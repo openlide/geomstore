@@ -1,0 +1,631 @@
+/**
+ * GeomStore v1.0 - Store组合
+ *
+ * 优化：
+ * - 使用类实例替代对象字面量，提升性能
+ * - 订阅通知使用防抖机制，避免短时间内多次触发
+ */
+
+import type { Store, State, Actions, Getters, StateListener, CacheStats } from '../../types/store'
+import type { Plugin } from '../../types/plugin'
+import type { ComposeOptions, StoreTreeNode, StoreLike, ExtractStates, ExtractActions, ExtractGetters } from '../../types/compose'
+import { HookSystem } from '../hooks/index'
+import { isProduction } from '../store/utils'
+
+/**
+ * 根据命名空间分发操作到对应 store
+ * @private
+ */
+function dispatchByNamespace<T>(
+  stores: Store[],
+  namespace: string | boolean | undefined,
+  data: Record<string, T>,
+  strict: boolean,
+  handler: (store: Store, value: T) => void,
+): void {
+  if (namespace) {
+    // 命名空间模式：每个顶层键是一个 store
+    for (const key in data) {
+      const value = data[key]
+      const targetStore = stores.find((s) => s.name === key)
+      if (targetStore) {
+        handler(targetStore, value as T)
+      } else if (strict) {
+        throw new Error(`[composeStore] Cannot find store for key: ${key}`)
+      }
+    }
+  } else {
+    // 非命名空间模式：需要先分组
+    const storeGroups = new Map<Store, Record<string, T>>()
+
+    for (const key in data) {
+      const value = data[key]
+      const targetStore = findTargetStore(key, stores, namespace)
+      if (targetStore) {
+        let group = storeGroups.get(targetStore)
+        if (!group) {
+          group = {}
+          storeGroups.set(targetStore, group)
+        }
+        group[key] = value
+      } else if (strict) {
+        throw new Error(`[composeStore] Cannot find store for key: ${key}`)
+      }
+    }
+
+    // 一次性调用每个 store
+    for (const [store, groupData] of storeGroups) {
+      handler(store, groupData as T)
+    }
+  }
+}
+
+/**
+ * 查找目标store并提取实际的键
+ *
+ * 修复：非命名空间模式下，如果多个 store 包含相同的 key，
+ * 抛出错误以避免非确定性行为
+ */
+function findTargetStoreWithKey(key: string, stores: Store[], namespace?: string | boolean): [Store | undefined, string] {
+  if (namespace) {
+    // 命名空间模式：key = storeName/actualKey
+    const parts = key.split('/')
+    const storeName = parts[0]
+    const actualKey = parts.slice(1).join('/') // 支持多级路径
+    // key 不含 "/" 时视为未找到目标（由调用方按 strict 抛错或忽略），
+    // 避免在子 store 上写入空字符串键
+    if (!actualKey) {
+      return [undefined, key]
+    }
+    const targetStore = stores.find((s) => s.name === storeName)
+    return [targetStore, actualKey]
+  } else {
+    // 非命名空间模式：直接查找
+    // 修复：检查是否有多个 store 包含相同的 key，避免非确定性行为
+    const matchingStores = stores.filter((s) => {
+      const state = s.getState()
+      return key in state
+    })
+
+    if (matchingStores.length > 1) {
+      console.warn(
+        `[composeStore] Ambiguous key "${key}" found in multiple stores: ${matchingStores.map((s) => s.name).join(', ')}. ` +
+          `Consider using namespaced mode for disambiguation.`,
+      )
+    }
+
+    return [matchingStores[0], key]
+  }
+}
+
+/**
+ * 查找目标store
+ */
+function findTargetStore(key: string, stores: Store[], namespace?: string | boolean): Store | undefined {
+  const [store] = findTargetStoreWithKey(key, stores, namespace)
+  return store
+}
+
+/**
+ * 解析action名称
+ */
+function parseActionName(fullName: string, namespace?: string | boolean): [string, string] {
+  if (namespace) {
+    const parts = fullName.split('/')
+    // 支持多级路径（如 store/a/b）：首段为 store 名，其余段合并为成员名，
+    // 避免三级及以上路径静默落入裸名查找而失败
+    if (parts.length >= 2) {
+      return [parts[0], parts.slice(1).join('/')]
+    }
+  }
+  // 如果没有命名空间，尝试从stores中查找
+  return ['', fullName]
+}
+
+/**
+ * ComposedStore 类
+ *
+ * 组合多个 Store 为一个统一的 Store 实例
+ * 使用类替代对象字面量，提供更好的性能和方法查找效率
+ */
+class ComposedStore<S extends State = State> implements Store<S> {
+  readonly name: string
+  readonly actions: Record<string, (...args: unknown[]) => unknown> = {}
+
+  /** 实例级钩子系统 - 组合 Store 透传到子 Store */
+  public readonly hooks: HookSystem
+
+  /** 销毁标记 */
+  public destroyed: boolean = false
+
+  /** 内部 Store 数组 */
+  private _stores: Store[]
+  /** 命名空间 */
+  private _namespace: string | boolean
+  /** 严格模式 */
+  private _strict: boolean
+  /** stores 引用（暴露给外部） */
+  public stores: Record<string, Store> = {}
+
+  /** 防抖相关：实例级统一调度，避免多个订阅者各自维护标志导致非首个订阅者丢通知 */
+  private _pendingNotification: boolean = false
+  private _notificationScheduled: boolean = false
+  /** 当前活跃的订阅者集合 */
+  private _composedListeners: Set<StateListener<S>> = new Set()
+  /** 对子 Store 的订阅句柄（destroy 时统一退订，避免闭包残留） */
+  private _storeUnsubscribers: Array<() => void> = []
+
+  constructor(stores: Store[], options: ComposeOptions = {}) {
+    this._stores = stores
+    this._namespace = options.namespace ?? ''
+    this._strict = options.strict ?? false
+    this.name = typeof this._namespace === 'string' ? this._namespace || 'composed' : 'composed'
+
+    // 初始化实例级钩子系统（组合 Store 使用独立的 HookSystem）
+    this.hooks = new HookSystem()
+
+    // 构建 stores 引用
+    for (const store of stores) {
+      this.stores[store.name] = store
+    }
+  }
+
+  // ==================== 状态管理 ====================
+
+  /**
+   * 销毁状态守卫：在调用任何公开方法前检查 Store 是否已销毁
+   */
+  private _ensureAlive(methodName: string): void {
+    if (this.destroyed) {
+      throw new Error(`[GeomStore] Cannot call ${methodName} on a destroyed ComposedStore`)
+    }
+  }
+
+  getState(): S {
+    this._ensureAlive('getState')
+    // 合并所有store的state
+    const result: Record<string, unknown> = {}
+    for (const store of this._stores) {
+      if (this._namespace) {
+        result[store.name] = store.getState()
+      } else {
+        Object.assign(result, store.getState())
+      }
+    }
+    return result as S
+  }
+
+  get state(): S {
+    return this.getState()
+  }
+
+  setState<K extends keyof S>(key: K, value: S[K]): void {
+    this._ensureAlive('setState')
+    const [targetStore, actualKey] = findTargetStoreWithKey(String(key), this._stores, this._namespace)
+    if (!targetStore) {
+      if (this._strict) {
+        throw new Error(`[composeStore] Cannot find store for key: ${String(key)}`)
+      }
+      return
+    }
+    targetStore.setState(actualKey as keyof typeof targetStore.state, value as (typeof targetStore.state)[keyof typeof targetStore.state])
+  }
+
+  $patch(partialState: Partial<S>): void {
+    this._ensureAlive('$patch')
+    dispatchByNamespace(this._stores, this._namespace, partialState as Record<string, unknown>, this._strict, (store, value) =>
+      store.$patch(value as Partial<S>),
+    )
+  }
+
+  $replaceState(newState: S): void {
+    this._ensureAlive('$replaceState')
+    dispatchByNamespace(this._stores, this._namespace, newState as Record<string, unknown>, this._strict, (store, value) => store.$replaceState(value as S))
+  }
+
+  // ==================== Action 和 Getter ====================
+
+  dispatch(actionName: string, ...args: unknown[]): unknown {
+    this._ensureAlive('dispatch')
+    const [storeName, actualAction] = parseActionName(actionName, this._namespace)
+
+    let targetStore: Store | undefined
+
+    if (storeName) {
+      targetStore = this._stores.find((s) => s.name === storeName)
+    } else {
+      // 裸名查找：多 store 命中同名 action 时提示冲突（仍取第一个，保持兼容）
+      const matches = this._stores.filter((s) => s.actions && actualAction in s.actions)
+      if (matches.length > 1) {
+        console.warn(
+          `[composeStore] Action "${actualAction}" 存在于多个 store（${matches.map((s) => s.name).join(', ')}），将调用第一个 store 的定义；建议启用命名空间消除歧义`,
+        )
+      }
+      targetStore = matches[0]
+    }
+
+    if (!targetStore) {
+      if (this._strict) {
+        throw new Error(`[composeStore] Cannot find store for action: ${actionName}`)
+      }
+      return undefined
+    }
+
+    return targetStore.dispatch(actualAction, ...args)
+  }
+
+  /**
+   * 合并后的 Getters 定义（只读）
+   *
+   * 键的合并规则与 getter() 的解析语义一致：命名空间模式下为 `storeName/getterName`，
+   * 非命名空间模式为裸名（同名冲突取第一个 store 的定义）
+   */
+  get getters(): Getters<S> {
+    const result: Record<string, (state: S) => unknown> = {}
+    for (const store of this._stores) {
+      const subGetters = store.getters
+      for (const key of Object.keys(subGetters)) {
+        const mappedKey = this._namespace ? `${store.name}/${key}` : key
+        if (!(mappedKey in result)) {
+          result[mappedKey] = subGetters[key] as (state: S) => unknown
+        }
+      }
+    }
+    return result
+  }
+
+  getter(getterName: string): unknown {
+    this._ensureAlive('getter')
+    const [storeName, actualGetter] = parseActionName(getterName, this._namespace)
+
+    let targetStore: Store | undefined
+
+    if (storeName) {
+      targetStore = this._stores.find((s) => s.name === storeName)
+    } else {
+      // 使用 getGetterNames() 查找，避免 try/catch 异常驱动控制流；
+      // 多 store 命中同名 getter 时提示冲突（仍取第一个，保持兼容）
+      const matches = this._stores.filter((s) => {
+        return s.getGetterNames().includes(actualGetter)
+      })
+      if (matches.length > 1) {
+        console.warn(
+          `[composeStore] Getter "${actualGetter}" 存在于多个 store（${matches.map((s) => s.name).join(', ')}），将返回第一个 store 的定义；建议启用命名空间消除歧义`,
+        )
+      }
+      targetStore = matches[0]
+    }
+
+    if (!targetStore) {
+      if (this._strict) {
+        throw new Error(`[composeStore] Cannot find store for getter: ${getterName}`)
+      }
+      return undefined
+    }
+
+    return targetStore.getter(actualGetter)
+  }
+
+  /**
+   * 获取所有子 Store 的 getter 名称列表。
+   *
+   * 若存在命名空间前缀，返回 `${storeName}/${getterName}` 形式；否则返回去重后的裸名。
+   */
+  getGetterNames(): string[] {
+    const names: string[] = []
+    const seen = new Set<string>()
+    for (const store of this._stores) {
+      const subNames = store.getGetterNames ? store.getGetterNames() : []
+      for (const n of subNames) {
+        const full = this._namespace ? `${store.name}/${n}` : n
+        if (!seen.has(full)) {
+          seen.add(full)
+          names.push(full)
+        }
+      }
+    }
+    return names
+  }
+
+  // ==================== 订阅（带防抖）====================
+
+  /**
+   * 向所有活跃订阅者广播当前状态
+   */
+  private _notifyListeners(): void {
+    if (this.destroyed) return
+    const state = this.getState()
+    // 迭代前快照，防止订阅者在回调中退订导致集合变更
+    for (const listener of [...this._composedListeners]) {
+      try {
+        listener(state)
+      } catch (error) {
+        // 单个 listener 抛错不应中断其余监听器的通知，
+        // 否则错误会冒泡进微任务回调成为 uncaught exception（与 SubscriptionManager 隔离语义一致）
+        if (!isProduction()) {
+          console.error('[GeomStore] Error in composed state listener:', error)
+        }
+      }
+    }
+  }
+
+  /**
+   * 调度一次合并通知：同一微任务内的多次状态变化只触发一次广播
+   */
+  private _scheduleNotify(): void {
+    if (this.destroyed) return
+    // 如果已经有待处理的通知，标记后由微任务统一补发
+    if (this._notificationScheduled) {
+      this._pendingNotification = true
+      return
+    }
+
+    this._notificationScheduled = true
+
+    const runNotify = () => {
+      this._notificationScheduled = false
+
+      // 通知所有监听器
+      this._notifyListeners()
+
+      // 如果在等待期间又有新的变化，再通知一次
+      if (this._pendingNotification) {
+        this._pendingNotification = false
+        this._notifyListeners()
+      }
+    }
+
+    // 使用微任务合并同一事件循环内的多次状态变化；
+    // 旧版小程序基础库（< 2.26.x）无 queueMicrotask，降级为 Promise 微任务
+    if (typeof queueMicrotask === 'function') {
+      queueMicrotask(runNotify)
+    } else {
+      Promise.resolve().then(runNotify)
+    }
+  }
+
+  subscribe(listener: StateListener<S>): () => void {
+    this._ensureAlive('subscribe')
+    this._composedListeners.add(listener)
+    const unsubscribers: Array<() => void> = []
+
+    // 订阅所有子 store，统一走实例级防抖调度
+    for (const store of this._stores) {
+      const unsubscribe = store.subscribe(() => this._scheduleNotify())
+      unsubscribers.push(unsubscribe)
+      this._storeUnsubscribers.push(unsubscribe)
+    }
+
+    // 与普通 Store.subscribe 保持一致：订阅时不立即回调，
+    // 仅在子 store 状态变化时通知，避免带副作用的监听器在订阅时被意外执行
+
+    return () => {
+      for (const unsubscribe of unsubscribers) {
+        unsubscribe()
+        // 同步清理组合层句柄记录：退订后残留句柄会在长会话
+        // （页面反复挂载/卸载）中累积，持有已退订回调的闭包引用
+        const index = this._storeUnsubscribers.indexOf(unsubscribe)
+        if (index !== -1) {
+          this._storeUnsubscribers.splice(index, 1)
+        }
+      }
+      this._composedListeners.delete(listener)
+    }
+  }
+
+  // ==================== 插件管理 ====================
+
+  use(plugin: Plugin): () => void {
+    this._ensureAlive('use')
+    const uninstalls: Array<() => void> = []
+
+    for (const store of this._stores) {
+      const uninstall = store.use(plugin)
+      if (typeof uninstall === 'function') {
+        uninstalls.push(uninstall)
+      }
+    }
+
+    return () => {
+      for (const uninstall of uninstalls) {
+        uninstall()
+      }
+    }
+  }
+
+  // ==================== 生命周期 ====================
+
+  /**
+   * 销毁组合 Store
+   *
+   * @param destroyStores - 是否级联销毁子 Store（默认 true，保持向后兼容）。
+   *  当子 Store 在组合之外被独立持有并继续使用时，应传入 false：
+   *  仅退订组合层订阅并清理钩子，避免牵连外部持有的子 Store
+   */
+  destroy(destroyStores: boolean = true): void {
+    if (this.destroyed) return
+    // 先退订所有子 Store 订阅：组合层销毁后，残留回调无意义且会持有闭包引用
+    // （退订函数幂等，重复调用安全）
+    for (const unsubscribe of this._storeUnsubscribers) {
+      unsubscribe()
+    }
+    this._storeUnsubscribers = []
+    if (destroyStores) {
+      for (const store of this._stores) {
+        store.destroy()
+      }
+    }
+    this._composedListeners.clear()
+    this.hooks.clear()
+    this.destroyed = true
+  }
+
+  // ==================== 缓存管理 ====================
+
+  getCached<K extends keyof S>(key: K): S[K] {
+    const keyStr = String(key)
+    const [targetStore, actualKey] = findTargetStoreWithKey(keyStr, this._stores, this._namespace)
+    if (!targetStore) {
+      if (this._strict) {
+        throw new Error(`[composeStore] Cannot find store for key: ${keyStr}`)
+      }
+      return undefined as S[K]
+    }
+    return targetStore.getCached(actualKey as never) as S[K]
+  }
+
+  enableCache(keys?: Array<keyof S>): void {
+    for (const store of this._stores) {
+      // 子 store 的泛型与组合后的 S 不同构，键集合仅在运行时传递，此处断言安全
+      store.enableCache(keys as Array<keyof State> | undefined)
+    }
+  }
+
+  disableCache(): void {
+    for (const store of this._stores) {
+      store.disableCache()
+    }
+  }
+
+  invalidateCache<K extends keyof S>(key?: K): void {
+    if (key !== undefined) {
+      const keyStr = String(key)
+      const [targetStore, actualKey] = findTargetStoreWithKey(keyStr, this._stores, this._namespace)
+      if (targetStore) {
+        targetStore.invalidateCache(actualKey as never)
+      } else if (this._strict) {
+        throw new Error(`[composeStore] Cannot find store for key: ${keyStr}`)
+      }
+    } else {
+      for (const store of this._stores) {
+        store.invalidateCache()
+      }
+    }
+  }
+
+  getCacheStats(): CacheStats {
+    const stats: CacheStats = {
+      enabled: false,
+      size: 0,
+      keys: [],
+      hits: 0,
+      misses: 0,
+    }
+
+    for (const store of this._stores) {
+      const storeStats = store.getCacheStats()
+      stats.enabled = stats.enabled || storeStats.enabled
+      stats.size += storeStats.size
+      stats.keys.push(...storeStats.keys)
+      stats.hits += storeStats.hits
+      stats.misses += storeStats.misses
+    }
+
+    return stats
+  }
+
+  // ==================== 批量更新 ====================
+
+  startBatch(): void {
+    for (const store of this._stores) {
+      store.startBatch()
+    }
+  }
+
+  endBatch(): void {
+    for (const store of this._stores) {
+      store.endBatch()
+    }
+  }
+
+  batch<T>(fn: () => T): T {
+    this.startBatch()
+    try {
+      return fn()
+    } finally {
+      this.endBatch()
+    }
+  }
+
+  // ==================== 快照管理 ====================
+
+  $snapshot(): Readonly<S> {
+    const result: Record<string, unknown> = {}
+    for (const store of this._stores) {
+      if (this._namespace) {
+        result[store.name] = store.$snapshot()
+      } else {
+        Object.assign(result, store.$snapshot())
+      }
+    }
+    return result as Readonly<S>
+  }
+
+  $restore(snapshot: Readonly<S>): void {
+    dispatchByNamespace(this._stores, this._namespace, snapshot as Record<string, unknown>, this._strict, (store, value) =>
+      store.$restore(value as Readonly<S>),
+    )
+  }
+}
+
+/**
+ * Store组合函数 - 类型安全重载
+ * 支持完整的类型推断，保留原始 Store 的类型信息
+ */
+
+// 类型推断版本：保留 Store 元组的完整类型信息
+function composeStore<Stores extends readonly StoreLike[]>(
+  stores: [...Stores],
+  options?: ComposeOptions,
+): Store<ExtractStates<Stores>, ExtractActions<Stores>, ExtractGetters<Stores>>
+
+// 标准版本：使用默认泛型参数
+function composeStore(stores: Store[], options?: ComposeOptions): Store<State, Actions, Getters<State>>
+
+// 实现
+function composeStore(stores: Store[], options: ComposeOptions = {}): Store<State, Actions, Getters<State>> {
+  // 验证stores
+  if (!Array.isArray(stores) || stores.length === 0) {
+    throw new Error('[composeStore] stores must be a non-empty array')
+  }
+
+  // 创建 ComposedStore 类实例（性能优于对象字面量）
+  const composedStore = new ComposedStore<State>(stores, options)
+
+  return composedStore as unknown as Store<State, Actions, Getters<State>>
+}
+
+export { composeStore }
+
+/**
+ * 创建Store树
+ */
+export function createStoreTree(stores: Store[], options: ComposeOptions = {}): StoreTreeNode {
+  const { namespace = '' } = options
+  const children: Record<string, StoreTreeNode> = {}
+  const root: StoreTreeNode = {
+    name: typeof namespace === 'string' ? namespace || 'root' : 'root',
+    store: null as Store | null,
+    children,
+  }
+
+  for (const store of stores) {
+    children[store.name] = {
+      name: store.name,
+      store,
+      children: {},
+    }
+  }
+
+  return root
+}
+
+/**
+ * 导出 ComposedStore 类（供高级用户使用）
+ */
+export { ComposedStore }
+
+/**
+ * 默认导出
+ */
+export type { ComposeOptions, StoreTreeNode, NamespaceConfig } from '../../types/compose'

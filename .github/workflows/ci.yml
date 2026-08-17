@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master, develop]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  verify:
+    name: Lint / Typecheck / Test / Build (Node ${{ matrix.node-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [22, 24]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm run lint:ci
+
+      - name: Typecheck (src)
+        run: pnpm run typecheck
+
+      - name: Typecheck (examples)
+        run: pnpm run typecheck:examples
+
+      - name: Test with coverage
+        run: pnpm run test:ci
+
+      - name: Build
+        run: pnpm run build
+
+      - name: Smoke test dist bundles (CJS + ESM + subpath)
+        run: |
+          node -e '
+            const s = require("./dist/cjs/index.js")
+            const store = s.createStore({
+              name: "ci-smoke",
+              state: { count: 1 },
+              actions: { inc() { this.setState("count", this.state.count + 1) } },
+            })
+            store.dispatch("inc")
+            if (store.getState().count !== 2) throw new Error("cjs smoke failed")
+            if (typeof s.GeomStoreError !== "function") throw new Error("GeomStoreError missing")
+            const err = require("./dist/cjs/core/error/index.js")
+            if (typeof err.GeomStoreError !== "function") throw new Error("error subpath failed")
+            const plugins = require("./dist/cjs/plugins/index.js")
+            if (!plugins.loggerPlugin) throw new Error("plugins subpath failed")
+            console.log("CJS SMOKE OK")
+          '
+          node --input-type=module -e '
+            import { createStore, GeomStoreError } from "./dist/esm/index.js"
+            const store = createStore({
+              name: "ci-smoke-esm",
+              state: { count: 1 },
+              actions: { inc() { this.setState("count", this.state.count + 1) } },
+            })
+            store.dispatch("inc")
+            if (store.getState().count !== 2) throw new Error("esm smoke failed")
+            if (typeof GeomStoreError !== "function") throw new Error("GeomStoreError missing")
+            console.log("ESM SMOKE OK")
+          '
+
+      - name: Upload coverage report
+        if: matrix.node-version == 22
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage/lcov-report
+          retention-days: 14

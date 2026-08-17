@@ -1,0 +1,35 @@
+{
+  "name": "@openlide/geomstore-benchmark",
+  "version": "1.0.0",
+  "description": "GeomStore 基准测试工具包 - 提供全面的性能基准测试功能",
+  "main": "dist/index.js",
+  "module": "dist/index.esm.js",
+  "types": "dist/d.ts",
+  "files": ["dist", "src"],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "benchmark",
+    "performance",
+    "state-management",
+    "geomstore"
+  ],
+  "author": "GeomStore Team",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/openlide/GeomStore.git",
+    "directory": "packages/benchmark"
+  },
+  "peerDependencies": {
+    "@openlide/geomstore": "^1.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0"
+  },
+  "engines": {
+    "node": ">=14.0.0"
+  }
+}

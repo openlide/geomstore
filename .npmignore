@@ -1,0 +1,31 @@
+# 发布内容由 package.json files 白名单控制（仅 dist）
+# - dist: 编译产物（CJS/ESM 双格式，含 .d.ts；sourcemap 已由 postbuild 剔除）
+# - 类型解析完全由 dist 内 .d.ts 提供（exports 已映射），src 不随包发布
+# 以下目录/文件仅存在于仓库，不随包发布：
+src/
+tests/
+docs/
+examples/
+scripts/
+
+# Config files
+tsconfig*.json
+jest.config.cjs
+.eslintrc.*
+.prettierrc*
+
+# Development files
+.gitignore
+.github/
+
+# Documentation
+*.md
+!README.md
+!CHANGELOG.md
+
+# Test files
+**/*.test.ts
+**/*.spec.ts
+
+# Build artifacts
+*.tsbuildinfo

@@ -1,0 +1,227 @@
+// Self-contained SCSS变量系统（微信小程序可直接导入）
+// 主色：#003aa9，生成 10 级色阶（50/100/200/300/400/500/600/700/800/900）
+
+// 1) 基础颜色变量
+$color-primary: #003aa9;
+$color-primary-50: #e6f0ff;
+$color-primary-100: #cfe0ff;
+$color-primary-200: #a8d0ff;
+$color-primary-300: #7bb0ff;
+$color-primary-400: #4b8fff;
+$color-primary-500: #003aa9;
+$color-primary-600: #00319f;
+$color-primary-700: #002a86;
+$color-primary-800: #001f6a;
+$color-primary-900: #00124a;
+
+$color-gray-50: #f8f9fb;
+$color-gray-100: #f1f5f9;
+$color-gray-200: #e5e7eb;
+$color-gray-300: #d1d5db;
+$color-gray-400: #9ca3af;
+$color-gray-500: #6b7280;
+$color-gray-600: #4b5563;
+$color-gray-700: #374151;
+$color-gray-800: #1f2937;
+$color-gray-900: #111827;
+
+$color-background: #ffffff;
+$color-surface: #f7f8fb;
+$color-surface-2: #f0f4f8;
+$color-text: #111827;
+$color-text-secondary: #4b5563;
+$color-on-primary: #ffffff;
+$color-border: #e5e7eb;
+$color-border-strong: #d1d5db;
+
+$color-success: #16a34a;
+$color-warning: #f59e0b;
+$color-danger: #e11d48;
+$color-info: #3b82f6;
+$color-muted: #6b7280;
+
+$shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
+$shadow-md: 0 6px 18px rgba(0, 0, 0, 0.12);
+$shadow-lg: 0 12px 28px rgba(0, 0, 0, 0.2);
+
+$radius-sm: 4px;
+$radius-md: 8px;
+$radius-lg: 12px;
+$radius-full: 999px;
+
+$font-family-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Noto Sans', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', Arial, sans-serif;
+$font-family-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas;
+$font-size-root: 16px;
+$line-height-root: 1.5;
+$font-weight-regular: 400;
+$font-weight-medium: 500;
+$font-weight-bold: 700;
+
+$space-0: 0px;
+$space-1: 4px;
+$space-2: 8px;
+$space-3: 12px;
+$space-4: 16px;
+$space-5: 20px;
+$space-6: 24px;
+$space-8: 32px;
+$space-10: 40px;
+$space-12: 48px;
+$space-16: 64px;
+
+$breakpoint-xs: 420px;
+$breakpoint-sm: 640px;
+$breakpoint-md: 1024px;
+$breakpoint-lg: 1280px;
+
+$theme-name-light: light;
+$theme-name-dark: dark;
+
+@mixin theme-vars($map) {
+  @each $name, $value in $map {
+    #{"--#{$name}"}: #{$value};
+  }
+}
+
+// 2) 深色主题定义（Dark）
+$color-background-dark: #0b1020;
+$color-surface-dark: #141a2b;
+$color-surface-2-dark: #1f2540;
+$color-text-dark: #e5e7eb;
+$color-text-secondary-dark: #a3aec2;
+$color-on-primary-dark: #ffffff;
+$color-border-dark: #1f2a44;
+$color-border-strong-dark: #273346;
+
+$theme-dark: (
+  'color-background': $color-background-dark,
+  'color-surface': $color-surface-dark,
+  'color-surface-2': $color-surface-2-dark,
+  'color-text': $color-text-dark,
+  'color-text-secondary': $color-text-secondary-dark,
+  'color-on-primary': $color-on-primary-dark,
+  'color-border': $color-border-dark,
+  'color-border-strong': $color-border-strong-dark,
+  'color-primary': $color-primary,
+  'color-primary-50': #e5f0ff,
+  'color-primary-100': #cfe0ff,
+  'color-primary-200': #a6d0ff,
+  'color-primary-300': #79b0ff,
+  'color-primary-400': #4e91ff,
+  'color-primary-500': $color-primary,
+  'color-primary-600': #00319f,
+  'color-primary-700': #002a86,
+  'color-primary-800': #001f6a,
+  'color-primary-900': #00124a,
+  'color-gray-50': #0b1220,
+  'color-gray-100': #151b2b,
+  'color-gray-200': #1f2a44,
+  'color-gray-300': #334155,
+  'color-gray-400': #4b5563,
+  'color-gray-500': #64748b,
+  'color-gray-600': #94a3b8,
+  'color-gray-700': #cbd5e1,
+  'color-gray-800': #e5e7eb,
+  'color-gray-900': #f8fafc,
+  'shadow-sm': 0 1px 2px rgba(0, 0, 0, 0.55),
+  'shadow-md': 0 6px 16px rgba(0, 0, 0, 0.6),
+  'shadow-lg': 0 12px 28px rgba(0, 0, 0, 0.6),
+  'radius-sm': $radius-sm,
+  'radius-md': $radius-md,
+  'radius-lg': $radius-lg,
+  'radius-full': $radius-full,
+  'font-family-sans': $font-family-sans,
+  'font-family-mono': $font-family-mono,
+  'font-size-root': 15.5px,
+  'line-height-root': 1.6,
+  'font-weight-regular': $font-weight-regular,
+  'font-weight-medium': $font-weight-medium,
+  'font-weight-bold': $font-weight-bold,
+  'space-0': $space-0,
+  'space-1': $space-1,
+  'space-2': $space-2,
+  'space-3': $space-3,
+  'space-4': $space-4,
+  'space-5': $space-5,
+  'space-6': $space-6,
+  'space-8': $space-8,
+  'space-10': $space-10,
+  'space-12': $space-12,
+  'space-16': $space-16,
+  'breakpoint-xs': $breakpoint-xs,
+  'breakpoint-sm': $breakpoint-sm,
+  'breakpoint-md': $breakpoint-md,
+  'breakpoint-lg': $breakpoint-lg,
+  'theme-name': $theme-name-dark,
+);
+
+// 3) 导出浅色主题变量集合（Light）
+$theme-light: (
+  'color-background': $color-background,
+  'color-surface': $color-surface,
+  'color-surface-2': $color-surface-2,
+  'color-text': $color-text,
+  'color-text-secondary': $color-text-secondary,
+  'color-on-primary': $color-on-primary,
+  'color-border': $color-border,
+  'color-border-strong': $color-border-strong,
+  'color-primary': $color-primary,
+  'color-primary-50': $color-primary-50,
+  'color-primary-100': $color-primary-100,
+  'color-primary-200': $color-primary-200,
+  'color-primary-300': $color-primary-300,
+  'color-primary-400': $color-primary-400,
+  'color-primary-500': $color-primary-500,
+  'color-primary-600': $color-primary-600,
+  'color-primary-700': $color-primary-700,
+  'color-primary-800': $color-primary-800,
+  'color-primary-900': $color-primary-900,
+  'color-gray-50': $color-gray-50,
+  'color-gray-100': $color-gray-100,
+  'color-gray-200': $color-gray-200,
+  'color-gray-300': $color-gray-300,
+  'color-gray-400': $color-gray-400,
+  'color-gray-500': $color-gray-500,
+  'color-gray-600': $color-gray-600,
+  'color-gray-700': $color-gray-700,
+  'color-gray-800': $color-gray-800,
+  'color-gray-900': $color-gray-900,
+  'shadow-sm': $shadow-sm,
+  'shadow-md': $shadow-md,
+  'shadow-lg': $shadow-lg,
+  'radius-sm': $radius-sm,
+  'radius-md': $radius-md,
+  'radius-lg': $radius-lg,
+  'radius-full': $radius-full,
+  'font-family-sans': $font-family-sans,
+  'font-family-mono': $font-family-mono,
+  'font-size-root': $font-size-root,
+  'line-height-root': $line-height-root,
+  'font-weight-regular': $font-weight-regular,
+  'font-weight-medium': $font-weight-medium,
+  'font-weight-bold': $font-weight-bold,
+  'space-0': $space-0,
+  'space-1': $space-1,
+  'space-2': $space-2,
+  'space-3': $space-3,
+  'space-4': $space-4,
+  'space-5': $space-5,
+  'space-6': $space-6,
+  'space-8': $space-8,
+  'space-10': $space-10,
+  'space-12': $space-12,
+  'space-16': $space-16,
+  'breakpoint-xs': $breakpoint-xs,
+  'breakpoint-sm': $breakpoint-sm,
+  'breakpoint-md': $breakpoint-md,
+  'breakpoint-lg': $breakpoint-lg,
+  'theme-name': $theme-name-light,
+);
+
+:root {
+  @include theme-vars($theme-light);
+}
+
+[data-theme='dark'] {
+  @include theme-vars($theme-dark);
+}

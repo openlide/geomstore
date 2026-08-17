@@ -1,0 +1,5 @@
+# pnpm 工作区配置
+# 当前仅根包纳入锁文件管理；packages/benchmark 为实验性子包，暂未接入
+# allowBuilds：批准依赖的安装脚本（pnpm 10+ 默认禁止构建脚本）
+allowBuilds:
+  unrs-resolver: true
