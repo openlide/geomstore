@@ -3,88 +3,67 @@
   "version": "0.1.0",
   "description": "轻量级微信小程序状态管理库 - 简洁、高效、易用",
   "main": "dist/cjs/index.js",
-  "module": "dist/esm/index.js",
   "types": "dist/cjs/index.d.ts",
   "sideEffects": false,
   "exports": {
     ".": {
-      "import": {
-        "types": "./dist/esm/index.d.ts",
-        "default": "./dist/esm/index.js"
-      },
-      "require": {
-        "types": "./dist/cjs/index.d.ts",
-        "default": "./dist/cjs/index.js"
-      }
+      "types": "./dist/cjs/index.d.ts",
+      "require": "./dist/cjs/index.js"
     },
     "./store": {
       "types": "./dist/cjs/core/store/index.d.ts",
-      "import": "./dist/esm/core/store/index.js",
       "require": "./dist/cjs/core/store/index.js"
     },
     "./hooks": {
       "types": "./dist/cjs/core/hooks/index.d.ts",
-      "import": "./dist/esm/core/hooks/index.js",
       "require": "./dist/cjs/core/hooks/index.js"
     },
     "./plugins": {
       "types": "./dist/cjs/plugins/index.d.ts",
-      "import": "./dist/esm/plugins/index.js",
       "require": "./dist/cjs/plugins/index.js"
     },
     "./plugins/devtools": {
       "types": "./dist/cjs/plugins/devtools/index.d.ts",
-      "import": "./dist/esm/plugins/devtools/index.js",
       "require": "./dist/cjs/plugins/devtools/index.js"
     },
     "./plugins/performance": {
       "types": "./dist/cjs/plugins/performance/index.d.ts",
-      "import": "./dist/esm/plugins/performance/index.js",
       "require": "./dist/cjs/plugins/performance/index.js"
     },
     "./integrations": {
       "types": "./dist/cjs/integrations/index.d.ts",
-      "import": "./dist/esm/integrations/index.js",
       "require": "./dist/cjs/integrations/index.js"
     },
     "./integrations/enterprise": {
       "types": "./dist/cjs/integrations/enterprise/index.d.ts",
-      "import": "./dist/esm/integrations/enterprise/index.js",
       "require": "./dist/cjs/integrations/enterprise/index.js"
     },
     "./error": {
       "types": "./dist/cjs/core/error/index.d.ts",
-      "import": "./dist/esm/core/error/index.js",
       "require": "./dist/cjs/core/error/index.js"
     },
     "./compose": {
       "types": "./dist/cjs/core/compose/index.d.ts",
-      "import": "./dist/esm/core/compose/index.js",
       "require": "./dist/cjs/core/compose/index.js"
     },
     "./selectors": {
       "types": "./dist/cjs/core/selector/index.d.ts",
-      "import": "./dist/esm/core/selector/index.js",
       "require": "./dist/cjs/core/selector/index.js"
     },
     "./snapshot": {
       "types": "./dist/cjs/core/snapshot/index.d.ts",
-      "import": "./dist/esm/core/snapshot/index.js",
       "require": "./dist/cjs/core/snapshot/index.js"
     },
     "./performance": {
       "types": "./dist/cjs/core/performance/index.d.ts",
-      "import": "./dist/esm/core/performance/index.js",
       "require": "./dist/cjs/core/performance/index.js"
     },
     "./actions": {
       "types": "./dist/cjs/core/action/index.d.ts",
-      "import": "./dist/esm/core/action/index.js",
       "require": "./dist/cjs/core/action/index.js"
     },
     "./cache": {
       "types": "./dist/cjs/core/cache/index.d.ts",
-      "import": "./dist/esm/core/cache/index.js",
       "require": "./dist/cjs/core/cache/index.js"
     },
     "./package.json": "./package.json"
@@ -116,7 +95,7 @@
     "test:unit": "jest tests/unit",
     "test:integration": "jest tests/integration",
     "test:ci": "jest --ci --coverage --maxWorkers=2",
-    "build": "tsc -p tsconfig.cjs.json && tsc -p tsconfig.esm.json && node scripts/postbuild-dist.cjs",
+    "build": "tsc -p tsconfig.cjs.json && node scripts/postbuild-dist.cjs",
     "prepublishOnly": "pnpm test && pnpm build",
     "lint": "eslint src tests --ext .ts",
     "lint:ci": "eslint src tests --ext .ts --max-warnings 70",
