@@ -80,7 +80,7 @@ export const loggerPlugin: Plugin = {
 // - 作为 Plugin 对象使用时：具有 name / install 属性（使用默认选项）
 const _persistencePluginFactory = <S extends State = State>(options?: PersistenceOptions<S>): Plugin => ({
   name: 'persistence',
-  install: (store) => installPersistence(store as Store<S>, options),
+  install: (store) => installPersistence(store as unknown as Store<S>, options),
 })
 
 // 附加 Plugin 属性（使用 defineProperty 避免 name 属性只读限制）
@@ -112,20 +112,40 @@ function installPersistence<S extends State>(store: Store<S>, options: Persisten
   const storageKey = typeof key === 'function' ? key(store.name) : key
 
   // 解析存储后端：优先使用传入的 storage（符合 getItem/setItem 接口），
-  // 否则使用微信小程序的 wx.getStorageSync / setStorageSync / removeStorageSync。
+  // 否则使用微信小程序的 wx.getStorageSync / setStorageSync / removeStorageSync；
+  // 非微信环境（如测试/Node）wx 不存在，降级为内存存储避免 ReferenceError
   const userStorage = options.storage
-  const storageAdapter: SyncStorageBackend =
-    userStorage && typeof userStorage === 'object' && 'getItem' in userStorage
-      ? (userStorage as SyncStorageBackend)
-      : {
-          // 微信小程序同步存储（小程序环境 wx 必存在）
-          getItem: (k: string) => {
-            const v = wx.getStorageSync(k)
-            return v === undefined ? null : v
-          },
-          setItem: (k: string, v: string) => wx.setStorageSync(k, v),
-          removeItem: (k: string) => wx.removeStorageSync(k),
-        }
+  let storageAdapter: SyncStorageBackend
+  if (userStorage && typeof userStorage === 'object' && 'getItem' in userStorage) {
+    storageAdapter = userStorage as SyncStorageBackend
+  } else {
+    // 微信小程序 wx 为全局变量，经 globalThis 读取避免直接引用未声明标识符（TS2304）
+    const wxGlobal = (
+      globalThis as { wx?: { getStorageSync(k: string): unknown; setStorageSync(k: string, v: string): void; removeStorageSync(k: string): void } }
+    ).wx
+    if (wxGlobal && typeof wxGlobal.getStorageSync === 'function') {
+      storageAdapter = {
+        // 微信小程序同步存储
+        getItem: (k: string) => {
+          const v = wxGlobal.getStorageSync(k)
+          return v === undefined || v === null ? null : (v as string)
+        },
+        setItem: (k: string, v: string) => wxGlobal.setStorageSync(k, v),
+        removeItem: (k: string) => wxGlobal.removeStorageSync(k),
+      }
+    } else {
+      // 降级：进程内存存储（重启即失，仅保证不抛错）
+      if (!isProduction()) {
+        console.warn('[GeomStore][persistence] 未检测到可用的 storage 后端（非微信环境且未传入 storage），降级为内存存储，持久化不生效')
+      }
+      const memoryMap = new Map<string, string>()
+      storageAdapter = {
+        getItem: (k: string) => memoryMap.get(k) ?? null,
+        setItem: (k: string, v: string) => void memoryMap.set(k, v),
+        removeItem: (k: string) => void memoryMap.delete(k),
+      }
+    }
+  }
 
   if (shouldRestore) {
     try {
@@ -140,7 +160,9 @@ function installPersistence<S extends State>(store: Store<S>, options: Persisten
           console.error('[GeomStore] Restored state failed validation, skipping restore')
         } else {
           const filteredState = filter ? filter(parsedState) : parsedState
-          store.$replaceState(filteredState)
+          // 恢复时使用 $patch 合并语义：filter 可能只持久化了部分键，
+          // 若用 $replaceState 整体替换会丢失未持久化的运行时键（如 UI 态/临时态）
+          store.$patch(filteredState)
           if (!isProduction()) {
             console.log('[GeomStore][persistence] State restored from storage:', storageKey)
           }

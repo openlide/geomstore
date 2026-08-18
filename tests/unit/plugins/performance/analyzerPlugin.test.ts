@@ -573,7 +573,7 @@ describe('analyzerPlugin - uninstall cleanup', () => {
     }
 
     // 先恢复 globalThis
-    (global as any).globalThis = originalGlobalThis
+    ;(global as any).globalThis = originalGlobalThis
     expect(threw).toBe(false)
   })
 })
@@ -635,6 +635,134 @@ describe('analyzerPlugin - after hook without before hook (if(end) false branch)
 
     // 直接 emit afterDispatch 而不先 emit beforeDispatch
     expect(() => store.hooks.emit('afterDispatch', 'someAction', [], undefined)).not.toThrow()
+  })
+})
+
+describe('analyzerPlugin - BUG-F2 错误路径清理配对栈', () => {
+  afterEach(() => {
+    try {
+      delete (global as any).__GEOMSTORE_ANALYZER__
+    } catch {
+      // ignore
+    }
+    jest.restoreAllMocks()
+  })
+
+  it('dispatch 抛错后同类型后续操作的配对不错位（残留计时被 onError 清理）', () => {
+    const store = createStore({
+      name: 'f2-error-dispatch-store',
+      state: { count: 0 },
+      actions: {
+        fail(..._args: unknown[]) {
+          throw new Error('boom')
+        },
+        succeed(..._args: unknown[]) {
+          ;(this.state as any).count++ // eslint-disable-line no-extra-semi
+        },
+      } as any,
+    })
+
+    store.use(analyzerPlugin)
+
+    // 错误路径：beforeDispatch push 后抛错，afterDispatch 不触发，
+    // onError 应立即结束全部未完成计时（记录到错误为止的耗时）并清空栈
+    expect(() => store.dispatch('fail')).toThrow('execution failed')
+
+    // 后续正常 dispatch 不应受残留影响：指标正常记录且无残留计时条目
+    store.dispatch('succeed')
+
+    const monitor = (store as any).__performanceMonitor__
+    const metrics = monitor.getMetrics() as Array<{ operation: string }>
+    // 错误场景的计时被记录（到错误发生为止的耗时）
+    expect(metrics.filter((m) => m.operation === 'dispatch:fail')).toHaveLength(1)
+    expect(metrics.filter((m) => m.operation === 'dispatch:succeed')).toHaveLength(1)
+    // 全部计时条目已配对结束，无残留
+    expect(monitor.currentOperations.size).toBe(0)
+  })
+
+  it('通过 onError 钩子手动触发时也应清空全部类型栈', () => {
+    const store = createStore({
+      name: 'f2-manual-onerror-store',
+      state: { count: 0 },
+    })
+
+    store.use(analyzerPlugin)
+
+    // 制造残留：emit beforeXxx 而不 emit afterXxx
+    store.hooks.emit('beforeSetState', 'count', 1)
+    store.hooks.emit('beforeDispatch', 'whatever', [])
+
+    // 手动触发 onError：残留计时应被立即结束（记录到错误为止），
+    // 后续 afterXxx 弹空栈不产生重复指标
+    store.hooks.emit('onError', new Error('manual'), 'manual')
+    expect(() => store.hooks.emit('afterSetState', 'count', 1)).not.toThrow()
+    expect(() => store.hooks.emit('afterDispatch', 'whatever', [], undefined)).not.toThrow()
+
+    const monitor = (store as any).__performanceMonitor__
+    expect(monitor.currentOperations.size).toBe(0)
+    // 每个操作各1条指标，不因清栈重复记录
+    expect(monitor.getMetrics().length).toBe(2)
+  })
+})
+
+describe('analyzerPlugin - BUG-F16 getter 包装链防护', () => {
+  afterEach(() => {
+    try {
+      delete (global as any).__GEOMSTORE_ANALYZER__
+    } catch {
+      // ignore
+    }
+    jest.restoreAllMocks()
+  })
+
+  it('getter 被后续插件重新包装时卸载应保留后续包装并告警', () => {
+    const consoleWarnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {})
+    const store = createStore({
+      name: 'f16-store',
+      state: { count: 2 },
+      getters: {
+        double: (state: any) => state.count * 2,
+      },
+    })
+
+    const uninstallAnalyzer = store.use(analyzerPlugin)
+
+    // 模拟后续插件再次包装 getter
+    const getterAfterAnalyzer = store.getter
+    const laterWrappedCalls: string[] = []
+    ;(store as any).getter = function (this: unknown, ...args: unknown[]): unknown {
+      laterWrappedCalls.push(String(args[0]))
+      return (getterAfterAnalyzer as (...a: unknown[]) => unknown).apply(this, args)
+    }
+
+    // 卸载 analyzer：getter 已不是自己的包装，应保留后续包装并告警
+    uninstallAnalyzer()
+
+    expect(consoleWarnSpy).toHaveBeenCalledWith(expect.stringContaining('已被后续插件重新包装'))
+
+    // 后续包装仍然生效，且 getter 正常工作
+    const result = store.getter('double')
+    expect(result).toBe(4)
+    expect(laterWrappedCalls).toContain('double')
+  })
+
+  it('getter 未被重新包装时卸载应正常恢复原始实现', () => {
+    const consoleWarnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {})
+    const store = createStore({
+      name: 'f16-restore-store',
+      state: { count: 3 },
+      getters: {
+        double: (state: any) => state.count * 2,
+      },
+    })
+
+    const uninstall = store.use(analyzerPlugin)
+    store.getter('double') // 触发包装
+    uninstall()
+
+    // 正常恢复：不应触发“被重新包装”告警，getter 仍可用
+    expect(consoleWarnSpy).not.toHaveBeenCalledWith(expect.stringContaining('已被后续插件重新包装'))
+    expect(store.getter('double')).toBe(6)
   })
 })
 

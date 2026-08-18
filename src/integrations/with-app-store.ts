@@ -128,16 +128,14 @@ export function withAppStore<S extends State = State, A extends Actions = Action
     // 扩展 onLaunch
     const originalOnLaunch = enhancedConfig.onLaunch
     enhancedConfig.onLaunch = function (this: AppOptions, ...args: unknown[]) {
-      const appInstance = this
-
       // 防御重复绑定：若已存在订阅（极端情况下 onLaunch 被多次调用），先清理旧订阅
       if (unbindFunctions.length > 0) {
         cleanupBindings(unbindFunctions)
       }
 
       // 确保 globalData 存在
-      if (!appInstance.globalData) {
-        appInstance.globalData = {}
+      if (!this.globalData) {
+        this.globalData = {}
       }
 
       // 辅助函数：订阅 store 变化
@@ -146,11 +144,11 @@ export function withAppStore<S extends State = State, A extends Actions = Action
       // 绑定 state 到 globalData
       if (options.mapState) {
         const unbindState = bindMappings(
-          appInstance.globalData,
+          this.globalData,
           stateMapping,
           (storeKey) => store.state[storeKey as keyof S],
           (updates) => {
-            Object.assign(appInstance.globalData as Record<string, unknown>, updates)
+            Object.assign(this.globalData as Record<string, unknown>, updates)
           },
           subscribeStore,
         )
@@ -160,11 +158,11 @@ export function withAppStore<S extends State = State, A extends Actions = Action
       // 绑定 getters 到 globalData
       if (options.mapGetters) {
         const unbindGetters = bindMappings(
-          appInstance.globalData,
+          this.globalData,
           gettersMapping,
           (storeKey) => store.getter(storeKey),
           (updates) => {
-            Object.assign(appInstance.globalData as Record<string, unknown>, updates)
+            Object.assign(this.globalData as Record<string, unknown>, updates)
           },
           subscribeStore,
         )
@@ -174,7 +172,7 @@ export function withAppStore<S extends State = State, A extends Actions = Action
       // 绑定 actions 到 App 实例方法
       if (options.mapActions) {
         Object.entries(actionsMapping).forEach(([localName, actionName]) => {
-          appInstance[localName] = (...args: unknown[]) => {
+          this[localName] = (...args: unknown[]) => {
             return store.dispatch(actionName, ...args)
           }
         })
@@ -182,13 +180,13 @@ export function withAppStore<S extends State = State, A extends Actions = Action
 
       // 自动注入（使用getCached）
       if (options.autoInject && injectMapping) {
-        performAutoInject(appInstance, injectMapping, store, (updates: Record<string, unknown>) => {
-          Object.assign(appInstance.globalData as Record<string, unknown>, updates)
+        performAutoInject(this, injectMapping, store, (updates: Record<string, unknown>) => {
+          Object.assign(this.globalData as Record<string, unknown>, updates)
         })
       }
 
       // 暴露 Store API 到 App 实例
-      exposeStoreAPI(appInstance, store)
+      exposeStoreAPI(this, store)
 
       // 调用原始 onLaunch
       originalOnLaunch?.call(this, ...args)

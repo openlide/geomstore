@@ -1162,4 +1162,52 @@ describe('withComponentStore - 覆盖率补全', () => {
     expect(() => ComponentWithStore.lifetimes?.attached?.call(componentWithoutLifetimes)).not.toThrow()
     expect(() => ComponentWithStore.lifetimes?.detached?.call(componentWithoutLifetimes)).not.toThrow()
   })
+
+  it('BUG-F5: multi-instance shared methods object must not be polluted by attached/detached', () => {
+    // 修复前 attached 直接写入 this.methods（引用配置级共享对象），
+    // 一个实例 detached 删除绑定方法会连带删掉其他实例仍在使用的方法
+    const store = createStore({
+      state: { count: 0 },
+      actions: {
+        increment(..._args: unknown[]) {
+          ;(this.state as any).count++
+        },
+      },
+    })
+
+    const ComponentWithStore = withComponentStore(store, {
+      mapActions: { doIncrement: 'increment' },
+    })(mockComponent)
+
+    // 模拟微信组件多实例：两个实例的 this.methods 引用同一配置级对象
+    const sharedMethods = {
+      ownMethod() {
+        return 'own'
+      },
+    }
+    const makeInstance = () => ({
+      data: {},
+      setData(data: any) {
+        Object.assign(this.data, data)
+      },
+      methods: sharedMethods,
+    })
+    const instanceA: any = makeInstance()
+    const instanceB: any = makeInstance()
+
+    ComponentWithStore.lifetimes?.attached?.call(instanceA)
+    ComponentWithStore.lifetimes?.attached?.call(instanceB)
+
+    // 两个实例各自的 methods 拷贝上都有绑定方法，且共享配置对象未被污染
+    expect(typeof instanceA.methods.doIncrement).toBe('function')
+    expect(typeof instanceB.methods.doIncrement).toBe('function')
+    expect(sharedMethods).not.toHaveProperty('doIncrement')
+
+    // A 卸载：只删除自身拷贝中的绑定方法，不影响 B
+    ComponentWithStore.lifetimes?.detached?.call(instanceA)
+    expect(instanceA.methods.doIncrement).toBeUndefined()
+    expect(instanceA.methods.ownMethod).toBeDefined()
+    expect(typeof instanceB.methods.doIncrement).toBe('function')
+    expect(sharedMethods).not.toHaveProperty('doIncrement')
+  })
 })

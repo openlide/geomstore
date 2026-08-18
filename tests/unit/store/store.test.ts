@@ -248,7 +248,7 @@ describe('Store - 核心功能', () => {
         state: { count: 0 },
         actions: {
           increment(..._args: unknown[]) {
-            (this.state as any).count++
+            ;(this.state as any).count++
           },
         },
       })
@@ -262,7 +262,7 @@ describe('Store - 核心功能', () => {
         state: { count: 0 },
         actions: {
           increment(..._args: unknown[]) {
-            (this.state as any).count++
+            ;(this.state as any).count++
           },
         },
       })
@@ -345,10 +345,10 @@ describe('Store - 核心功能', () => {
         state: { count: 0, name: 'test' },
         actions: {
           increment(..._args: unknown[]) {
-            (this.state as any).count++
+            ;(this.state as any).count++
           },
           decrement(..._args: unknown[]) {
-            (this.state as any).count--
+            ;(this.state as any).count--
           },
           setName(...args: unknown[]) {
             const [name] = args as [string]
@@ -787,6 +787,42 @@ describe('Store - 核心功能', () => {
 
       expect(snapshot).toEqual({ count: 0, user: { name: 'Alice' } })
       expect(Object.isFrozen(snapshot)).toBe(true)
+    })
+
+    it('STORE-072 (BUG-F11): $snapshot应该递归深冻结嵌套对象和数组', () => {
+      const store = createStore({
+        state: {
+          user: { name: 'Alice', profile: { city: 'Beijing' } },
+          items: [{ id: 1 }, { id: 2 }],
+        },
+      })
+
+      const snapshot = store.$snapshot()
+
+      // 顶层与嵌套纯对象均被冻结
+      expect(Object.isFrozen(snapshot)).toBe(true)
+      expect(Object.isFrozen(snapshot.user)).toBe(true)
+      expect(Object.isFrozen(snapshot.user.profile)).toBe(true)
+      // 数组及其元素对象也被递归冻结
+      expect(Object.isFrozen(snapshot.items)).toBe(true)
+      expect(Object.isFrozen(snapshot.items[0])).toBe(true)
+      expect(Object.isFrozen(snapshot.items[1])).toBe(true)
+    })
+
+    it('STORE-073 (BUG-F11): 快照深冻结不影响原state的可变性', () => {
+      const store = createStore({
+        state: { user: { name: 'Alice' }, items: [] as number[] },
+      })
+
+      const snapshot = store.$snapshot()
+
+      // 原状态仍可正常修改（冻结只作用于快照副本）
+      store.setState('user', { name: 'Bob' })
+      expect(store.state.user.name).toBe('Bob')
+
+      // 快照保持创建时的内容且持续冻结
+      expect(snapshot.user).toEqual({ name: 'Alice' })
+      expect(Object.isFrozen(snapshot.user)).toBe(true)
     })
 
     it('STORE-067: $restore应该从快照恢复状态', () => {
@@ -1673,7 +1709,7 @@ describe('Store - 核心功能', () => {
         state: { count: 0, total: 0 },
         actions: {
           increment(..._args: unknown[]) {
-            (this.state as any).count++
+            ;(this.state as any).count++
           },
           incrementAndSum(..._args: unknown[]) {
             this.dispatch('increment')
@@ -1721,7 +1757,7 @@ describe('Store - 核心功能', () => {
       // 尝试通过 proxy 修改状态，触发 set 拦截器中的 isInternalAccess
       // 在开发模式下，直接修改 state 会抛出错误
       expect(() => {
-        (state2 as any).count = 999
+        ;(state2 as any).count = 999
       }).toThrow('prohibited')
     })
   })
@@ -1755,7 +1791,7 @@ describe('Store - 核心功能', () => {
       // 尝试通过 proxy 修改状态，触发 set 拦截器中的 isInternalAccess
       // 在开发模式下，直接修改 state 会抛出错误
       expect(() => {
-        (s3 as any).count = 999
+        ;(s3 as any).count = 999
       }).toThrow('prohibited')
     })
   })

@@ -106,7 +106,7 @@ describe('Builtin Plugins - 内置插件', () => {
 
     beforeEach(() => {
       // Mock wx API
-      (global as any).wx.setStorageSync = mockSetStorageSync
+      ;(global as any).wx.setStorageSync = mockSetStorageSync
       ;(global as any).wx.getStorageSync = mockGetStorageSync
       mockSetStorageSync.mockClear()
       mockGetStorageSync.mockClear()
@@ -584,7 +584,7 @@ describe('Builtin Plugins - 内置插件', () => {
         state: { count: 0 },
         actions: {
           increment(n: number) {
-            (this.state as any).count += n
+            ;(this.state as any).count += n
           },
         } as any,
       })
@@ -772,7 +772,7 @@ describe('Builtin Plugins 补充覆盖', () => {
     const mockGetStorageSync = jest.fn()
 
     beforeEach(() => {
-      (global as any).wx.setStorageSync = mockSetStorageSync
+      ;(global as any).wx.setStorageSync = mockSetStorageSync
       ;(global as any).wx.getStorageSync = mockGetStorageSync
       mockSetStorageSync.mockClear()
       mockGetStorageSync.mockClear()
@@ -820,7 +820,7 @@ describe('Builtin Plugins 补充覆盖', () => {
     const mockGetStorageSync = jest.fn()
 
     beforeEach(() => {
-      (global as any).wx.setStorageSync = mockSetStorageSync
+      ;(global as any).wx.setStorageSync = mockSetStorageSync
       ;(global as any).wx.getStorageSync = mockGetStorageSync
       mockSetStorageSync.mockClear()
       mockGetStorageSync.mockClear()
@@ -925,10 +925,10 @@ describe('Builtin Plugins 补充覆盖', () => {
       }
       store.use(plugin)
 
-      // 恢复时 filter 只取 count，$replaceState 替换整个状态
+      // 恢复时 filter 只取 count，$patch 合并语义：
+      // count 被恢复为持久化值，secret 不在恢复数据中、保留初始值不被覆盖
       expect(store.getState().count).toBe(10)
-      // filter 过滤掉了 secret，所以 secret 不存在
-      expect(store.getState().secret).toBeUndefined()
+      expect(store.getState().secret).toBe('initial')
 
       consoleLogSpy.mockRestore()
     })
@@ -952,6 +952,32 @@ describe('Builtin Plugins 补充覆盖', () => {
       expect(() => store.use(plugin)).not.toThrow()
 
       consoleLogSpy.mockRestore()
+    })
+
+    it('PERSIST-COVER-015 (BUG-F11): 无 storage 后端时应该降级为内存存储并告警', () => {
+      // 临时移除全局 wx，模拟非小程序环境且未显式传 storage
+      const originalWx = (global as any).wx
+      ;(global as any).wx = undefined
+
+      const consoleWarnSpy = jest.spyOn(console, 'warn').mockImplementation()
+
+      try {
+        const store = createStore({
+          name: 'test-store',
+          state: { count: 0 },
+        })
+
+        expect(() => store.use(persistencePlugin)).not.toThrow()
+        // 开发模式下应提示降级
+        expect(consoleWarnSpy).toHaveBeenCalledWith(expect.stringContaining('[GeomStore][persistence]'))
+
+        // 内存后端仍可正常读写，不影响运行
+        store.setState('count', 5)
+        expect(store.getState().count).toBe(5)
+      } finally {
+        ;(global as any).wx = originalWx
+        consoleWarnSpy.mockRestore()
+      }
     })
   })
 
@@ -1247,7 +1273,7 @@ describe('Builtin Plugins 补充覆盖', () => {
       }
 
       // 先恢复 globalThis，再使用 expect
-      (global as any).globalThis = originalGlobalThis
+      ;(global as any).globalThis = originalGlobalThis
       expect(threw).toBe(false)
     })
 
@@ -1269,7 +1295,7 @@ describe('Builtin Plugins 补充覆盖', () => {
       }
 
       // 先恢复 globalThis，再使用 expect
-      (global as any).globalThis = originalGlobalThis
+      ;(global as any).globalThis = originalGlobalThis
       expect(threw).toBe(false)
     })
   })

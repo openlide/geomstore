@@ -1385,4 +1385,83 @@ describe('Action Decorators', () => {
       expect(afterFn).toHaveBeenCalledWith(42)
     })
   })
+
+  describe('withCache/withThrottle 异步检测（BUG-F6）', () => {
+    // 修复前用 fn.constructor.name === 'AsyncFunction' 判定异步，
+    // 压缩 mangle 后失效；现改为原型对象比较（压缩安全）+ 运行时观测兑底
+    it('DECORATOR-F6-001: async 方法缓存命中时应恢复 Promise 语义', async () => {
+      let callCount = 0
+      class AsyncCacheClass {
+        @withCache({ ttl: 5000 })
+        async fetchValue(id: string): Promise<string> {
+          callCount++
+          return `value-${id}`
+        }
+      }
+      const instance = new AsyncCacheClass()
+
+      const first = await instance.fetchValue('a')
+      expect(first).toBe('value-a')
+
+      // 第二次命中缓存：返回 Promise（与首次类型一致），原方法不再执行
+      const second = instance.fetchValue('a')
+      expect(second).toBeInstanceOf(Promise)
+      await expect(second).resolves.toBe('value-a')
+      expect(callCount).toBe(1)
+    })
+
+    it('DECORATOR-F6-002: 非 async 但返回 Promise 的方法运行时观测后命中也应恢复 Promise 语义', async () => {
+      let callCount = 0
+      class PromiseReturningClass {
+        @withCache({ ttl: 5000 })
+        fetchValue(id: string): Promise<string> {
+          callCount++
+          return Promise.resolve(`value-${id}`)
+        }
+      }
+      const instance = new PromiseReturningClass()
+
+      await expect(instance.fetchValue('a')).resolves.toBe('value-a')
+      const second = instance.fetchValue('a')
+      expect(second).toBeInstanceOf(Promise)
+      await expect(second).resolves.toBe('value-a')
+      expect(callCount).toBe(1)
+    })
+
+    it('DECORATOR-F6-003: withThrottle 节流跳过 async 方法时应返回 Promise(undefined)', async () => {
+      let callCount = 0
+      class AsyncThrottleClass {
+        @withThrottle(10000)
+        async run(): Promise<number> {
+          callCount++
+          return callCount
+        }
+      }
+      const instance = new AsyncThrottleClass()
+
+      await expect(instance.run()).resolves.toBe(1)
+
+      // 间隔内再次调用被节流：不执行原方法，返回 Promise(undefined) 而非裸 undefined
+      const second = instance.run()
+      expect(second).toBeInstanceOf(Promise)
+      await expect(second).resolves.toBeUndefined()
+      expect(callCount).toBe(1)
+    })
+
+    it('DECORATOR-F6-004: withThrottle 节流跳过非 async 方法时应返回 undefined', () => {
+      let callCount = 0
+      class SyncThrottleClass {
+        @withThrottle(10000)
+        run(): number {
+          callCount++
+          return callCount
+        }
+      }
+      const instance = new SyncThrottleClass()
+
+      expect(instance.run()).toBe(1)
+      expect(instance.run()).toBeUndefined()
+      expect(callCount).toBe(1)
+    })
+  })
 })

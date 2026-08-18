@@ -25,6 +25,14 @@ export interface CacheDecoratorOptions {
 const MAX_CACHE_ENTRIES = 1000
 
 /**
+ * async 函数原型引用：用于压缩安全的异步判定。
+ * `fn.constructor.name === 'AsyncFunction'` 在压缩 mangle 后失效（name 被改写），
+ * 改比较原型对象身份——压缩不会改变原型引用。
+ * @private
+ */
+const ASYNC_FUNCTION_PROTOTYPE = Object.getPrototypeOf(async () => {})
+
+/**
  * 递归排序对象键，保证属性声明顺序不同的等价参数生成相同的缓存键
  *
  * JSON.stringify 对属性顺序敏感：`{a:1,b:2}` 与 `{b:2,a:1}` 语义等价却生成
@@ -135,8 +143,8 @@ export function withCache(options: CacheDecoratorOptions = {}): MethodDecorator 
 
   return function (_target: unknown, propertyKey: string | symbol, descriptor: PropertyDescriptor): PropertyDescriptor {
     const originalMethod = descriptor.value
-    // 静态判别原方法异步性（tsc 产物可靠）；运行时观测兜底非 async 但返回 Promise 的方法
-    const isAsyncMethod = originalMethod.constructor.name === 'AsyncFunction'
+    // 静态判别原方法异步性（原型比较，压缩安全）；运行时观测兜底非 async 但返回 Promise 的方法
+    const isAsyncMethod = typeof originalMethod === 'function' && Object.getPrototypeOf(originalMethod) === ASYNC_FUNCTION_PROTOTYPE
     let observesPromise = false
 
     const writeCache = (cache: Map<string, { value: unknown; expiry: number }>, key: string, value: unknown, at: number): unknown => {

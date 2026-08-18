@@ -286,7 +286,7 @@ export class SelectorComposer {
       try {
         const value = selector(state)
         return value === undefined ? defaultValue : value
-      } catch (error) {
+      } catch {
         return defaultValue
       }
     }

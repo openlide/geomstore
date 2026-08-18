@@ -427,4 +427,104 @@ describe('withLoading 装饰器', () => {
       myError: null,
     })
   })
+
+  it('BUG-F7-1: withLoading 的 loading 状态应按宿主实例隔离', async () => {
+    // 修复前 loaderInstance 在装饰器函数体创建（按方法共享）：两个实例并发调用时
+    // 共享引用计数，先完成实例的 loading 会永久卡在 true
+    // 注意：本 describe 启用了 fake timers，用受控 Promise 代替定时器
+    class HostStore {
+      state: Record<string, unknown> = {}
+
+      setState(key: string, value: unknown) {
+        this.state[key] = value
+      }
+
+      @withLoading()
+      fetch(deferred: Promise<void>) {
+        return deferred.then(() => 'ok')
+      }
+    }
+
+    const a = new HostStore()
+    const b = new HostStore()
+
+    let resolveA!: () => void
+    let resolveB!: () => void
+    const pa = a.fetch(
+      new Promise<void>((resolve) => {
+        resolveA = resolve
+      }),
+    )
+    const pb = b.fetch(
+      new Promise<void>((resolve) => {
+        resolveB = resolve
+      }),
+    )
+
+    resolveB()
+    await pb
+    // b 先完成：b 的 loading 归 false，a 的仍为 true
+    expect(b.state.loading).toBe(false)
+    expect(a.state.loading).toBe(true)
+
+    resolveA()
+    await pa
+    expect(a.state.loading).toBe(false)
+  })
+
+  it('BUG-F7-2: setOptions 中途切换 autoLoading 应重置计数避免 loading 永久卡住', async () => {
+    const loader = new ActionLoader({ autoLoading: true })
+    const states: Record<string, unknown> = {}
+    const setState = (key: string, value: unknown) => {
+      states[key] = value
+    }
+
+    let resolveFirst!: () => void
+    const firstWrapped = loader.wrap(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveFirst = resolve
+        }),
+      'fetch',
+      setState,
+    )
+    const first = firstWrapped()
+    expect(states.loading).toBe(true)
+
+    // 进行中切换 autoLoading：残留计数应被重置
+    loader.setOptions({ autoLoading: false })
+    resolveFirst()
+    await first
+
+    // 切回 autoLoading：新调用 loading 正常从 true 到 false，不被残留计数卡住
+    loader.setOptions({ autoLoading: true })
+    const second = loader.wrap(() => Promise.resolve('done'), 'fetch', setState)()
+    await expect(second).resolves.toBe('done')
+    expect(states.loading).toBe(false)
+  })
+
+  it('BUG-F7-3: 错误时 setState 收到的 errorData 与内部存储应是同一引用（单次构建）', async () => {
+    const loader = new ActionLoader()
+    const states: Record<string, unknown> = {}
+    const setState = (key: string, value: unknown) => {
+      states[key] = value
+    }
+
+    const failure = new Error('f7 failure')
+    await expect(
+      loader.wrap(
+        () => {
+          throw failure
+        },
+        'fetch',
+        setState,
+      ),
+    ).rejects.toBe(failure)
+
+    const internal = loader as any
+    // state 中的 errorData 与内部存储的 errorData 为同一对象（单次构建、引用一致）
+    expect(states.errorData).toBe(internal.errorData.get('errorData'))
+    expect((states.errorData as any).message).toBe('f7 failure')
+    expect(typeof (states.errorData as any).timestamp).toBe('number')
+  })
 })

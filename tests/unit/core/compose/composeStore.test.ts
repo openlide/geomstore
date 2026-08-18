@@ -303,6 +303,59 @@ describe('composeStore', () => {
       expect(store2.getState().theme).toBe('dark')
       expect(store2.getState().language).toBe('en')
     })
+
+    test('BUG-F9: 非命名空间模式缺键替换时开发模式应告警提示键丢失', () => {
+      // 整体替换语义保留：只提供 user store 的部分键（缺 age），
+      // store2 未被触及也应无告警；仅对被触及但缺键的 store 告警
+      const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {})
+      const composed = composeStore([store1, store2])
+
+      composed.$replaceState({ name: 'Bob' })
+
+      // user store 缺 age：告警应提及 store 名与缺失键
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('"user"'))
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('age'))
+      // 替换语义：age 确实丢失（保持既有行为不变）
+      expect(composed.getState().age).toBeUndefined()
+
+      warnSpy.mockRestore()
+    })
+
+    test('BUG-F9: 键齐全时替换不应告警', () => {
+      const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {})
+      const composed = composeStore([store1, store2])
+
+      composed.$replaceState({
+        name: 'Bob',
+        age: 30,
+        theme: 'dark',
+        language: 'en',
+      })
+
+      expect(warnSpy).not.toHaveBeenCalled()
+      warnSpy.mockRestore()
+    })
+
+    test('BUG-F9: $patch 部分键合并不应触发缺键告警', () => {
+      const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {})
+      const composed = composeStore([store1, store2])
+
+      composed.$patch({ name: 'Bob' })
+
+      expect(warnSpy).not.toHaveBeenCalled()
+      expect(composed.getState().age).toBe(25)
+      warnSpy.mockRestore()
+    })
+
+    test('BUG-F9: 命名空间模式整体替换不应触发缺键告警', () => {
+      const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {})
+      const composed = composeStore([store1, store2], { namespace: true })
+
+      composed.$replaceState({ user: { name: 'Bob' } })
+
+      expect(warnSpy).not.toHaveBeenCalled()
+      warnSpy.mockRestore()
+    })
   })
 
   describe('dispatch', () => {
@@ -647,7 +700,7 @@ describe('composeStore', () => {
       const earlyUnsubscribe = store1.subscribe(() => {
         // 通知循环中途销毁组合层（不级联销毁子 store）
         // destroy(destroyStores) 为实现层签名，公共类型暴露无参版本，此处断言安全
-        (composed as any).destroy(false)
+        ;(composed as any).destroy(false)
       })
 
       // 再注册组合层订阅：wrapper 在同一通知循环内随后被调用

@@ -220,10 +220,10 @@ describe('企业级方案 - 离线状态管理', () => {
       },
       actions: {
         addItem(item: string) {
-          (this.state as any).items.push(item)
+          ;(this.state as any).items.push(item)
         },
         syncToServer() {
-          (this.state as any).syncCount++
+          ;(this.state as any).syncCount++
           return Promise.resolve({ success: true })
         },
         failingAction() {
@@ -392,7 +392,7 @@ describe('企业级方案 - 离线状态管理', () => {
     })
 
     it('ENTERPRISE-056: 断网时 isOnline 应该为 false', () => {
-      (mockWx.getNetworkType as jest.Mock).mockImplementationOnce((options: any) => options.success({ networkType: 'none' }))
+      ;(mockWx.getNetworkType as jest.Mock).mockImplementationOnce((options: any) => options.success({ networkType: 'none' }))
       offlineManager = new OfflineManager(testStore)
 
       expect((offlineManager as any).isOnline).toBe(false)
@@ -470,7 +470,7 @@ describe('企业级方案 - 离线状态管理', () => {
     })
 
     it('ENTERPRISE-067: dispose 幂等且只移除一次网络监听', () => {
-      (mockWx as any).offNetworkStatusChange = jest.fn()
+      ;(mockWx as any).offNetworkStatusChange = jest.fn()
       offlineManager = new OfflineManager(testStore)
 
       offlineManager.dispose()
@@ -680,7 +680,7 @@ describe('企业级方案 - StoreManager 完整场景', () => {
   })
 
   it('ENTERPRISE-059: 幽灵用户 ID 时 getCurrentStore 应该返回 null', () => {
-    (manager as any).currentUserId = 'ghost-user'
+    ;(manager as any).currentUserId = 'ghost-user'
 
     expect(manager.getCurrentStore()).toBeNull()
   })
@@ -772,7 +772,7 @@ describe('企业级方案 - 网络同步', () => {
   })
 
   it('ENTERPRISE-035: syncWithServer 应该从服务器同步用户信息', async () => {
-    (mockWx.request as jest.Mock).mockImplementation((options: any) => {
+    ;(mockWx.request as jest.Mock).mockImplementation((options: any) => {
       options.success({ data: { userInfo: { id: 9, name: 'Server User' } } })
     })
     const store = createUserStore({ userId: 'sync-user' })
@@ -784,7 +784,7 @@ describe('企业级方案 - 网络同步', () => {
   })
 
   it('ENTERPRISE-036: syncWithServer 请求失败时应该 reject', async () => {
-    (mockWx.request as jest.Mock).mockImplementation((options: any) => {
+    ;(mockWx.request as jest.Mock).mockImplementation((options: any) => {
       options.fail?.(new Error('Network error'))
     })
     const store = createUserStore({ userId: 'sync-user-fail' })
@@ -793,7 +793,7 @@ describe('企业级方案 - 网络同步', () => {
   })
 
   it('ENTERPRISE-065: syncWithServer 非 2xx 状态码应该 reject 且不污染状态', async () => {
-    (mockWx.request as jest.Mock).mockImplementation((options: any) => {
+    ;(mockWx.request as jest.Mock).mockImplementation((options: any) => {
       options.success({ statusCode: 500, data: { userInfo: null } })
     })
     const store = createUserStore({ userId: 'sync-user-500' })
@@ -886,44 +886,52 @@ describe('企业级方案 - 热更新初始化', () => {
 describe('企业级方案 - 后台/前台状态同步', () => {
   const originalApp = (global as any).App
   let testStore: any
+  // 捕获 App(options) 接收的 options，供测试触发生命周期回调
+  let appOptions: Record<string, any> | null = null
 
-  const mockApp = {
-    prototype: {
-      onShow: jest.fn(),
-      onHide: jest.fn(),
-    },
+  // 模拟微信小程序全局 App 构造器（函数形式，用户回调通过 options 注册）
+  const mockApp = (options: Record<string, any> = {}) => {
+    appOptions = options
+    return options
   }
 
   beforeAll(() => {
-    (global as any).App = mockApp
+    ;(global as any).App = mockApp
   })
 
   afterAll(() => {
-    (global as any).App = originalApp
+    ;(global as any).App = originalApp
   })
 
   beforeEach(() => {
     Object.keys(mockStorage).forEach((key) => delete mockStorage[key])
     jest.clearAllMocks()
-    // 重置 App 生命周期 mock（initBackgroundSync 会替换原型方法）
-    mockApp.prototype.onShow = jest.fn()
-    mockApp.prototype.onHide = jest.fn()
+    // 重置全局 App 为原始 mock：initBackgroundSync 检测到 App 被外部替换后
+    // 会清空注册表并重新包装，避免跨测试残留
+    ;(global as any).App = mockApp
+    appOptions = null
 
     testStore = createStore({
       name: 'bg-sync-test-store',
       state: { refreshed: 0 },
       actions: {
         refreshData() {
-          (this.state as any).refreshed++
+          ;(this.state as any).refreshed++
         },
       },
     })
   })
 
+  /** 注册 App 并返回包装后的 options（触发 initBackgroundSync 后调用） */
+  const registerApp = (options: Record<string, any> = {}): Record<string, any> => {
+    ;(global as any).App(options)
+    return appOptions!
+  }
+
   it('ENTERPRISE-042: 非活跃时间过长时应该刷新数据', () => {
     initBackgroundSync({ store: testStore, maxInactiveTime: -1 })
 
-    mockApp.prototype.onShow()
+    registerApp().onShow()
 
     expect(testStore.state.refreshed).toBe(1)
   })
@@ -931,39 +939,40 @@ describe('企业级方案 - 后台/前台状态同步', () => {
   it('ENTERPRISE-043: 非活跃时间未超过限制时不应该刷新', () => {
     initBackgroundSync({ store: testStore, maxInactiveTime: 100000 })
 
-    mockApp.prototype.onShow()
+    registerApp().onShow()
 
     expect(testStore.state.refreshed).toBe(0)
   })
 
   it('ENTERPRISE-044: 回调与原始生命周期应该被调用', () => {
-    const originalOnShow = mockApp.prototype.onShow
-    const originalOnHide = mockApp.prototype.onHide
+    const userOnShow = jest.fn()
+    const userOnHide = jest.fn()
     const onForeground = jest.fn()
     const onBackground = jest.fn()
     initBackgroundSync({ store: testStore, maxInactiveTime: -1, onForeground, onBackground })
 
-    mockApp.prototype.onShow()
+    const options = registerApp({ onShow: userOnShow, onHide: userOnHide })
+    options.onShow()
     expect(onForeground).toHaveBeenCalled()
-    expect(originalOnShow).toHaveBeenCalled()
+    expect(userOnShow).toHaveBeenCalled()
 
-    mockApp.prototype.onHide()
+    options.onHide()
     expect(onBackground).toHaveBeenCalled()
-    expect(originalOnHide).toHaveBeenCalled()
+    expect(userOnHide).toHaveBeenCalled()
   })
 
   it('ENTERPRISE-060: store 无 refreshData 时 onShow 不应报错', () => {
     const plainStore = createStore({ name: 'no-refresh-store', state: { a: 1 } })
     initBackgroundSync({ store: plainStore, maxInactiveTime: -1 })
 
-    expect(() => mockApp.prototype.onShow()).not.toThrow()
+    expect(() => registerApp().onShow()).not.toThrow()
   })
 
   it('ENTERPRISE-061: unregisterBackgroundSync 注销后 onShow 不再刷新', () => {
     initBackgroundSync({ store: testStore, maxInactiveTime: -1 })
     unregisterBackgroundSync(testStore)
 
-    mockApp.prototype.onShow()
+    registerApp().onShow()
 
     expect(testStore.state.refreshed).toBe(0)
   })
@@ -972,10 +981,11 @@ describe('企业级方案 - 后台/前台状态同步', () => {
     initBackgroundSync({ store: testStore, maxInactiveTime: -1 })
     testStore.destroy()
 
+    const options = registerApp()
     // 残留 handler 指向已销毁 store：onShow 应跳过并清理，而不是 dispatch 抛错
-    expect(() => mockApp.prototype.onShow()).not.toThrow()
+    expect(() => options.onShow()).not.toThrow()
     // 再次触发也不抛错（处理器已被自清理）
-    expect(() => mockApp.prototype.onShow()).not.toThrow()
+    expect(() => options.onShow()).not.toThrow()
   })
 
   it('ENTERPRISE-068: 快照迭代中处理器已被移除时 indexOf 为 -1 应安全跳过', () => {
@@ -984,7 +994,7 @@ describe('企业级方案 - 后台/前台状态同步', () => {
       state: { a: 0 },
       actions: {
         refreshData() {
-          (this.state as any).a++
+          ;(this.state as any).a++
         },
       },
     })
@@ -999,25 +1009,50 @@ describe('企业级方案 - 后台/前台状态同步', () => {
     initBackgroundSync({ store: storeB, maxInactiveTime: -1 })
     storeB.destroy()
 
-    expect(() => mockApp.prototype.onShow()).not.toThrow()
+    expect(() => registerApp().onShow()).not.toThrow()
     expect(storeA.state.a).toBe(1)
   })
 
-  it('ENTERPRISE-069: onShow 赋值被忽略时 installedOnShow 应该回退为 null', () => {
-    const originalApp = (global as any).App
-    const trappedProto: Record<string, unknown> = {}
-    Object.defineProperty(trappedProto, 'onShow', {
-      get: () => undefined,
-      set: () => {
-        // 模拟只读原型：包装赋值被静默忽略
+  it('ENTERPRISE-069: App(options) 未提供生命周期回调时包装后仍可正常调用', () => {
+    initBackgroundSync({ store: testStore, maxInactiveTime: -1 })
+
+    // 用户未注册 onShow/onHide：包装函数应注入回调且可安全触发
+    const options = registerApp()
+    expect(() => options.onShow()).not.toThrow()
+    expect(testStore.state.refreshed).toBe(1)
+  })
+
+  it('ENTERPRISE-070: 全局 App 被外部替换后再次 init 应重新包装并重置注册表', () => {
+    initBackgroundSync({ store: testStore, maxInactiveTime: -1 })
+    // 外部重置 App（如测试/框架重新注入）：旧 handler 注册表应被清空
+    ;(global as any).App = mockApp
+
+    const newStore = createStore({
+      name: 'bg-reinstall-store',
+      state: { refreshed: 0 },
+      actions: {
+        refreshData() {
+          ;(this.state as any).refreshed++
+        },
       },
     })
-    ;(global as any).App = { prototype: trappedProto }
+    initBackgroundSync({ store: newStore, maxInactiveTime: -1 })
+
+    registerApp().onShow()
+
+    // 旧 store 的处理器已被重置，不再刷新；新 store 正常刷新
+    expect(testStore.state.refreshed).toBe(0)
+    expect(newStore.state.refreshed).toBe(1)
+  })
+
+  it('ENTERPRISE-071: App 非函数（如测试对象 mock）时应安全返回不注册', () => {
+    const original = (global as any).App
+    ;(global as any).App = { prototype: { onShow: jest.fn() } }
 
     try {
       expect(() => initBackgroundSync({ store: testStore, maxInactiveTime: -1 })).not.toThrow()
     } finally {
-      (global as any).App = originalApp
+      ;(global as any).App = original
     }
   })
 })
@@ -1032,11 +1067,11 @@ describe('企业级方案 - App 集成', () => {
   }
 
   beforeAll(() => {
-    (global as any).App = mockApp
+    ;(global as any).App = mockApp
   })
 
   afterAll(() => {
-    (global as any).App = originalApp
+    ;(global as any).App = originalApp
   })
 
   beforeEach(() => {

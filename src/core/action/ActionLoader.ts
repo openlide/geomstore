@@ -212,16 +212,15 @@ export class ActionLoader {
     setState(errorKey, error)
 
     if (error) {
-      this.errorData.set(errorDataKey, {
+      // 单次构建 errorData：避免双重构建产生两个内容相同但引用不同的对象，
+      // 且两处 Date.now() 调用可能产生不一致的时间戳
+      const errorData = {
         message: error.message,
         stack: error.stack,
         timestamp: Date.now(),
-      })
-      setState(errorDataKey, {
-        message: error.message,
-        stack: error.stack,
-        timestamp: Date.now(),
-      })
+      }
+      this.errorData.set(errorDataKey, errorData)
+      setState(errorDataKey, errorData)
     } else {
       this.errorData.delete(errorDataKey)
       setState(errorDataKey, null)
@@ -394,6 +393,7 @@ export class ActionLoader {
    * ```
    */
   setOptions(options: Partial<ActionLoaderOptions>): void {
+    const previousAutoLoading = this.options.autoLoading
     Object.assign(this.options, {
       loadingKey: options.loadingKey ?? this.options.loadingKey,
       errorKey: options.errorKey ?? this.options.errorKey,
@@ -401,6 +401,13 @@ export class ActionLoader {
       autoLoading: options.autoLoading ?? this.options.autoLoading,
       perActionKeys: options.perActionKeys ?? this.options.perActionKeys,
     })
+    // 中途切换 autoLoading 会使进行中调用的 increment/decrement 不对称，
+    // 残留计数会永久占用 loading 状态：切换时重置计数与状态，代价是
+    // 切换瞬间进行中的调用不再参与计数（可接受，切换本身即行为变更点）
+    if (previousAutoLoading !== this.options.autoLoading) {
+      this.loadingRefCounts.clear()
+      this.loadingStates.clear()
+    }
   }
 }
 
@@ -435,9 +442,12 @@ export class ActionLoader {
  * ```
  */
 export function withLoading(options: ActionLoaderOptions = {}): MethodDecorator {
+  // 修复闭包陷阱：loaderInstance 不得在装饰器函数体创建（按方法共享、跨宿主实例串扰），
+  // 改为按宿主对象（this）懒创建并隔离，各实例的 loading/error 状态互不影响
+  const loaderByHost = new WeakMap<object, ActionLoader>()
+
   return function (_target: unknown, propertyKey: string | symbol, descriptor: PropertyDescriptor): PropertyDescriptor {
     const originalMethod = descriptor.value
-    const loaderInstance = new ActionLoader(options)
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     descriptor.value = async function (this: any, ...args: unknown[]) {
@@ -446,6 +456,19 @@ export function withLoading(options: ActionLoaderOptions = {}): MethodDecorator 
 
       if (!setState) {
         throw new Error('[withLoading] Method must be used in a Store instance')
+      }
+
+      let loaderInstance: ActionLoader
+      if (typeof this === 'object' && this !== null) {
+        let loader = loaderByHost.get(this)
+        if (!loader) {
+          loader = new ActionLoader(options)
+          loaderByHost.set(this, loader)
+        }
+        loaderInstance = loader
+      } else {
+        // 宿主非对象（罕见）：一次性实例，不跨调用串扰
+        loaderInstance = new ActionLoader(options)
       }
 
       // 只绑定 this，参数由 wrapped(...args) 传入，避免参数被应用两次

@@ -110,15 +110,12 @@ export class SelectorFactory<S extends Record<string, unknown> = Record<string, 
    * ```
    */
   execute(state: S): R {
-    // 检查缓存
-    if (this.options.cache && this.cache) {
-      const now = Date.now()
-
-      // 检查缓存是否有效
-      const stateEqual = this.options.equalityFn ? this.options.equalityFn(this.cache.state, state) : this.cache.state === state
-
-      if (stateEqual && this.cache.timestamp + this.options.cacheTTL > now) {
-        return this.cache.value
+    // 检查缓存：最近一条优先，其次回溯缓存历史（cacheSize 条目均参与命中，
+    // 修复此前仅命中单条缓存导致交替状态输入时每次都 miss、cacheSize 形同虚设的问题）
+    if (this.options.cache) {
+      const hit = this.findCacheHit(state)
+      if (hit) {
+        return hit.value
       }
     }
 
@@ -131,6 +128,43 @@ export class SelectorFactory<S extends Record<string, unknown> = Record<string, 
     }
 
     return value
+  }
+
+  /**
+   * 判断缓存条目是否命中（状态相等且未过期）
+   *
+   * @private
+   */
+  private isCacheHit(item: SelectorCacheItem<R>, state: S, now: number): boolean {
+    const stateEqual = this.options.equalityFn ? this.options.equalityFn(item.state, state) : item.state === state
+    return stateEqual && item.timestamp + this.options.cacheTTL > now
+  }
+
+  /**
+   * 查找命中的缓存条目：最近一条优先，其次回溯 cacheHistory（最新在后），
+   * 命中历史条目时将其提升为当前缓存（LRU 语义）
+   *
+   * @private
+   * @returns 命中的缓存条目；未命中返回 null
+   */
+  private findCacheHit(state: S): SelectorCacheItem<R> | null {
+    const now = Date.now()
+
+    if (this.cache && this.isCacheHit(this.cache, state, now)) {
+      return this.cache
+    }
+
+    for (let i = this.cacheHistory.length - 1; i >= 0; i--) {
+      if (this.isCacheHit(this.cacheHistory[i], state, now)) {
+        const hit = this.cacheHistory[i]
+        this.cache = hit
+        this.cacheHistory.splice(i, 1)
+        this.cacheHistory.push(hit)
+        return hit
+      }
+    }
+
+    return null
   }
 
   /**
@@ -222,19 +256,19 @@ export class SelectorFactory<S extends Record<string, unknown> = Record<string, 
    */
   withCacheResult(): Selector<S, SelectorResult<R>> {
     return (state: S) => {
-      // 检查是否使用缓存
-      let fromCache = false
-      if (this.options.cache && this.cache) {
-        const now = Date.now()
-        const stateEqual = this.options.equalityFn ? this.options.equalityFn(this.cache.state, state) : this.cache.state === state
-
-        if (stateEqual && this.cache.timestamp + this.options.cacheTTL > now) {
-          fromCache = true
+      // 与 execute 共用同一套命中查找（含 cacheHistory），保证 fromCache 标记一致
+      if (this.options.cache) {
+        const hit = this.findCacheHit(state)
+        if (hit) {
+          return { value: hit.value, fromCache: true }
         }
       }
 
-      const value = this.execute(state)
-      return { value, fromCache }
+      const value = this.selector(state)
+      if (this.options.cache) {
+        this.updateCache(state, value)
+      }
+      return { value, fromCache: false }
     }
   }
 }

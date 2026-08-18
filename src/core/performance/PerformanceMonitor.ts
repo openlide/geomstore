@@ -136,9 +136,12 @@ export class PerformanceMonitor implements PerformanceMonitorInterface {
    */
   private _getTimestamp(): number {
     // 优先使用小程序高精度计时 wx.getPerformance().now()（基础库 2.20.1+，微秒级），
-    // 旧基础库降级使用 Date.now()（毫秒精度）
-    if (typeof wx !== 'undefined' && typeof wx.getPerformance === 'function') {
-      return wx.getPerformance().now()
+    // 旧基础库降级使用 Date.now()（毫秒精度）；
+    // wx 经 globalThis 读取，避免直接引用未声明的小程序全局标识符
+    const wxGlobal = (globalThis as { wx?: { getPerformance?: () => unknown } }).wx
+    if (wxGlobal && typeof wxGlobal.getPerformance === 'function') {
+      // 微信运行时 getPerformance() 返回的对象确实包含 now()，但部分基础库类型未声明，故此处断言
+      return (wxGlobal.getPerformance() as unknown as { now(): number }).now()
     }
     return Date.now()
   }
@@ -232,7 +235,7 @@ export class PerformanceMonitor implements PerformanceMonitorInterface {
         if (memory && memory.usedJSHeapSize !== undefined) {
           metrics.memoryUsage = memory.usedJSHeapSize
         }
-      } catch (error) {
+      } catch {
         // 内存监控可能不可用
       }
     }

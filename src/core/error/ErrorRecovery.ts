@@ -431,7 +431,10 @@ export class ErrorRecovery {
   private clearRetryCount(errorCode: string): void {
     const keys = Array.from(this.retryCount.keys())
     keys.forEach((key) => {
-      if (key.startsWith(errorCode)) {
+      // 精确匹配错误码段（重试键格式为 `${code}:${storeName}:${operation}`）：
+      // 此前用 startsWith(errorCode) 前缀匹配，当一个错误码是另一个的前缀
+      // （如 'ACTION' 与 'ACTION_TIMEOUT'）时会误清后者的计数
+      if (key.split(':')[0] === errorCode) {
         this.retryCount.delete(key)
       }
     })

@@ -30,15 +30,21 @@
  * // 即使滚动事件高频触发，每100ms最多执行一次handleScroll
  * ```
  */
+/**
+ * async 函数原型引用：用于压缩安全的异步判定（同 cache.ts，不依赖 Function.prototype.name）
+ * @private
+ */
+const ASYNC_FUNCTION_PROTOTYPE = Object.getPrototypeOf(async () => {})
+
 export function withThrottle(interval: number = 300): MethodDecorator {
   // 按宿主对象隔离上次调用时间，避免多实例共享。
   const lastCallMap = new WeakMap<object, number>()
 
   return function (_target: unknown, _propertyKey: string | symbol, descriptor: PropertyDescriptor): PropertyDescriptor {
     const originalMethod = descriptor.value
-    // 静态判别原方法异步性（tsc 产物可靠）；首次实际执行后以运行时观测为准，
+    // 静态判别原方法异步性（原型比较，压缩安全）；首次实际执行后以运行时观测为准，
     // 兜底非 async 但返回 Promise 的方法（如 `return fetch(...)`）被节流跳过的语义
-    const isAsyncMethod = originalMethod.constructor.name === 'AsyncFunction'
+    const isAsyncMethod = typeof originalMethod === 'function' && Object.getPrototypeOf(originalMethod) === ASYNC_FUNCTION_PROTOTYPE
     let observesPromise = false
 
     descriptor.value = function (this: unknown, ...args: unknown[]) {

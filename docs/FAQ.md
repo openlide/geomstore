@@ -635,6 +635,43 @@ store.dispatch('login', { username: 123 })  // ❌ 类型错误
 
 ---
 
+### Q: state 字段被推断为 `never[]` / `null`，action 里写入报类型错误？
+
+**A:** 这是 TypeScript 字面量推断导致的。字面量 `[]` 会被推断为 `never[]`、`null` 会被收窄为 `null`，与接口声明不一致：
+
+```typescript
+// ❌ 错误：字面量对象形式，[] 被推断为 never[]
+interface CityState {
+  historyList: string[]
+  activeLetter: string | null
+}
+
+const store = createStore<CityState>({
+  state: {
+    historyList: [],       // 推断为 never[]，而非 string[]
+    activeLetter: null,    // 收窄为 null，而非 string | null
+  },
+  actions: {
+    setHistoryList(historyList: string[]) {
+      this.setState('historyList', historyList)  // ❌ never[] 不能接收 string[]
+    },
+  },
+})
+
+// ✅ 正确：使用 state 工厂函数 + 显式返回类型锚定
+const store = createStore<CityState>({
+  state: (): CityState => ({
+    historyList: [],
+    activeLetter: null,
+  }),
+  // ...
+})
+```
+
+**注意：** `satisfies` 不改变字面量推断（空数组仍为 `never[]`、`null` 仍为 `null`），不能替代显式返回类型。
+
+---
+
 ### Q: dispatch 参数类型不正确？
 
 **A:** 确保正确定义了 Actions 类型：

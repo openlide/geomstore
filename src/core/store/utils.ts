@@ -20,7 +20,11 @@ let cachedProductionState: boolean | undefined
  * @returns {boolean} 如果当前处于生产环境则返回 true，否则返回 false
  */
 export function isProduction(): boolean {
-  // 使用缓存结果避免重复计算
+  // 使用缓存结果避免重复计算。
+  // 注意：首次判定后结果在当前模块实例内永久缓存：
+  // - 构建产物中 NODE_ENV / __DEV__ 均为构建期常量，运行时不会变化，缓存是安全的；
+  // - 仅 HMR/运行时篡改环境变量场景下缓存会陈旧——这是有意为之的性能取舍
+  //   （避免热路径重复检测），需要重新判定时应重新加载本模块。
   if (cachedProductionState !== undefined) {
     return cachedProductionState
   }
@@ -44,6 +48,53 @@ export function isProduction(): boolean {
   // 3. 兜底：无法判定时按开发模式处理，确保状态保护默认开启
   cachedProductionState = false
   return cachedProductionState
+}
+
+/**
+ * 递归冻结状态（用于 $snapshot 等对外暴露的只读副本）
+ *
+ * 仅冻结纯对象与数组（Date/RegExp/Map/Set 等内建对象的 mutator 方法
+ * 不走 [[Set]] 陷阱，Object.freeze 无法阻止，冻结无意义故跳过）；
+ * 循环引用用 WeakSet 守卫避免重复冻结枝；冻结失败（如 sealed 对象）不拖垮快照。
+ */
+export function deepFreezeState<T>(value: T, seen?: WeakSet<object>): T {
+  if (value === null || typeof value !== 'object') {
+    return value
+  }
+
+  const visited = seen ?? new WeakSet<object>()
+  if (visited.has(value as object)) {
+    return value
+  }
+  visited.add(value as object)
+
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length; i++) {
+      deepFreezeState(value[i], visited)
+    }
+    try {
+      Object.freeze(value)
+    } catch {
+      // 非可扩展对象冻结会抛错：跳过，不影响其余枝的冻结
+    }
+    return value
+  }
+
+  // 非纯对象（class 实例等）不冻结，仅递归其可枚举属性
+  const proto = Object.getPrototypeOf(value as object)
+  const isPlain = proto === Object.prototype || proto === null
+  const record = value as Record<string, unknown>
+  for (const key of Object.keys(record)) {
+    deepFreezeState(record[key], visited)
+  }
+  if (isPlain) {
+    try {
+      Object.freeze(value)
+    } catch {
+      // 同上：冻结失败时保留可变引用，不拖垮快照
+    }
+  }
+  return value
 }
 
 /**

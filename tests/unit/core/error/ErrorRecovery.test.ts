@@ -10,15 +10,7 @@
  * - ��������
  */
 
-import {
-  ErrorRecovery,
-  RecoveryStrategy,
-  createDefaultErrorRecovery,
-  defaultErrorRecovery,
-  createError,
-  ErrorCode,
-  GeomStoreError,
-} from '@/index'
+import { ErrorRecovery, RecoveryStrategy, createDefaultErrorRecovery, defaultErrorRecovery, createError, ErrorCode, GeomStoreError } from '@/index'
 
 describe('ErrorRecovery', () => {
   let recovery: ErrorRecovery
@@ -48,8 +40,8 @@ describe('ErrorRecovery', () => {
       const strategy: RecoveryStrategy = RecoveryStrategy.IGNORE
       recovery.configure({
         [ErrorCode.ACTION_NOT_FOUND]: {
-          strategy
-        }
+          strategy,
+        },
       })
 
       const config = recovery.getConfig(ErrorCode.ACTION_NOT_FOUND)
@@ -62,8 +54,8 @@ describe('ErrorRecovery', () => {
     it('RECOVERY-004: Ӧ�ú��Դ���', async () => {
       recovery.configure({
         [ErrorCode.ACTION_NOT_FOUND]: {
-          strategy: RecoveryStrategy.IGNORE
-        }
+          strategy: RecoveryStrategy.IGNORE,
+        },
       })
 
       const error = createError(ErrorCode.ACTION_NOT_FOUND, 'Action not found')
@@ -78,8 +70,8 @@ describe('ErrorRecovery', () => {
       recovery.configure({
         [ErrorCode.ACTION_NOT_FOUND]: {
           strategy: RecoveryStrategy.FALLBACK,
-          fallbackFn
-        }
+          fallbackFn,
+        },
       })
 
       const error = createError(ErrorCode.ACTION_NOT_FOUND, 'Action not found')
@@ -92,8 +84,8 @@ describe('ErrorRecovery', () => {
       recovery.configure({
         [ErrorCode.STATE_KEY_NOT_FOUND]: {
           strategy: RecoveryStrategy.FALLBACK,
-          fallback: { value: 'default' }
-        }
+          fallback: { value: 'default' },
+        },
       })
 
       const error = createError(ErrorCode.STATE_KEY_NOT_FOUND, 'Key not found')
@@ -104,8 +96,8 @@ describe('ErrorRecovery', () => {
     it('RECOVERY-011: û�����û���ֵ����ʱӦ���׳�����', async () => {
       recovery.configure({
         [ErrorCode.VALIDATION_ERROR]: {
-          strategy: RecoveryStrategy.FALLBACK
-        }
+          strategy: RecoveryStrategy.FALLBACK,
+        },
       })
 
       const error = createError(ErrorCode.VALIDATION_ERROR, 'Validation failed')
@@ -119,8 +111,8 @@ describe('ErrorRecovery', () => {
         [ErrorCode.ACTION_EXECUTION_ERROR]: {
           strategy: RecoveryStrategy.RETRY,
           maxRetries: 3,
-          retryDelay: 100
-        }
+          retryDelay: 100,
+        },
       })
 
       const config = recovery.getConfig(ErrorCode.ACTION_EXECUTION_ERROR)
@@ -138,8 +130,8 @@ describe('ErrorRecovery', () => {
           maxRetries: 3,
           retryDelay: 100,
           exponentialBackoff: false,
-          onRetry
-        }
+          onRetry,
+        },
       })
 
       const error = createError(ErrorCode.ACTION_TIMEOUT, 'Timeout')
@@ -160,8 +152,8 @@ describe('ErrorRecovery', () => {
           maxRetries: 3,
           retryDelay: 100,
           exponentialBackoff: true,
-          onRetry
-        }
+          onRetry,
+        },
       })
 
       const error = createError(ErrorCode.ACTION_TIMEOUT, 'Timeout')
@@ -179,8 +171,8 @@ describe('ErrorRecovery', () => {
           strategy: RecoveryStrategy.RETRY,
           maxRetries: 2,
           retryDelay: 10,
-          exponentialBackoff: false
-        }
+          exponentialBackoff: false,
+        },
       })
 
       const error = createError(ErrorCode.ACTION_TIMEOUT, 'Timeout')
@@ -212,8 +204,8 @@ describe('ErrorRecovery', () => {
           strategy: RecoveryStrategy.RETRY,
           maxRetries: 3,
           retryDelay: 100,
-          onRetry
-        }
+          onRetry,
+        },
       })
 
       const error = createError(ErrorCode.ACTION_TIMEOUT, 'Timeout')
@@ -222,10 +214,7 @@ describe('ErrorRecovery', () => {
       jest.advanceTimersByTime(200)
 
       await expect(promise).rejects.toBe(error)
-      expect(consoleErrorSpy).toHaveBeenCalledWith(
-        '[ErrorRecovery] Error in onRetry callback:',
-        expect.any(Error)
-      )
+      expect(consoleErrorSpy).toHaveBeenCalledWith('[ErrorRecovery] Error in onRetry callback:', expect.any(Error))
 
       consoleErrorSpy.mockRestore()
     })
@@ -233,9 +222,9 @@ describe('ErrorRecovery', () => {
     it('RECOVERY-016: Ӧ��ʹ��Ĭ�ϵ���������', async () => {
       recovery.configure({
         [ErrorCode.ACTION_TIMEOUT]: {
-          strategy: RecoveryStrategy.RETRY
+          strategy: RecoveryStrategy.RETRY,
           // ������ maxRetries, retryDelay, exponentialBackoff
-        }
+        },
       })
 
       const config = recovery.getConfig(ErrorCode.ACTION_TIMEOUT)
@@ -251,8 +240,8 @@ describe('ErrorRecovery', () => {
       recovery.configure({
         [ErrorCode.STATE_UPDATE_ERROR]: {
           strategy: RecoveryStrategy.RECOVER,
-          recoverFn
-        }
+          recoverFn,
+        },
       })
 
       const error = createError(ErrorCode.STATE_UPDATE_ERROR, 'Update failed')
@@ -264,8 +253,8 @@ describe('ErrorRecovery', () => {
     it('RECOVERY-018: û�����ûָ�����ʱӦ���׳�����', async () => {
       recovery.configure({
         [ErrorCode.STATE_UPDATE_ERROR]: {
-          strategy: RecoveryStrategy.RECOVER
-        }
+          strategy: RecoveryStrategy.RECOVER,
+        },
       })
 
       const error = createError(ErrorCode.STATE_UPDATE_ERROR, 'Update failed')
@@ -277,8 +266,8 @@ describe('ErrorRecovery', () => {
     it('RECOVERY-019: Ӧ�÷��� undefined ��ʾ��Ҫ����', async () => {
       recovery.configure({
         [ErrorCode.STORE_COMPOSE_ERROR]: {
-          strategy: RecoveryStrategy.RESTART
-        }
+          strategy: RecoveryStrategy.RESTART,
+        },
       })
 
       const error = createError(ErrorCode.STORE_COMPOSE_ERROR, 'Compose failed')
@@ -291,8 +280,8 @@ describe('ErrorRecovery', () => {
     it('RECOVERY-020: δ֪����Ӧ���׳�����', async () => {
       recovery.configure({
         [ErrorCode.UNKNOWN_ERROR]: {
-          strategy: 'unknown' as any
-        }
+          strategy: 'unknown' as any,
+        },
       })
 
       const error = createError(ErrorCode.UNKNOWN_ERROR, 'Unknown')
@@ -305,8 +294,8 @@ describe('ErrorRecovery', () => {
       recovery.configure({
         [ErrorCode.ACTION_NOT_FOUND]: {
           strategy: RecoveryStrategy.IGNORE,
-          shouldRecover: () => false
-        }
+          shouldRecover: () => false,
+        },
       })
 
       const error = createError(ErrorCode.ACTION_NOT_FOUND, 'Action not found')
@@ -317,8 +306,8 @@ describe('ErrorRecovery', () => {
       recovery.configure({
         [ErrorCode.ACTION_NOT_FOUND]: {
           strategy: RecoveryStrategy.IGNORE,
-          shouldRecover: () => true
-        }
+          shouldRecover: () => true,
+        },
       })
 
       const error = createError(ErrorCode.ACTION_NOT_FOUND, 'Action not found')
@@ -333,8 +322,8 @@ describe('ErrorRecovery', () => {
       recovery.configure({
         [ErrorCode.ACTION_NOT_FOUND]: {
           strategy: RecoveryStrategy.IGNORE,
-          onRecovery
-        }
+          onRecovery,
+        },
       })
 
       const error = createError(ErrorCode.ACTION_NOT_FOUND, 'Action not found')
@@ -351,8 +340,8 @@ describe('ErrorRecovery', () => {
       recovery.configure({
         [ErrorCode.ACTION_NOT_FOUND]: {
           strategy: RecoveryStrategy.IGNORE,
-          onRecovery
-        }
+          onRecovery,
+        },
       })
 
       const error = createError(ErrorCode.ACTION_NOT_FOUND, 'Action not found')
@@ -368,8 +357,8 @@ describe('ErrorRecovery', () => {
       recovery.configure({
         [ErrorCode.STATE_KEY_NOT_FOUND]: {
           strategy: RecoveryStrategy.FALLBACK,
-          onRecoveryFailed
-        }
+          onRecoveryFailed,
+        },
       })
 
       const error = createError(ErrorCode.STATE_KEY_NOT_FOUND, 'Key not found')
@@ -386,8 +375,8 @@ describe('ErrorRecovery', () => {
       recovery.configure({
         [ErrorCode.STATE_KEY_NOT_FOUND]: {
           strategy: RecoveryStrategy.FALLBACK,
-          onRecoveryFailed
-        }
+          onRecoveryFailed,
+        },
       })
 
       const error = createError(ErrorCode.STATE_KEY_NOT_FOUND, 'Key not found')
@@ -421,8 +410,8 @@ describe('ErrorRecovery', () => {
       const instance = createDefaultErrorRecovery({
         [ErrorCode.ACTION_TIMEOUT]: {
           strategy: RecoveryStrategy.RETRY,
-          maxRetries: 5
-        }
+          maxRetries: 5,
+        },
       })
 
       const config = instance.getConfig(ErrorCode.ACTION_TIMEOUT)
@@ -445,8 +434,8 @@ describe('ErrorRecovery', () => {
           strategy: RecoveryStrategy.RETRY,
           maxRetries: 5,
           retryDelay: 10,
-          exponentialBackoff: false
-        }
+          exponentialBackoff: false,
+        },
       })
 
       const error = createError(ErrorCode.ACTION_TIMEOUT, 'Timeout')
@@ -472,18 +461,18 @@ describe('ErrorRecovery', () => {
       recovery.configure({
         [ErrorCode.STATE_UPDATE_ERROR]: {
           strategy: RecoveryStrategy.RECOVER,
-          recoverFn
-        }
+          recoverFn,
+        },
       })
 
       const error = createError(ErrorCode.STATE_UPDATE_ERROR, 'Update failed', {
         storeName: 'test-store',
-        operation: 'update'
+        operation: 'update',
       })
 
       await recovery.recover(error, {
         storeName: 'custom-store',
-        operation: 'custom-op'
+        operation: 'custom-op',
       })
 
       expect(recoverFn).toHaveBeenCalledWith(error)
@@ -497,14 +486,59 @@ describe('ErrorRecovery', () => {
         [ErrorCode.ACTION_NOT_FOUND]: {
           strategy: RecoveryStrategy.FALLBACK,
           fallback: 'static value',
-          fallbackFn
-        }
+          fallbackFn,
+        },
       })
 
       const error = createError(ErrorCode.ACTION_NOT_FOUND, 'Action not found')
       const result = await recovery.recover(error)
       expect(result).toBe('from function')
       expect(fallbackFn).toHaveBeenCalled()
+    })
+  })
+
+  describe('clearRetryCount exact match (BUG-F8)', () => {
+    it('RECOVERY-F8-001: clearing one error code must not clear counts of prefix-sibling codes', () => {
+      // 修复前用 startsWith(errorCode) 前缀匹配：当一个错误码是另一个的前缀
+      // （如 'AUTH' 与 'AUTH_FAILED'）时，清除前者会连带误清后者的重试计数
+      const internal = recovery as any
+
+      internal.incrementRetryCount('AUTH:store:op')
+      internal.incrementRetryCount('AUTH:store:op')
+      internal.incrementRetryCount('AUTH_FAILED:store:op')
+
+      internal.clearRetryCount('AUTH')
+
+      // AUTH 的计数被精确清除
+      expect(internal.getRetryCount('AUTH:store:op')).toBe(0)
+      // AUTH_FAILED 的计数不受影响
+      expect(internal.getRetryCount('AUTH_FAILED:store:op')).toBe(1)
+
+      internal.clearRetryCount('AUTH_FAILED')
+      expect(internal.getRetryCount('AUTH_FAILED:store:op')).toBe(0)
+    })
+
+    it('RECOVERY-F8-002: after AUTH exhausts retries, AUTH_FAILED quota must remain', async () => {
+      // 行为级验证：AUTH 达到最大重试次数触发清零后，AUTH_FAILED 仍能重试
+      recovery.configure({
+        AUTH: { strategy: RecoveryStrategy.RETRY, maxRetries: 1, retryDelay: 10, exponentialBackoff: false },
+        AUTH_FAILED: { strategy: RecoveryStrategy.RETRY, maxRetries: 3, retryDelay: 10, exponentialBackoff: false },
+      } as any)
+
+      const errorAuth = createError('AUTH' as any, 'auth failed')
+      const errorAuthFailed = createError('AUTH_FAILED' as any, 'auth failed twice')
+
+      // AUTH 第一次重试（计数 0 < 1）
+      const p1 = recovery.recover(errorAuth)
+      jest.advanceTimersByTime(50)
+      await expect(p1).rejects.toBe(errorAuth)
+      // AUTH 第二次：达到上限，清计数并抛“超出最大重试次数”
+      await expect(recovery.recover(errorAuth)).rejects.toThrow('Max retries (1) exceeded')
+
+      // AUTH_FAILED 不受 AUTH 清零影响，仍可重试（不抛 Max retries）
+      const p2 = recovery.recover(errorAuthFailed)
+      jest.advanceTimersByTime(50)
+      await expect(p2).rejects.toBe(errorAuthFailed)
     })
   })
 })

@@ -688,6 +688,11 @@ store.use(persistencePlugin({
 }))
 ```
 
+**说明：**
+
+- `storage` 可省略：插件会自动检测微信环境并使用 `wx.getStorageSync` / `wx.setStorageSync`；两者都不可用时降级为进程内内存存储（开发模式输出告警），不影响运行。
+- 启动恢复采用**合并语义**（`$patch`）：未持久化的键（如被 `filter` 过滤的键）保留初始值，不会被覆盖为 `undefined`。
+
 #### DevTools 插件
 
 ```javascript
@@ -869,6 +874,56 @@ useUserStore.dispatch('login', { username: 123 })  // ❌ 类型错误
 const isVip = useUserStore.getter('isVip')  // boolean
 const name = useUserStore.getter('displayName')  // string
 ```
+
+### state 工厂函数形式（推荐）
+
+除了上面示例中的字面量对象形式，`createStore` 还支持 **state 工厂函数**形式（Pinia 同款）：
+
+```typescript
+import { createStore } from './utils/geomstore'
+
+interface CityGroup {
+  key: string
+  cities: Array<{ id: number; name: string }>
+}
+
+interface CityState {
+  historyList: string[]
+  cityGroups: CityGroup[]
+  activeLetter: string | null
+}
+
+const cityStore = createStore<CityState>({
+  name: 'city',
+
+  state: (): CityState => ({
+    historyList: [],
+    cityGroups: [],
+    activeLetter: null,
+  }),
+
+  actions: {
+    setHistoryList(historyList: string[]) {
+      this.setState('historyList', historyList)
+    },
+  },
+})
+```
+
+**两种形式的选择：**
+
+| 形式                        | 适用场景                                                                     |
+| --------------------------- | ---------------------------------------------------------------------------- |
+| `state: { ... }`            | 对象字面量类型简单、无空数组/`null` 字面量需要精确推断时，可直接配合泛型使用 |
+| `state: (): S => ({ ... })` | 状态字段包含 `[]`、`null` 等字面量，需要精确类型锚定时，**推荐使用**         |
+
+**为什么需要工厂函数 + 显式返回类型：**
+
+在 strict TypeScript 下，字面量 `[]` 会被推断为 `never[]`、`null` 会被收窄为 `null`，而非接口声明的 `string[]` / `string | null`。这会直接导致 action 内 `this.setState('historyList', historyList)` 等写入操作无法通过类型检查。使用 `state: (): CityState => ({ ... })` 显式锚定返回类型后，空数组精确推断为 `string[]`、`activeLetter` 保持 `string | null`。
+
+> 注意：`satisfies` 不改变字面量推断（空数组仍为 `never[]`、`null` 仍被收窄为 `null`），因此**不可用** `state: {...} satisfies CityState` 替代。
+
+另外，工厂函数在 Store 初始化时执行一次并深拷贝结果，可避免外部修改 `options.state` 引用污染 Store 内部状态。
 
 ### 类型推断工具
 

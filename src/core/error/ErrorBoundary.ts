@@ -312,12 +312,28 @@ export class ErrorBoundary<S = unknown> {
  * ```
  */
 export function withErrorBoundary(options?: ErrorBoundaryOptions) {
-  const boundary = new ErrorBoundary(options)
+  // 修复闭包陷阱：boundary 不得在工厂作用域创建，否则同一装饰器装饰的
+  // 所有类实例共享同一份 errorHistory/恢复状态。现按宿主对象（this）懒创建并隔离。
+  const boundaryByHost = new WeakMap<object, ErrorBoundary>()
+
+  const getBoundary = (host: unknown): ErrorBoundary => {
+    if (typeof host !== 'object' || host === null) {
+      // 宿主非对象（罕见）：每次调用一次性实例，不跨调用串扰
+      return new ErrorBoundary(options)
+    }
+    let boundary = boundaryByHost.get(host)
+    if (!boundary) {
+      boundary = new ErrorBoundary(options)
+      boundaryByHost.set(host, boundary)
+    }
+    return boundary
+  }
 
   return function (_target: unknown, _propertyKey: string | symbol, descriptor: PropertyDescriptor): PropertyDescriptor {
     const originalMethod = descriptor.value
 
     descriptor.value = function (this: ThisParameterType<typeof originalMethod>, ...args: unknown[]) {
+      const boundary = getBoundary(this)
       // 同步阶段（含 async 方法的同步抛出）由 execute 包裹
       const result = boundary.execute(() => originalMethod.apply(this, args))
       // async 方法返回的 Promise 其 rejection 会绕过同步 try/catch，

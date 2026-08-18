@@ -100,13 +100,14 @@ export class SubscriptionManager<S extends State = State> implements Subscriptio
    * - cloneOnNotify=false：零拷贝模式，调用方（Store）负责传入只读保护后的状态
    */
   notify(state: S): void {
+    // 仅在循环前克隆一次，避免对每个监听器重复深拷贝整棵状态树
+    // （cloneOnNotify=true 默认开启，单次克隆已能保证监听器间的引用隔离）
+    const payload = this._cloneOnNotify ? deepCloneState(state) : state
     const listeners = [...this._listeners]
-    // 默认创建状态深拷贝，确保监听器接收完全独立的副本
-    const currentState = this._cloneOnNotify ? deepCloneState(state) : state
 
     for (let i = 0; i < listeners.length; i++) {
       try {
-        listeners[i](currentState as S)
+        listeners[i](payload as S)
       } catch (error) {
         // 生产环境移除详细日志
         if (!isProduction()) {

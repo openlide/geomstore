@@ -12,7 +12,7 @@
  */
 
 import type { Store, State, Actions, Getters } from '../types/store'
-import type { ConnectOptions, PageThis, PageOwnMethods, ComponentThis, ComponentOwnMethods, ExtractPageData } from '../types/integration'
+import type { ConnectOptions, PageThis, PageOwnMethods, ComponentThis, ComponentOwnMethods, ExtractPageData, WithPageThis } from '../types/integration'
 import { parseMapping, bindMappings, cleanupBindings, performAutoInject } from './utils'
 
 export type { ConnectOptions } from '../types/integration'
@@ -112,9 +112,7 @@ type ComponentInstance = ComponentOptions & {
 export function withPageStore<S extends State, A extends Actions, G extends Getters<S>, O extends ConnectOptions<S, A, G>>(
   store: Store<S, A, G>,
   options: O = {} as O,
-): <C extends PageOptions>(
-  PageConfig: C,
-) => PageThis<S, A, G, O, PageOwnMethods<C>> & Omit<C, 'data'> & { data: (C extends { data: infer D } ? D : object) & ExtractPageData<S, O, G> } {
+) {
   // 解析映射配置
   const stateMapping = options.mapState ? parseMapping(options.mapState) : {}
   const gettersMapping = options.mapGetters ? parseMapping(options.mapGetters) : {}
@@ -124,21 +122,24 @@ export function withPageStore<S extends State, A extends Actions, G extends Gett
   const injectMapping = options.injectMapping || {}
 
   return function <C extends PageOptions>(
-    PageConfig: C,
+    // 入参使用具体类型（不依赖 C），使字面量方法内的 this 被统一注入为 PageThis：
+    // - WithPageThis 显式重写已知生命周期方法的 this 参数
+    // - ThisType<PageThis<...>> 标记让自定义方法（仅能命中 PageOptions 索引签名的 onInput 等）
+    //   在 noImplicitThis 开启时也获得精确 this，避免退化为 unknown / object
+    // C 仅用于返回类型，保留自定义方法 / data 的精确类型
+    PageConfig: WithPageThis<Omit<PageOptions, 'data'>, PageThis<S, A, G, O>> & { data: object } & ThisType<PageThis<S, A, G, O>>,
   ): PageThis<S, A, G, O, PageOwnMethods<C>> & Omit<C, 'data'> & { data: (C extends { data: infer D } ? D : object) & ExtractPageData<S, O, G> } {
-    const enhancedConfig: PageOptions = { ...PageConfig }
+    const enhancedConfig = { ...PageConfig } as PageOptions
 
     // 扩展 onLoad
     const originalOnLoad = enhancedConfig.onLoad
     enhancedConfig.onLoad = function (this: PageInstance, ...args: unknown[]) {
-      const pageInstance = this
-
       // 订阅清理列表挂在页面实例上：同一 Page 配置可能存在多个页面实例
       // （如页面栈中的同名页面），实例级存储避免互相清除订阅
-      if (!pageInstance.__geomUnbinds) {
-        pageInstance.__geomUnbinds = []
+      if (!this.__geomUnbinds) {
+        this.__geomUnbinds = []
       }
-      const unbindFunctions = pageInstance.__geomUnbinds
+      const unbindFunctions = this.__geomUnbinds
 
       // 辅助函数：订阅 store 变化
       const subscribeStore = (callback: () => void) => store.subscribe(callback)
@@ -146,10 +147,10 @@ export function withPageStore<S extends State, A extends Actions, G extends Gett
       // 绑定 state
       if (options.mapState) {
         const unbindState = bindMappings(
-          pageInstance.data,
+          this.data,
           stateMapping,
           (key) => store.state[key as keyof S],
-          (updates) => pageInstance.setData(updates),
+          (updates) => this.setData(updates),
           subscribeStore,
         )
         unbindFunctions.push(...unbindState)
@@ -158,10 +159,10 @@ export function withPageStore<S extends State, A extends Actions, G extends Gett
       // 绑定 getters
       if (options.mapGetters) {
         const unbindGetters = bindMappings(
-          pageInstance.data,
+          this.data,
           gettersMapping,
           (key) => store.getter(key),
-          (updates) => pageInstance.setData(updates),
+          (updates) => this.setData(updates),
           subscribeStore,
         )
         unbindFunctions.push(...unbindGetters)
@@ -170,15 +171,18 @@ export function withPageStore<S extends State, A extends Actions, G extends Gett
       // 绑定 actions
       if (options.mapActions) {
         Object.entries(actionsMapping).forEach(([localName, actionName]) => {
-          pageInstance[localName] = (...args: unknown[]) => {
+          this[localName] = (...args: unknown[]) => {
             return store.dispatch(actionName, ...args)
           }
+          unbindFunctions.push(() => {
+            delete this[localName]
+          })
         })
       }
 
       // 自动注入（使用getCached）
       if (options.autoInject && injectMapping) {
-        performAutoInject(pageInstance, injectMapping, store, (updates: Record<string, unknown>) => pageInstance.setData(updates))
+        performAutoInject(this, injectMapping, store, (updates: Record<string, unknown>) => this.setData(updates))
       }
 
       // 调用原始 onLoad
@@ -286,18 +290,18 @@ export function withComponentStore<S extends State, A extends Actions, G extends
     enhancedConfig.lifetimes = {
       ...originalLifetimes,
       attached: function (this: ComponentInstance) {
-        const componentInstance = this
-
         // 订阅清理列表挂在组件实例上：同一 Component 配置可能存在多个实例
         // （如列表项组件），实例级存储避免互相清除订阅
-        if (!componentInstance.__geomUnbinds) {
-          componentInstance.__geomUnbinds = []
+        if (!this.__geomUnbinds) {
+          this.__geomUnbinds = []
         }
-        const unbindFunctions = componentInstance.__geomUnbinds
+        const unbindFunctions = this.__geomUnbinds
 
-        // 将绑定的 methods 合并到实例上
-        if (componentInstance.methods) {
-          Object.assign(componentInstance.methods, boundMethods)
+        // 将绑定的 methods 合并到实例上：
+        // 先做实例级浅拷贝再合并，避免 this.methods 引用配置级共享对象时
+        // 直接写入污染所有实例共用的 methods 定义
+        if (this.methods) {
+          this.methods = { ...this.methods, ...boundMethods }
         }
 
         // 辅助函数：订阅 store 变化
@@ -306,10 +310,10 @@ export function withComponentStore<S extends State, A extends Actions, G extends
         // 绑定 state
         if (options.mapState) {
           const unbindState = bindMappings(
-            componentInstance.data,
+            this.data,
             stateMapping,
             (key) => store.state[key as keyof S],
-            (updates) => componentInstance.setData(updates),
+            (updates) => this.setData(updates),
             subscribeStore,
           )
           unbindFunctions.push(...unbindState)
@@ -318,10 +322,10 @@ export function withComponentStore<S extends State, A extends Actions, G extends
         // 绑定 getters
         if (options.mapGetters) {
           const unbindGetters = bindMappings(
-            componentInstance.data,
+            this.data,
             gettersMapping,
             (key) => store.getter(key),
-            (updates) => componentInstance.setData(updates),
+            (updates) => this.setData(updates),
             subscribeStore,
           )
           unbindFunctions.push(...unbindGetters)
@@ -329,7 +333,7 @@ export function withComponentStore<S extends State, A extends Actions, G extends
 
         // 自动注入（使用getCached）
         if (options.autoInject && injectMapping) {
-          performAutoInject(componentInstance, injectMapping, store, (updates: Record<string, unknown>) => componentInstance.setData(updates))
+          performAutoInject(this, injectMapping, store, (updates: Record<string, unknown>) => this.setData(updates))
         }
 
         // 调用原始 attached
@@ -339,6 +343,14 @@ export function withComponentStore<S extends State, A extends Actions, G extends
       detached: function (this: ComponentInstance) {
         // 清理当前组件实例的订阅
         cleanupBindings(this.__geomUnbinds || [])
+        // 移除实例上绑定的 action 方法：同样先做实例级拷贝再删除，
+        // 避免 this.methods 仍指向配置级共享对象时误删其他实例仍在使用的方法
+        if (this.methods) {
+          this.methods = { ...this.methods }
+          Object.keys(actionsMapping).forEach((localName) => {
+            delete this.methods![localName]
+          })
+        }
         originalLifetimes.detached?.call(this)
       },
     }

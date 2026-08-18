@@ -270,6 +270,64 @@ describe('withErrorBoundary 装饰器', () => {
     await expect(instance.loadOk()).resolves.toBe('ok')
     expect(onError).toHaveBeenCalled()
   })
+
+  it('BUG-F3: 不同实例的 boundary 应按宿主隔离（不共享错误历史）', () => {
+    // 修复前 boundary 在工厂闭包创建，同一装饰器装饰的所有实例共享同一份错误历史/恢复状态；
+    // 修复后按宿主（this）懒创建隔离，互不影响各自的回退与捕获行为
+    const fallback = { recovered: true }
+
+    class Widget {
+      constructor(public id: string) {}
+
+      @withErrorBoundary({ recoverable: true, fallback })
+      fail(): { recovered: boolean } {
+        throw new Error(`fail from ${this.id}`)
+      }
+    }
+
+    const a = new Widget('a')
+    const b = new Widget('b')
+
+    // a 连续多次出错：每次都返回自己的 fallback
+    expect(a.fail()).toBe(fallback)
+    expect(a.fail()).toBe(fallback)
+    // b 首次出错不受 a 的影响，正常返回 fallback
+    expect(b.fail()).toBe(fallback)
+  })
+
+  it('BUG-F3: 同一实例的多个被装饰方法共享同一 boundary（宿主级隔离粒度）', () => {
+    let errorCount = 0
+    class Shared {
+      @withErrorBoundary({ recoverable: true, onError: () => errorCount++ })
+      failA(): void {
+        throw new Error('a')
+      }
+
+      @withErrorBoundary({ recoverable: true, onError: () => errorCount++ })
+      failB(): void {
+        throw new Error('b')
+      }
+    }
+
+    const instance = new Shared()
+    expect(() => instance.failA()).not.toThrow()
+    expect(() => instance.failB()).not.toThrow()
+    expect(errorCount).toBe(2)
+  })
+
+  it('BUG-F3: 宿主非对象时（如解绑定调用）应每次用一次性 boundary 不抛错', () => {
+    const decorator = withErrorBoundary({ recoverable: true })
+    const original = () => {
+      throw new Error('bare')
+    }
+    const descriptor = { value: original, writable: true, enumerable: true, configurable: true }
+    const wrapped = decorator(undefined, 'method', descriptor)
+
+    // apply(this=undefined)：宿主非对象，退化为一次性 boundary，不跨调用串扰
+    expect(() => (wrapped.value as () => void).apply(undefined)).not.toThrow()
+    expect(() => (wrapped.value as () => void).apply(undefined)).not.toThrow()
+    expect(() => (wrapped.value as () => void).apply(null)).not.toThrow()
+  })
 })
 
 describe('ErrorBoundary 边界条件', () => {

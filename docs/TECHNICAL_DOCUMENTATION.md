@@ -306,7 +306,7 @@ Store 是 GeomStore 的核心，负责状态管理、状态保护、订阅通知
 │  + getState(): S                                                    │
 │  + setState<K>(key: K, value: S[K]): void                          │
 │  + $patch(partialState: Partial<S>): void                          │
-│  + $replaceState(newState: S): void                                │
+│  + $replaceState(newState: S \| (() => S)): void                    │
 │  + dispatch<K>(actionName: K, ...args): R                          │
 │  + getter<K>(getterName: K): R                                      │
 │  + subscribe(listener: StateListener<S>): () => void               │
@@ -439,6 +439,8 @@ await userStore.dispatch('login', 'admin', 'password')
 console.log(userStore.getter('displayName')) // 'admin'
 console.log(userStore.getter('isAuthenticated')) // true
 ```
+
+> **state 工厂函数形式**：除字面量对象外，`state` 也可定义为工厂函数 `state: (): UserState => ({...})`（初始化时执行一次并深拷贝）。在 strict TypeScript 下，显式返回类型可避免 `[]` 被推断为 `never[]`、`null` 被收窄为 `null` 导致的类型错误。`$replaceState(newState: S | (() => S))` 同样支持工厂函数形式。
 
 ### 3.2 Store 组合模块 (composeStore)
 
@@ -1205,7 +1207,7 @@ interface Store<
   $patch(partialState: Partial<S>): void
   $replaceState(newState: S): void
   
-  // 快照
+  // 快照（深拷贝并递归冻结嵌套纯对象/数组，不可变）
   $snapshot(): Readonly<S>
   $restore(snapshot: Readonly<S>): void
   
@@ -1253,8 +1255,8 @@ interface StoreOptions<
   /** Store 名称 */
   name?: string
   
-  /** 初始状态 */
-  state?: S
+  /** 初始状态：字面量对象或工厂函数（state: () => ({...})，初始化时执行一次并深拷贝） */
+  state?: S | (() => S)
   
   /** Actions（自动注入 this 类型） */
   actions?: ActionsWithThis<S, A>
@@ -1816,6 +1818,8 @@ store.use(
     filter: (state) => ({ theme: state.theme }) // 只持久化部分状态
   }),
 )
+// storage 省略时自动检测 wx 同步存储；不可用时降级为内存存储（开发模式告警）
+// 恢复采用 $patch 合并语义：未持久化的键（如 language）保留初始值
 ```
 
 #### Q3: 如何调试状态变化？

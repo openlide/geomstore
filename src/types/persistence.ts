@@ -40,10 +40,20 @@ export interface PersistenceOptions<S extends State = State> {
  * 微信存储后端
  */
 export class WxStorageBackend implements StorageBackend {
+  /** 经 globalThis 读取 wx，避免直接引用未声明的小程序全局标识符 */
+  private get wxApi():
+    | { getStorageSync?: (k: string) => string | undefined; setStorageSync?: (k: string, v: string) => void; removeStorageSync?: (k: string) => void }
+    | undefined {
+    return (
+      globalThis as {
+        wx?: { getStorageSync?: (k: string) => string | undefined; setStorageSync?: (k: string, v: string) => void; removeStorageSync?: (k: string) => void }
+      }
+    ).wx
+  }
+
   getItem(key: string): string | null {
     try {
-      // wx 是微信小程序全局变量，由宿主环境提供
-      const value = (wx as { getStorageSync: (k: string) => string | undefined }).getStorageSync(key)
+      const value = this.wxApi?.getStorageSync?.(key)
       return value === undefined ? null : value
     } catch (error) {
       console.error('[WxStorage] getItem error:', error)
@@ -53,7 +63,7 @@ export class WxStorageBackend implements StorageBackend {
 
   setItem(key: string, value: string): void {
     try {
-      (wx as { setStorageSync: (k: string, v: string) => void }).setStorageSync(key, value)
+      this.wxApi?.setStorageSync?.(key, value)
     } catch (error) {
       console.error('[WxStorage] setItem error:', error)
       throw error
@@ -62,7 +72,7 @@ export class WxStorageBackend implements StorageBackend {
 
   removeItem(key: string): void {
     try {
-      (wx as { removeStorageSync: (k: string) => void }).removeStorageSync(key)
+      this.wxApi?.removeStorageSync?.(key)
     } catch (error) {
       console.error('[WxStorage] removeItem error:', error)
     }

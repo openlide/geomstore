@@ -549,99 +549,108 @@ describe('StateProxyManager 补充覆盖', () => {
     })
   })
 
-  describe('_handleIllegalMutation 返回 false 的边界路径', () => {
-    // _handleIllegalMutation 在正常逻辑中只返回 true 或 throw，
-    // 但 `if (!allowed)` 分支需要 allowed=false 才能进入。
-    // 通过修改原型方法模拟返回 false 来覆盖这些防御性代码路径。
+  describe('非法修改的拒绝与放行语义（_handleIllegalMutation 返回 void）', () => {
+    // 新语义（v1.0 起）：_handleIllegalMutation 拒绝路径总是抛错（开发模式与生产 'error'），
+    // 生产 warn/silent 处理后返回 void、由调用方放行操作。
+    // 此前返回 boolean 且调用方依据 false 拦截的分支为不可达死代码，已移除。
+    // 测试环境 NODE_ENV=test，isProduction() === false，全部拒绝路径应抛错。
 
-    it('深层代理: set 的 !allowed 分支应该返回 false', () => {
+    it('深层代理: 外部 set 应该抛错且不修改状态', () => {
       const { manager } = createManager()
-      // mock _handleIllegalMutation 返回 false
-      ;(manager as any)._handleIllegalMutation = jest.fn().mockReturnValue(false)
       const state = { count: 0 }
       const proxy = manager.createStateProxy(state, '') as any
 
-      // 外部访问时 _handleIllegalMutation 返回 false，set 返回 false
-      const result = Reflect.set(proxy, 'count', 1)
-      expect(result).toBe(false)
+      expect(() => Reflect.set(proxy, 'count', 1)).toThrow(/prohibited/)
       expect(state.count).toBe(0) // 没有被修改
     })
 
-    it('深层代理: deleteProperty 的 !allowed 分支应该返回 false', () => {
+    it('深层代理: 外部 deleteProperty 应该抛错且不删除', () => {
       const { manager } = createManager()
-      ;(manager as any)._handleIllegalMutation = jest.fn().mockReturnValue(false)
       const state = { count: 0, name: 'test' }
       const proxy = manager.createStateProxy(state, '') as any
 
-      const result = Reflect.deleteProperty(proxy, 'name')
-      expect(result).toBe(false)
+      expect(() => Reflect.deleteProperty(proxy, 'name')).toThrow(/prohibited/)
       expect(state.name).toBe('test') // 没有被删除
     })
 
-    it('深层代理: defineProperty 的 !allowed 分支应该返回 false', () => {
+    it('深层代理: 外部 defineProperty 应该抛错且不定义', () => {
       const { manager } = createManager()
-      ;(manager as any)._handleIllegalMutation = jest.fn().mockReturnValue(false)
       const state = { count: 0 }
       const proxy = manager.createStateProxy(state, '') as any
 
-      const result = Reflect.defineProperty(proxy, 'newProp', { value: 123, configurable: true })
-      expect(result).toBe(false)
+      expect(() => Reflect.defineProperty(proxy, 'newProp', { value: 123, configurable: true })).toThrow(/prohibited/)
       expect((state as any).newProp).toBeUndefined() // 没有被定义
     })
 
-    it('浅层代理: set 的 !allowed 分支应该返回 false', () => {
+    it('浅层代理: 外部 set 应该抛错且不修改状态', () => {
       const { manager } = createManager({ deep: false })
-      ;(manager as any)._handleIllegalMutation = jest.fn().mockReturnValue(false)
+      const state = { count: 0 }
+      const proxy = manager.createStateProxy(state, '') as any
+
+      expect(() => Reflect.set(proxy, 'count', 1)).toThrow(/prohibited/)
+      expect(state.count).toBe(0)
+    })
+
+    it('浅层代理: 外部 deleteProperty 应该抛错且不删除', () => {
+      const { manager } = createManager({ deep: false })
+      const state = { count: 0, name: 'test' }
+      const proxy = manager.createStateProxy(state, '') as any
+
+      expect(() => Reflect.deleteProperty(proxy, 'name')).toThrow(/prohibited/)
+      expect(state.name).toBe('test')
+    })
+
+    it('数组代理: 外部变异方法应该抛错且数组不变', () => {
+      const { manager } = createManager()
+      const state = { items: [1, 2, 3] }
+      const proxy = manager.createStateProxy(state, '') as any
+
+      expect(() => proxy.items.push(4)).toThrow(/prohibited/)
+      expect(state.items).toEqual([1, 2, 3]) // 数组没变
+    })
+
+    it('数组代理: 外部 set 应该抛错且不修改', () => {
+      const { manager } = createManager()
+      const state = { items: [1, 2, 3] }
+      const proxy = manager.createStateProxy(state, '') as any
+
+      expect(() => Reflect.set(proxy.items, 0, 10)).toThrow(/prohibited/)
+      expect(state.items[0]).toBe(1) // 没有被修改
+    })
+
+    it('数组代理: 外部 deleteProperty 应该抛错且不删除', () => {
+      const { manager } = createManager()
+      const state = { items: [1, 2, 3] }
+      const proxy = manager.createStateProxy(state, '') as any
+
+      expect(() => Reflect.deleteProperty(proxy.items, 0)).toThrow(/prohibited/)
+      expect(state.items[0]).toBe(1) // 没有被删除
+    })
+
+    it('_handleIllegalMutation 放行（不抛错）时操作应该被放行且写入生效', () => {
+      // 模拟生产 warn/silent 处理器：_handleIllegalMutation 处理后返回 void（不抛错），
+      // 调用方放行写入——返回值不再参与拦截判断
+      const { manager } = createManager()
+      ;(manager as any)._handleIllegalMutation = jest.fn()
       const state = { count: 0 }
       const proxy = manager.createStateProxy(state, '') as any
 
       const result = Reflect.set(proxy, 'count', 1)
-      expect(result).toBe(false)
-      expect(state.count).toBe(0)
+      expect(result).toBe(true)
+      expect(state.count).toBe(1) // 放行后写入生效
+      expect((manager as any)._handleIllegalMutation).toHaveBeenCalled()
     })
 
-    it('浅层代理: deleteProperty 的 !allowed 分支应该返回 false', () => {
-      const { manager } = createManager({ deep: false })
-      ;(manager as any)._handleIllegalMutation = jest.fn().mockReturnValue(false)
-      const state = { count: 0, name: 'test' }
+    it('内部访问时不应调用 _handleIllegalMutation', () => {
+      const { manager, setInternal } = createManager()
+      const spy = jest.spyOn(manager as any, '_handleIllegalMutation')
+      const state = { count: 0 }
       const proxy = manager.createStateProxy(state, '') as any
 
-      const result = Reflect.deleteProperty(proxy, 'name')
-      expect(result).toBe(false)
-      expect(state.name).toBe('test')
-    })
-
-    it('数组代理: 变异方法的 !allowed 分支应该返回 undefined', () => {
-      const { manager } = createManager()
-      ;(manager as any)._handleIllegalMutation = jest.fn().mockReturnValue(false)
-      const state = { items: [1, 2, 3] }
-      const proxy = manager.createStateProxy(state, '') as any
-
-      const result = proxy.items.push(4)
-      expect(result).toBeUndefined()
-      expect(state.items).toEqual([1, 2, 3]) // 数组没变
-    })
-
-    it('数组代理: set 的 !allowed 分支应该返回 false', () => {
-      const { manager } = createManager()
-      ;(manager as any)._handleIllegalMutation = jest.fn().mockReturnValue(false)
-      const state = { items: [1, 2, 3] }
-      const proxy = manager.createStateProxy(state, '') as any
-
-      const result = Reflect.set(proxy.items, 0, 10)
-      expect(result).toBe(false)
-      expect(state.items[0]).toBe(1) // 没有被修改
-    })
-
-    it('数组代理: deleteProperty 的 !allowed 分支应该返回 false', () => {
-      const { manager } = createManager()
-      ;(manager as any)._handleIllegalMutation = jest.fn().mockReturnValue(false)
-      const state = { items: [1, 2, 3] }
-      const proxy = manager.createStateProxy(state, '') as any
-
-      const result = Reflect.deleteProperty(proxy.items, 0)
-      expect(result).toBe(false)
-      expect(state.items[0]).toBe(1) // 没有被删除
+      setInternal(true)
+      proxy.count = 5
+      expect(spy).not.toHaveBeenCalled()
+      expect(state.count).toBe(5)
     })
   })
 

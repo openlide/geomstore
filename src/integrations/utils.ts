@@ -80,23 +80,55 @@ export function bindMappings(
     return unbinds
   }
 
-  // 合并所有映射的更新为一次批量 setter 调用
+  // 记录上一次各映射键的值，用于跳过无变化的 setData。
+  // 小程序 setData 开销较大，即使 store 变化与本地映射无关也应避免无谓的视图更新
+  const prevValues: Record<string, unknown> = {}
+  for (const [localKey, storeKey] of entries) {
+    prevValues[localKey] = getValue(storeKey)
+  }
+
+  // 合并所有映射的更新为一次批量 setter 调用，仅在确有变化时才触发
   const updateAll = () => {
     const updates: Record<string, unknown> = {}
+    let changed = false
     for (const [localKey, storeKey] of entries) {
-      updates[localKey] = getValue(storeKey)
+      const next = getValue(storeKey)
+      if (!safeEqual(next, prevValues[localKey])) {
+        prevValues[localKey] = next
+        updates[localKey] = next
+        changed = true
+      }
     }
-    setter(updates)
+    if (changed) {
+      setter(updates)
+    }
   }
 
   // 立即设置初始值
-  updateAll()
+  setter(prevValues)
 
   // 订阅 Store 变化（单个订阅覆盖全部映射，进一步减少回调数）
   const unsubscribe = subscribeStore(() => updateAll())
   unbinds.push(unsubscribe)
 
   return unbinds
+}
+
+/**
+ * 浅比较：处理 NaN 与引用相等，足以判断映射值是否发生变化。
+ *
+ * 不深比较对象，避免大对象 diff 开销；引用变化即视为变化（符合 store 不可变更新语义）。
+ *
+ * @param a - 旧值
+ * @param b - 新值
+ * @returns 是否相等
+ */
+function safeEqual(a: unknown, b: unknown): boolean {
+  if (a === b) {
+    return true
+  }
+  // NaN !== NaN，但视为相等
+  return typeof a === 'number' && typeof b === 'number' && isNaN(a) && isNaN(b)
 }
 
 /**

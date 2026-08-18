@@ -166,6 +166,20 @@ function installAnalyzer(store: Store, options: PerformanceOptions): (() => void
     end?.()
   }
 
+  // 错误路径（如 action 执行抛错）不会触发 afterXxx 钩子，
+  // 若不清理，配对栈中的残留 end 会导致后续同类型操作的配对错位（内层 pop 到外层的计时），
+  // 且 monitor 内部计时条目会随错误次数持续泄漏。
+  // 监听 onError 立即结束全部未完成计时：记录「到错误发生为止」的耗时
+  // （对定位错误操作的性能开销有参考价值），同时清空栈保证后续配对正确
+  const discardPendingEnds = (): void => {
+    for (const stack of pendingEnds.values()) {
+      while (stack.length > 0) {
+        stack.pop()?.()
+      }
+    }
+    pendingEnds.clear()
+  }
+
   // 使用钩子系统替代 monkey-patching，避免多插件冲突
   // 监控 setState
   const unsubBeforeSetState = store.hooks.on('beforeSetState', (key: unknown) => {
@@ -207,7 +221,7 @@ function installAnalyzer(store: Store, options: PerformanceOptions): (() => void
   // getter 没有钩子，使用包装方式（仅监控，不修改原型）
   const originalGetter = store.getter.bind(store)
   const storeProxy = store as unknown as Record<string, unknown>
-  storeProxy.getter = function (...args: unknown[]): unknown {
+  const wrappedGetter = function (...args: unknown[]): unknown {
     const end = monitor.start(`getter:${String(args[0])}`)
     try {
       return (originalGetter as (...a: unknown[]) => unknown)(...args)
@@ -215,6 +229,7 @@ function installAnalyzer(store: Store, options: PerformanceOptions): (() => void
       end()
     }
   }
+  storeProxy.getter = wrappedGetter
 
   // 暴露监控器API
   storeProxy.__performanceMonitor__ = monitor
@@ -235,6 +250,11 @@ function installAnalyzer(store: Store, options: PerformanceOptions): (() => void
     console.log(`[GeomStore][analyzer] Access at: globalThis.__GEOMSTORE_ANALYZER__["${store.name}"]`)
   }
 
+  // 错误时丢弃未完成的配对计时（见 discardPendingEnds 注释）
+  const unsubOnError = store.hooks.on('onError', () => {
+    discardPendingEnds()
+  })
+
   return () => {
     // 清理钩子订阅
     unsubBeforeSetState()
@@ -245,9 +265,15 @@ function installAnalyzer(store: Store, options: PerformanceOptions): (() => void
     unsubAfterReplace()
     unsubBeforeDispatch()
     unsubAfterDispatch()
+    unsubOnError()
 
-    // 恢复 getter（仅 getter 使用了包装）
-    storeProxy.getter = originalGetter as (...args: unknown[]) => unknown
+    // 恢复 getter：仅当仍是本插件包装的函数时才恢复，
+    // 避免多插件叠加包装时卸载顺序不当把后续插件的包装一并覆盖丢失
+    if (storeProxy.getter === wrappedGetter) {
+      storeProxy.getter = originalGetter as (...args: unknown[]) => unknown
+    } else if (!isProduction()) {
+      console.warn(`[GeomStore][analyzer] store.getter 已被后续插件重新包装，卸载时保留当前包装（不再恢复本插件安装前的原始实现），以免覆盖其他插件`)
+    }
 
     // 清理全局引用
     if (typeof globalThis !== 'undefined') {

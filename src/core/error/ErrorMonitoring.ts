@@ -627,7 +627,7 @@ export class ErrorMonitoring {
     }, this.batchInterval)
     // 调用 unref() 让定时器不阻止 Node.js 进程退出（解决测试/小程序环境句柄泄漏）
     if (timer && typeof (timer as { unref?: () => void }).unref === 'function') {
-      (timer as { unref: () => void }).unref()
+      ;(timer as { unref: () => void }).unref()
     }
     this.batchTimer = timer
   }
@@ -645,7 +645,7 @@ export class ErrorMonitoring {
       // unref()：退避等待定时器不应阻止 Node.js 进程/测试 worker 退出
       // （与 batchTimer 的 unref 处理一致，小程序/浏览器环境无 unref 时跳过）
       if (typeof (timer as { unref?: () => void }).unref === 'function') {
-        (timer as { unref: () => void }).unref()
+        ;(timer as { unref: () => void }).unref()
       }
     })
   }

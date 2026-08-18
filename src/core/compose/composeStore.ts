@@ -6,7 +6,7 @@
  * - 订阅通知使用防抖机制，避免短时间内多次触发
  */
 
-import type { Store, State, Actions, Getters, StateListener, CacheStats } from '../../types/store'
+import type { Store, State, Actions, Getters, StateListener, CacheStats, InferGetterReturn } from '../../types/store'
 import type { Plugin } from '../../types/plugin'
 import type { ComposeOptions, StoreTreeNode, StoreLike, ExtractStates, ExtractActions, ExtractGetters } from '../../types/compose'
 import { HookSystem } from '../hooks/index'
@@ -22,6 +22,7 @@ function dispatchByNamespace<T>(
   data: Record<string, T>,
   strict: boolean,
   handler: (store: Store, value: T) => void,
+  options?: { warnMissingKeys?: boolean },
 ): void {
   if (namespace) {
     // 命名空间模式：每个顶层键是一个 store
@@ -55,6 +56,16 @@ function dispatchByNamespace<T>(
 
     // 一次性调用每个 store
     for (const [store, groupData] of storeGroups) {
+      // $replaceState 整体替换语义下，分组数据缺錇会丢失 store 中的既有键，
+      // 开发模式下告警提示（保留替换语义不变，避免破坏既有行为）
+      if (options?.warnMissingKeys) {
+        const stateKeys = Object.keys(store.getState())
+        const providedKeys = Object.keys(groupData)
+        const missing = stateKeys.filter((k) => !providedKeys.includes(k))
+        if (missing.length > 0) {
+          console.warn(`[composeStore] $replaceState 未包含 store "${store.name}" 的键 [${missing.join(', ')}]，整体替换后这些键将丢失；如需保留请使用 $patch`)
+        }
+      }
       handler(store, groupData as T)
     }
   }
@@ -220,7 +231,15 @@ class ComposedStore<S extends State = State> implements Store<S> {
 
   $replaceState(newState: S): void {
     this._ensureAlive('$replaceState')
-    dispatchByNamespace(this._stores, this._namespace, newState as Record<string, unknown>, this._strict, (store, value) => store.$replaceState(value as S))
+    dispatchByNamespace(
+      this._stores,
+      this._namespace,
+      newState as Record<string, unknown>,
+      this._strict,
+      (store, value) => store.$replaceState(value as S),
+      // 仅开发模式下对非命名空间分组缺键发出告警
+      { warnMissingKeys: !isProduction() && !this._namespace },
+    )
   }
 
   // ==================== Action 和 Getter ====================
@@ -274,6 +293,8 @@ class ComposedStore<S extends State = State> implements Store<S> {
     return result
   }
 
+  /** 类型安全 getter（与 Store 接口重载签名保持一致） */
+  getter<K extends keyof Getters<S>>(getterName: K): InferGetterReturn<Getters<S>, K>
   getter(getterName: string): unknown {
     this._ensureAlive('getter')
     const [storeName, actualGetter] = parseActionName(getterName, this._namespace)

@@ -454,13 +454,13 @@ export class SnapshotManager {
           if (task.target) {
             const t = task.target
             if (t.kind === 'prop') {
-              (t.container as Record<string, unknown>)[t.key as string] = result
+              ;(t.container as Record<string, unknown>)[t.key as string] = result
             } else if (t.kind === 'index') {
-              (t.container as unknown[])[t.key as number] = result
+              ;(t.container as unknown[])[t.key as number] = result
             } else if (t.kind === 'mapValue') {
-              (t.container as Map<unknown, unknown>).set(t.key, result)
+              ;(t.container as Map<unknown, unknown>).set(t.key, result)
             } else {
-              (t.container as Set<unknown>).add(result)
+              ;(t.container as Set<unknown>).add(result)
             }
           } else {
             rootResult = result

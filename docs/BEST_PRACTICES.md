@@ -1234,6 +1234,48 @@ const name = userStore.getter('displayName') // string
 const isVip = userStore.getter('isVip') // boolean
 ```
 
+### 2.5 state 工厂函数（类型锚定与引用隔离）
+
+**推荐使用工厂函数形式定义 state**，尤其当字段包含 `[]`、`null` 等字面量时：
+
+```typescript
+// stores/city.ts
+import { createStore } from '../utils/geomstore'
+
+export interface CityState {
+  historyList: string[]
+  hotCities: string[]
+  activeLetter: string | null
+}
+
+export const cityStore = createStore<CityState>({
+  name: 'city',
+
+  // ✅ 显式返回类型锚定：[] → string[]、null → string | null
+  state: (): CityState => ({
+    historyList: [],
+    hotCities: [],
+    activeLetter: null,
+  }),
+
+  actions: {
+    setHistoryList(historyList: string[]) {
+      this.setState('historyList', historyList) // ✅ 通过类型检查
+    },
+  },
+})
+```
+
+**为什么必须显式返回类型：**
+
+- 字面量 `[]` 会被推断为 `never[]`，`null` 会被收窄为 `null`，与接口声明的 `string[]` / `string | null` 不一致
+- `satisfies` 不改变字面量推断，**无法**替代显式返回类型
+- 未锚定时，action 内 `this.setState('historyList', historyList)` 等写入会直接报类型错误
+
+**额外收益：** 工厂函数在初始化时执行一次并深拷贝，隔离外部引用，避免 `options.state` 被外部修改污染内部状态。
+
+> 若状态字段全部为原始类型或对象（无空数组/`null` 字面量），仍可使用字面量对象形式配合泛型。
+
 ### 3. 类型安全的页面
 
 ```typescript

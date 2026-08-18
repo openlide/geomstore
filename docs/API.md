@@ -99,6 +99,20 @@
 
 **签名：**
 
+`createStore` 提供两种重载：
+
+1. **工厂函数形式**（推荐，类型锚定更精确）：`state` 定义为返回初始状态的函数
+
+```typescript
+function createStore<
+  S extends State,
+  A extends Actions = Actions,
+  G extends Getters<S> = Getters<S>
+>(options: Omit<StoreOptions<S, A, G>, 'state'> & { state: () => S }): Store<S, A, G>
+```
+
+2. **字面量对象形式**：`state` 直接传入初始状态对象
+
 ```typescript
 function createStore<
   S extends State,
@@ -120,8 +134,8 @@ interface StoreOptions<S, A, G> {
   /** Store 名称，用于调试和识别 */
   name?: string
 
-  /** 初始状态 */
-  state?: S
+  /** 初始状态：字面量对象（`state: {...}`）或工厂函数（`state: () => ({...})`，初始化时执行一次并深拷贝） */
+  state?: S | (() => S)
 
   /** Actions（通过 ThisType 注入 this，action 内用 this.state 读写状态） */
   actions?: ActionsWithThis<S, A>
@@ -203,6 +217,24 @@ interface UserGetters {
 
 const typedStore = createStore<UserState, UserActions, UserGetters>({
   // ... 配置同上
+})
+
+// ✅ 推荐：state 工厂函数形式（配合显式返回类型，类型锚定更精确）
+interface CityState {
+  list: string[]
+  detail: { id: number; name: string } | null
+}
+
+const cityStore = createStore<CityState>({
+  state: (): CityState => ({
+    list: [],
+    detail: null,
+  }),
+  actions: {
+    setList(list: string[]) {
+      this.setState('list', list) // ✅ 精确推断为 string[]
+    },
+  },
 })
 ```
 
@@ -347,6 +379,8 @@ store.$replaceState({
 
 创建状态快照。
 
+> ℹ️ 快照会被**递归深冻结**：嵌套的纯对象与数组（含数组元素）均被 `Object.freeze`，任何直接修改在严格模式下抛出 `TypeError`，非严格模式下静默失败。冻结仅作用于快照副本，不影响原 state 的可变性。
+
 **签名：**
 
 ```typescript
@@ -355,15 +389,15 @@ $snapshot(): Readonly<S>
 
 **返回值：**
 
-状态的深拷贝快照。
+状态的深拷贝快照（递归冻结，不可变）。
 
 **示例：**
 
 ```javascript
 const snapshot = store.$snapshot()
-// 修改快照不影响原状态
-snapshot.count = 100
-console.log(store.state.count) // 仍然是原值
+// 快照深冻结，直接修改会抛错（严格模式）
+// snapshot.count = 100 // ❌ TypeError: Cannot assign to read only property
+console.log(store.state.count) // 原值不受影响
 ```
 
 ---
@@ -460,13 +494,16 @@ interface ActionContext<S, A> {
   $replaceState(newState: S): void
   getState(): S
 
-  // Action 方法
-  dispatch(actionName: string, ...args: unknown[]): unknown
+  // 类型安全的跨 action 调用（编译期校验 action 名与参数，仅接受已声明的 action 名称）
+  dispatch<K extends keyof A>(actionName: K, ...args: InferActionArgs<A, K>): InferActionReturn<A, K>
 
   // 其他 action 方法（通过 A 类型合并）
   [K in keyof A]: A[K]
 }
 ```
+
+> 注意：action 内 `this.dispatch` **不提供字符串兜底重载**（拼错 action 名/传错参数会在编译期报错）。
+> 需要动态 dispatch（action 名来自变量）时，请改用外部 `store.dispatch(actionName, ...args)`。
 
 **示例：**
 
@@ -940,6 +977,11 @@ store.use(persistencePlugin({
 | debounce         | number                             | 防抖延迟（毫秒）                                                           |
 | clearOnUninstall | boolean                            | 卸载插件时是否清除存储数据（默认 `false`，仅停止监听，保留已持久化的数据） |
 
+**行为说明：**
+
+- **storage 后端解析顺序**：优先使用 `options.storage`；未提供时自动检测微信环境的 `wx.getStorageSync` / `wx.setStorageSync`；两者都不可用时（如测试/Node 环境）**降级为进程内内存存储**，开发模式下输出 `[GeomStore][persistence]` 告警，持久化不真正落盘但不影响运行。
+- **恢复语义为合并不替换**：启动恢复使用 `$patch` 将持久化数据合并进当前 state；未持久化的键（如被 `filter` 过滤掉的键）**保留初始值**，不会被覆盖为 `undefined`。
+
 #### devtoolsPlugin
 
 开发者工具插件。
@@ -968,6 +1010,11 @@ store.use(analyzerPlugin)
 // 访问分析数据
 console.log(globalThis.__GEOMSTORE_ANALYZER__)
 ```
+
+**行为说明：**
+
+- dispatch / setState / getter 执行抛错时，插件会在 `onError` 时结束并清理未完成的计时配对，避免监控器内部残留悬挂条目。
+- 卸载时若发现 `store.getter` 已被后续插件重新包装，会跳过恢复并输出告警，避免破坏其他插件的包装链。
 
 #### timeTravelPlugin
 
@@ -1203,6 +1250,8 @@ rootStore.dispatch('user/login', credentials)
 rootStore.dispatch('cart/addItem', product)
 ```
 
+> ⚠️ 非命名空间模式下 `$replaceState` 保留整体替换语义：未包含某子 store 键时，该子 store 对应状态将被替换丢失。开发模式下会输出 `console.warn` 提示缺失的键；如需保留未提供的状态，请改用 `$patch`。命名空间模式下按子 store 整体替换，无此告警。
+
 ---
 
 ### StoreRegistry
@@ -1436,12 +1485,13 @@ try {
 
 **方法：**
 
-| 方法                    | 说明         |
-| ----------------------- | ------------ |
-| configure(strategies)   | 配置恢复策略 |
-| getConfig(code)         | 获取策略配置 |
-| recover(error, context) | 尝试恢复     |
-| clearAllRetryCounts()   | 清除重试计数 |
+| 方法                    | 说明                                                                                                                    |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| configure(strategies)   | 配置恢复策略                                                                                                            |
+| getConfig(code)         | 获取策略配置                                                                                                            |
+| recover(error, context) | 尝试恢复                                                                                                                |
+| clearRetryCount(code)   | 清除指定错误码的重试计数（**精确匹配**错误码，不会误清同前缀的其他错误码，如清除 `AUTH` 不会影响 `AUTH_FAILED` 的计数） |
+| clearAllRetryCounts()   | 清除重试计数                                                                                                            |
 
 **恢复策略：**
 
@@ -1798,6 +1848,8 @@ function withThrottle(interval?: number): MethodDecorator
 ||------|------|--------|------|
 || interval | number | 300 | 节流间隔（毫秒） |
 
+> ℹ️ 支持同步与异步方法：装饰异步方法时，被节流跳过的调用返回 `Promise<undefined>`（保持调用方 `await` 语义）。异步判定基于函数原型比较，构建压缩（混淆函数名）后依然可靠。
+
 **示例：**
 
 ```typescript
@@ -1832,6 +1884,8 @@ function withCache(options?: CacheDecoratorOptions): MethodDecorator
 ||------|------|--------|------|
 || ttl | number | 5000 | 缓存有效期（毫秒） |
 || keyFn | Function | 按参数序列化 | 自定义缓存键生成函数 |
+
+> ℹ️ 支持同步与异步方法：异步方法缓存命中时直接返回缓存的 `Promise`（不会重复发起底层调用），判定基于函数原型比较，构建压缩后依然可靠。
 
 **示例：**
 

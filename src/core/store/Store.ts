@@ -46,7 +46,7 @@ import { StoreCacheManager } from './StoreCache'
 import { ActionManager, GetterManager } from './ActionManager'
 import { BatchManager, createBatchFunction } from './BatchManager'
 import type { ProxyCache, InternalStateProtectionConfig } from './types'
-import { deepCloneState } from './utils'
+import { deepCloneState, deepFreezeState } from './utils'
 
 // Plugin类型别名
 type Plugin = PluginType
@@ -326,21 +326,23 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
 
   /**
    * 替换整个状态
-   * @param newState - 新状态对象（不能为 null/undefined）
+   * @param newState - 新状态对象或状态工厂函数（工厂函数写法：`() => ({...})`，返回值不能为 null/undefined）
    */
-  $replaceState(newState: S): void {
+  $replaceState(newState: S | (() => S)): void {
     if (this._destroyed) {
       throw new Error('[GeomStore] Cannot call $replaceState on a destroyed Store')
     }
-    if (newState === undefined || newState === null) {
+    // 支持 state 工厂函数写法（Pinia 同款），先解析再校验/深拷贝
+    const resolvedState = typeof newState === 'function' ? (newState as () => S)() : newState
+    if (resolvedState === undefined || resolvedState === null) {
       throw new TypeError('[GeomStore] $replaceState: newState must be a valid state object')
     }
     // 安全检查：防止原型链污染，拒绝非对象类型和数组
-    if (typeof newState !== 'object' || newState === null || Array.isArray(newState)) {
+    if (typeof resolvedState !== 'object' || resolvedState === null || Array.isArray(resolvedState)) {
       throw new TypeError('[GeomStore] $replaceState: newState must be a plain object')
     }
 
-    this._hooks.emit('beforeReplaceState', newState)
+    this._hooks.emit('beforeReplaceState', resolvedState)
 
     this._withInternalAccess(() => {
       // 清理旧状态缓存
@@ -349,7 +351,7 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
       }
 
       // 深拷贝新状态，防止外部修改 newState 影响 Store 内部状态
-      this._state = deepCloneState(newState)
+      this._state = deepCloneState(resolvedState)
 
       // 更新新状态缓存
       if (this._cacheManager.enabled) {
@@ -375,7 +377,7 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
     if (!this._dispatching && !this._batchManager.isInBatch) {
       this._notifyListeners()
     }
-    this._hooks.emit('afterReplaceState', newState)
+    this._hooks.emit('afterReplaceState', resolvedState)
   }
 
   /**
@@ -386,7 +388,9 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
       throw new Error('[GeomStore] Cannot call $snapshot on a destroyed Store')
     }
     return this._withInternalAccess(() => {
-      return Object.freeze(deepCloneState(this._state)) as Readonly<S>
+      // 深克隆后递归冻结纯对象/数组，使 Readonly<S> 的只读承诺在嵌套层级也成立
+      // （内建对象 Date/Map 等的 mutator 不走 [[Set]] 陷阱，冻结无意义故跳过）
+      return deepFreezeState(deepCloneState(this._state)) as Readonly<S>
     })
   }
 
@@ -694,9 +698,11 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
   // ==================== 私有方法 ====================
 
   /** 初始化状态 */
-  private _initializeState(state?: S): void {
+  private _initializeState(state?: S | (() => S)): void {
+    // 支持 state 工厂函数写法（Pinia 同款）：`state: () => ({...})`
+    const resolvedState = typeof state === 'function' ? (state as () => S)() : state
     // 深拷贝初始状态，防止外部修改 options.state 引用污染 Store 内部状态（与 $replaceState 行为一致）
-    this._state = state ? deepCloneState(state) : ({} as S)
+    this._state = resolvedState ? deepCloneState(resolvedState) : ({} as S)
   }
 
   /** 初始化Actions和Getters */
@@ -774,7 +780,7 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
         return self._createDirtyTrackingProxy(value)
       },
       set(obj: object, key: string | symbol, value: unknown): boolean {
-        (obj as Record<string | symbol, unknown>)[key] = value
+        ;(obj as Record<string | symbol, unknown>)[key] = value
         self._mutationCount++
         return true
       },

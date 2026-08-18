@@ -13,6 +13,52 @@ import { createStore } from '../../core/store/index'
 import type { Store, State } from '../../types/store'
 import { persistencePlugin } from '../../plugins/builtin'
 
+// ==================== wx API 模块级类型声明 ====================
+
+/**
+ * 微信小程序 wx API 最小类型声明（仅覆盖本模块用到的 API）
+ *
+ * 项目不依赖 miniprogram-api-typings，这里采用模块级 ambient 声明，
+ * 不向全局类型空间注入 wx，避免与下游项目的微信官方类型包冲突；
+ * 运行时 wx 由小程序宿主环境提供（测试环境由 tests/setup.js mock）。
+ */
+interface WxRequestOptions {
+  url: string
+  method?: string
+  data?: unknown
+  success?: (res: { statusCode: number; data: unknown }) => void
+  fail?: (err: unknown) => void
+}
+
+/** 热更新管理器（wx.getUpdateManager 返回值） */
+interface WxUpdateManager {
+  onUpdateReady(callback: () => void): void
+  onUpdateFailed(callback: () => void): void
+  applyUpdate(): void
+}
+
+/** 本模块用到的 wx API 子集 */
+interface WxApi {
+  // 同步存储
+  getStorageSync(key: string): unknown
+  setStorageSync(key: string, value: unknown): void
+  removeStorageSync(key: string): void
+  // 网络
+  request(options: WxRequestOptions): void
+  onNetworkStatusChange(callback: (res: { isConnected: boolean }) => void): void
+  offNetworkStatusChange?(callback: (res: { isConnected: boolean }) => void): void
+  getNetworkType(options: { success?: (res: { networkType: string }) => void }): void
+  // 热更新
+  getUpdateManager(): WxUpdateManager
+  // UI 反馈
+  showModal(options: { title?: string; content?: string; success?: (res: { confirm: boolean }) => void }): void
+  showToast(options: { title: string; icon?: string }): void
+  showLoading(options: { title: string }): void
+  hideLoading(): void
+}
+
+declare const wx: WxApi
+
 // ==================== 常量定义 ====================
 
 /** 默认最大 Store 数量 */
@@ -306,6 +352,18 @@ const DEFAULT_BACKUP_KEY = 'store_backup_before_update'
 const CURRENT_VERSION = '1.0.0'
 
 /**
+ * 备份当前状态
+ */
+function backupState<S extends State = State>(store: Store<S>, backupKey: string): void {
+  const backupData: BackupData = {
+    timestamp: Date.now(),
+    state: store.$snapshot(),
+    version: CURRENT_VERSION,
+  }
+  storage.set(backupKey, backupData)
+}
+
+/**
  * 初始化热更新处理
  * 在小程序更新时自动备份和恢复状态
  */
@@ -366,18 +424,6 @@ export function restoreFromHotUpdate<S extends State = State>(store: Store<S>, b
     logger.error('HotUpdate', '恢复状态失败:', error)
     return false
   }
-}
-
-/**
- * 备份当前状态
- */
-function backupState<S extends State = State>(store: Store<S>, backupKey: string): void {
-  const backupData: BackupData = {
-    timestamp: Date.now(),
-    state: store.$snapshot(),
-    version: CURRENT_VERSION,
-  }
-  storage.set(backupKey, backupData)
 }
 
 // ==================== 4. 离线状态管理 ====================
@@ -665,19 +711,26 @@ interface BackgroundSyncHandler {
 /** 模块级注册表：多次 initBackgroundSync 共享同一份生命周期包装 */
 const backgroundSyncHandlers: BackgroundSyncHandler[] = []
 
-/** 已安装的 onShow 包装函数引用，用于检测是否需要重新安装 */
-let installedOnShow: ((...args: unknown[]) => void) | null = null
+/** 已安装的全局 App 构造器包装函数引用，用于检测是否需要重新安装 */
+let installedAppWrapper: ((this: unknown, options?: Record<string, unknown>) => unknown) | null = null
 
 /**
- * 在 App.prototype 上安装前后台生命周期包装（仅安装一次）
- * 包装函数遍历注册表执行各 Store 的时效性检查，
- * 避免重复初始化时包装层层叠加
+ * 包装全局 App 构造函数以拦截 options.onShow / options.onHide（仅安装一次）
+ *
+ * 微信小程序中用户生命周期回调通过 App({ onShow, onHide }) 的 options 注册，
+ * 框架直接调用 options 上的回调；修改 App.prototype 既不会触发包装、也链不到用户回调。
+ * 故改为替换全局 App 为包装函数：先包装 options 回调再调用原始 App，
+ * 包装函数遍历注册表执行各 Store 的时效性检查，避免重复初始化时包装层层叠加。
+ *
+ * 注意：必须在 App(options) 被调用之前完成 initBackgroundSync（如在 app.js 顶层
+ * import 后立即初始化），否则无法拦截已创建的 App 实例注册的回调。
  */
 function installAppLifecycleHooks(): void {
-  const originalOnShow = App.prototype.onShow
-  const originalOnHide = App.prototype.onHide
+  const globalObj = globalThis as { App?: (this: unknown, options?: Record<string, unknown>) => unknown }
+  const originalApp = globalObj.App
+  if (typeof originalApp !== 'function') return
 
-  App.prototype.onShow = function (this: unknown, ...args: unknown[]) {
+  const runForegroundChecks = (): void => {
     const now = Date.now()
 
     for (const handler of [...backgroundSyncHandlers]) {
@@ -701,49 +754,41 @@ function installAppLifecycleHooks(): void {
       handler.lastActiveTime = now
       handler.onForeground?.()
     }
-
-    originalOnShow?.apply(this as object, args)
   }
 
-  App.prototype.onHide = function (this: unknown, ...args: unknown[]) {
+  const runBackgroundChecks = (): void => {
     for (const handler of [...backgroundSyncHandlers]) {
       handler.lastActiveTime = Date.now()
       handler.onBackground?.()
     }
-    originalOnHide?.apply(this as object, args)
   }
 
-  installedOnShow = App.prototype.onShow ?? null
-}
+  const wrappedApp = function (this: unknown, options: Record<string, unknown> = {}): unknown {
+    const userOnShow = options.onShow as ((this: unknown, ...args: unknown[]) => void) | undefined
+    const userOnHide = options.onHide as ((this: unknown, ...args: unknown[]) => void) | undefined
 
-/**
- * 初始化后台/前台状态同步
- * 在小程序从后台返回前台时检查状态时效性
- *
- * 多次调用不会重复包装 App.prototype：
- * 若原型方法仍为本模块安装的包装，则仅注册新的处理器；
- * 若原型方法已被外部替换（如测试重置），则重新安装并重置注册表
- */
-export function initBackgroundSync<S extends State = State>(config: BackgroundSyncConfig<S>): void {
-  const { store, maxInactiveTime = DEFAULT_MAX_INACTIVE_MS, onForeground, onBackground } = config
-
-  if (typeof App === 'undefined') return
-
-  if (App.prototype.onShow !== installedOnShow) {
-    backgroundSyncHandlers.length = 0
-    installAppLifecycleHooks()
+    // 先执行时效性检查再调用用户回调，保证切前台时状态刷新优先
+    options.onShow = function (this: unknown, ...args: unknown[]): void {
+      runForegroundChecks()
+      userOnShow?.apply(this, args)
+    }
+    options.onHide = function (this: unknown, ...args: unknown[]): void {
+      runBackgroundChecks()
+      userOnHide?.apply(this, args)
+    }
+    return originalApp.call(this, options)
   }
 
-  // 幂等注册：同一 Store 重复 init 时替换旧处理器，避免重复刷新
-  unregisterBackgroundSync(store)
+  // 保持原型链，使 instanceof / new 语义不受影响（基础库可能以构造器形式使用 App）
+  try {
+    Object.setPrototypeOf(wrappedApp, originalApp)
+    ;(wrappedApp as { prototype?: unknown }).prototype = (originalApp as { prototype?: unknown }).prototype
+  } catch {
+    // setPrototypeOf 失败（极少见）时忽略，仅丢失静态属性继承
+  }
 
-  backgroundSyncHandlers.push({
-    store: store as Store<State>,
-    maxInactiveTime,
-    onForeground,
-    onBackground,
-    lastActiveTime: Date.now(),
-  })
+  globalObj.App = wrappedApp
+  installedAppWrapper = wrappedApp
 }
 
 /**
@@ -753,11 +798,42 @@ export function initBackgroundSync<S extends State = State>(config: BackgroundSy
  * 导致下次 onShow 触发 dispatch 抛错中断生命周期。
  */
 export function unregisterBackgroundSync<S extends State = State>(store: Store<S>): void {
-  const target = store as Store<State>
+  const target = store as unknown as Store<State>
   const index = backgroundSyncHandlers.findIndex((handler) => handler.store === target)
   if (index !== -1) {
     backgroundSyncHandlers.splice(index, 1)
   }
+}
+
+/**
+ * 初始化后台/前台状态同步
+ * 在小程序从后台返回前台时检查状态时效性
+ *
+ * 多次调用不会重复包装全局 App：
+ * 若全局 App 仍为本模块安装的包装函数，则仅注册新的处理器；
+ * 若全局 App 已被外部替换（如测试重置），则重新安装并重置注册表
+ */
+export function initBackgroundSync<S extends State = State>(config: BackgroundSyncConfig<S>): void {
+  const { store, maxInactiveTime = DEFAULT_MAX_INACTIVE_MS, onForeground, onBackground } = config
+
+  const globalObj = globalThis as { App?: unknown }
+  if (typeof globalObj.App !== 'function') return
+
+  if (globalObj.App !== installedAppWrapper) {
+    backgroundSyncHandlers.length = 0
+    installAppLifecycleHooks()
+  }
+
+  // 幂等注册：同一 Store 重复 init 时替换旧处理器，避免重复刷新
+  unregisterBackgroundSync(store)
+
+  backgroundSyncHandlers.push({
+    store: store as unknown as Store<State>,
+    maxInactiveTime,
+    onForeground,
+    onBackground,
+    lastActiveTime: Date.now(),
+  })
 }
 
 // ==================== 6. 完整示例：App.ts 集成 ====================

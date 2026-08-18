@@ -42,7 +42,8 @@ coverage-*.json
 *.tmp
 *.temp
 .cache/
-.PRODUCTION_READINESS_REPORT.md
+PRODUCTION_READINESS_REPORT.md
+CODE_REVIEW_FINAL.md
 
 # Environment variables
 .env

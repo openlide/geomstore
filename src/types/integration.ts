@@ -17,11 +17,11 @@ export type { Actions } from './store'
  */
 export interface ConnectOptions<S extends State = State, A extends Actions = Actions, G extends Getters<S> = Getters<S>> {
   /** 映射state */
-  mapState?: (keyof S)[] | Record<string, keyof S>
+  mapState?: readonly (keyof S)[] | Record<string, keyof S>
   /** 映射getters */
-  mapGetters?: (keyof G)[] | Record<string, keyof G>
+  mapGetters?: readonly (keyof G)[] | Record<string, keyof G>
   /** 映射actions（数组形式按 action 名映射；对象形式支持本地名重命名，值须为 action 名） */
-  mapActions?: (keyof A)[] | Record<string, keyof A>
+  mapActions?: readonly (keyof A)[] | Record<string, keyof A>
   /** 是否自动注入到页面/组件data（使用getCached） */
   autoInject?: boolean
   /** 自动注入的字段映射（从store键到本地键） */
@@ -38,12 +38,15 @@ export interface ConnectOptions<S extends State = State, A extends Actions = Act
  */
 export type ExtractMappedState<
   S extends State = State,
-  M extends { mapState?: (keyof S)[] | Record<string, keyof S> } = { mapState?: (keyof S)[] | Record<string, keyof S> },
-> = M['mapState'] extends (infer K)[]
-  ? { [P in K & keyof S]: S[P] }
-  : M['mapState'] extends Record<string, keyof S>
-    ? { [P in keyof M['mapState'] & string]: S[M['mapState'][P] & keyof S] }
-    : object
+  M extends { mapState?: readonly (keyof S)[] | Record<string, keyof S> } = { mapState?: readonly (keyof S)[] | Record<string, keyof S> },
+> =
+  Extract<M['mapState'], readonly unknown[]> extends readonly (infer K)[]
+    ? { [P in K & keyof S]: S[P] }
+    : Extract<M['mapState'], Record<string, keyof S>> extends infer R
+      ? [R] extends [never]
+        ? object
+        : { [P in keyof R & string]: S[R[P] & keyof S] }
+      : object
 
 /**
  * 从映射数组提取计算属性类型
@@ -52,13 +55,16 @@ export type ExtractMappedState<
  * 未传时（默认 `Getters`）映射值收敛为 `unknown`
  */
 export type ExtractMappedGetters<
-  M extends { mapGetters?: PropertyKey[] | Record<string, PropertyKey> } = { mapGetters?: PropertyKey[] | Record<string, PropertyKey> },
+  M extends { mapGetters?: readonly PropertyKey[] | Record<string, PropertyKey> } = { mapGetters?: readonly PropertyKey[] | Record<string, PropertyKey> },
   G extends { [K: string]: (state: never) => unknown } = { [K: string]: (state: never) => unknown },
-> = M['mapGetters'] extends (infer K)[]
-  ? { [P in K & keyof G]: ReturnType<G[P]> }
-  : M['mapGetters'] extends Record<string, PropertyKey>
-    ? { [P in keyof M['mapGetters'] & string]: ReturnType<G[Extract<M['mapGetters'][P], keyof G>]> }
-    : object
+> =
+  Extract<M['mapGetters'], readonly PropertyKey[]> extends readonly (infer K)[]
+    ? { [P in K & keyof G]: ReturnType<G[P]> }
+    : Extract<M['mapGetters'], Record<PropertyKey, PropertyKey>> extends infer R
+      ? [R] extends [never]
+        ? object
+        : { [P in keyof R & string]: ReturnType<G[Extract<R[P], keyof G>]> }
+      : object
 
 /**
  * 从映射配置提取 actions 类型（精确签名）
@@ -68,41 +74,36 @@ export type ExtractMappedGetters<
  */
 export type ExtractMappedActions<
   A extends Actions = Actions,
-  M extends { mapActions?: (keyof A)[] | Record<string, keyof A> } = { mapActions?: (keyof A)[] | Record<string, keyof A> },
-> = M['mapActions'] extends (infer K)[]
-  ? { [P in K & keyof A]: (...args: InferActionArgs<A, P>) => InferActionReturn<A, P> }
-  : M['mapActions'] extends Record<string, keyof A>
-    ? {
-        [P in keyof M['mapActions'] & string]: (...args: InferActionArgs<A, M['mapActions'][P] & keyof A>) => InferActionReturn<A, M['mapActions'][P] & keyof A>
-      }
-    : object
+  M extends { mapActions?: readonly (keyof A)[] | Record<string, keyof A> } = { mapActions?: readonly (keyof A)[] | Record<string, keyof A> },
+> =
+  Extract<M['mapActions'], readonly unknown[]> extends readonly (infer K)[]
+    ? { [P in K & keyof A]: (...args: InferActionArgs<A, P>) => InferActionReturn<A, P> }
+    : Extract<M['mapActions'], Record<string, keyof A>> extends infer R
+      ? [R] extends [never]
+        ? object
+        : {
+            [P in keyof R & string]: (...args: InferActionArgs<A, R[P] & keyof A>) => InferActionReturn<A, R[P] & keyof A>
+          }
+      : object
 
 /**
  * 从 ConnectOptions 提取完整的页面 data 类型
  */
 export type ExtractPageData<
   S extends State,
-  M extends { mapState?: (keyof S)[] | Record<string, keyof S>; mapGetters?: PropertyKey[] | Record<string, PropertyKey> },
+  M extends { mapState?: readonly (keyof S)[] | Record<string, keyof S>; mapGetters?: readonly PropertyKey[] | Record<string, PropertyKey> },
   G extends Getters<S> = Getters<S>,
 > = S & ExtractMappedState<S, M> & ExtractMappedGetters<M, G>
 
 /**
  * 方法 this 重写映射类型
  *
- * 将配置对象中所有函数属性的 this 参数重写为 T，非函数属性保持不变。
- * data 属性合并 C.data 与 T.data（用户自定义 data + store 映射 data）。
- * 用于装饰器返回类型，使方法内 this 自动获得精确类型推导（含 data、actions、自定义方法）。
+ * 将配置对象中所有函数属性的 this 参数重写为 T，非函数属性（含 data）保持原样不变。
+ * 仅用于装饰器入参，使方法内 this 自动获得精确类型推导（含 data、actions、自定义方法），
+ * 且不改变对象结构类型，从而仍满足 PageOptions / ComponentOptions 约束。
  */
 export type WithPageThis<C, T> = {
-  [K in keyof C]: K extends 'data'
-    ? C[K] extends Record<string, unknown>
-      ? T extends { data: infer D }
-        ? C[K] & D
-        : C[K]
-      : C[K]
-    : C[K] extends (...args: infer P) => infer R
-      ? (this: T, ...args: P) => R
-      : C[K]
+  [K in keyof C]: C[K] extends (...args: infer P) => infer R ? (this: T, ...args: P) => R : C[K]
 }
 
 /**
@@ -128,17 +129,7 @@ export type PageReservedKeys =
  * Component 保留键（框架生命周期 + 内部字段），不参与自定义方法提取
  */
 export type ComponentReservedKeys =
-  | 'data'
-  | 'setData'
-  | 'methods'
-  | 'properties'
-  | 'lifetimes'
-  | 'pageLifetimes'
-  | 'observers'
-  | 'relations'
-  | 'externalClasses'
-  | 'options'
-  | '__geomUnbinds'
+  'data' | 'setData' | 'methods' | 'properties' | 'lifetimes' | 'pageLifetimes' | 'observers' | 'relations' | 'externalClasses' | 'options' | '__geomUnbinds'
 
 /**
  * 从 Page 配置提取用户自定义方法（排除保留键，方法 this 不检查以避免循环兼容性）
@@ -185,7 +176,7 @@ export type PageThis<
 } & ExtraMethods &
   ExtractMappedActions<A, M> & {
     setData: (data: Record<string, unknown>, callback?: () => void) => void
-    getTabBar?: () => { updateSelected?: () => void } | undefined
+    getTabBar?: () => { syncSelectedTab?: () => void } | undefined
   }
 
 /**

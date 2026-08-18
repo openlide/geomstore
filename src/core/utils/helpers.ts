@@ -37,7 +37,7 @@ export function isPlainObject(value: unknown): boolean {
 /**
  * 判断是否是函数
  */
-export function isFunction(value: unknown): value is Function {
+export function isFunction(value: unknown): value is (...args: unknown[]) => unknown {
   return typeof value === 'function'
 }
 
@@ -83,9 +83,14 @@ export function shallowEqual(a: unknown, b: unknown): boolean {
 /**
  * 深度比较两个值（使用迭代实现避免栈溢出）
  *
+ * 注意：超过 maxDepth 时本函数直接返回 false（并告警），而非抛错或视为相等。
+ * 这是保守语义——深度未知/超限的结构按「不相等」处理，
+ * 以避免误报相等导致缓存误命中。调用方如需比较超深结构，
+ * 请显式传入更大的 maxDepth。
+ *
  * @param a - 第一个值
  * @param b - 第二个值
- * @param maxDepth - 最大递归深度（默认1000）
+ * @param maxDepth - 最大递归深度（默认1000），超限时返回 false
  * @returns 是否相等
  */
 export function deepEqual(a: unknown, b: unknown, maxDepth: number = 1000): boolean {
@@ -436,6 +441,9 @@ export function clone<T>(obj: T, options?: { deep?: boolean; safe?: boolean }): 
   }
 
   if (safe) {
+    // safe 模式：序列化失败（如循环引用、无法序列化的类型）时返回原引用而非抛错，
+    // 调用方拿到的是未克隆的原始对象——共享可变状态的风险由调用方自行承担，
+    // 适用“宁可共享引用也不能抛错”的降级场景
     try {
       return JSON.parse(JSON.stringify(obj))
     } catch {

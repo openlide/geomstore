@@ -150,16 +150,11 @@ export class StateProxyManager<S extends State = State> {
         const fullPath = path ? `${path}.${String(key)}` : String(key)
 
         if (!self._isInternalAccess()) {
-          const allowed = self._handleIllegalMutation(fullPath, value)
-          if (!allowed) {
-            return false
-          }
-          // 允许操作继续（生产环境 warn/silent 模式）
-          (obj as Record<string | symbol, unknown>)[key] = value
-          return true
+          // 拒绝路径总是抛错；生产 warn/silent 处理后放行写入
+          self._handleIllegalMutation(fullPath, value)
         }
 
-        (obj as Record<string | symbol, unknown>)[key] = value
+        ;(obj as Record<string | symbol, unknown>)[key] = value
         return true
       },
 
@@ -168,13 +163,8 @@ export class StateProxyManager<S extends State = State> {
         const fullPath = path ? `${path}.${String(key)}` : String(key)
 
         if (!self._isInternalAccess()) {
-          const allowed = self._handleIllegalMutation(fullPath, undefined, 'delete')
-          if (!allowed) {
-            return false
-          }
-          // 允许操作继续（生产环境 warn/silent 模式）
-          delete (obj as Record<string | symbol, unknown>)[key]
-          return true
+          // 拒绝路径总是抛错；生产 warn/silent 处理后放行删除
+          self._handleIllegalMutation(fullPath, undefined, 'delete')
         }
 
         delete (obj as Record<string | symbol, unknown>)[key]
@@ -186,13 +176,8 @@ export class StateProxyManager<S extends State = State> {
         const fullPath = path ? `${path}.${String(key)}` : String(key)
 
         if (!self._isInternalAccess()) {
-          const allowed = self._handleIllegalMutation(fullPath, descriptor.value, 'defineProperty')
-          if (!allowed) {
-            return false
-          }
-          // 允许操作继续（生产环境 warn/silent 模式）
-          Object.defineProperty(obj, key, descriptor)
-          return true
+          // 拒绝路径总是抛错；生产 warn/silent 处理后放行定义
+          self._handleIllegalMutation(fullPath, descriptor.value, 'defineProperty')
         }
 
         Object.defineProperty(obj, key, descriptor)
@@ -218,16 +203,11 @@ export class StateProxyManager<S extends State = State> {
         const fullPath = path ? `${path}.${String(key)}` : String(key)
 
         if (!self._isInternalAccess()) {
-          const allowed = self._handleIllegalMutation(fullPath, value)
-          if (!allowed) {
-            return false
-          }
-          // 允许操作继续（生产环境 warn/silent 模式）
-          (obj as Record<string | symbol, unknown>)[key] = value
-          return true
+          // 拒绝路径总是抛错；生产 warn/silent 处理后放行写入
+          self._handleIllegalMutation(fullPath, value)
         }
 
-        (obj as Record<string | symbol, unknown>)[key] = value
+        ;(obj as Record<string | symbol, unknown>)[key] = value
         return true
       },
 
@@ -235,13 +215,8 @@ export class StateProxyManager<S extends State = State> {
         const fullPath = path ? `${path}.${String(key)}` : String(key)
 
         if (!self._isInternalAccess()) {
-          const allowed = self._handleIllegalMutation(fullPath, undefined, 'delete')
-          if (!allowed) {
-            return false
-          }
-          // 允许操作继续（生产环境 warn/silent 模式）
-          delete (obj as Record<string | symbol, unknown>)[key]
-          return true
+          // 拒绝路径总是抛错；生产 warn/silent 处理后放行删除
+          self._handleIllegalMutation(fullPath, undefined, 'delete')
         }
 
         delete (obj as Record<string | symbol, unknown>)[key]
@@ -294,16 +269,10 @@ export class StateProxyManager<S extends State = State> {
         if (typeof key === 'string' && ARRAY_MUTATING_METHODS.includes(key)) {
           return function (...args: unknown[]) {
             if (!self._isInternalAccess()) {
-              const allowed = self._handleIllegalMutation(path, args, key)
-              if (!allowed) {
-                return undefined
-              }
-              // 允许操作继续（生产环境 warn/silent 模式）
-              const result = (arr as unknown as Record<string, (...args: unknown[]) => unknown>)[key](...args)
-              return result
+              // 拒绝路径总是抛错；生产 warn/silent 处理后放行执行
+              self._handleIllegalMutation(path, args, key)
             }
-            const result = (arr as unknown as Record<string, (...args: unknown[]) => unknown>)[key](...args)
-            return result
+            return (arr as unknown as Record<string, (...args: unknown[]) => unknown>)[key](...args)
           }
         }
 
@@ -315,16 +284,11 @@ export class StateProxyManager<S extends State = State> {
         const fullPath = `${path}[${String(key)}]`
 
         if (!self._isInternalAccess()) {
-          const allowed = self._handleIllegalMutation(fullPath, value)
-          if (!allowed) {
-            return false
-          }
-          // 允许操作继续（生产环境 warn/silent 模式）
-          (arr as unknown as Record<string | symbol, unknown>)[key] = value
-          return true
+          // 拒绝路径总是抛错；生产 warn/silent 处理后放行写入
+          self._handleIllegalMutation(fullPath, value)
         }
 
-        (arr as unknown as Record<string | symbol, unknown>)[key] = value
+        ;(arr as unknown as Record<string | symbol, unknown>)[key] = value
         return true
       },
 
@@ -332,13 +296,8 @@ export class StateProxyManager<S extends State = State> {
         const fullPath = `${path}[${String(key)}]`
 
         if (!self._isInternalAccess()) {
-          const allowed = self._handleIllegalMutation(fullPath, undefined, 'delete')
-          if (!allowed) {
-            return false
-          }
-          // 允许操作继续（生产环境 warn/silent 模式）
-          delete (arr as unknown as Record<string | symbol, unknown>)[key]
-          return true
+          // 拒绝路径总是抛错；生产 warn/silent 处理后放行删除
+          self._handleIllegalMutation(fullPath, undefined, 'delete')
         }
 
         delete (arr as unknown as Record<string | symbol, unknown>)[key]
@@ -349,9 +308,12 @@ export class StateProxyManager<S extends State = State> {
 
   /**
    * 处理非法状态修改
-   * @returns {boolean} 是否应该允许操作继续（true: 允许, false: 拒绝）
+   *
+   * 拒绝路径总是抛出错误（开发模式与生产 'error' 处理器）。
+   * 生产 warn/silent 处理器不抛错，返回后由调用方放行操作，
+   * 因此返回值为 void（此前返回 boolean 的 false 分支为不可达死代码，已移除）。
    */
-  private _handleIllegalMutation(path: string, value: unknown, operation: string = 'set'): boolean {
+  private _handleIllegalMutation(path: string, value: unknown, operation: string = 'set'): void {
     const message = createMutationErrorMessage(path, value, operation)
 
     if (isProduction()) {
@@ -360,9 +322,9 @@ export class StateProxyManager<S extends State = State> {
           throw new Error(message)
         case 'warn':
           console.warn(message)
-          return true // 允许操作继续，避免 TypeError
+          return // 允许操作继续，避免 TypeError
         case 'silent':
-          return true // 静默忽略，允许操作继续
+          return // 静默忽略，允许操作继续
       }
     }
     // 开发模式总是抛出错误

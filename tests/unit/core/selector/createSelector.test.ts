@@ -113,6 +113,43 @@ describe('createSelector', () => {
       const cacheStatus = (selector as any).factory.getCacheStatus()
       expect(cacheStatus.cacheSize).toBeLessThanOrEqual(2)
     })
+
+    it('BUG-F4: 交替状态输入应命中缓存历史（cacheSize 条目均参与命中）', () => {
+      // 修复前仅命中单条当前缓存：两个状态交替输入时每次都 miss、反复重算，
+      // cacheSize 形同虚设；修复后回溯 cacheHistory 命中并提升为当前缓存（LRU）
+      let callCount = 0
+      const selector = createSelector(
+        (s: TestState) => {
+          callCount++
+          return s.value * 2
+        },
+        { cacheSize: 3 },
+      )
+
+      const s1 = { value: 1, name: 'a' }
+      const s2 = { value: 2, name: 'b' }
+
+      selector(s1) // miss：计算
+      selector(s2) // miss：计算
+      selector(s1) // 命中 cacheHistory
+      selector(s2) // 命中 cacheHistory
+      selector(s1) // 命中（已被 LRU 提升）
+
+      expect(callCount).toBe(2)
+    })
+
+    it('BUG-F4: withCacheResult 交替输入时 fromCache 应为 true', () => {
+      const selector = createSelector((s: TestState) => s.value * 2, { cacheSize: 2 })
+      const cacheSelector = (selector as any).factory.withCacheResult()
+
+      const s1 = { value: 1, name: 'a' }
+      const s2 = { value: 2, name: 'b' }
+
+      expect(cacheSelector(s1).fromCache).toBe(false)
+      expect(cacheSelector(s2).fromCache).toBe(false)
+      expect(cacheSelector(s1).fromCache).toBe(true)
+      expect(cacheSelector(s2).fromCache).toBe(true)
+    })
   })
 
   describe('缓存 TTL', () => {
