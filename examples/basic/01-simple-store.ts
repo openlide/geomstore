@@ -9,10 +9,11 @@ import { createStore } from '../../src'
 // 创建一个简单的计数器 Store
 const counterStore = createStore({
   name: 'counter',
-  state: {
+  // state 推荐使用工厂函数形式：每次创建 Store 时执行，避免引用类型被多个实例共享
+  state: () => ({
     count: 0,
     message: 'Hello GeomStore!',
-  },
+  }),
 })
 
 // 获取状态

@@ -1,4 +1,4 @@
-# GeomStore v0.1.1 API 参考文档
+# GeomStore v0.1.2 API 参考文档
 
 完整的 API 参考文档，包含所有公开接口、类型定义和使用示例。
 
@@ -6,7 +6,7 @@
 
 ## 目录
 
-- [GeomStore v0.1.1 API 参考文档](#geomstore-v011-api-参考文档)
+- [GeomStore v0.1.2 API 参考文档](#geomstore-v012-api-参考文档)
   - [目录](#目录)
   - [核心 API](#核心-api)
     - [createStore](#createstore)
@@ -172,14 +172,14 @@ interface StoreConfig<S = unknown, A = unknown, G = unknown> {
 ```javascript
 const { createStore } = require('@openlide/geomstore')
 
-// 基础用法（action 通过 this.state 读写状态，参数为调用时传入的用户参数）
+// 基础用法（state 推荐使用工厂函数形式；action 通过 this.state 读写状态，参数为调用时传入的用户参数）
 const store = createStore({
   name: 'user',
-  state: {
+  state: () => ({
     userInfo: null,
     token: '',
     isLoggedIn: false
-  },
+  }),
   actions: {
     login(credentials) {
       this.state.userInfo = credentials.user
@@ -246,14 +246,14 @@ Store 类是 GeomStore 的核心，提供状态管理和响应式更新功能。
 
 **属性：**
 
-| 属性    | 类型     | 说明                                                       |
-| ------- | -------- | ---------------------------------------------------------- |
-| name    | `string` | Store 名称                                                 |
-| state   | `S`      | 当前状态（只读 getter，无 setter）                         |
-| actions | `A`      | Actions 对象                                               |
-| getters | `G`      | Getters 定义对象（只读；提供类型推断位点，可用于调试检查） |
-| hooks   | `IHookSystem` | 实例级钩子系统（每个 Store 独立）                |
-| destroyed | `boolean` | 是否已销毁（销毁后调用公开方法会抛错）              |
+| 属性      | 类型          | 说明                                                       |
+| --------- | ------------- | ---------------------------------------------------------- |
+| name      | `string`      | Store 名称                                                 |
+| state     | `S`           | 当前状态（只读 getter，无 setter）                         |
+| actions   | `A`           | Actions 对象                                               |
+| getters   | `G`           | Getters 定义对象（只读；提供类型推断位点，可用于调试检查） |
+| hooks     | `IHookSystem` | 实例级钩子系统（每个 Store 独立）                          |
+| destroyed | `boolean`     | 是否已销毁（销毁后调用公开方法会抛错）                     |
 
 **示例：**
 
@@ -361,9 +361,9 @@ $replaceState(newState: S | (() => S)): void
 
 **参数：**
 
-| 参数     | 类型                    | 说明                                     |
-| -------- | ----------------------- | ---------------------------------------- |
-| newState | S \| (() => S)          | 新状态对象，或返回新状态的工厂函数       |
+| 参数     | 类型           | 说明                               |
+| -------- | -------------- | ---------------------------------- |
+| newState | S \| (() => S) | 新状态对象，或返回新状态的工厂函数 |
 
 **示例：**
 
@@ -975,7 +975,7 @@ store.use(persistencePlugin({
 | key              | string \| (name: string) => string | 存储键名                                                                   |
 | storage          | StorageBackend                     | 存储后端                                                                   |
 | filter           | (state: S) => Partial\<S\>         | 状态过滤器                                                                 |
-| validate         | (state: unknown) => state is S     | 状态验证器（恢复前校验，返回 false 则拒绝恢复）                           |
+| validate         | (state: unknown) => state is S     | 状态验证器（恢复前校验，返回 false 则拒绝恢复）                            |
 | restore          | boolean                            | 是否在启动时恢复                                                           |
 | debounce         | number                             | 防抖延迟（毫秒）                                                           |
 | clearOnUninstall | boolean                            | 卸载插件时是否清除存储数据（默认 `false`，仅停止监听，保留已持久化的数据） |
@@ -1180,7 +1180,7 @@ const { createStore, withAppStore } = require('@openlide/geomstore')
 
 const globalStore = createStore({
   name: 'global',
-  state: { theme: 'light' },
+  state: () => ({ theme: 'light' }),
   actions: {
     setTheme(theme) {
       this.state.theme = theme
@@ -1265,23 +1265,23 @@ rootStore.dispatch('cart/addItem', product)
 
 **方法：**
 
-| 方法              | 签名                                       | 说明                                             |
-| ----------------- | ------------------------------------------ | ------------------------------------------------ |
-| register          | (name: string, store: Store) => void       | 注册 Store（同名覆盖，旧实例会被销毁）           |
-| registerAll       | (stores: Record<string, Store>) => void    | 批量注册                                         |
-| unregister        | (name: string) => void                     | 注销 Store（会调用 store.destroy()）              |
-| get               | (name: string) => Store \| undefined       | 获取 Store                                       |
-| getOrThrow        | (name: string) => Store                    | 获取 Store，不存在时抛错                         |
-| has               | (name: string) => boolean                  | 检查是否存在                                     |
-| getAll            | () => Record<string, Store>                | 获取所有 Store                                   |
-| size              | () => number                               | 注册的 Store 数量                                |
-| clear             | () => void                                 | 清空注册表（会销毁所有 Store）                   |
-| setDefault        | (name: string) => void                     | 设置默认 Store                                   |
-| getDefault        | () => Store \| undefined                   | 获取默认 Store                                   |
-| getNames          | () => string[]                             | 获取所有 Store 名称                              |
-| forEach           | (callback: (name, store) => void) => void  | 遍历所有 Store                                   |
-| createSnapshot    | () => Record<string, unknown>              | 创建所有 Store 状态快照（深拷贝）                |
-| restoreSnapshot   | (snapshot: Record<string, unknown>) => void | 从快照恢复所有 Store（$replaceState）          |
+| 方法            | 签名                                        | 说明                                   |
+| --------------- | ------------------------------------------- | -------------------------------------- |
+| register        | (name: string, store: Store) => void        | 注册 Store（同名覆盖，旧实例会被销毁） |
+| registerAll     | (stores: Record<string, Store>) => void     | 批量注册                               |
+| unregister      | (name: string) => void                      | 注销 Store（会调用 store.destroy()）   |
+| get             | (name: string) => Store \| undefined        | 获取 Store                             |
+| getOrThrow      | (name: string) => Store                     | 获取 Store，不存在时抛错               |
+| has             | (name: string) => boolean                   | 检查是否存在                           |
+| getAll          | () => Record<string, Store>                 | 获取所有 Store                         |
+| size            | () => number                                | 注册的 Store 数量                      |
+| clear           | () => void                                  | 清空注册表（会销毁所有 Store）         |
+| setDefault      | (name: string) => void                      | 设置默认 Store                         |
+| getDefault      | () => Store \| undefined                    | 获取默认 Store                         |
+| getNames        | () => string[]                              | 获取所有 Store 名称                    |
+| forEach         | (callback: (name, store) => void) => void   | 遍历所有 Store                         |
+| createSnapshot  | () => Record<string, unknown>               | 创建所有 Store 状态快照（深拷贝）      |
+| restoreSnapshot | (snapshot: Record<string, unknown>) => void | 从快照恢复所有 Store（$replaceState）  |
 
 **示例：**
 
@@ -1514,13 +1514,13 @@ try {
 
 **恢复策略：**
 
-| 策略     | 说明                         |
-| -------- | ---------------------------- |
-| RETRY    | 重试（见下方语义说明）       |
-| FALLBACK | 使用回退值（见下方语义说明） |
+| 策略     | 说明                                       |
+| -------- | ------------------------------------------ |
+| RETRY    | 重试（见下方语义说明）                     |
+| FALLBACK | 使用回退值（见下方语义说明）               |
 | IGNORE   | 忽略错误（恢复结果为 `{ ignored: true }`） |
-| RESTART  | 重启                         |
-| RECOVER  | 执行恢复函数                 |
+| RESTART  | 重启                                       |
+| RECOVER  | 执行恢复函数                               |
 
 **语义说明：**
 
@@ -1653,19 +1653,19 @@ LRU 缓存实现。
 
 **方法：**
 
-| 方法     | 签名                       | 说明         |
-| -------- | -------------------------- | ------------ |
-| get      | (key: K) => V \| undefined | 获取值       |
-| set      | (key: K, value: V) => this | 设置值       |
-| has      | (key: K) => boolean        | 检查是否存在 |
+| 方法     | 签名                       | 说明                     |
+| -------- | -------------------------- | ------------------------ |
+| get      | (key: K) => V \| undefined | 获取值                   |
+| set      | (key: K, value: V) => this | 设置值                   |
+| has      | (key: K) => boolean        | 检查是否存在             |
 | peek     | (key: K) => V \| undefined | 查看值（不更新访问顺序） |
-| delete   | (key: K) => boolean        | 删除         |
-| clear    | () => this                 | 清空         |
-| size     | () => number               | 获取大小     |
-| resize   | (capacity: number) => this | 调整容量     |
-| keys     | () => K[]                  | 获取所有键   |
-| values   | () => V[]                  | 获取所有值   |
-| getStats | () => LRUCacheStats        | 获取统计     |
+| delete   | (key: K) => boolean        | 删除                     |
+| clear    | () => this                 | 清空                     |
+| size     | () => number               | 获取大小                 |
+| resize   | (capacity: number) => this | 调整容量                 |
+| keys     | () => K[]                  | 获取所有键               |
+| values   | () => V[]                  | 获取所有值               |
+| getStats | () => LRUCacheStats        | 获取统计                 |
 
 **示例：**
 

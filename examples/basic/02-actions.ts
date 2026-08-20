@@ -9,10 +9,10 @@ import { createStore } from '../../src'
 // 创建带有 Actions 的 Store
 const todoStore = createStore({
   name: 'todos',
-  state: {
+  state: () => ({
     items: [] as Array<{ id: number; text: string; done: boolean }>,
     filter: 'all' as 'all' | 'active' | 'completed',
-  },
+  }),
   actions: {
     addTodo(text: string) {
       // @ts-ignore
@@ -27,9 +27,7 @@ const todoStore = createStore({
     },
     toggleTodo(id: number) {
       // @ts-ignore
-      const items = this.state.items.map((item) =>
-        item.id === id ? { ...item, done: !item.done } : item
-      )
+      const items = this.state.items.map((item) => (item.id === id ? { ...item, done: !item.done } : item))
       // @ts-ignore
       this.setState('items', items)
     },

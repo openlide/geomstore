@@ -88,15 +88,15 @@ import { createStore } from '@openlide/geomstore'
 ```javascript
 const { createStore } = require('@openlide/geomstore')
 
-// 创建用户状态管理
+// 创建用户状态管理（state 推荐使用工厂函数形式，初始化时执行一次并深拷贝）
 const userStore = createStore({
   name: 'user',
 
-  state: {
+  state: () => ({
     userInfo: null,
     token: '',
     isLoggedIn: false
-  },
+  }),
 
   actions: {
     // 登录（action 通过 this.state 读写状态，参数为调用时传入）
@@ -238,10 +238,11 @@ Component(withComponentStore(userStore, {
 const cartStore = createStore({
   name: 'cart',
 
-  state: {
+  // 工厂函数形式：每次创建 Store 时执行，避免数组/Set 等引用类型被多个实例共享
+  state: () => ({
     items: [],
     selectedIds: new Set()
-  },
+  }),
 
   actions: {
     addItem(product) {
@@ -314,7 +315,7 @@ const { createStore, loggerPlugin, persistencePlugin, devtoolsPlugin } = require
 
 const store = createStore({
   name: 'app',
-  state: { /* ... */ },
+  state: () => ({ /* ... */ }),
   actions: { /* ... */ }
 })
 

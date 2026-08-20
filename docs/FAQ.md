@@ -96,7 +96,7 @@ const initialState = {
 }
 
 const store = createStore({
-  state: { ...initialState },
+  state: () => ({ ...initialState }),
   actions: {
     reset() {
       this.$replaceState(initialState)
@@ -399,10 +399,10 @@ const store = createStore({
 
 **2. 分页加载**
 ```javascript
-state: {
+state: () => ({
   products: { page1: [], page2: [] },
   currentPage: 1
-}
+})
 ```
 
 **3. 使用虚拟列表**

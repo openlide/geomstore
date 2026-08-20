@@ -10,19 +10,17 @@ import { withComponentStore } from '../../src/integrations'
 // 创建购物车 Store
 const cartStore = createStore({
   name: 'cart-store',
-  state: {
+  state: () => ({
     items: [] as Array<{ id: number; name: string; price: number; quantity: number }>,
     totalCount: 0,
-  },
+  }),
   actions: {
     addItem(item: { id: number; name: string; price: number }) {
       // @ts-ignore
       const existingItem = this.state.items.find((i) => i.id === item.id)
       if (existingItem) {
         // @ts-ignore
-        const items = this.state.items.map((i) =>
-          i.id === item.id ? { ...i, quantity: i.quantity + 1 } : i
-        )
+        const items = this.state.items.map((i) => (i.id === item.id ? { ...i, quantity: i.quantity + 1 } : i))
         // @ts-ignore
         this.setState('items', items)
       } else {
@@ -46,8 +44,7 @@ const cartStore = createStore({
     },
   },
   getters: {
-    totalPrice: (state) =>
-      state.items.reduce((sum, item) => sum + item.price * item.quantity, 0),
+    totalPrice: (state) => state.items.reduce((sum, item) => sum + item.price * item.quantity, 0),
   },
 })
 
@@ -84,7 +81,7 @@ Component(
         console.log('Cart component detached, subscriptions cleaned up automatically')
       },
     },
-  })
+  }),
 )
 
 console.log('✅ Component integration examples defined')

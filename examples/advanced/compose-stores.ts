@@ -11,11 +11,11 @@ import { createStore, composeStore } from '../../src'
 // 用户 Store
 const userStore = createStore({
   name: 'user',
-  state: {
+  state: () => ({
     id: 1,
     name: 'Alice',
     email: 'alice@example.com',
-  },
+  }),
   actions: {
     updateName(name: string) {
       // @ts-ignore
@@ -27,9 +27,9 @@ const userStore = createStore({
 // 购物车 Store
 const cartStore = createStore({
   name: 'cart',
-  state: {
+  state: () => ({
     items: [] as Array<{ id: number; name: string; price: number }>,
-  },
+  }),
   actions: {
     addItem(item: { id: number; name: string; price: number }) {
       // @ts-ignore
@@ -44,10 +44,10 @@ const cartStore = createStore({
 // 设置 Store
 const settingsStore = createStore({
   name: 'settings',
-  state: {
+  state: () => ({
     theme: 'light',
     language: 'zh-CN',
-  },
+  }),
   actions: {
     setTheme(theme: string) {
       // @ts-ignore
@@ -60,13 +60,10 @@ const settingsStore = createStore({
 
 console.log('=== Store 组合示例 ===\n')
 
-// 方式 1: 使用 composeStore 创建组合
-const rootStore = composeStore({
-  stores: {
-    user: userStore,
-    cart: cartStore,
-    settings: settingsStore,
-  },
+// 方式 1: 使用 composeStore 创建组合（数组形式 + 命名空间）
+const rootStore = composeStore([userStore, cartStore, settingsStore], {
+  namespace: true, // 启用命名空间，支持 'storeName/actionName' 斜杠路径
+  strict: true,
 })
 
 console.log('Combined state:', rootStore.getState())
@@ -84,7 +81,10 @@ rootStore.dispatch('cart/addItem', { id: 1, name: 'Product A', price: 100 })
 console.log('After addItem:', rootStore.getState().cart.items)
 
 // 使用 getter
-console.log('Cart total:', rootStore.getState().cart.items.reduce((sum, item) => sum + item.price, 0))
+console.log(
+  'Cart total:',
+  rootStore.getState().cart.items.reduce((sum, item) => sum + item.price, 0),
+)
 
 // 订阅组合状态变化
 const unsubscribe = rootStore.subscribe((state) => {

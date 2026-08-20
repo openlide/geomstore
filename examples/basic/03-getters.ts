@@ -12,14 +12,14 @@ const calcSubtotal = (items: Array<{ price: number; quantity: number }>) => item
 // 创建带有 Getters 的 Store
 const cartStore = createStore({
   name: 'shopping-cart',
-  state: {
+  state: () => ({
     items: [
       { id: 1, name: 'Apple', price: 1.5, quantity: 3 },
       { id: 2, name: 'Banana', price: 0.8, quantity: 5 },
       { id: 3, name: 'Orange', price: 2.0, quantity: 2 },
     ] as Array<{ id: number; name: string; price: number; quantity: number }>,
     taxRate: 0.08,
-  },
+  }),
   getters: {
     itemCount: (state) => state.items.reduce((sum, item) => sum + item.quantity, 0),
     subtotal: (state) => calcSubtotal(state.items),

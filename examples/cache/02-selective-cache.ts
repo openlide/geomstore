@@ -11,11 +11,11 @@ console.log('=== 选择性缓存 ===\n')
 // 创建用户 Store，只缓存特定键
 const userStore = createStore({
   name: 'user-store',
-  state: {
+  state: () => ({
     userInfo: { id: 1, name: 'Alice' },
     preferences: { theme: 'light', language: 'en' },
     session: { token: 'xxx', expires: '2024-12-31' },
-  },
+  }),
   // 只缓存部分状态
   enableCache: true,
   cacheKeys: ['userInfo', 'preferences'], // 不缓存 session

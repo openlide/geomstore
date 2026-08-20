@@ -24,7 +24,7 @@ Store 是 GeomStore 的核心概念，它是一个包含状态、操作和计算
 ```javascript
 const store = createStore({
   name: 'my-store',     // 标识符
-  state: { ... },       // 状态
+  state: () => ({ ... }), // 状态（推荐工厂函数形式）
   actions: { ... },     // 操作
   getters: { ... }      // 计算属性
 })
@@ -43,12 +43,12 @@ const store = createStore({
 State 是应用的状态数据，具有以下特点：
 
 ```javascript
-state: {
+state: () => ({
   // 状态应该是普通对象
   user: null,
   items: [],
   settings: {}
-}
+})
 ```
 
 **特点：**
@@ -188,7 +188,7 @@ store.subscribe()     // 订阅变化
 ```typescript
 // 完整的类型推断
 const store = createStore({
-  state: { count: 0 },
+  state: () => ({ count: 0 }),
   actions: {
     add(n: number) {
       this.state.count += n

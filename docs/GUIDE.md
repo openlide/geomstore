@@ -94,11 +94,11 @@ const counterStore = createStore({
   // Store 名称（可选，用于调试）
   name: 'counter',
 
-  // 状态
-  state: {
+  // 状态（推荐使用工厂函数形式，初始化时执行一次并深拷贝）
+  state: () => ({
     count: 0,
     step: 1
-  },
+  }),
 
   // Actions：修改状态的方法（通过 this.state 读写状态，参数为调用时传入）
   actions: {
@@ -458,11 +458,11 @@ const { withAppStore } = require('@openlide/geomstore/integrations')
 // 创建全局 store
 const globalStore = createStore({
   name: 'global',
-  state: {
+  state: () => ({
     theme: 'light',
     language: 'zh_CN',
     systemInfo: null
-  },
+  }),
   actions: {
     setTheme(theme) {
       this.state.theme = theme
@@ -758,19 +758,19 @@ const { composeStore } = require('@openlide/geomstore')
 // 创建多个独立 store
 const userStore = createStore({
   name: 'user',
-  state: { userInfo: null, token: '' },
+  state: () => ({ userInfo: null, token: '' }),
   actions: { /* ... */ }
 })
 
 const cartStore = createStore({
   name: 'cart',
-  state: { items: [] },
+  state: () => ({ items: [] }),
   actions: { /* ... */ }
 })
 
 const settingsStore = createStore({
   name: 'settings',
-  state: { theme: 'light' },
+  state: () => ({ theme: 'light' }),
   actions: { /* ... */ }
 })
 
@@ -829,11 +829,11 @@ interface UserGetters {
 const userStore = createStore<UserState, UserActions, UserGetters>({
   name: 'user',
 
-  state: {
+  state: () => ({
     userInfo: null,
     token: '',
     isLoggedIn: false
-  },
+  }),
 
   actions: {
     async login(credentials) {

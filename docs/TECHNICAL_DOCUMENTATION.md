@@ -1,4 +1,4 @@
-# GeomStore v0.1.1 技术文档
+# GeomStore v0.1.2 技术文档
 
 > 轻量级微信小程序状态管理库 - 企业级生产就绪
 
@@ -25,7 +25,7 @@
 
 | 属性     | 值                                        |
 | -------- | ----------------------------------------- |
-| 版本     | 0.1.1                                     |
+| 版本     | 0.1.2                                     |
 | 许可证   | MIT                                       |
 | 运行环境 | Node.js ≥22.0.0, 微信小程序基础库 ≥2.10.0 |
 | 语言     | TypeScript 6.0+                           |
@@ -392,11 +392,11 @@ interface UserGetters {
 // 创建 Store
 const userStore = createStore<UserState, UserActions, UserGetters>({
   name: 'user-store',
-  state: {
+  state: () => ({
     user: null,
     isLoggedIn: false,
     token: null
-  },
+  }),
   actions: {
     // this 自动获得类型提示
     async login(username, password) {
@@ -499,7 +499,7 @@ import { createStore, composeStore } from '@openlide/geomstore'
 // 创建模块 Store
 const userStore = createStore({
   name: 'user',
-  state: { name: 'Alice', age: 25 },
+  state: () => ({ name: 'Alice', age: 25 }),
   actions: {
     setName(name: string) {
       this.setState('name', name)
@@ -512,7 +512,7 @@ const userStore = createStore({
 
 const counterStore = createStore({
   name: 'counter',
-  state: { count: 0 },
+  state: () => ({ count: 0 }),
   actions: {
     increment() {
       this.setState('count', this.state.count + 1)
@@ -1063,10 +1063,10 @@ import { withPageStore } from '@openlide/geomstore/integrations'
 
 const userStore = createStore({
   name: 'user',
-  state: {
+  state: () => ({
     userInfo: null,
     isLoading: false
-  },
+  }),
   actions: {
     async fetchUser(userId: string) {
       this.setState('isLoading', true)
@@ -1165,10 +1165,10 @@ import { withAppStore, createApp } from '@openlide/geomstore/integrations'
 
 const globalStore = createStore({
   name: 'global',
-  state: {
+  state: () => ({
     systemInfo: null,
     theme: 'light'
-  },
+  }),
   actions: {
     async init() {
       const info = await wx.getSystemInfo()
@@ -1515,7 +1515,7 @@ import { createStore } from 'miniprogram_npm/geomstore'
 ```json
 {
   "name": "@openlide/geomstore",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "main": "dist/cjs/index.js",
   "types": "dist/cjs/index.d.ts",
   "files": ["dist", "CHANGELOG.md"],
@@ -1633,10 +1633,10 @@ interface CounterGetters {
 export const counterStore = createStore<CounterState, CounterActions, CounterGetters>({
   name: 'counter',
   
-  state: {
+  state: () => ({
     count: 0,
     history: []
-  },
+  }),
   
   actions: {
     increment() {
@@ -1760,7 +1760,7 @@ const store = createStore({
 ```typescript
 // ✅ 推荐：使用 store.batch 批量更新减少通知次数
 const store = createStore({
-  state: { a: 1, b: 2, c: 3 },
+  state: () => ({ a: 1, b: 2, c: 3 }),
   actions: {
     updateAll() {
       this.setState('a', 10)
@@ -1808,11 +1808,11 @@ const store = createStore({
 
 ```typescript
 const store = createStore({
-  state: {
+  state: () => ({
     data: null,
     loading: false,
     error: null
-  },
+  }),
   
   actions: {
     async fetchData(id: string) {
@@ -1840,10 +1840,10 @@ import { persistencePlugin } from '@openlide/geomstore'
 
 const store = createStore({
   name: 'user-preferences',
-  state: {
+  state: () => ({
     theme: 'light',
     language: 'zh-CN'
-  }
+  })
 })
 
 // 使用持久化插件（工厂调用传入配置）
@@ -1882,7 +1882,7 @@ import { createStore } from '@openlide/geomstore'
 
 export const globalStore = createStore({
   name: 'global',
-  state: { /* ... */ }
+  state: () => ({ /* ... */ })
 })
 
 // 在不同页面/组件中导入使用
@@ -1902,7 +1902,7 @@ Component(withComponentStore(globalStore, { /* ... */ })({ /* 组件配置 */ })
 ### 7.1 基准测试结果
 
 ```
-GeomStore v0.1.1 性能基准测试
+GeomStore v0.1.2 性能基准测试
 ==============================
 
 测试环境:
@@ -2089,22 +2089,22 @@ console.log('After:', snapshot2)
 
 ### A. 完整 API 列表
 
-| API                                  | 描述             |
-| ------------------------------------ | ---------------- |
-| `createStore(options)`               | 创建 Store 实例  |
-| `composeStore(stores, options)`      | 组合多个 Store   |
-| `createSelector(fn)`                 | 创建基础选择器   |
-| `createMemoizedSelector(fn, equalityFn?)`        | 创建记忆化选择器 |
-| `createParametricSelector(fn)`       | 创建参数化选择器 |
-| `LRUCache`                           | LRU 缓存类       |
-| `withPageStore(store, options)`      | Page 集成        |
-| `withComponentStore(store, options)` | Component 集成   |
-| `withAppStore(store, options)`       | App 集成         |
-| `loggerPlugin`                       | 日志插件         |
-| `persistencePlugin`                  | 持久化插件       |
-| `devtoolsPlugin`                     | DevTools 插件    |
-| `timeTravelPlugin`                   | 时间旅行插件     |
-| `analyzerPlugin`                     | 性能分析插件     |
+| API                                       | 描述             |
+| ----------------------------------------- | ---------------- |
+| `createStore(options)`                    | 创建 Store 实例  |
+| `composeStore(stores, options)`           | 组合多个 Store   |
+| `createSelector(fn)`                      | 创建基础选择器   |
+| `createMemoizedSelector(fn, equalityFn?)` | 创建记忆化选择器 |
+| `createParametricSelector(fn)`            | 创建参数化选择器 |
+| `LRUCache`                                | LRU 缓存类       |
+| `withPageStore(store, options)`           | Page 集成        |
+| `withComponentStore(store, options)`      | Component 集成   |
+| `withAppStore(store, options)`            | App 集成         |
+| `loggerPlugin`                            | 日志插件         |
+| `persistencePlugin`                       | 持久化插件       |
+| `devtoolsPlugin`                          | DevTools 插件    |
+| `timeTravelPlugin`                        | 时间旅行插件     |
+| `analyzerPlugin`                          | 性能分析插件     |
 
 ### B. 版本历史
 
@@ -2122,6 +2122,6 @@ console.log('After:', snapshot2)
 
 ---
 
-**GeomStore v0.1.1** - 轻量级微信小程序状态管理库
+**GeomStore v0.1.2** - 轻量级微信小程序状态管理库
 
 Copyright (c) 2026 GeomStore Team. Licensed under MIT.

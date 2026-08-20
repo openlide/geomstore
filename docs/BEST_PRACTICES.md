@@ -1,4 +1,4 @@
-# GeomStore v0.1.1 最佳实践
+# GeomStore v0.1.2 最佳实践
 
 本文档总结了在微信小程序项目中使用 GeomStore 的最佳实践，帮助开发者构建高质量、可维护的应用。
 
@@ -97,13 +97,13 @@ const userService = require('../services/user')
 const userStore = createStore({
   name: 'user',
 
-  state: {
+  state: () => ({
     userInfo: null,
     token: '',
     isLoggedIn: false,
     loading: false,
     error: null
-  },
+  }),
 
   actions: {
     // 登录
@@ -163,17 +163,17 @@ module.exports = userStore
 
 ```javascript
 // ❌ 不推荐：存储冗余数据
-state: {
+state: () => ({
   items: [...],
   itemCount: 10,        // 可计算得出
   totalPrice: 1000,     // 可计算得出
   isEmpty: false        // 可计算得出
-}
+})
 
 // ✅ 推荐：使用 getter 计算
-state: {
+state: () => ({
   items: []
-},
+}),
 getters: {
   itemCount(state) {
     return state.items.length
@@ -193,7 +193,7 @@ getters: {
 
 ```javascript
 // ❌ 不推荐：深层嵌套
-state: {
+state: () => ({
   user: {
     profile: {
       personal: {
@@ -206,18 +206,18 @@ state: {
       }
     }
   }
-}
+})
 
 // ✅ 推荐：扁平化结构
-state: {
+state: () => ({
   userName: 'John',
   userAge: 30,
   userEmail: 'john@example.com',
   userPhone: '123456'
-}
+})
 
 // 或适度分组
-state: {
+state: () => ({
   userBasic: {
     name: 'John',
     age: 30
@@ -226,7 +226,7 @@ state: {
     email: 'john@example.com',
     phone: '123456'
   }
-}
+})
 ```
 
 ### 3. 规范化列表数据
@@ -235,24 +235,24 @@ state: {
 
 ```javascript
 // ❌ 不推荐：纯数组
-state: {
+state: () => ({
   products: [
     { id: 1, name: 'Product 1' },
     { id: 2, name: 'Product 2' },
     { id: 3, name: 'Product 3' }
   ]
-}
+})
 // 查找需要遍历：state.products.find(p => p.id === 2)
 
 // ✅ 推荐：规范化存储
-state: {
+state: () => ({
   products: {
     1: { id: 1, name: 'Product 1' },
     2: { id: 2, name: 'Product 2' },
     3: { id: 3, name: 'Product 3' }
   },
   productIds: [1, 2, 3]
-}
+})
 // 直接访问：state.products[2]
 ```
 
@@ -262,20 +262,20 @@ state: {
 
 ```javascript
 // ❌ 不推荐
-state: {
+state: () => ({
   user: null,        // 可能导致解构错误
   list: undefined,   // 不明确
   count: undefined
-}
+})
 
 // ✅ 推荐
-state: {
+state: () => ({
   user: null,
   list: [],
   count: 0,
   loading: false,
   error: null
-}
+})
 ```
 
 ---
@@ -539,10 +539,10 @@ const { userStore, cartStore, settingsStore } = require('./stores')
 
 App(withAppStore(createStore({
   name: 'global',
-  state: {
+  state: () => ({
     initialized: false,
     systemInfo: null
-  },
+  }),
   actions: {
     async init() {
       if (this.state.initialized) return
@@ -755,10 +755,10 @@ Page({
 
 ```javascript
 const store = createStore({
-  state: {
+  state: () => ({
     largeList: [], // 大列表数据
     config: {}     // 配置数据
-  },
+  }),
   enableCache: true,
   cacheKeys: ['largeList', 'config'],
   cacheConfig: {
@@ -803,7 +803,7 @@ store.subscribe((state) => {
 
 ```javascript
 // Store 中分页存储
-state: {
+state: () => ({
   products: {
     // 按页存储
     page1: [...],
@@ -812,7 +812,7 @@ state: {
   },
   currentPage: 1,
   hasMore: true
-},
+}),
 actions: {
   async loadMore() {
     const state = this.state
@@ -996,11 +996,11 @@ describe('UserStore', () => {
   beforeEach(() => {
     store = createStore({
       name: 'user',
-      state: {
+      state: () => ({
         userInfo: null,
         token: '',
         isLoggedIn: false
-      },
+      }),
       actions: {
         login({ user, token }) {
           this.state.userInfo = user
@@ -1072,7 +1072,7 @@ describe('Page Integration', () => {
 
   beforeEach(() => {
     store = createStore({
-      state: { count: 0 },
+      state: () => ({ count: 0 }),
       actions: {
         increment() { this.state.count++ }
       }
@@ -1178,13 +1178,13 @@ import type { UserState, UserActions, UserGetters } from '../types/store'
 export const userStore = createStore<UserState, UserActions, UserGetters>({
   name: 'user',
 
-  state: {
+  state: () => ({
     userInfo: null,
     token: '',
     isLoggedIn: false,
     loading: false,
     error: null
-  },
+  }),
 
   actions: {
     async login(credentials) {
@@ -1419,18 +1419,18 @@ Page({
 
 ```javascript
 // ❌ 错误：存储大量冗余数据
-state: {
+state: () => ({
   allProducts: [...], // 10000 条数据
   filteredProducts: [...], // 冗余
   sortedProducts: [...] // 冗余
-}
+})
 
 // ✅ 正确：只存储必要数据，计算派生值
-state: {
+state: () => ({
   products: [...], // 原始数据
   filter: { minPrice: 0, maxPrice: 1000 },
   sort: 'price'
-},
+}),
 getters: {
   filteredProducts(state) {
     return state.products

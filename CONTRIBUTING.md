@@ -28,11 +28,11 @@
 
 ## 2. 开发环境
 
-| 工具 | 版本要求 |
-| --- | --- |
-| Node.js | >= 22.0.0（CI 矩阵 22 / 24） |
-| pnpm | 11.21.0（项目 `packageManager` 已锁定） |
-| TypeScript | ^6.0.3 |
+| 工具       | 版本要求                                |
+| ---------- | --------------------------------------- |
+| Node.js    | >= 22.0.0（CI 矩阵 22 / 24）            |
+| pnpm       | 11.21.0（项目 `packageManager` 已锁定） |
+| TypeScript | ^6.0.3                                  |
 
 > 建议启用 pnpm 的 `corepack`：`corepack enable`，确保使用锁定的 pnpm 版本。
 
@@ -102,19 +102,19 @@ pnpm build           # 构建 + 产物冒烟
 
 ### 脚本速查
 
-| 命令 | 说明 |
-| --- | --- |
-| `pnpm test` | 全量测试 |
-| `pnpm test:unit` | 仅单元测试 |
-| `pnpm test:integration` | 仅集成测试 |
-| `pnpm test:coverage` | 测试 + 覆盖率 |
-| `pnpm lint` | ESLint 检查 |
-| `pnpm lint:fix` | ESLint 自动修复 |
-| `pnpm format` | Prettier 格式化 |
-| `pnpm typecheck` | 源码类型检查 |
-| `pnpm typecheck:tests` | 源码 + 测试类型检查 |
-| `pnpm typecheck:examples` | 示例类型检查 |
-| `pnpm build` | 构建 CJS 产物 |
+| 命令                      | 说明                |
+| ------------------------- | ------------------- |
+| `pnpm test`               | 全量测试            |
+| `pnpm test:unit`          | 仅单元测试          |
+| `pnpm test:integration`   | 仅集成测试          |
+| `pnpm test:coverage`      | 测试 + 覆盖率       |
+| `pnpm lint`               | ESLint 检查         |
+| `pnpm lint:fix`           | ESLint 自动修复     |
+| `pnpm format`             | Prettier 格式化     |
+| `pnpm typecheck`          | 源码类型检查        |
+| `pnpm typecheck:tests`    | 源码 + 测试类型检查 |
+| `pnpm typecheck:examples` | 示例类型检查        |
+| `pnpm build`              | 构建 CJS 产物       |
 
 ---
 
@@ -128,12 +128,12 @@ pnpm build           # 构建 + 产物冒烟
 
 ### 6.2 命名约定
 
-| 对象 | 约定 |
-| --- | --- |
-| Store 名称 | `lowerCamelCase`（如 `userStore`） |
-| action / getter | `lowerCamelCase`（如 `fetchUser`、`displayName`） |
-| 类型 / 接口 | `UpperCamelCase`（如 `StoreOptions`、`ConnectOptions`） |
-| 未使用变量 | 前缀 `_`（ESLint `varsIgnorePattern: '^_'`） |
+| 对象            | 约定                                                    |
+| --------------- | ------------------------------------------------------- |
+| Store 名称      | `lowerCamelCase`（如 `userStore`）                      |
+| action / getter | `lowerCamelCase`（如 `fetchUser`、`displayName`）       |
+| 类型 / 接口     | `UpperCamelCase`（如 `StoreOptions`、`ConnectOptions`） |
+| 未使用变量      | 前缀 `_`（ESLint `varsIgnorePattern: '^_'`）            |
 
 ### 6.3 安全红线
 
@@ -148,10 +148,10 @@ pnpm build           # 构建 + 产物冒烟
 
 ### 7.1 覆盖率阈值
 
-| 范围 | branches | functions | lines | statements |
-| --- | --- | --- | --- | --- |
-| 全局 | 95% | 98% | 98% | 98% |
-| `src/core/**` 单文件 | 85% | 98% | 98% | 98% |
+| 范围                 | branches | functions | lines | statements |
+| -------------------- | -------- | --------- | ----- | ---------- |
+| 全局                 | 95%      | 98%       | 98%   | 98%        |
+| `src/core/**` 单文件 | 85%      | 98%       | 98%   | 98%        |
 
 ### 7.2 测试命名
 

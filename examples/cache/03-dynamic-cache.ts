@@ -11,11 +11,11 @@ console.log('=== 动态缓存控制 ===\n')
 // 创建主题 Store，默认不启用缓存
 const themeStore = createStore({
   name: 'theme-store',
-  state: {
+  state: () => ({
     theme: 'light',
     primaryColor: '#007AFF',
     fontSize: 16,
-  },
+  }),
 })
 
 console.log('Initial cache enabled:', themeStore.getCacheStats().enabled)
