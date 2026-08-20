@@ -7,7 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-第二轮全量源码审阅修复（16 项），全量测试 40 套件 / 2040 用例通过。
+## [0.1.1] - 2026-08-19
+
+第二轮全量源码审阅修复（16 项），全量测试 40 套件 / 2040 用例通过，typecheck 0 错误。
 
 ### Fixed
 
@@ -50,3 +52,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 40 个测试套件 / 2000+ 测试用例
 
 [0.1.0]: https://github.com/openlide/GeomStore/releases/tag/v0.1.0
+[0.1.1]: https://github.com/openlide/GeomStore/releases/tag/v0.1.1

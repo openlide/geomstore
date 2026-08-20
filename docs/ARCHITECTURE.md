@@ -207,12 +207,15 @@ class Store<S extends State = State, A extends Actions = Actions, G extends Gett
 
   dispatch<K extends keyof A>(...args): unknown
   getter<K extends keyof G>(): unknown
+  get getters(): G                          // getter 集合（直接访问派生值）
+  getGetterNames(): string[]
   subscribe(listener): () => void
   use<T extends PluginType>(plugin): () => void
   batch<T>(fn): T
   startBatch(): void
   endBatch(): void
   destroy(): void
+  get destroyed(): boolean
 }
 ```
 
@@ -583,24 +586,39 @@ function withComponentStore<S extends State, A extends Actions, G extends Getter
 ```typescript
 enum ErrorCode {
   // Action 错误
+  ACTION_NOT_FOUND = 'ACTION_NOT_FOUND',
   ACTION_EXECUTION_ERROR = 'ACTION_EXECUTION_ERROR',
   ACTION_TIMEOUT = 'ACTION_TIMEOUT',
+  ACTION_CANCELLED = 'ACTION_CANCELLED',
 
   // 状态错误
   STATE_KEY_NOT_FOUND = 'STATE_KEY_NOT_FOUND',
+  STATE_UPDATE_ERROR = 'STATE_UPDATE_ERROR',
   STATE_TYPE_ERROR = 'STATE_TYPE_ERROR',
 
   // 选择器错误
-  SELECTOR_ERROR = 'SELECTOR_ERROR',
+  SELECTOR_NOT_FOUND = 'SELECTOR_NOT_FOUND',
+  SELECTOR_EXECUTION_ERROR = 'SELECTOR_EXECUTION_ERROR',
+  SELECTOR_CACHE_ERROR = 'SELECTOR_CACHE_ERROR',
 
   // 插件错误
-  PLUGIN_ERROR = 'PLUGIN_ERROR',
+  PLUGIN_NOT_FOUND = 'PLUGIN_NOT_FOUND',
+  PLUGIN_INSTALLATION_ERROR = 'PLUGIN_INSTALLATION_ERROR',
+  PLUGIN_EXECUTION_ERROR = 'PLUGIN_EXECUTION_ERROR',
 
   // 组合错误
-  COMPOSE_ERROR = 'COMPOSE_ERROR',
+  STORE_NAME_CONFLICT = 'STORE_NAME_CONFLICT',
+  STORE_DEPENDENCY_ERROR = 'STORE_DEPENDENCY_ERROR',
+  STORE_COMPOSE_ERROR = 'STORE_COMPOSE_ERROR',
 
   // 验证错误
-  VALIDATION_ERROR = 'VALIDATION_ERROR'
+  VALIDATION_ERROR = 'VALIDATION_ERROR',
+  TYPE_ERROR = 'TYPE_ERROR',
+  PARAMETER_ERROR = 'PARAMETER_ERROR',
+
+  // 通用错误
+  UNKNOWN_ERROR = 'UNKNOWN_ERROR',
+  INTERNAL_ERROR = 'INTERNAL_ERROR'
 }
 ```
 

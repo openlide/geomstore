@@ -329,9 +329,10 @@ const rootStore = composeStore([userStore, cartStore], {
 })
 
 Page(withPageStore(rootStore, {
-  mapState: ['user/userInfo', 'cart/items']
+  // 命名空间模式下 mapState 映射子 Store 整体（state 为 { user, cart } 嵌套结构）
+  mapState: ['user', 'cart']
 })({
-  // 页面配置
+  // 页面中通过 this.data.user.userInfo 访问
 }))
 ```
 
@@ -355,12 +356,15 @@ Page({
 
 ```javascript
 Page(withPageStore(store, {
-  mapState: ['userInfo'],
-  autoUpdateOnShow: true  // 页面显示时自动更新
+  autoInject: true,
+  injectMapping: { userInfo: 'userInfo' },  // store 键 → 本地键
+  autoUpdateOnShow: true  // 页面显示时自动重新注入
 })({
   // 页面配置
 }))
 ```
+
+> 注意：`autoUpdateOnShow` 仅在同时启用 `autoInject` 时生效（默认仅 onLoad 时注入一次）。
 
 或手动处理：
 
@@ -369,9 +373,9 @@ Page(withPageStore(store, {
   mapState: ['userInfo']
 })({
   onShow() {
-    // 重新获取状态
+    // 重新获取状态（store 为闭包中的变量）
     this.setData({
-      userInfo: this.store.state.userInfo
+      userInfo: store.state.userInfo
     })
   }
 }))
@@ -496,11 +500,11 @@ try {
 **A:** 使用 ErrorRecovery：
 
 ```javascript
-const { ErrorRecovery, RecoveryStrategy } = require('@openlide/geomstore')
+const { ErrorRecovery, RecoveryStrategy, ErrorCode } = require('@openlide/geomstore')
 
 const recovery = new ErrorRecovery()
 recovery.configure({
-  'NETWORK_ERROR': {
+  [ErrorCode.ACTION_EXECUTION_ERROR]: {  // 键为 ErrorCode 枚举值
     strategy: RecoveryStrategy.RETRY,
     maxRetries: 3,
     retryDelay: 1000,
@@ -511,6 +515,7 @@ recovery.configure({
 try {
   await store.dispatch('fetchData')
 } catch (error) {
+  // 注意：recover 仅支持恢复 GeomStoreError 实例（dispatch 抛出的错误通常是）
   const result = await recovery.recover(error)
 }
 ```
@@ -772,6 +777,68 @@ Page(withPageStore(userStore, { mapState: ['user'] })({
   // 页面配置
 }))
 ```
+
+---
+
+## 行为变更与进阶（v0.1.1）
+
+### Q: 为什么修改 `$snapshot()` 返回的快照会报错？
+
+**A:** 自 v0.1.1 起，`$snapshot()` 返回的快照会被**递归深冻结**（嵌套纯对象与数组均被 `Object.freeze`），严格模式下直接修改会抛出 `TypeError`。这是有意为之的不可变性保证：
+
+```javascript
+const snapshot = store.$snapshot()
+snapshot.count = 100            // ❌ TypeError: Cannot assign to read only property
+snapshot.user.name = 'Bob'      // ❌ 嵌套对象同样被冻结
+
+// ✅ 如需修改，先克隆一份
+const copy = JSON.parse(JSON.stringify(snapshot))
+copy.count = 100
+```
+
+快照冻结不影响原 state 的可变性，`store.setState()` 等正常操作不受影响。
+
+---
+
+### Q: persistencePlugin 恢复状态时，未持久化的键为什么保留了初始值？
+
+**A:** 自 v0.1.1 起，启动恢复采用**合并语义**（内部使用 `$patch`）：持久化数据只覆盖其中包含的键，未被持久化的键（如被 `filter` 过滤掉的键）保留初始值，不会被覆盖为 `undefined`：
+
+```javascript
+store.use(persistencePlugin({
+  filter: (state) => ({ theme: state.theme }) // 只持久化 theme
+}))
+// 启动恢复后：theme 为持久化值，其他键（如 language）保留初始值
+```
+
+---
+
+### Q: 非小程序环境（Node / 测试环境）使用 persistencePlugin 会报错吗？
+
+**A:** 不会。v0.1.1 起 storage 后端解析顺序为：`options.storage` → 微信 `wx` 同步存储 → **进程内内存存储降级**。无可用后端时自动降级并在开发模式输出 `[GeomStore][persistence]` 告警，持久化不真正落盘但不影响运行。
+
+---
+
+### Q: 组合 Store（非命名空间模式）调用 `$replaceState` 时控制台出现告警？
+
+**A:** 这是 v0.1.1 新增的开发模式保护：非命名空间模式下 `$replaceState` 保留整体替换语义，若提供的数据未包含某子 store 的全部键，这些键将被替换丢失。告警会列出将丢失的键：
+
+```javascript
+// 告警示例：[composeStore] $replaceState 未包含 store "user" 的键 [age]...
+composed.$replaceState({ name: 'Bob' }) // 缺少 age，开发模式告警
+
+// ✅ 如需保留未提供的状态，改用 $patch
+composed.$patch({ name: 'Bob' })
+```
+
+---
+
+### Q: withCache / withThrottle 装饰异步方法后行为有变化吗？
+
+**A:** v0.1.1 起异步方法判定改为**函数原型比较**（不再依赖 `constructor.name`，构建压缩后依然可靠）：
+
+- `withCache`：异步方法缓存命中时直接返回缓存的 `Promise`，不会重复发起底层调用
+- `withThrottle`：被节流跳过的异步调用返回 `Promise<undefined>`，保持调用方 `await` 语义
 
 ---
 

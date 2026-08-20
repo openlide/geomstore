@@ -349,8 +349,9 @@ Page(withPageStore(app.userStore, {
     console.log(this.data.userInfo)
     console.log(this.data.displayName)
 
-    // 访问原始 store
-    console.log(this.store)  // userStore 实例
+    // 访问原始 store（withPageStore 不会向页面实例暴露 store 属性，
+    // 请通过 getApp() 或模块导入的 store 引用访问）
+    console.log(app.userStore.getState())  // 当前状态
   },
 
   onShow() {
@@ -505,7 +506,7 @@ App(withAppStore(globalStore)({
 // 自动注入状态到页面 data
 Page(withPageStore(store, {
   // 自动注入配置
-  autoInject: true,  // 默认 true
+  autoInject: true,  // 显式开启（默认 false，不会自动注入）
   injectMapping: {
     // store 键 -> 本地键
     'userInfo': 'user',
@@ -784,7 +785,7 @@ rootStore.dispatch('user/login', credentials)
 rootStore.dispatch('cart/addItem', product)
 
 // 获取子 store
-const user = rootStore.getStore('user')
+const user = rootStore.stores['user']
 ```
 
 ---

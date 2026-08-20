@@ -1,4 +1,4 @@
-# GeomStore v0.1.0 API 参考文档
+# GeomStore v0.1.1 API 参考文档
 
 完整的 API 参考文档，包含所有公开接口、类型定义和使用示例。
 
@@ -6,7 +6,7 @@
 
 ## 目录
 
-- [GeomStore v0.1.0 API 参考文档](#geomstore-v010-api-参考文档)
+- [GeomStore v0.1.1 API 参考文档](#geomstore-v011-api-参考文档)
   - [目录](#目录)
   - [核心 API](#核心-api)
     - [createStore](#createstore)
@@ -108,7 +108,7 @@ function createStore<
   S extends State,
   A extends Actions = Actions,
   G extends Getters<S> = Getters<S>
->(options: Omit<StoreOptions<S, A, G>, 'state'> & { state: () => S }): Store<S, A, G>
+>(options: Omit<StoreConfig<S, A, G>, 'state'> & { state: () => S }): Store<S, A, G>
 ```
 
 2. **字面量对象形式**：`state` 直接传入初始状态对象
@@ -118,7 +118,7 @@ function createStore<
   S extends State,
   A extends Actions = Actions,
   G extends Getters<S> = Getters<S>
->(options: StoreOptions<S, A, G>): Store<S, A, G>
+>(options: Omit<StoreConfig<S, A, G>, 'state'> & { state: S }): Store<S, A, G>
 ```
 
 **参数：**
@@ -127,10 +127,10 @@ function createStore<
 | ------- | ------------ | ---- | -------------- |
 | options | StoreOptions | 是   | Store 配置选项 |
 
-**StoreOptions 接口：**
+**StoreConfig 接口（免泛型自动推导，推荐）：**
 
 ```typescript
-interface StoreOptions<S, A, G> {
+interface StoreConfig<S = unknown, A = unknown, G = unknown> {
   /** Store 名称，用于调试和识别 */
   name?: string
 
@@ -252,6 +252,8 @@ Store 类是 GeomStore 的核心，提供状态管理和响应式更新功能。
 | state   | `S`      | 当前状态（只读 getter，无 setter）                         |
 | actions | `A`      | Actions 对象                                               |
 | getters | `G`      | Getters 定义对象（只读；提供类型推断位点，可用于调试检查） |
+| hooks   | `IHookSystem` | 实例级钩子系统（每个 Store 独立）                |
+| destroyed | `boolean` | 是否已销毁（销毁后调用公开方法会抛错）              |
 
 **示例：**
 
@@ -354,14 +356,14 @@ store.$patch({
 **签名：**
 
 ```typescript
-$replaceState(newState: S): void
+$replaceState(newState: S | (() => S)): void
 ```
 
 **参数：**
 
-| 参数     | 类型 | 说明       |
-| -------- | ---- | ---------- |
-| newState | S    | 新状态对象 |
+| 参数     | 类型                    | 说明                                     |
+| -------- | ----------------------- | ---------------------------------------- |
+| newState | S \| (() => S)          | 新状态对象，或返回新状态的工厂函数       |
 
 **示例：**
 
@@ -491,7 +493,7 @@ interface ActionContext<S, A> {
   // 状态方法
   setState<K extends keyof S>(key: K, value: S[K]): void
   $patch(partialState: Partial<S>): void
-  $replaceState(newState: S): void
+  $replaceState(newState: S | (() => S)): void
   getState(): S
 
   // 类型安全的跨 action 调用（编译期校验 action 名与参数，仅接受已声明的 action 名称）
@@ -973,6 +975,7 @@ store.use(persistencePlugin({
 | key              | string \| (name: string) => string | 存储键名                                                                   |
 | storage          | StorageBackend                     | 存储后端                                                                   |
 | filter           | (state: S) => Partial\<S\>         | 状态过滤器                                                                 |
+| validate         | (state: unknown) => state is S     | 状态验证器（恢复前校验，返回 false 则拒绝恢复）                           |
 | restore          | boolean                            | 是否在启动时恢复                                                           |
 | debounce         | number                             | 防抖延迟（毫秒）                                                           |
 | clearOnUninstall | boolean                            | 卸载插件时是否清除存储数据（默认 `false`，仅停止监听，保留已持久化的数据） |
@@ -1204,12 +1207,14 @@ App(withAppStore(globalStore, {})({
 
 ```typescript
 function composeStore<Stores extends readonly StoreLike[]>(
-  stores: Stores,
-  options?: ComposeOptions
-): ComposedStore<ExtractStates<Stores>>
+  stores: [...Stores],
+  options?: ComposeOptions,
+): Store<ExtractStates<Stores>, ExtractActions<Stores>, ExtractGetters<Stores>>
 ```
 
 组合后的 Store 暴露 `getters` 只读属性，合并规则与 `getter()` 的解析语义一致：命名空间模式下键为 `storeName/getterName`，非命名空间模式为裸名（同名冲突取第一个 store 的定义）。
+
+子 Store 实例通过 `stores` 公开属性访问（如 `rootStore.stores['user']`）；`dispatch` / `getter` 支持 `storeName/actionName` 命名空间调用，裸名多 store 冲突时输出告警并取第一个 store 的定义。
 
 **参数：**
 
@@ -1222,10 +1227,10 @@ function composeStore<Stores extends readonly StoreLike[]>(
 
 ```typescript
 interface ComposeOptions {
-  namespace?: string      // 命名空间前缀
-  lazy?: boolean         // 延迟初始化
-  strict?: boolean       // 严格模式
-  tree?: boolean         // 树形结构
+  namespace?: string | boolean  // true 启用命名空间（默认分隔符 /），或指定前缀字符串
+  lazy?: boolean               // 延迟初始化
+  strict?: boolean             // 严格模式（访问不存在的 Store 报错）
+  tree?: boolean               // 树形结构
 }
 ```
 
@@ -1260,13 +1265,23 @@ rootStore.dispatch('cart/addItem', product)
 
 **方法：**
 
-| 方法       | 签名                                 | 说明           |
-| ---------- | ------------------------------------ | -------------- |
-| register   | (name: string, store: Store) => void | 注册 Store     |
-| unregister | (name: string) => void               | 注销 Store     |
-| get        | (name: string) => Store \| undefined | 获取 Store     |
-| getAll     | () => Record<string, Store>          | 获取所有 Store |
-| clear      | () => void                           | 清空注册表     |
+| 方法              | 签名                                       | 说明                                             |
+| ----------------- | ------------------------------------------ | ------------------------------------------------ |
+| register          | (name: string, store: Store) => void       | 注册 Store（同名覆盖，旧实例会被销毁）           |
+| registerAll       | (stores: Record<string, Store>) => void    | 批量注册                                         |
+| unregister        | (name: string) => void                     | 注销 Store（会调用 store.destroy()）              |
+| get               | (name: string) => Store \| undefined       | 获取 Store                                       |
+| getOrThrow        | (name: string) => Store                    | 获取 Store，不存在时抛错                         |
+| has               | (name: string) => boolean                  | 检查是否存在                                     |
+| getAll            | () => Record<string, Store>                | 获取所有 Store                                   |
+| size              | () => number                               | 注册的 Store 数量                                |
+| clear             | () => void                                 | 清空注册表（会销毁所有 Store）                   |
+| setDefault        | (name: string) => void                     | 设置默认 Store                                   |
+| getDefault        | () => Store \| undefined                   | 获取默认 Store                                   |
+| getNames          | () => string[]                             | 获取所有 Store 名称                              |
+| forEach           | (callback: (name, store) => void) => void  | 遍历所有 Store                                   |
+| createSnapshot    | () => Record<string, unknown>              | 创建所有 Store 状态快照（深拷贝）                |
+| restoreSnapshot   | (snapshot: Record<string, unknown>) => void | 从快照恢复所有 Store（$replaceState）          |
 
 **示例：**
 
@@ -1428,11 +1443,15 @@ const summary = selectUserSummary(store.state)
 
 ```typescript
 class GeomStoreError extends Error {
-  code: string
-  context?: Record<string, unknown>
-  timestamp: number
+  readonly code: string
+  readonly context?: Record<string, unknown>
 
   constructor(message: string, code: string, context?: Record<string, unknown>)
+
+  // 序列化为 JSON（name/message/code/context/stack）
+  toJSON(): Record<string, unknown>
+  // 用户友好的错误消息（含 storeName 上下文时格式化为 "... in store 'xxx': action"）
+  getFriendlyMessage(): string
 }
 ```
 
@@ -1499,7 +1518,7 @@ try {
 | -------- | ---------------------------- |
 | RETRY    | 重试（见下方语义说明）       |
 | FALLBACK | 使用回退值（见下方语义说明） |
-| IGNORE   | 忽略错误                     |
+| IGNORE   | 忽略错误（恢复结果为 `{ ignored: true }`） |
 | RESTART  | 重启                         |
 | RECOVER  | 执行恢复函数                 |
 
@@ -1639,6 +1658,7 @@ LRU 缓存实现。
 | get      | (key: K) => V \| undefined | 获取值       |
 | set      | (key: K, value: V) => this | 设置值       |
 | has      | (key: K) => boolean        | 检查是否存在 |
+| peek     | (key: K) => V \| undefined | 查看值（不更新访问顺序） |
 | delete   | (key: K) => boolean        | 删除         |
 | clear    | () => this                 | 清空         |
 | size     | () => number               | 获取大小     |
@@ -1662,7 +1682,7 @@ cache.set('user:1', { name: 'John' })
 const user = cache.get('user:1')
 
 console.log(cache.getStats())
-// { capacity: 100, size: 1, hits: 1, misses: 0, hitRate: 100 }
+// { capacity: 100, size: 1, hits: 1, misses: 0, totalAccesses: 1, hitRate: 100, missRate: 0, evictions: 0, keys: ['user:1'], avgAccessTime: 0 }
 ```
 
 ---
@@ -1760,8 +1780,8 @@ noop() // undefined
 // 恒等函数
 identity(5) // 5
 
-// 唯一ID
-uniqueId('user_') // 'user_1'
+// 唯一ID（递增序号 + 随机后缀，避免 HMR/多 bundle 下重复）
+uniqueId('user_') // 'user_1_ab12cd'（格式：前缀 + 序号 + 随机后缀）
 ```
 
 ---
@@ -2102,12 +2122,23 @@ const asyncResult = await boundary.executeAsync(() => riskyAsyncOperation())
 ```javascript
 const { AsyncBatchNotifier } = require('@openlide/geomstore')
 
-const notifier = new AsyncBatchNotifier({
-  delay: 16, // 延迟时间
-  maxBatchSize: 100 // 最大批量大小
+// 构造函数无参数：同一微任务内的多次 notify 只触发一次订阅回调
+const notifier = new AsyncBatchNotifier()
+
+// 订阅状态变化
+const unsubscribe = notifier.subscribe((state) => {
+  console.log('合并后的最新状态:', state)
 })
 
-notifier.notify(callback)
+notifier.notify(state1)
+notifier.notify(state2)
+notifier.notify(state3)
+// 监听器只被调用一次，且收到的是最后一次 notify 的状态
+
+// 取消订阅
+unsubscribe()
+
+// 其他方法：clear() 清空监听器；size() 获取监听器数量
 ```
 
 ### StateFingerprint
@@ -2118,8 +2149,13 @@ notifier.notify(callback)
 const { StateFingerprint } = require('@openlide/geomstore')
 
 const fingerprint = new StateFingerprint()
-const hash = fingerprint.compute(state)
-const changed = fingerprint.hasChanged(newState)
+
+// 生成状态哈希指纹（不同状态内容产生不同哈希）
+const hash1 = fingerprint.generate(state)
+const hash2 = fingerprint.generate(newState)
+
+// 哈希不同即状态已变化
+const changed = hash1 !== hash2
 ```
 
 ### 工具函数
@@ -2156,8 +2192,8 @@ const throttledFn = throttle(fn, 100)
 ### 常用类型
 
 ```typescript
-// 状态类型
-type State = Record<string, unknown>
+// 状态类型（宽松对象约束：兼容 Record 写法，也允许未声明索引签名的 interface）
+type State = object
 
 // Actions 类型
 type Actions = Record<string, (...args: any[]) => any>
@@ -2190,6 +2226,20 @@ type MappedGetters<S, G, M extends (keyof G)[]> = {
 
 ## 版本历史
 
+- **v0.1.1** - Round-2 全量源码审阅修复
+  - persistencePlugin 恢复改用合并语义（$patch）
+  - analyzerPlugin 错误路径清理配对栈
+  - withErrorBoundary 按宿主 WeakMap 隔离
+  - createSelector 缓存命中扩展到 LRU cacheHistory
+  - withComponentStore methods 实例级拷贝
+  - withCache/withThrottle 异步运行时检测（原型比较）
+  - ActionLoader 按宿主隔离 + setOptions 重置计数
+  - ErrorRecovery.clearRetryCount 精确匹配
+  - composeStore.$replaceState 缺键告警
+  - initBackgroundSync 包装全局 App 构造器
+  - Store.$snapshot 递归深冻结
+  - StateProxy 死代码清理
+  - typecheck 0 errors（wx 全局标识符修复）
 - **v0.1.0** - 初始版本发布
   - 核心 Store 功能
   - 微信小程序集成

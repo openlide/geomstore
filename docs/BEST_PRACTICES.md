@@ -1,4 +1,4 @@
-# GeomStore v0.1.0 最佳实践
+# GeomStore v0.1.1 最佳实践
 
 本文档总结了在微信小程序项目中使用 GeomStore 的最佳实践，帮助开发者构建高质量、可维护的应用。
 
@@ -438,15 +438,15 @@ store.batch(() => {
 ```javascript
 const { createMemoizedSelector } = require('@openlide/geomstore')
 
-// 在 Store 外部创建记忆化选择器
+// 在 Store 外部创建记忆化选择器（记忆化默认启用；
+// 可选第二参数为自定义相等性函数，如 (a, b) => a === b）
 const selectFilteredProducts = createMemoizedSelector(
   (state) => {
     return state.products.filter(p => 
       p.price >= state.filter.minPrice &&
       p.price <= state.filter.maxPrice
     )
-  },
-  { cache: true }
+  }
 )
 
 // 在 getter 中使用
@@ -488,26 +488,35 @@ const products = store.getter('getProductsByCategory')(1, 'price')
 组合多个 getter 的结果。
 
 ```javascript
+// getter 是纯函数，仅接收 state，无法在内部通过 this.getter() 调用其他 getter。
+// 组合多个 getter 的正确方式：将公共逻辑提取为外部选择器函数，在多个 getter 中复用。
+const { createMemoizedSelector } = require('@openlide/geomstore')
+
+const selectUserBasic = createMemoizedSelector((state) => ({
+  name: state.userInfo?.name,
+  avatar: state.userInfo?.avatar
+}))
+const selectUserVip = createMemoizedSelector((state) => ({
+  level: state.userInfo?.vipLevel,
+  points: state.userInfo?.vipPoints
+}))
+
 getters: {
   userBasicInfo(state) {
-    return {
-      name: state.userInfo?.name,
-      avatar: state.userInfo?.avatar
-    }
+    return selectUserBasic(state)
   },
 
   userVipInfo(state) {
-    return {
-      level: state.userInfo?.vipLevel,
-      points: state.userInfo?.vipPoints
-    }
+    return selectUserVip(state)
   },
 
-  // 组合其他 getter
+  // 组合其他 getter 的结果
   userFullInfo(state) {
-    const basic = this.getter('userBasicInfo')
-    const vip = this.getter('userVipInfo')
-    return { ...basic, ...vip, isLoggedIn: state.isLoggedIn }
+    return {
+      ...selectUserBasic(state),
+      ...selectUserVip(state),
+      isLoggedIn: state.isLoggedIn
+    }
   }
 }
 ```
@@ -677,7 +686,8 @@ Component(withComponentStore(app.productStore, {
   methods: {
     checkFavorite() {
       // 检查是否已收藏
-      return this.store.getter('isFavorite')(this.data.product.id)
+      // （withComponentStore 不向组件实例暴露 store，请通过模块导入或 getApp() 访问原始 store）
+      return app.productStore.getter('isFavorite')(this.data.product.id)
     },
 
     onTap() {
@@ -883,7 +893,7 @@ App({
     wx.onUnhandledRejection((event) => {
       monitoring.report({
         storeName: 'global',
-        operation: 'unhandledRejection',
+        operation: 'action-execution', // OperationType 联合类型中的合法值
         error: event.reason,
         level: 'error',
         timestamp: Date.now()
@@ -915,14 +925,14 @@ const boundary = new ErrorBoundary({
 
 // 包装 action
 const safeDispatch = (store, actionName, ...args) => {
-  return boundary.wrap(() => store.dispatch(actionName, ...args))
+  return boundary.execute(() => store.dispatch(actionName, ...args))
 }
 ```
 
 ### 3. 错误恢复策略
 
 ```javascript
-const { ErrorRecovery, RecoveryStrategy } = require('@openlide/geomstore')
+const { ErrorRecovery, RecoveryStrategy, createError, ErrorCode } = require('@openlide/geomstore')
 
 const recovery = new ErrorRecovery()
 
@@ -958,7 +968,9 @@ actions: {
       const res = await fetchApi()
       this.state.data = res.data
     } catch (error) {
-      const result = await recovery.recover(error)
+      // recover 只接受 GeomStoreError，普通 Error 需先用 createError 包装
+      const geomError = createError(ErrorCode.ACTION_EXECUTION_ERROR, error.message || String(error))
+      const result = await recovery.recover(geomError)
       this.state.data = result || []
     }
   }
@@ -1145,9 +1157,10 @@ export interface UserActions {
 }
 
 export interface UserGetters {
-  displayName: () => string
-  isVip: () => boolean
-  userLevel: () => number
+  // getter 是纯函数，签名固定为 (state: S) => R
+  displayName: (state: UserState) => string
+  isVip: (state: UserState) => boolean
+  userLevel: (state: UserState) => number
 }
 ```
 
@@ -1293,9 +1306,10 @@ interface IndexPageMethods {
   handleLogin: (e: { detail: { value: { username: string; password: string } } }) => Promise<void>
 }
 
+// withPageStore 不会向页面实例暴露 store 属性，映射的状态/action/getter 直接挂在实例上
+// （如需访问原始 store，请通过模块导入或 getApp()）
 type IndexPageThis = {
   data: IndexPageData
-  store: typeof userStore
 } & IndexPageMethods
 
 Page(withPageStore(userStore, {

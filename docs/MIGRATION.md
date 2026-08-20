@@ -1,6 +1,6 @@
 # 迁移指南（Migration Guide）
 
-> 本文档面向正在使用其他小程序状态管理方案、希望迁移到 **GeomStore v0.1.0** 的开发者。
+> 本文档面向正在使用其他小程序状态管理方案、希望迁移到 **GeomStore v0.1.1** 的开发者。
 >
 > GeomStore 是零运行时依赖、TypeScript 优先、面向微信小程序（兼容 Skyline / WebView）的轻量级状态管理库。
 

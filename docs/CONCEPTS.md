@@ -640,14 +640,14 @@ store.getter('expensiveCalculation')  // 此时才执行
 ### 4. 选择器缓存
 
 ```javascript
-import { createParametricSelector } from './utils/geomstore'
+import { createParametricSelector } from '@openlide/geomstore'
 
-// 创建带参数的选择器
+// 创建带参数的选择器（第二参数可配置缓存：{ ttl, maxEntries }）
 const selectUserById = createParametricSelector(
   (state, id) => state.users.find(u => u.id === id)
 )
 
-// 结果会被缓存（默认 TTL 5 秒，可通过第二参数 { ttl, maxEntries } 调整）
+// 先传状态，再传参数调用；结果会被缓存（默认 TTL 5 秒、maxEntries 1000）
 selectUserById(state)(1)  // 计算
 selectUserById(state)(1)  // 缓存命中
 selectUserById(newState)(1)  // 状态变化，重新计算
