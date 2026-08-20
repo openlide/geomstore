@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- 文档全面审阅与更新：全部文档示例代码与 API 引用与源码对齐（GUIDE / API / BEST_PRACTICES / TECHNICAL_DOCUMENTATION / CONCEPTS / ARCHITECTURE / FAQ / MIGRATION / README），并修正若干无效示例（命名空间组合 Store 的 mapState 路径、autoUpdateOnShow 依赖 autoInject、ErrorRecovery 配置键、ErrorCode 枚举等）。
+
 ## [0.1.1] - 2026-08-19
 
 第二轮全量源码审阅修复（16 项），全量测试 40 套件 / 2040 用例通过，typecheck 0 错误。
@@ -47,9 +51,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 错误边界与错误恢复机制
 - 性能监控（Performance Monitor）
 - 开发工具插件（Time Travel）
-- CJS + ESM 双产物，15 个子路径导出，sideEffects: false
+- CJS 构建产物（CJS-only），14 个子路径导出（含微信「构建 npm」兼容的转发 stub），sideEffects: false
 - TypeScript strict mode，完整类型推断
 - 40 个测试套件 / 2000+ 测试用例
 
 [0.1.0]: https://github.com/openlide/GeomStore/releases/tag/v0.1.0
 [0.1.1]: https://github.com/openlide/GeomStore/releases/tag/v0.1.1
+[Unreleased]: https://github.com/openlide/GeomStore/compare/v0.1.1...HEAD

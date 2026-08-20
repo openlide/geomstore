@@ -71,6 +71,14 @@ npm install @openlide/geomstore
 import { createStore } from '@openlide/geomstore'
 ```
 
+> 支持子路径按需导入（插件、集成、选择器等）：
+>
+> ```javascript
+> import { withPageStore } from '@openlide/geomstore/integrations'
+> import { persistencePlugin, analyzerPlugin } from '@openlide/geomstore/plugins'
+> import { createSelector } from '@openlide/geomstore/selectors'
+> ```
+
 ---
 
 ## 快速开始
@@ -78,10 +86,10 @@ import { createStore } from '@openlide/geomstore'
 ### 创建 Store
 
 ```javascript
-const { createStore } = require('./utils/geomstore')
+const { createStore } = require('@openlide/geomstore')
 
 // 创建用户状态管理
-const useUserStore = createStore({
+const userStore = createStore({
   name: 'user',
 
   state: {
@@ -135,11 +143,8 @@ const useUserStore = createStore({
 
 ```javascript
 // pages/index/index.js
-const { withPageStore } = require('../../utils/geomstore')
-
-// 获取全局 store
-const app = getApp()
-const userStore = app.userStore
+const { withPageStore } = require('@openlide/geomstore/integrations')
+const { userStore } = require('../../stores/user')
 
 Page(withPageStore(userStore, {
   // 映射状态到页面 data
@@ -186,7 +191,7 @@ Page(withPageStore(userStore, {
 
 ```javascript
 // components/user-card/index.js
-const { withComponentStore } = require('../../utils/geomstore')
+const { withComponentStore } = require('@openlide/geomstore/integrations')
 
 Component(withComponentStore(userStore, {
   mapState: ['userInfo'],
@@ -305,7 +310,7 @@ const useCartStore = createStore({
 ### 使用插件
 
 ```javascript
-const { createStore, loggerPlugin, persistencePlugin, devtoolsPlugin } = require('./utils/geomstore')
+const { createStore, loggerPlugin, persistencePlugin, devtoolsPlugin } = require('@openlide/geomstore')
 
 const store = createStore({
   name: 'app',
@@ -316,14 +321,13 @@ const store = createStore({
 // 安装日志插件
 store.use(loggerPlugin)
 
-// 安装持久化插件
+// 安装持久化插件（默认使用微信同步存储，也可传入自定义 storage 后端）
 store.use(persistencePlugin({
-  key: 'app-state',
-  storage: wx.storage
+  key: 'app-state'
 }))
 
 // 安装开发工具（仅开发环境）
-if (__DEV__) {
+if (process.env.NODE_ENV === 'development') {
   store.use(devtoolsPlugin)
 }
 ```
@@ -353,6 +357,7 @@ GeomStore/
 │   ├── core/                # 核心实现
 │   │   ├── store/           # Store 类
 │   │   ├── cache/           # LRU 缓存
+│   │   ├── hooks/           # 钩子系统
 │   │   ├── selector/        # 选择器
 │   │   ├── error/           # 错误处理
 │   │   ├── action/          # Action 增强
@@ -373,23 +378,23 @@ GeomStore/
 ## 开发
 
 ```bash
-# 安装依赖
-npm install
-
-# 开发模式
-npm run dev
-
-# 构建
-npm run build
+# 安装依赖（项目使用 pnpm，亦可使用 npm）
+pnpm install
 
 # 测试
-npm test
+pnpm test
+
+# 测试监听模式
+pnpm test:watch
+
+# 构建
+pnpm run build
 
 # 类型检查
-npm run typecheck
+pnpm run typecheck
 
 # 代码检查
-npm run lint
+pnpm run lint
 ```
 
 ---
