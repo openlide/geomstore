@@ -47,6 +47,8 @@ const { createStore } = require('./utils/geomstore/dist/index.js')
 const { createStore, withPageStore } = require('./utils/geomstore/dist/index.js')
 ```
 
+> 💡 复制安装时，本文示例中的 `@openlide/geomstore`（含 `/integrations`、`/plugins` 等子路径）需替换为 `./utils/geomstore/dist/index.js` 全路径；采用 NPM 安装则无需修改。
+
 ### 方式二：NPM 安装
 
 如果你的小程序项目使用 NPM：
@@ -86,17 +88,17 @@ const { createStore } = require('@openlide/geomstore')
 
 ```javascript
 // stores/counter.js
-const { createStore } = require('../utils/geomstore')
+const { createStore } = require('@openlide/geomstore')
 
-const useCounterStore = createStore({
+const counterStore = createStore({
   // Store 名称（可选，用于调试）
   name: 'counter',
 
-  // 状态
-  state: {
+  // 状态（推荐使用工厂函数形式，初始化时执行一次并深拷贝）
+  state: () => ({
     count: 0,
     step: 1
-  },
+  }),
 
   // Actions：修改状态的方法（通过 this.state 读写状态，参数为调用时传入）
   actions: {
@@ -142,26 +144,26 @@ const useCounterStore = createStore({
   }
 })
 
-module.exports = { useCounterStore }
+module.exports = { counterStore }
 ```
 
 ### 直接使用 Store
 
 ```javascript
-const { useCounterStore } = require('./stores/counter')
+const { counterStore } = require('./stores/counter')
 
 // 获取状态
-console.log(useCounterStore.state.count)  // 0
+console.log(counterStore.state.count)  // 0
 
 // 调用 action
-useCounterStore.dispatch('increment')
-console.log(useCounterStore.state.count)  // 1
+counterStore.dispatch('increment')
+console.log(counterStore.state.count)  // 1
 
 // 使用 getter
-console.log(useCounterStore.getter('doubleCount'))  // 2
+console.log(counterStore.getter('doubleCount'))  // 2
 
 // 订阅状态变化
-const unsubscribe = useCounterStore.subscribe((state) => {
+const unsubscribe = counterStore.subscribe((state) => {
   console.log('状态已更新:', state)
 })
 
@@ -328,7 +330,7 @@ const total = store.getter('totalPrice')
 
 ```javascript
 // pages/index/index.js
-const { withPageStore } = require('../../utils/geomstore')
+const { withPageStore } = require('@openlide/geomstore/integrations')
 const app = getApp()
 
 Page(withPageStore(app.userStore, {
@@ -349,8 +351,9 @@ Page(withPageStore(app.userStore, {
     console.log(this.data.userInfo)
     console.log(this.data.displayName)
 
-    // 访问原始 store
-    console.log(this.store)  // userStore 实例
+    // 访问原始 store（withPageStore 不会向页面实例暴露 store 属性，
+    // 请通过 getApp() 或模块导入的 store 引用访问）
+    console.log(app.userStore.getState())  // 当前状态
   },
 
   onShow() {
@@ -398,7 +401,7 @@ Page(withPageStore(app.userStore, {
 
 ```javascript
 // components/user-card/index.js
-const { withComponentStore } = require('../../utils/geomstore')
+const { withComponentStore } = require('@openlide/geomstore/integrations')
 const app = getApp()
 
 Component(withComponentStore(app.userStore, {
@@ -449,16 +452,17 @@ Component(withComponentStore(app.userStore, {
 
 ```javascript
 // app.js
-const { createStore, withAppStore } = require('./utils/geomstore')
+const { createStore } = require('@openlide/geomstore')
+const { withAppStore } = require('@openlide/geomstore/integrations')
 
 // 创建全局 store
 const globalStore = createStore({
   name: 'global',
-  state: {
+  state: () => ({
     theme: 'light',
     language: 'zh_CN',
     systemInfo: null
-  },
+  }),
   actions: {
     setTheme(theme) {
       this.state.theme = theme
@@ -505,7 +509,7 @@ App(withAppStore(globalStore)({
 // 自动注入状态到页面 data
 Page(withPageStore(store, {
   // 自动注入配置
-  autoInject: true,  // 默认 true
+  autoInject: true,  // 显式开启（默认 false，不会自动注入）
   injectMapping: {
     // store 键 -> 本地键
     'userInfo': 'user',
@@ -644,7 +648,7 @@ class DataService {
 #### 日志插件
 
 ```javascript
-const { loggerPlugin } = require('./utils/geomstore')
+const { loggerPlugin } = require('@openlide/geomstore/plugins')
 
 // 安装日志插件
 store.use(loggerPlugin)
@@ -657,7 +661,7 @@ store.use(loggerPlugin)
 #### 持久化插件
 
 ```javascript
-const { persistencePlugin } = require('./utils/geomstore')
+const { persistencePlugin } = require('@openlide/geomstore/plugins')
 
 store.use(persistencePlugin({
   // 存储键名
@@ -696,7 +700,7 @@ store.use(persistencePlugin({
 #### DevTools 插件
 
 ```javascript
-const { devtoolsPlugin } = require('./utils/geomstore')
+const { devtoolsPlugin } = require('@openlide/geomstore/plugins')
 
 // 仅在开发环境启用
 if (process.env.NODE_ENV === 'development') {
@@ -749,24 +753,24 @@ store.use(myPlugin)
 对于大型应用，可以将多个 Store 组合起来管理：
 
 ```javascript
-const { composeStore } = require('./utils/geomstore')
+const { composeStore } = require('@openlide/geomstore')
 
 // 创建多个独立 store
 const userStore = createStore({
   name: 'user',
-  state: { userInfo: null, token: '' },
+  state: () => ({ userInfo: null, token: '' }),
   actions: { /* ... */ }
 })
 
 const cartStore = createStore({
   name: 'cart',
-  state: { items: [] },
+  state: () => ({ items: [] }),
   actions: { /* ... */ }
 })
 
 const settingsStore = createStore({
   name: 'settings',
-  state: { theme: 'light' },
+  state: () => ({ theme: 'light' }),
   actions: { /* ... */ }
 })
 
@@ -784,7 +788,7 @@ rootStore.dispatch('user/login', credentials)
 rootStore.dispatch('cart/addItem', product)
 
 // 获取子 store
-const user = rootStore.getStore('user')
+const user = rootStore.stores['user']
 ```
 
 ---
@@ -794,7 +798,7 @@ const user = rootStore.getStore('user')
 ### 定义类型安全的 Store
 
 ```typescript
-import { createStore, State, Actions, Getters } from './utils/geomstore'
+import { createStore, State, Actions, Getters } from '@openlide/geomstore'
 
 // 定义状态类型
 interface UserState {
@@ -822,14 +826,14 @@ interface UserGetters {
 }
 
 // 创建类型安全的 store
-const useUserStore = createStore<UserState, UserActions, UserGetters>({
+const userStore = createStore<UserState, UserActions, UserGetters>({
   name: 'user',
 
-  state: {
+  state: () => ({
     userInfo: null,
     token: '',
     isLoggedIn: false
-  },
+  }),
 
   actions: {
     async login(credentials) {
@@ -868,11 +872,11 @@ const useUserStore = createStore<UserState, UserActions, UserGetters>({
 })
 
 // 类型自动推断
-useUserStore.dispatch('login', { username: 'test', password: '123' })  // ✅ 类型正确
-useUserStore.dispatch('login', { username: 123 })  // ❌ 类型错误
+userStore.dispatch('login', { username: 'test', password: '123' })  // ✅ 类型正确
+userStore.dispatch('login', { username: 123 })  // ❌ 类型错误
 
-const isVip = useUserStore.getter('isVip')  // boolean
-const name = useUserStore.getter('displayName')  // string
+const isVip = userStore.getter('isVip')  // boolean
+const name = userStore.getter('displayName')  // string
 ```
 
 ### state 工厂函数形式（推荐）
@@ -880,7 +884,7 @@ const name = useUserStore.getter('displayName')  // string
 除了上面示例中的字面量对象形式，`createStore` 还支持 **state 工厂函数**形式（Pinia 同款）：
 
 ```typescript
-import { createStore } from './utils/geomstore'
+import { createStore } from '@openlide/geomstore'
 
 interface CityGroup {
   key: string
@@ -928,7 +932,7 @@ const cityStore = createStore<CityState>({
 ### 类型推断工具
 
 ```typescript
-import type { InferActionArgs, InferActionReturn, InferGetterReturn } from './utils/geomstore'
+import type { InferActionArgs, InferActionReturn, InferGetterReturn } from '@openlide/geomstore'
 
 // 推断 action 参数类型
 type LoginArgs = InferActionArgs<UserActions, 'login'>  // [{ username: string; password: string }]

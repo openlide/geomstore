@@ -1,4 +1,4 @@
-# GeomStore v0.1.0 技术文档
+# GeomStore v0.1.2 技术文档
 
 > 轻量级微信小程序状态管理库 - 企业级生产就绪
 
@@ -25,11 +25,11 @@
 
 | 属性     | 值                                        |
 | -------- | ----------------------------------------- |
-| 版本     | 0.1.0                                     |
+| 版本     | 0.1.2                                     |
 | 许可证   | MIT                                       |
 | 运行环境 | Node.js ≥22.0.0, 微信小程序基础库 ≥2.10.0 |
 | 语言     | TypeScript 6.0+                           |
-| 打包格式 | ESM / CommonJS                            |
+| 打包格式 | CommonJS（CJS-only，微信小程序专用）      |
 
 ### 1.2 核心特性
 
@@ -392,11 +392,11 @@ interface UserGetters {
 // 创建 Store
 const userStore = createStore<UserState, UserActions, UserGetters>({
   name: 'user-store',
-  state: {
+  state: () => ({
     user: null,
     isLoggedIn: false,
     token: null
-  },
+  }),
   actions: {
     // this 自动获得类型提示
     async login(username, password) {
@@ -499,7 +499,7 @@ import { createStore, composeStore } from '@openlide/geomstore'
 // 创建模块 Store
 const userStore = createStore({
   name: 'user',
-  state: { name: 'Alice', age: 25 },
+  state: () => ({ name: 'Alice', age: 25 }),
   actions: {
     setName(name: string) {
       this.setState('name', name)
@@ -512,7 +512,7 @@ const userStore = createStore({
 
 const counterStore = createStore({
   name: 'counter',
-  state: { count: 0 },
+  state: () => ({ count: 0 }),
   actions: {
     increment() {
       this.setState('count', this.state.count + 1)
@@ -527,8 +527,10 @@ const counterStore = createStore({
 })
 
 // 组合 Store (命名空间模式)
+// namespace: true 启用命名空间（键格式 storeName/actionName）；
+// 传入字符串仅作为启用标志，实际前缀固定为各子 store 的 name
 const rootStore = composeStore([userStore, counterStore], {
-  namespace: 'app',
+  namespace: true,
   strict: true
 })
 
@@ -577,11 +579,9 @@ import { createSelector, createMemoizedSelector, createParametricSelector } from
 // 基础选择器
 const selectUserName = createSelector((state: AppState) => state.user.name)
 
-// 记忆化选择器 (自动缓存结果)
+// 记忆化选择器 (自动缓存结果；可选第二参数为自定义相等性函数)
 const selectFilteredItems = createMemoizedSelector(
-  (state: AppState) => state.items,
-  (state: AppState) => state.filter,
-  (items, filter) => items.filter(item => item.category === filter)
+  (state: AppState) => state.items.filter(item => item.category === state.filter)
 )
 
 // 参数化选择器
@@ -687,23 +687,35 @@ enum ErrorCode {
   ACTION_EXECUTION_ERROR = 'ACTION_EXECUTION_ERROR',
   ACTION_TIMEOUT = 'ACTION_TIMEOUT',
   ACTION_CANCELLED = 'ACTION_CANCELLED',
-  
+
   // State 错误
   STATE_KEY_NOT_FOUND = 'STATE_KEY_NOT_FOUND',
   STATE_UPDATE_ERROR = 'STATE_UPDATE_ERROR',
   STATE_TYPE_ERROR = 'STATE_TYPE_ERROR',
-  
+
   // Selector 错误
   SELECTOR_NOT_FOUND = 'SELECTOR_NOT_FOUND',
   SELECTOR_EXECUTION_ERROR = 'SELECTOR_EXECUTION_ERROR',
-  
+  SELECTOR_CACHE_ERROR = 'SELECTOR_CACHE_ERROR',
+
   // Plugin 错误
   PLUGIN_NOT_FOUND = 'PLUGIN_NOT_FOUND',
   PLUGIN_INSTALLATION_ERROR = 'PLUGIN_INSTALLATION_ERROR',
-  
-  // 其他
+  PLUGIN_EXECUTION_ERROR = 'PLUGIN_EXECUTION_ERROR',
+
+  // Compose 错误
+  STORE_NAME_CONFLICT = 'STORE_NAME_CONFLICT',
+  STORE_DEPENDENCY_ERROR = 'STORE_DEPENDENCY_ERROR',
+  STORE_COMPOSE_ERROR = 'STORE_COMPOSE_ERROR',
+
+  // 验证错误
   VALIDATION_ERROR = 'VALIDATION_ERROR',
-  UNKNOWN_ERROR = 'UNKNOWN_ERROR'
+  TYPE_ERROR = 'TYPE_ERROR',
+  PARAMETER_ERROR = 'PARAMETER_ERROR',
+
+  // 通用错误
+  UNKNOWN_ERROR = 'UNKNOWN_ERROR',
+  INTERNAL_ERROR = 'INTERNAL_ERROR',
 }
 ```
 
@@ -730,7 +742,8 @@ try {
 
 // 错误边界
 const boundary = new ErrorBoundary({
-  fallback: (error, context) => {
+  // fallback 第二参数为当前状态（S | undefined）
+  fallback: (error, currentState) => {
     console.error('Caught by boundary:', error)
     return { recovered: true }
   }
@@ -1011,7 +1024,7 @@ class DataService {
 
 ### 3.8 微信小程序集成模块
 
-#### 3.7.1 集成架构
+#### 3.8.1 集成架构
 
 ```
 微信小程序集成:
@@ -1041,7 +1054,7 @@ class DataService {
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-#### 3.7.2 Page 集成
+#### 3.8.2 Page 集成
 
 ```typescript
 // pages/user/user.ts
@@ -1050,10 +1063,10 @@ import { withPageStore } from '@openlide/geomstore/integrations'
 
 const userStore = createStore({
   name: 'user',
-  state: {
+  state: () => ({
     userInfo: null,
     isLoading: false
-  },
+  }),
   actions: {
     async fetchUser(userId: string) {
       this.setState('isLoading', true)
@@ -1108,7 +1121,7 @@ Page(withPageStore(userStore, {
 }))
 ```
 
-#### 3.7.3 Component 集成
+#### 3.8.3 Component 集成
 
 ```typescript
 // components/user-card/user-card.ts
@@ -1144,7 +1157,7 @@ Component(withComponentStore(userStore, {
 }))
 ```
 
-#### 3.7.4 App 集成
+#### 3.8.4 App 集成
 
 ```typescript
 // app.ts
@@ -1152,10 +1165,10 @@ import { withAppStore, createApp } from '@openlide/geomstore/integrations'
 
 const globalStore = createStore({
   name: 'global',
-  state: {
+  state: () => ({
     systemInfo: null,
     theme: 'light'
-  },
+  }),
   actions: {
     async init() {
       const info = await wx.getSystemInfo()
@@ -1200,12 +1213,18 @@ interface Store<
   
   /** Getters 定义对象（只读；提供类型推断位点，可用于调试检查） */
   readonly getters: G
+
+  /** 实例级钩子系统（每个 Store 独立） */
+  readonly hooks: IHookSystem
+
+  /** Store 是否已销毁（销毁后调用公开方法会抛错） */
+  readonly destroyed: boolean
   
   // 状态管理
   getState(): S
   setState<K extends keyof S>(key: K, value: S[K]): void
   $patch(partialState: Partial<S>): void
-  $replaceState(newState: S): void
+  $replaceState(newState: S | (() => S)): void
   
   // 快照（深拷贝并递归冻结嵌套纯对象/数组，不可变）
   $snapshot(): Readonly<S>
@@ -1220,6 +1239,9 @@ interface Store<
   
   getter<K extends keyof G>(getterName: K): InferGetterReturn<G, K>
   getter(getterName: string): unknown
+
+  /** 获取所有 getter 名称列表（用于 DevTools / 调试） */
+  getGetterNames(): string[]
   
   // 订阅
   subscribe(listener: StateListener<S>): () => void
@@ -1244,13 +1266,13 @@ interface Store<
 }
 ```
 
-#### 4.1.2 StoreOptions 接口
+#### 4.1.2 StoreConfig 接口（免泛型自动推导，推荐）
 
 ```typescript
-interface StoreOptions<
-  S extends State = State,
-  A extends Actions = Actions,
-  G extends Getters<S> = Getters<S>
+interface StoreConfig<
+  S = unknown,
+  A = unknown,
+  G = unknown
 > {
   /** Store 名称 */
   name?: string
@@ -1283,8 +1305,8 @@ interface StoreOptions<
 #### 4.1.3 类型工具
 
 ```typescript
-// 状态类型
-type State = Record<string, unknown>
+// 状态类型（宽松对象约束：兼容 Record 写法，也允许未声明索引签名的业务 interface）
+type State = object
 
 // Actions 类型
 type Actions = Record<string, (...args: any[]) => any>
@@ -1296,45 +1318,51 @@ type Getters<S extends State = State> = {
 
 // 推断 Action 参数类型
 type InferActionArgs<A extends Actions, K extends keyof A> = 
-  A[K] extends (...args: infer Args) => any ? Args : never
+  A[K] extends (...args: infer Args) => unknown ? Args : never
 
 // 推断 Action 返回类型
 type InferActionReturn<A extends Actions, K extends keyof A> = 
-  A[K] extends (...args: any[]) => infer R ? R : never
+  A[K] extends (...args: never[]) => infer R ? R : never
 
 // 推断 Getter 返回类型
 type InferGetterReturn<G extends Getters, K extends keyof G> = 
-  G[K] extends (state: any) => infer R ? R : never
+  G[K] extends (...args: never[]) => infer R ? R : never
 ```
 
 ### 4.2 组合接口
 
 ```typescript
 interface ComposeOptions {
-  /** 命名空间前缀 */
-  namespace?: string
-  
-  /** 严格模式（找不到 store 时抛错） */
+  /** 命名空间模式：true 启用（键格式 storeName/actionName），或传入任意字符串作为启用标志 */
+  namespace?: string | boolean
+
+  /** 延迟初始化 */
+  lazy?: boolean
+
+  /** 严格模式（访问不存在的 Store 报错） */
   strict?: boolean
+
+  /** Store 树结构 */
+  tree?: boolean
 }
 
 // 从 Store 数组推断组合状态类型
 type ExtractStates<Stores extends readonly StoreLike[]> = 
-  Stores extends [infer First, ...infer Rest]
-    ? First extends StoreLike
-      ? Rest extends readonly StoreLike[]
-        ? First['state'] & ExtractStates<Rest>
-        : First['state']
-      : {}
-    : {}
+  Stores extends readonly [infer First extends StoreLike, ...infer Rest extends StoreLike[]]
+    ? First['state'] & ExtractStates<Rest>
+    : Record<string, never>
 
 // 从 Store 数组推断组合 Actions 类型
 type ExtractActions<Stores extends readonly StoreLike[]> = 
-  UnionToIntersection<{
-    [K in keyof Stores]: Stores[K] extends StoreLike 
-      ? Stores[K]['actions'] 
-      : never
-  }[number]>
+  Stores extends readonly [infer First extends StoreLike, ...infer Rest extends StoreLike[]]
+    ? First['actions'] & ExtractActions<Rest>
+    : Record<string, never>
+
+// 从 Store 数组推断组合 Getters 类型
+type ExtractGetters<Stores extends readonly StoreLike[]> = 
+  Stores extends readonly [infer First extends StoreLike, ...infer Rest extends StoreLike[]]
+    ? First['getters'] & ExtractGetters<Rest>
+    : Record<string, never>
 ```
 
 ### 4.3 插件接口
@@ -1344,8 +1372,8 @@ interface Plugin<S extends State = State> {
   /** 插件名称 */
   name: string
   
-  /** 安装函数 */
-  install: (store: Store<S>, options?: any) => (() => void) | void
+  /** 安装函数（返回可选的卸载函数） */
+  install: (store: Store) => void | (() => void)
 }
 
 // 钩子类型
@@ -1360,8 +1388,13 @@ type HookName =
   | 'afterReplaceState'
   | 'onError'
 
-type HookHandler<H extends HookName> = H extends 'beforeSetState'
+// 类型层面为宽松的 (...args: unknown[]) => void；以下为常用钩子的推荐参数签名
+type HookHandler<H extends HookName> = H extends 'beforeSetState' | 'afterSetState'
   ? (key: string, value: unknown) => void
+  : H extends 'beforePatch' | 'afterPatch'
+  ? (partialState: unknown) => void
+  : H extends 'beforeDispatch'
+  ? (actionName: string, args: unknown[]) => void
   : H extends 'afterDispatch'
   ? (actionName: string, args: unknown[], result: unknown) => void
   : H extends 'onError'
@@ -1482,20 +1515,23 @@ import { createStore } from 'miniprogram_npm/geomstore'
 ```json
 {
   "name": "@openlide/geomstore",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "main": "dist/cjs/index.js",
-  "module": "dist/esm/index.js",
   "types": "dist/cjs/index.d.ts",
-  "files": ["dist", "src"],
+  "files": ["dist", "CHANGELOG.md"],
   "scripts": {
-    "build": "tsc",
+    "build": "tsc -p tsconfig.cjs.json && node scripts/postbuild-dist.cjs",
     "test": "jest",
     "test:coverage": "jest --coverage",
+    "test:ci": "jest --ci --coverage --maxWorkers=2",
     "lint": "eslint src tests --ext .ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit -p tsconfig.typecheck.json"
   },
-  "peerDependencies": {
-    "typescript": ">=6.0.0"
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^6.0.3"
   }
 }
 ```
@@ -1541,7 +1577,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
       
       - name: Install dependencies
@@ -1597,10 +1633,10 @@ interface CounterGetters {
 export const counterStore = createStore<CounterState, CounterActions, CounterGetters>({
   name: 'counter',
   
-  state: {
+  state: () => ({
     count: 0,
     history: []
-  },
+  }),
   
   actions: {
     increment() {
@@ -1724,7 +1760,7 @@ const store = createStore({
 ```typescript
 // ✅ 推荐：使用 store.batch 批量更新减少通知次数
 const store = createStore({
-  state: { a: 1, b: 2, c: 3 },
+  state: () => ({ a: 1, b: 2, c: 3 }),
   actions: {
     updateAll() {
       this.setState('a', 10)
@@ -1750,12 +1786,11 @@ store.setState('c', 30)  // 触发通知
 ```typescript
 import { createMemoizedSelector } from '@openlide/geomstore'
 
-// ✅ 推荐：使用记忆化选择器
+// ✅ 推荐：使用记忆化选择器（复杂计算在单个选择器函数内完成，结果会被缓存）
 const selectExpensiveValue = createMemoizedSelector(
-  (state: State) => state.items,
-  (items) => {
+  (state: State) => {
     // 复杂计算，结果会被缓存
-    return items.filter(/* ... */).map(/* ... */).reduce(/* ... */)
+    return state.items.filter(/* ... */).map(/* ... */).reduce(/* ... */)
   }
 )
 
@@ -1773,11 +1808,11 @@ const store = createStore({
 
 ```typescript
 const store = createStore({
-  state: {
+  state: () => ({
     data: null,
     loading: false,
     error: null
-  },
+  }),
   
   actions: {
     async fetchData(id: string) {
@@ -1805,10 +1840,10 @@ import { persistencePlugin } from '@openlide/geomstore'
 
 const store = createStore({
   name: 'user-preferences',
-  state: {
+  state: () => ({
     theme: 'light',
     language: 'zh-CN'
-  }
+  })
 })
 
 // 使用持久化插件（工厂调用传入配置）
@@ -1847,7 +1882,7 @@ import { createStore } from '@openlide/geomstore'
 
 export const globalStore = createStore({
   name: 'global',
-  state: { /* ... */ }
+  state: () => ({ /* ... */ })
 })
 
 // 在不同页面/组件中导入使用
@@ -1867,7 +1902,7 @@ Component(withComponentStore(globalStore, { /* ... */ })({ /* 组件配置 */ })
 ### 7.1 基准测试结果
 
 ```
-GeomStore v0.1.0 性能基准测试
+GeomStore v0.1.2 性能基准测试
 ==============================
 
 测试环境:
@@ -2054,28 +2089,29 @@ console.log('After:', snapshot2)
 
 ### A. 完整 API 列表
 
-| API                                  | 描述             |
-| ------------------------------------ | ---------------- |
-| `createStore(options)`               | 创建 Store 实例  |
-| `composeStore(stores, options)`      | 组合多个 Store   |
-| `createSelector(fn)`                 | 创建基础选择器   |
-| `createMemoizedSelector(...fns)`     | 创建记忆化选择器 |
-| `createParametricSelector(fn)`       | 创建参数化选择器 |
-| `LRUCache`                           | LRU 缓存类       |
-| `withPageStore(store, options)`      | Page 集成        |
-| `withComponentStore(store, options)` | Component 集成   |
-| `withAppStore(store, options)`       | App 集成         |
-| `loggerPlugin`                       | 日志插件         |
-| `persistencePlugin`                  | 持久化插件       |
-| `devtoolsPlugin`                     | DevTools 插件    |
-| `timeTravelPlugin`                   | 时间旅行插件     |
-| `analyzerPlugin`                     | 性能分析插件     |
+| API                                       | 描述             |
+| ----------------------------------------- | ---------------- |
+| `createStore(options)`                    | 创建 Store 实例  |
+| `composeStore(stores, options)`           | 组合多个 Store   |
+| `createSelector(fn)`                      | 创建基础选择器   |
+| `createMemoizedSelector(fn, equalityFn?)` | 创建记忆化选择器 |
+| `createParametricSelector(fn)`            | 创建参数化选择器 |
+| `LRUCache`                                | LRU 缓存类       |
+| `withPageStore(store, options)`           | Page 集成        |
+| `withComponentStore(store, options)`      | Component 集成   |
+| `withAppStore(store, options)`            | App 集成         |
+| `loggerPlugin`                            | 日志插件         |
+| `persistencePlugin`                       | 持久化插件       |
+| `devtoolsPlugin`                          | DevTools 插件    |
+| `timeTravelPlugin`                        | 时间旅行插件     |
+| `analyzerPlugin`                          | 性能分析插件     |
 
 ### B. 版本历史
 
-| 版本  | 日期       | 变更         |
-| ----- | ---------- | ------------ |
-| 0.1.0 | 2026-08-17 | 初始版本发布 |
+| 版本  | 日期       | 变更                                                  |
+| ----- | ---------- | ----------------------------------------------------- |
+| 0.1.0 | 2026-08-17 | 初始版本发布                                          |
+| 0.1.1 | 2026-08-19 | Round-2 全量源码审阅修复（16 项）+ typecheck 0 errors |
 
 ### C. 参与贡献
 
@@ -2086,6 +2122,6 @@ console.log('After:', snapshot2)
 
 ---
 
-**GeomStore v0.1.0** - 轻量级微信小程序状态管理库
+**GeomStore v0.1.2** - 轻量级微信小程序状态管理库
 
 Copyright (c) 2026 GeomStore Team. Licensed under MIT.

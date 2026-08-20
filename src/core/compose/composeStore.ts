@@ -600,18 +600,17 @@ function composeStore<Stores extends readonly StoreLike[]>(
   options?: ComposeOptions,
 ): Store<ExtractStates<Stores>, ExtractActions<Stores>, ExtractGetters<Stores>>
 
-// 标准版本：使用默认泛型参数
-function composeStore(stores: Store[], options?: ComposeOptions): Store<State, Actions, Getters<State>>
-
 // 实现
-function composeStore(stores: Store[], options: ComposeOptions = {}): Store<State, Actions, Getters<State>> {
+// 注意：不提供第二个非泛型重载——多重重载下 TS 的推断会吸收 [...Stores] 的元素类型，
+// 导致 ExtractStates 落回 Record<string, never>（返回类型退化为 never），仅保留泛型重载可完整提取
+function composeStore(stores: StoreLike[], options: ComposeOptions = {}): Store<State, Actions, Getters<State>> {
   // 验证stores
   if (!Array.isArray(stores) || stores.length === 0) {
     throw new Error('[composeStore] stores must be a non-empty array')
   }
 
   // 创建 ComposedStore 类实例（性能优于对象字面量）
-  const composedStore = new ComposedStore<State>(stores, options)
+  const composedStore = new ComposedStore<State>(stores as Store[], options)
 
   return composedStore as unknown as Store<State, Actions, Getters<State>>
 }

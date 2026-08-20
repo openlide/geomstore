@@ -1,6 +1,6 @@
 # 迁移指南（Migration Guide）
 
-> 本文档面向正在使用其他小程序状态管理方案、希望迁移到 **GeomStore v0.1.0** 的开发者。
+> 本文档面向正在使用其他小程序状态管理方案、希望迁移到 **GeomStore v0.1.2** 的开发者。
 >
 > GeomStore 是零运行时依赖、TypeScript 优先、面向微信小程序（兼容 Skyline / WebView）的轻量级状态管理库。
 
@@ -74,10 +74,10 @@ import { createStore } from '@openlide/geomstore'
 
 export const userStore = createStore({
   name: 'user',
-  state: {
+  state: () => ({
     userInfo: null,
     count: 0,
-  },
+  }),
   actions: {
     async login(payload) {
       const res = await api.login(payload)
@@ -213,7 +213,7 @@ const store = observable({
 import { createStore } from '@openlide/geomstore'
 
 const store = createStore({
-  state: { count: 0 },
+  state: () => ({ count: 0 }),
   getters: {
     double: (state) => state.count * 2,
   },

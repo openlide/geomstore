@@ -10,11 +10,11 @@ import { withPageStore } from '../../src/integrations'
 // 创建全局 Store
 const appStore = createStore({
   name: 'app-store',
-  state: {
+  state: () => ({
     userInfo: null as { name: string; avatar: string } | null,
     isLoggedIn: false,
     theme: 'light',
-  },
+  }),
   actions: {
     login(userInfo: { name: string; avatar: string }) {
       // @ts-ignore
@@ -62,7 +62,7 @@ Page(
     onReady() {
       console.log('Page ready')
     },
-  })
+  }),
 )
 
 // 高级用法：对象形式（别名映射）
@@ -90,7 +90,7 @@ Page(
       // 通过别名调用 action
       this.changeTheme('dark')
     },
-  })
+  }),
 )
 
 console.log('✅ Page integration examples defined')

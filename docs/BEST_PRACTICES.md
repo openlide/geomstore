@@ -1,4 +1,4 @@
-# GeomStore v0.1.0 最佳实践
+# GeomStore v0.1.2 最佳实践
 
 本文档总结了在微信小程序项目中使用 GeomStore 的最佳实践，帮助开发者构建高质量、可维护的应用。
 
@@ -58,13 +58,15 @@ miniprogram/
     └── analytics.js           # 分析插件
 ```
 
+> 📌 本文示例默认采用 NPM 安装方式（`require('@openlide/geomstore')` 等包路径，需在微信开发者工具中执行「构建 npm」）；若使用复制安装（上述 `utils/geomstore/` 目录），请将包路径替换为 `utils/geomstore/dist/index.js` 全路径。
+
 ### Store 文件组织
 
 **stores/index.js** - 统一导出入口：
 
 ```javascript
 // stores/index.js
-const { composeStore } = require('../utils/geomstore')
+const { composeStore } = require('@openlide/geomstore')
 const userStore = require('./user')
 const cartStore = require('./cart')
 const productStore = require('./product')
@@ -89,19 +91,19 @@ module.exports.rootStore = composeStore(
 
 ```javascript
 // stores/user.js
-const { createStore } = require('../utils/geomstore')
+const { createStore } = require('@openlide/geomstore')
 const userService = require('../services/user')
 
 const userStore = createStore({
   name: 'user',
 
-  state: {
+  state: () => ({
     userInfo: null,
     token: '',
     isLoggedIn: false,
     loading: false,
     error: null
-  },
+  }),
 
   actions: {
     // 登录
@@ -161,17 +163,17 @@ module.exports = userStore
 
 ```javascript
 // ❌ 不推荐：存储冗余数据
-state: {
+state: () => ({
   items: [...],
   itemCount: 10,        // 可计算得出
   totalPrice: 1000,     // 可计算得出
   isEmpty: false        // 可计算得出
-}
+})
 
 // ✅ 推荐：使用 getter 计算
-state: {
+state: () => ({
   items: []
-},
+}),
 getters: {
   itemCount(state) {
     return state.items.length
@@ -191,7 +193,7 @@ getters: {
 
 ```javascript
 // ❌ 不推荐：深层嵌套
-state: {
+state: () => ({
   user: {
     profile: {
       personal: {
@@ -204,18 +206,18 @@ state: {
       }
     }
   }
-}
+})
 
 // ✅ 推荐：扁平化结构
-state: {
+state: () => ({
   userName: 'John',
   userAge: 30,
   userEmail: 'john@example.com',
   userPhone: '123456'
-}
+})
 
 // 或适度分组
-state: {
+state: () => ({
   userBasic: {
     name: 'John',
     age: 30
@@ -224,7 +226,7 @@ state: {
     email: 'john@example.com',
     phone: '123456'
   }
-}
+})
 ```
 
 ### 3. 规范化列表数据
@@ -233,24 +235,24 @@ state: {
 
 ```javascript
 // ❌ 不推荐：纯数组
-state: {
+state: () => ({
   products: [
     { id: 1, name: 'Product 1' },
     { id: 2, name: 'Product 2' },
     { id: 3, name: 'Product 3' }
   ]
-}
+})
 // 查找需要遍历：state.products.find(p => p.id === 2)
 
 // ✅ 推荐：规范化存储
-state: {
+state: () => ({
   products: {
     1: { id: 1, name: 'Product 1' },
     2: { id: 2, name: 'Product 2' },
     3: { id: 3, name: 'Product 3' }
   },
   productIds: [1, 2, 3]
-}
+})
 // 直接访问：state.products[2]
 ```
 
@@ -260,20 +262,20 @@ state: {
 
 ```javascript
 // ❌ 不推荐
-state: {
+state: () => ({
   user: null,        // 可能导致解构错误
   list: undefined,   // 不明确
   count: undefined
-}
+})
 
 // ✅ 推荐
-state: {
+state: () => ({
   user: null,
   list: [],
   count: 0,
   loading: false,
   error: null
-}
+})
 ```
 
 ---
@@ -438,15 +440,15 @@ store.batch(() => {
 ```javascript
 const { createMemoizedSelector } = require('@openlide/geomstore')
 
-// 在 Store 外部创建记忆化选择器
+// 在 Store 外部创建记忆化选择器（记忆化默认启用；
+// 可选第二参数为自定义相等性函数，如 (a, b) => a === b）
 const selectFilteredProducts = createMemoizedSelector(
   (state) => {
     return state.products.filter(p => 
       p.price >= state.filter.minPrice &&
       p.price <= state.filter.maxPrice
     )
-  },
-  { cache: true }
+  }
 )
 
 // 在 getter 中使用
@@ -488,26 +490,35 @@ const products = store.getter('getProductsByCategory')(1, 'price')
 组合多个 getter 的结果。
 
 ```javascript
+// getter 是纯函数，仅接收 state，无法在内部通过 this.getter() 调用其他 getter。
+// 组合多个 getter 的正确方式：将公共逻辑提取为外部选择器函数，在多个 getter 中复用。
+const { createMemoizedSelector } = require('@openlide/geomstore')
+
+const selectUserBasic = createMemoizedSelector((state) => ({
+  name: state.userInfo?.name,
+  avatar: state.userInfo?.avatar
+}))
+const selectUserVip = createMemoizedSelector((state) => ({
+  level: state.userInfo?.vipLevel,
+  points: state.userInfo?.vipPoints
+}))
+
 getters: {
   userBasicInfo(state) {
-    return {
-      name: state.userInfo?.name,
-      avatar: state.userInfo?.avatar
-    }
+    return selectUserBasic(state)
   },
 
   userVipInfo(state) {
-    return {
-      level: state.userInfo?.vipLevel,
-      points: state.userInfo?.vipPoints
-    }
+    return selectUserVip(state)
   },
 
-  // 组合其他 getter
+  // 组合其他 getter 的结果
   userFullInfo(state) {
-    const basic = this.getter('userBasicInfo')
-    const vip = this.getter('userVipInfo')
-    return { ...basic, ...vip, isLoggedIn: state.isLoggedIn }
+    return {
+      ...selectUserBasic(state),
+      ...selectUserVip(state),
+      isLoggedIn: state.isLoggedIn
+    }
   }
 }
 ```
@@ -522,15 +533,16 @@ getters: {
 
 ```javascript
 // app.js
-const { createStore, withAppStore } = require('./utils/geomstore')
+const { createStore } = require('@openlide/geomstore')
+const { withAppStore } = require('@openlide/geomstore/integrations')
 const { userStore, cartStore, settingsStore } = require('./stores')
 
 App(withAppStore(createStore({
   name: 'global',
-  state: {
+  state: () => ({
     initialized: false,
     systemInfo: null
-  },
+  }),
   actions: {
     async init() {
       if (this.state.initialized) return
@@ -580,7 +592,7 @@ App(withAppStore(createStore({
 ```javascript
 // pages/index/index.js
 const app = getApp()
-const { withPageStore } = require('../../utils/geomstore')
+const { withPageStore } = require('@openlide/geomstore/integrations')
 
 Page(withPageStore(app.userStore, {
   // 明确映射需要的状态
@@ -644,7 +656,7 @@ Page(withPageStore(app.userStore, {
 ```javascript
 // components/product-card/index.js
 const app = getApp()
-const { withComponentStore } = require('../../utils/geomstore')
+const { withComponentStore } = require('@openlide/geomstore/integrations')
 
 Component(withComponentStore(app.productStore, {
   mapState: ['currency'],
@@ -677,7 +689,8 @@ Component(withComponentStore(app.productStore, {
   methods: {
     checkFavorite() {
       // 检查是否已收藏
-      return this.store.getter('isFavorite')(this.data.product.id)
+      // （withComponentStore 不向组件实例暴露 store，请通过模块导入或 getApp() 访问原始 store）
+      return app.productStore.getter('isFavorite')(this.data.product.id)
     },
 
     onTap() {
@@ -742,10 +755,10 @@ Page({
 
 ```javascript
 const store = createStore({
-  state: {
+  state: () => ({
     largeList: [], // 大列表数据
     config: {}     // 配置数据
-  },
+  }),
   enableCache: true,
   cacheKeys: ['largeList', 'config'],
   cacheConfig: {
@@ -790,7 +803,7 @@ store.subscribe((state) => {
 
 ```javascript
 // Store 中分页存储
-state: {
+state: () => ({
   products: {
     // 按页存储
     page1: [...],
@@ -799,7 +812,7 @@ state: {
   },
   currentPage: 1,
   hasMore: true
-},
+}),
 actions: {
   async loadMore() {
     const state = this.state
@@ -865,7 +878,7 @@ const cartStore = require('../../stores').getCartStore()
 
 ```javascript
 // app.js
-const { ErrorMonitoring, ConsoleReporter } = require('./utils/geomstore')
+const { ErrorMonitoring, ConsoleReporter } = require('@openlide/geomstore')
 
 const monitoring = new ErrorMonitoring({
   reporters: [
@@ -883,7 +896,7 @@ App({
     wx.onUnhandledRejection((event) => {
       monitoring.report({
         storeName: 'global',
-        operation: 'unhandledRejection',
+        operation: 'action-execution', // OperationType 联合类型中的合法值
         error: event.reason,
         level: 'error',
         timestamp: Date.now()
@@ -915,21 +928,21 @@ const boundary = new ErrorBoundary({
 
 // 包装 action
 const safeDispatch = (store, actionName, ...args) => {
-  return boundary.wrap(() => store.dispatch(actionName, ...args))
+  return boundary.execute(() => store.dispatch(actionName, ...args))
 }
 ```
 
 ### 3. 错误恢复策略
 
 ```javascript
-const { ErrorRecovery, RecoveryStrategy } = require('@openlide/geomstore')
+const { ErrorRecovery, RecoveryStrategy, createError, ErrorCode } = require('@openlide/geomstore')
 
 const recovery = new ErrorRecovery()
 
-// 配置恢复策略
+// 配置恢复策略（键必须是 ErrorCode 枚举值，与 recover 传入的错误 code 对应）
 recovery.configure({
-  // 网络错误：重试
-  'NETWORK_ERROR': {
+  // action 执行失败：重试
+  [ErrorCode.ACTION_EXECUTION_ERROR]: {
     strategy: RecoveryStrategy.RETRY,
     maxRetries: 3,
     retryDelay: 1000,
@@ -939,14 +952,14 @@ recovery.configure({
     }
   },
 
-  // 数据不存在：使用默认值
-  'DATA_NOT_FOUND': {
+  // 状态键不存在：使用默认值
+  [ErrorCode.STATE_KEY_NOT_FOUND]: {
     strategy: RecoveryStrategy.FALLBACK,
     fallback: []
   },
 
   // 验证错误：忽略
-  'VALIDATION_ERROR': {
+  [ErrorCode.VALIDATION_ERROR]: {
     strategy: RecoveryStrategy.IGNORE
   }
 })
@@ -958,7 +971,9 @@ actions: {
       const res = await fetchApi()
       this.state.data = res.data
     } catch (error) {
-      const result = await recovery.recover(error)
+      // recover 只接受 GeomStoreError，普通 Error 需先用 createError 包装
+      const geomError = createError(ErrorCode.ACTION_EXECUTION_ERROR, error.message || String(error))
+      const result = await recovery.recover(geomError)
       this.state.data = result || []
     }
   }
@@ -973,7 +988,7 @@ actions: {
 
 ```javascript
 // tests/stores/user.test.js
-const { createStore } = require('../../utils/geomstore')
+const { createStore } = require('@openlide/geomstore')
 
 describe('UserStore', () => {
   let store
@@ -981,11 +996,11 @@ describe('UserStore', () => {
   beforeEach(() => {
     store = createStore({
       name: 'user',
-      state: {
+      state: () => ({
         userInfo: null,
         token: '',
         isLoggedIn: false
-      },
+      }),
       actions: {
         login({ user, token }) {
           this.state.userInfo = user
@@ -1048,7 +1063,8 @@ describe('UserStore', () => {
 
 ```javascript
 // tests/integration/page.test.js
-const { withPageStore, createStore } = require('../../utils/geomstore')
+const { withPageStore } = require('@openlide/geomstore/integrations')
+const { createStore } = require('@openlide/geomstore')
 
 describe('Page Integration', () => {
   let store
@@ -1056,7 +1072,7 @@ describe('Page Integration', () => {
 
   beforeEach(() => {
     store = createStore({
-      state: { count: 0 },
+      state: () => ({ count: 0 }),
       actions: {
         increment() { this.state.count++ }
       }
@@ -1145,9 +1161,10 @@ export interface UserActions {
 }
 
 export interface UserGetters {
-  displayName: () => string
-  isVip: () => boolean
-  userLevel: () => number
+  // getter 是纯函数，签名固定为 (state: S) => R
+  displayName: (state: UserState) => string
+  isVip: (state: UserState) => boolean
+  userLevel: (state: UserState) => number
 }
 ```
 
@@ -1155,19 +1172,19 @@ export interface UserGetters {
 
 ```typescript
 // stores/user.ts
-import { createStore } from '../utils/geomstore'
+import { createStore } from '@openlide/geomstore'
 import type { UserState, UserActions, UserGetters } from '../types/store'
 
 export const userStore = createStore<UserState, UserActions, UserGetters>({
   name: 'user',
 
-  state: {
+  state: () => ({
     userInfo: null,
     token: '',
     isLoggedIn: false,
     loading: false,
     error: null
-  },
+  }),
 
   actions: {
     async login(credentials) {
@@ -1240,7 +1257,7 @@ const isVip = userStore.getter('isVip') // boolean
 
 ```typescript
 // stores/city.ts
-import { createStore } from '../utils/geomstore'
+import { createStore } from '@openlide/geomstore'
 
 export interface CityState {
   historyList: string[]
@@ -1293,9 +1310,10 @@ interface IndexPageMethods {
   handleLogin: (e: { detail: { value: { username: string; password: string } } }) => Promise<void>
 }
 
+// withPageStore 不会向页面实例暴露 store 属性，映射的状态/action/getter 直接挂在实例上
+// （如需访问原始 store，请通过模块导入或 getApp()）
 type IndexPageThis = {
   data: IndexPageData
-  store: typeof userStore
 } & IndexPageMethods
 
 Page(withPageStore(userStore, {
@@ -1401,18 +1419,18 @@ Page({
 
 ```javascript
 // ❌ 错误：存储大量冗余数据
-state: {
+state: () => ({
   allProducts: [...], // 10000 条数据
   filteredProducts: [...], // 冗余
   sortedProducts: [...] // 冗余
-}
+})
 
 // ✅ 正确：只存储必要数据，计算派生值
-state: {
+state: () => ({
   products: [...], // 原始数据
   filter: { minPrice: 0, maxPrice: 1000 },
   sort: 'price'
-},
+}),
 getters: {
   filteredProducts(state) {
     return state.products

@@ -9,7 +9,7 @@ import { createStore } from '../../src'
 // 创建设备信息 Store，启用缓存
 const deviceStore = createStore({
   name: 'device-store',
-  state: {
+  state: () => ({
     device: {
       platform: 'ios',
       model: 'iPhone 12',
@@ -18,7 +18,7 @@ const deviceStore = createStore({
     navBarHeight: 44,
     statusBarHeight: 47,
     theme: 'light',
-  },
+  }),
   // 启用缓存（缓存所有状态）
   enableCache: true,
 })

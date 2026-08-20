@@ -10,7 +10,7 @@ import { withAppStore } from '../../src/integrations'
 // 创建应用级 Store
 const appStore = createStore({
   name: 'app-store',
-  state: {
+  state: () => ({
     userInfo: null as { id: number; name: string; role: string } | null,
     appConfig: {
       theme: 'light',
@@ -18,7 +18,7 @@ const appStore = createStore({
       version: '1.0.0',
     },
     isReady: false,
-  },
+  }),
   actions: {
     async initApp() {
       // 模拟异步初始化
@@ -72,7 +72,7 @@ App(
     onError(error: Error) {
       console.error('App error:', error)
     },
-  })
+  }),
 )
 
 // 使用说明：
