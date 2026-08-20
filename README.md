@@ -235,7 +235,7 @@ Component(withComponentStore(userStore, {
 ### 购物车示例
 
 ```javascript
-const useCartStore = createStore({
+const cartStore = createStore({
   name: 'cart',
 
   state: {

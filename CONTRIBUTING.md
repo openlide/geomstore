@@ -55,7 +55,7 @@ pnpm typecheck:examples
 # 代码规范检查
 pnpm lint
 
-# 构建（CJS + ESM 双产物）
+# 构建（CJS 产物）
 pnpm build
 ```
 
@@ -114,7 +114,7 @@ pnpm build           # 构建 + 产物冒烟
 | `pnpm typecheck` | 源码类型检查 |
 | `pnpm typecheck:tests` | 源码 + 测试类型检查 |
 | `pnpm typecheck:examples` | 示例类型检查 |
-| `pnpm build` | 构建 CJS + ESM 产物 |
+| `pnpm build` | 构建 CJS 产物 |
 
 ---
 
@@ -201,7 +201,7 @@ docs: 重写生产可行性评审报告
 1. 确认 `CHANGELOG.md` 已记录本次变更。
 2. 确认全部质量门禁通过（见 [§5](#5-开发工作流)）。
 3. 更新 `package.json` 版本号。
-4. 运行 `pnpm build`，确认 `dist/cjs` 与 `dist/esm` 产物及 15 个子路径导出完整。
+4. 运行 `pnpm build`，确认 `dist/cjs` 产物及 14 个子路径导出完整。
 5. 打 tag 并发布：`git tag vX.Y.Z && git push --tags`。
 
 ---

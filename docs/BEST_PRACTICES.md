@@ -58,13 +58,15 @@ miniprogram/
     └── analytics.js           # 分析插件
 ```
 
+> 📌 本文示例默认采用 NPM 安装方式（`require('@openlide/geomstore')` 等包路径，需在微信开发者工具中执行「构建 npm」）；若使用复制安装（上述 `utils/geomstore/` 目录），请将包路径替换为 `utils/geomstore/dist/index.js` 全路径。
+
 ### Store 文件组织
 
 **stores/index.js** - 统一导出入口：
 
 ```javascript
 // stores/index.js
-const { composeStore } = require('../utils/geomstore')
+const { composeStore } = require('@openlide/geomstore')
 const userStore = require('./user')
 const cartStore = require('./cart')
 const productStore = require('./product')
@@ -89,7 +91,7 @@ module.exports.rootStore = composeStore(
 
 ```javascript
 // stores/user.js
-const { createStore } = require('../utils/geomstore')
+const { createStore } = require('@openlide/geomstore')
 const userService = require('../services/user')
 
 const userStore = createStore({
@@ -531,7 +533,8 @@ getters: {
 
 ```javascript
 // app.js
-const { createStore, withAppStore } = require('./utils/geomstore')
+const { createStore } = require('@openlide/geomstore')
+const { withAppStore } = require('@openlide/geomstore/integrations')
 const { userStore, cartStore, settingsStore } = require('./stores')
 
 App(withAppStore(createStore({
@@ -589,7 +592,7 @@ App(withAppStore(createStore({
 ```javascript
 // pages/index/index.js
 const app = getApp()
-const { withPageStore } = require('../../utils/geomstore')
+const { withPageStore } = require('@openlide/geomstore/integrations')
 
 Page(withPageStore(app.userStore, {
   // 明确映射需要的状态
@@ -653,7 +656,7 @@ Page(withPageStore(app.userStore, {
 ```javascript
 // components/product-card/index.js
 const app = getApp()
-const { withComponentStore } = require('../../utils/geomstore')
+const { withComponentStore } = require('@openlide/geomstore/integrations')
 
 Component(withComponentStore(app.productStore, {
   mapState: ['currency'],
@@ -875,7 +878,7 @@ const cartStore = require('../../stores').getCartStore()
 
 ```javascript
 // app.js
-const { ErrorMonitoring, ConsoleReporter } = require('./utils/geomstore')
+const { ErrorMonitoring, ConsoleReporter } = require('@openlide/geomstore')
 
 const monitoring = new ErrorMonitoring({
   reporters: [
@@ -936,10 +939,10 @@ const { ErrorRecovery, RecoveryStrategy, createError, ErrorCode } = require('@op
 
 const recovery = new ErrorRecovery()
 
-// 配置恢复策略
+// 配置恢复策略（键必须是 ErrorCode 枚举值，与 recover 传入的错误 code 对应）
 recovery.configure({
-  // 网络错误：重试
-  'NETWORK_ERROR': {
+  // action 执行失败：重试
+  [ErrorCode.ACTION_EXECUTION_ERROR]: {
     strategy: RecoveryStrategy.RETRY,
     maxRetries: 3,
     retryDelay: 1000,
@@ -949,14 +952,14 @@ recovery.configure({
     }
   },
 
-  // 数据不存在：使用默认值
-  'DATA_NOT_FOUND': {
+  // 状态键不存在：使用默认值
+  [ErrorCode.STATE_KEY_NOT_FOUND]: {
     strategy: RecoveryStrategy.FALLBACK,
     fallback: []
   },
 
   // 验证错误：忽略
-  'VALIDATION_ERROR': {
+  [ErrorCode.VALIDATION_ERROR]: {
     strategy: RecoveryStrategy.IGNORE
   }
 })
@@ -985,7 +988,7 @@ actions: {
 
 ```javascript
 // tests/stores/user.test.js
-const { createStore } = require('../../utils/geomstore')
+const { createStore } = require('@openlide/geomstore')
 
 describe('UserStore', () => {
   let store
@@ -1060,7 +1063,8 @@ describe('UserStore', () => {
 
 ```javascript
 // tests/integration/page.test.js
-const { withPageStore, createStore } = require('../../utils/geomstore')
+const { withPageStore } = require('@openlide/geomstore/integrations')
+const { createStore } = require('@openlide/geomstore')
 
 describe('Page Integration', () => {
   let store
@@ -1168,7 +1172,7 @@ export interface UserGetters {
 
 ```typescript
 // stores/user.ts
-import { createStore } from '../utils/geomstore'
+import { createStore } from '@openlide/geomstore'
 import type { UserState, UserActions, UserGetters } from '../types/store'
 
 export const userStore = createStore<UserState, UserActions, UserGetters>({
@@ -1253,7 +1257,7 @@ const isVip = userStore.getter('isVip') // boolean
 
 ```typescript
 // stores/city.ts
-import { createStore } from '../utils/geomstore'
+import { createStore } from '@openlide/geomstore'
 
 export interface CityState {
   historyList: string[]
