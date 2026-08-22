@@ -44,7 +44,7 @@ import { StateProxyManager, createProxyCache } from './StateProxy'
 import { SubscriptionManager, createSubscribeFunction } from './SubscriptionManager'
 import { StoreCacheManager } from './StoreCache'
 import { ActionManager, GetterManager } from './ActionManager'
-import { BatchManager, createBatchFunction } from './BatchManager'
+import { BatchManager } from './BatchManager'
 import type { ProxyCache, InternalStateProtectionConfig } from './types'
 import { deepCloneState, deepFreezeState } from './utils'
 
@@ -108,6 +108,12 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
 
   /** dispatch跟踪标记 */
   private _dispatching = false
+
+  /** batch 首层开始时的变更计数基线（onlyOnChange 模式判断批量期间是否发生变更） */
+  private _batchMutationBaseline = 0
+
+  /** 最近一次通知已覆盖到的变更计数：供 dispatch 补发通知去重（onlyOnChange） */
+  private _lastNotifiedMutationCount = 0
 
   /** 销毁标记 - 防止销毁后继续操作 */
   private _destroyed = false
@@ -197,7 +203,7 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
     this.hooks = this._hooks
 
     // 初始化批量更新管理器
-    this._batchManager = new BatchManager(() => this._notifyListeners())
+    this._batchManager = new BatchManager(() => this._onBatchEnd())
 
     // 初始化 Action 管理器
     this._actionManager = new ActionManager<S, A>({
@@ -212,6 +218,8 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
       getMutationCount: () => this._mutationCount,
       // dispatch 结束后从状态源刷新缓存，覆盖 action 直接变异 this.state 的路径
       refreshCache: () => this._cacheManager.refreshFromState((key) => this._state[key], Object.keys(this._state) as Array<keyof S>),
+      getLastNotifiedMutationCount: () => this._lastNotifiedMutationCount,
+      isInBatch: () => this._batchManager.isInBatch,
     })
 
     // 初始化 Getter 管理器
@@ -670,6 +678,9 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
     if (this._destroyed) {
       throw new Error('[GeomStore] Cannot call startBatch on a destroyed Store')
     }
+    if (!this._batchManager.isInBatch) {
+      this._batchMutationBaseline = this._mutationCount
+    }
     this._batchManager.start()
   }
 
@@ -692,7 +703,15 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
     if (this._destroyed) {
       throw new Error('[GeomStore] Cannot call batch on a destroyed Store')
     }
-    return createBatchFunction(this._batchManager)(fn)
+    // 走 startBatch/endBatch 而非 createBatchFunction：
+    // 只有 startBatch 会记录变更计数基线，绕过它会让 onlyOnChange 的
+    // 「无变更 batch 不通知」判定用上陈旧基线而失效
+    this.startBatch()
+    try {
+      return fn()
+    } finally {
+      this.endBatch()
+    }
   }
 
   // ==================== 私有方法 ====================
@@ -780,12 +799,19 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
         return self._createDirtyTrackingProxy(value)
       },
       set(obj: object, key: string | symbol, value: unknown): boolean {
-        ;(obj as Record<string | symbol, unknown>)[key] = value
+        (obj as Record<string | symbol, unknown>)[key] = value
         self._mutationCount++
         return true
       },
       deleteProperty(obj: object, key: string | symbol): boolean {
         delete (obj as Record<string | symbol, unknown>)[key]
+        self._mutationCount++
+        return true
+      },
+      defineProperty(obj: object, key: string | symbol, descriptor: PropertyDescriptor): boolean {
+        // defineProperty 不经过 set 陷阱：缺此陷阱时 action 内经
+        // Object.defineProperty 的写入不递增计数，onlyOnChange 模式漏通知
+        Object.defineProperty(obj, key, descriptor)
         self._mutationCount++
         return true
       },
@@ -795,11 +821,22 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
     return proxy
   }
 
+  /** 批量结束通知：onlyOnChange 模式下批量期间无任何变更则跳过（与 dispatch 收尾语义一致） */
+  private _onBatchEnd(): void {
+    if (this._notifyOnlyOnChange && this._mutationCount <= this._batchMutationBaseline) {
+      return
+    }
+    this._notifyListeners()
+  }
+
   /** 通知状态变化 */
   private _notifyListeners(): void {
     // 零拷贝模式下传入只读保护 Proxy（状态保护关闭时为原始引用，由用户自行保证不修改）
     const payload = this._notifyClone || !this._stateProtectionEnabled ? this._state : this._stateProxyManager.createStateProxy(this._state, '')
     this._subscriptionManager.notify(payload)
+    // 记录本次通知已覆盖到的变更计数：后续 dispatch 补发按此去重，
+    // 避免「续段 setState 已自发通知 + 完成补发」的重复通知
+    this._lastNotifiedMutationCount = this._mutationCount
   }
 }
 

@@ -24,12 +24,19 @@ export interface CacheDecoratorOptions {
 /** 单宿主缓存条目上限，防止参数空间大的方法导致 Map 无限增长 */
 const MAX_CACHE_ENTRIES = 1000
 
+/** Symbol 实例 → 唯一序号：同 description 的不同 Symbol 序列化后相同（symbol:Symbol(a)），
+ *  不加区分会让依赖 Symbol 身份的方法串用缓存 */
+// Map 而非 WeakMap：TS 的 WeakMap 键约束为 object（Symbol 键的 ES2023 扩展未反映到 lib）
+const symbolIds = new Map<symbol, number>()
+let nextSymbolId = 0
+
 /**
  * async 函数原型引用：用于压缩安全的异步判定。
  * `fn.constructor.name === 'AsyncFunction'` 在压缩 mangle 后失效（name 被改写），
  * 改比较原型对象身份——压缩不会改变原型引用。
  * @private
  */
+/* istanbul ignore next -- 空箭头函数体永不执行，仅用于获取原型引用 */
 const ASYNC_FUNCTION_PROTOTYPE = Object.getPrototypeOf(async () => {})
 
 /**
@@ -48,7 +55,12 @@ function sortKeysDeep(value: unknown): unknown {
   // Symbol 会被 JSON.stringify 序列化为 null，导致互异 Symbol 参数串用缓存：
   // 带 description 标记区分
   if (typeof value === 'symbol') {
-    return `symbol:${String(value)}`
+    let id = symbolIds.get(value)
+    if (id === undefined) {
+      id = ++nextSymbolId
+      symbolIds.set(value, id)
+    }
+    return `symbol:${String(value)}#${id}`
   }
   if (Array.isArray(value)) {
     return value.map(sortKeysDeep)
@@ -126,9 +138,11 @@ export function withCache(options: CacheDecoratorOptions = {}): MethodDecorator 
   const { ttl = 5000, keyFn } = options
 
   // 按宿主对象隔离缓存，避免多实例共享缓存条目。
-  const store = new WeakMap<object, Map<string, { value: unknown; expiry: number }>>()
+  // entry.pending：异步方法进行中的 Promise（in-flight 去重标记），
+  // 并发的同参调用复用同一 Promise，避免重复执行（如重复发请求）
+  const store = new WeakMap<object, Map<string, { value: unknown; expiry: number; pending?: Promise<unknown> }>>()
 
-  const getCache = (host: unknown): Map<string, { value: unknown; expiry: number }> => {
+  const getCache = (host: unknown): Map<string, { value: unknown; expiry: number; pending?: Promise<unknown> }> => {
     if (typeof host !== 'object' || host === null) {
       // 宿主不是对象时返回一次性 Map（不跨调用串扰）
       return new Map()
@@ -147,7 +161,12 @@ export function withCache(options: CacheDecoratorOptions = {}): MethodDecorator 
     const isAsyncMethod = typeof originalMethod === 'function' && Object.getPrototypeOf(originalMethod) === ASYNC_FUNCTION_PROTOTYPE
     let observesPromise = false
 
-    const writeCache = (cache: Map<string, { value: unknown; expiry: number }>, key: string, value: unknown, at: number): unknown => {
+    const writeCache = (
+      cache: Map<string, { value: unknown; expiry: number; pending?: Promise<unknown> }>,
+      key: string,
+      value: unknown,
+      at: number,
+    ): unknown => {
       // 写入前回收过期条目，避免长生命周期宿主上 Map 持续累积
       for (const [entryKey, entry] of cache) {
         if (entry.expiry <= at) {
@@ -168,12 +187,22 @@ export function withCache(options: CacheDecoratorOptions = {}): MethodDecorator 
 
     descriptor.value = function (this: unknown, ...args: unknown[]) {
       const cache = getCache(this)
-      const key = keyFn ? keyFn(...args) : defaultKeyFn(...args)
+      // 缓存键携带方法名前缀：同一装饰器实例（工厂返回值复用）装饰多个方法时，
+      // 仅按参数生成的键会让方法 B 命中方法 A 的缓存，静默返回错误数据
+      const methodKey = `${String(propertyKey)}::`
+      const key = `${methodKey}${keyFn ? keyFn(...args) : defaultKeyFn(...args)}`
       const now = Date.now()
 
       // 检查缓存
       const cached = cache.get(key)
       if (cached && cached.expiry > now) {
+        // in-flight 命中：直接复用进行中的 Promise（失败时条目已被删除，后续调用重新执行）
+        if (cached.pending) {
+          if (!isProduction()) {
+            console.log(`[Cache] In-flight dedup for ${String(propertyKey)}`)
+          }
+          return cached.pending
+        }
         if (!isProduction()) {
           console.log(`[Cache] Hit for ${String(propertyKey)}`)
         }
@@ -186,7 +215,25 @@ export function withCache(options: CacheDecoratorOptions = {}): MethodDecorator 
       const result = originalMethod.apply(this, args)
       if (result instanceof Promise) {
         observesPromise = true
-        return result.then((value) => writeCache(cache, key, value, Date.now()))
+        const pending = result.then(
+          (value) => {
+            writeCache(cache, key, value, Date.now())
+            return value
+          },
+          (error) => {
+            // 失败不缓存：仅当条目仍是本次调用写入的 pending 时删除，
+            // 避免误删期间已被重试调用覆盖的新条目
+            const entry = cache.get(key)
+            if (entry && entry.pending === pending) {
+              cache.delete(key)
+            }
+            throw error
+          },
+        )
+        // 先占位再返回：占位条目不过期（等待中的请求没有 TTL 语义），
+        // 并发同参调用经 pending 分支复用同一 Promise
+        cache.set(key, { value: undefined, expiry: Number.MAX_SAFE_INTEGER, pending })
+        return pending
       }
       return writeCache(cache, key, result, now)
     }

@@ -688,6 +688,7 @@ store.use(persistencePlugin({
   debounce: 500,
 
   // 卸载插件时是否清除存储数据（默认 false，仅停止监听）
+  // 注意：开启 debounce 时，卸载会先同步落盘防抖窗口内最后一次变更（clearOnUninstall 为 true 时跳过落盘直接清除）
   clearOnUninstall: false
 }))
 ```

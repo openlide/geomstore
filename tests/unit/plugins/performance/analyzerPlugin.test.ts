@@ -235,6 +235,8 @@ describe('analyzerPlugin - hook monitoring', () => {
 
     const uninstall = store.use(analyzerPlugin)
     store.getter('doubled')
+    // 卸载前捕获 monitor 引用（卸载后实例属性会被清理）
+    const monitor = (store as any).__performanceMonitor__
 
     uninstall()
 
@@ -242,12 +244,11 @@ describe('analyzerPlugin - hook monitoring', () => {
     const result = store.getter('doubled')
     expect(result).toBe(20)
 
-    // 确认不再记录指标
-    const metrics = (store as any).__performanceMonitor__
-    // monitor 在卸载后已被 clear，但仍可访问
-    const beforeCount = metrics.getMetrics().length
+    // 卸载后不再记录指标，且实例属性已清理（不残留已卸载 monitor 的引用）
+    const beforeCount = monitor.getMetrics().length
     store.getter('doubled')
-    expect(metrics.getMetrics().length).toBe(beforeCount)
+    expect(monitor.getMetrics().length).toBe(beforeCount)
+    expect((store as any).__performanceMonitor__).toBeUndefined()
   })
 
   it('should handle getter wrapper with try-finally on error', () => {
@@ -491,10 +492,12 @@ describe('analyzerPlugin - uninstall cleanup', () => {
     })
 
     const uninstall = store.use(analyzerPlugin)
+    // 卸载前捕获 monitor 引用（卸载后实例属性会被清理）
+    const monitor = (store as any).__performanceMonitor__
     uninstall()
 
-    // 卸载后操作不再记录指标
-    const monitor = (store as any).__performanceMonitor__
+    // 卸载后实例属性已清理，操作不再记录指标
+    expect((store as any).__performanceMonitor__).toBeUndefined()
     monitor.clear()
 
     store.setState('count', 1)
@@ -573,7 +576,7 @@ describe('analyzerPlugin - uninstall cleanup', () => {
     }
 
     // 先恢复 globalThis
-    ;(global as any).globalThis = originalGlobalThis
+    (global as any).globalThis = originalGlobalThis
     expect(threw).toBe(false)
   })
 })

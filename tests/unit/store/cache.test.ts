@@ -285,7 +285,9 @@ describe('Store Cache 功能', () => {
 
       const statsAfter = store.getCacheStats()
       expect(statsAfter.size).toBe(0)
-      expect(statsAfter.hits).toBe(0)
+      // clear 只清数据不清统计（与 resetStats 职责分离）：
+      // 运行统计反映缓存生命周期表现，不应随清空而丢失
+      expect(statsAfter.hits).toBe(statsBefore.hits)
       expect(statsAfter.misses).toBe(0)
     })
   })
@@ -557,10 +559,8 @@ describe('Store Cache 功能', () => {
       // 销毁 store
       store.destroy()
 
-      // 缓存应该被清除
+      // 缓存数据应该被清除；统计反映生命周期表现，保留不清零
       expect(store.getCacheStats().size).toBe(0)
-      expect(store.getCacheStats().hits).toBe(0)
-      expect(store.getCacheStats().misses).toBe(0)
     })
   })
 })

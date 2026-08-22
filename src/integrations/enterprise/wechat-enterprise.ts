@@ -251,6 +251,10 @@ export class StoreManager {
   getUserStore(userId: string): Store<UserState> {
     const existingStore = this.stores.get(userId)
     if (existingStore) {
+      // 命中即刷新插入顺序：Map 迭代序即淘汰顺序，不刷新则高频使用的账号
+      // 会被当作最旧淘汰（FIFO 而非注释宣称的 LRU）
+      this.stores.delete(userId)
+      this.stores.set(userId, existingStore)
       return existingStore
     }
 
@@ -313,11 +317,13 @@ export class StoreManager {
   private cleanupOldestStore(excludeUserId: string): void {
     if (this.stores.size < this.maxStores) return
 
-    // 跳过排除用户找到最早插入的 Store：若 LRU 头部恰好是排除用户时不清理，
-    // 会导致 stores 超限，需继续向后查找可清理项
+    // 跳过排除用户与当前活跃用户找到最久未使用的 Store：
+    // - 若 LRU 头部恰好是排除用户时不清理，会导致 stores 超限，需继续向后查找
+    // - currentUserId 的 store 被淘汰会让 getCurrentStore() 返回 null、
+    //   页面订阅被 destroy 静默清除，因此也必须排除
     let oldestKey: string | undefined
     for (const key of this.stores.keys()) {
-      if (key !== excludeUserId) {
+      if (key !== excludeUserId && key !== this.currentUserId) {
         oldestKey = key
         break
       }
@@ -351,6 +357,11 @@ export interface HotUpdateConfig<S extends State = State> {
 const DEFAULT_BACKUP_KEY = 'store_backup_before_update'
 const CURRENT_VERSION = '1.0.0'
 
+/** 待更新重启标记键：确认更新时写入，用于区分「更新后首启」与「普通重启」 */
+function pendingLaunchKey(backupKey: string): string {
+  return `${backupKey}__pending_update_launch`
+}
+
 /**
  * 备份当前状态
  */
@@ -367,24 +378,55 @@ function backupState<S extends State = State>(store: Store<S>, backupKey: string
  * 初始化热更新处理
  * 在小程序更新时自动备份和恢复状态
  */
+/** 热更新当前保护的 store 配置：重复调用（账号切换）时切换保护目标 */
+let hotUpdateRegistration: { store: Store<State>; backupKey: string; onBeforeUpdate?: () => void } | null = null
+/** 已安装监听的 updateManager 实例：真实环境为全局单例（幂等安装防止监听累积），
+ *  测试环境的每个 mock 实例各自安装 */
+let hotUpdateManagerInstalled: unknown = null
+
 export function initHotUpdate<S extends State = State>(config: HotUpdateConfig<S>): void {
   const { store, backupKey, onBeforeUpdate } = config
   // 默认按 store 名派生备份键：多账号/多 Store 实例并存时热更新备份互不覆盖
   const resolvedBackupKey = backupKey ?? `${DEFAULT_BACKUP_KEY}_${store.name}`
+  hotUpdateRegistration = { store: store as unknown as Store<State>, backupKey: resolvedBackupKey, onBeforeUpdate }
 
   const updateManager = wx.getUpdateManager()
+  // onUpdateReady 是累加式注册且无对应 off API：按 manager 实例幂等安装，
+  // 否则每次 login 重新调用都会累积一个监听（多弹窗、多份备份、标记竞态）
+  if (hotUpdateManagerInstalled === updateManager) return
+  hotUpdateManagerInstalled = updateManager
 
   updateManager.onUpdateReady(() => {
     logger.log('HotUpdate', '新版本准备就绪')
 
-    backupState(store, resolvedBackupKey)
-    onBeforeUpdate?.()
+    const registration = hotUpdateRegistration
+    if (!registration) return
+    // store 已被外部销毁（LRU 淘汰/logout）时 $snapshot 会抛错，
+    // 异常发生在 wx 回调内无人捕获——跳过已销毁 store
+    if (registration.store.destroyed) {
+      logger.warn('HotUpdate', `store "${registration.store.name}" 已销毁，跳过备份`)
+      return
+    }
+    try {
+      backupState(registration.store, registration.backupKey)
+      registration.onBeforeUpdate?.()
+    } catch (error) {
+      logger.error('HotUpdate', '备份状态失败:', error)
+    }
 
     wx.showModal({
       title: '更新提示',
       content: '新版本已准备好，是否重启应用？',
       success: (res) => {
         if (res.confirm) {
+          // 先写待更新重启标记再 applyUpdate：重启后凭标记区分「更新后首启」与
+          // 「拒绝更新后的普通重启」，避免普通重启把备份点之后的持久化变更回滚。
+          // 标记写入失败（存储配额满）不阻断更新：损失的只是恢复语义
+          try {
+            storage.set(pendingLaunchKey(registration.backupKey), true)
+          } catch (markerError) {
+            logger.error('HotUpdate', '写入待更新重启标记失败:', markerError)
+          }
           updateManager.applyUpdate()
         }
       },
@@ -403,8 +445,13 @@ export function initHotUpdate<S extends State = State>(config: HotUpdateConfig<S
 export function restoreFromHotUpdate<S extends State = State>(store: Store<S>, backupKey?: string): boolean {
   // 默认按 store 名派生备份键，与 initHotUpdate 保持一致
   const resolvedBackupKey = backupKey ?? `${DEFAULT_BACKUP_KEY}_${store.name}`
+  const markerKey = pendingLaunchKey(resolvedBackupKey)
   const backup = storage.get<BackupData>(resolvedBackupKey)
-  if (!backup) return false
+  if (!backup) {
+    // 备份不存在时顺带清理可能残留的孤儿标记
+    storage.remove(markerKey)
+    return false
+  }
 
   const backupAge = Date.now() - backup.timestamp
 
@@ -412,12 +459,22 @@ export function restoreFromHotUpdate<S extends State = State>(store: Store<S>, b
   if (backupAge > BACKUP_EXPIRY_MS) {
     logger.warn('HotUpdate', '备份数据已过期（超过1小时）')
     storage.remove(resolvedBackupKey)
+    storage.remove(markerKey)
+    return false
+  }
+
+  // 仅更新确认后的首次启动才恢复：用户在弹窗中拒绝更新后继续使用，
+  // 期间的变更已持久化，普通冷启动时恢复会把状态回滚到备份点，
+  // 备份点之后的所有变更静默丢失
+  if (!storage.get<boolean>(markerKey)) {
+    logger.log('HotUpdate', '存在备份但非更新后首启，跳过恢复')
     return false
   }
 
   try {
     store.$restore(backup.state as S)
     storage.remove(resolvedBackupKey)
+    storage.remove(markerKey)
     logger.log('HotUpdate', `状态已从备份恢复（版本: ${backup.version}）`)
     return true
   } catch (error) {
@@ -488,9 +545,12 @@ export class OfflineManager<S extends State = State> {
     if (this.isOnline) {
       try {
         return await action()
-      } catch {
+      } catch (error) {
         this.enqueue(type, payload)
-        throw new Error(`操作执行失败，已加入离线队列: ${type}`)
+        // 保留原始错误（网络/HTTP/业务错误）作为 cause，排障不被吞
+        const wrapped = new Error(`操作执行失败，已加入离线队列: ${type}`)
+        ;(wrapped as Error & { cause?: unknown }).cause = error
+        throw wrapped
       }
     }
 
@@ -507,14 +567,17 @@ export class OfflineManager<S extends State = State> {
     if (this.syncing || this.actionQueue.length === 0) return
 
     this.syncing = true
+    const failedActions: OfflineAction[] = []
+    let pendingActions: OfflineAction[] = []
+    let nextIndex = 0
     try {
       // 快照-清空模式：先取走当前队列，同步期间新入队的操作保留在 this.actionQueue，
       // 结束后整体赋值会丢弃同步期间入队的操作，需在失败项回填时合并保留
-      const pendingActions = this.actionQueue
+      pendingActions = this.actionQueue
       this.actionQueue = []
-      const failedActions: OfflineAction[] = []
 
-      for (const action of pendingActions) {
+      for (; nextIndex < pendingActions.length; nextIndex++) {
+        const action = pendingActions[nextIndex]
         const success = await this.tryExecuteAction(action)
         if (!success) {
           action.retryCount++
@@ -530,14 +593,20 @@ export class OfflineManager<S extends State = State> {
         }
       }
 
-      // 失败项回填队首，同步期间新入队的操作保持在后
-      this.actionQueue = [...failedActions, ...this.actionQueue]
-      this.saveQueue()
-
       if (failedActions.length > 0) {
         wx.showToast({ title: `${failedActions.length}个操作同步失败`, icon: 'none' })
       }
     } finally {
+      // 回填必须覆盖循环未迭代到的剩余项：中途异常（死信落盘配额满、
+      // onDrop 用户回调抛错）时，剩余项既不在 failedActions 也不在已清空的
+      // this.actionQueue——遗漏会让残缺队列落盘覆盖磁盘完整旧队列，丢失成为永久。
+      // 含当前项（at-least-once：异常中的操作重新入队重试，可能重复进死信，可接受）
+      this.actionQueue = [...failedActions, ...pendingActions.slice(nextIndex), ...this.actionQueue]
+      try {
+        this.saveQueue()
+      } catch (error) {
+        logger.error('OfflineManager', '同步后保存队列失败:', error)
+      }
       this.syncing = false
     }
   }
@@ -605,9 +674,12 @@ export class OfflineManager<S extends State = State> {
     // hasOwnProperty 校验：`in` 会命中原型链（如 'toString'），
     // 导致对非自有 action 发起无意义的 dispatch
     const actions = this.store.actions as Record<string, unknown>
-    if (Object.prototype.hasOwnProperty.call(actions, actionName)) {
-      await this.store.dispatch(actionName, action.payload)
+    if (!Object.prototype.hasOwnProperty.call(actions, actionName)) {
+      // 未知 action 必须抛错进入重试→死信路径：静默返回会让 tryExecuteAction
+      // 视为成功并将操作移出队列，离线操作无感知丢失（不进死信、不触发 onDrop）
+      throw new Error(`[OfflineManager] Unknown queued action "${actionName}"`)
     }
+    await this.store.dispatch(actionName, action.payload)
   }
 
   /**
@@ -748,18 +820,36 @@ function installAppLifecycleHooks(): void {
       if (inactiveDuration > handler.maxInactiveTime) {
         logger.log('BackgroundSync', `非活跃时间过长(${inactiveDuration}ms)，刷新状态`)
         if ('refreshData' in handler.store.actions) {
-          handler.store.dispatch('refreshData')
+          try {
+            // 异步 action 的 rejection 不会被同步 try/catch 捕获，
+            // 显式接住避免 unhandled rejection
+            Promise.resolve(handler.store.dispatch('refreshData')).catch((error) => {
+              logger.error('BackgroundSync', '刷新状态失败:', error)
+            })
+          } catch (error) {
+            // 单个 store 刷新失败不应沿 App.onShow 传播：
+            // 否则后续 handler 被跳过、用户自己的 onShow 回调不再执行
+            logger.error('BackgroundSync', '刷新状态失败:', error)
+          }
         }
       }
       handler.lastActiveTime = now
-      handler.onForeground?.()
+      try {
+        handler.onForeground?.()
+      } catch (error) {
+        logger.error('BackgroundSync', 'onForeground 回调执行失败:', error)
+      }
     }
   }
 
   const runBackgroundChecks = (): void => {
     for (const handler of [...backgroundSyncHandlers]) {
       handler.lastActiveTime = Date.now()
-      handler.onBackground?.()
+      try {
+        handler.onBackground?.()
+      } catch (error) {
+        logger.error('BackgroundSync', 'onBackground 回调执行失败:', error)
+      }
     }
   }
 
@@ -901,6 +991,11 @@ export function createEnterpriseApp(config: EnterpriseAppConfig = {}) {
         unregisterBackgroundSync(previousStore)
       }
       initBackgroundSync({ store: newStore, maxInactiveTime })
+      // 热更新保护切换到新 store：监听幂等安装（不累积），保护目标切换。
+      // 首次登录（previousStore 为 null，onLaunch 因无 store 未注册）也必须注册
+      if (previousStore !== newStore) {
+        initHotUpdate({ store: newStore })
+      }
 
       // 重新初始化离线管理器：先释放旧实例的网络监听，防止泄漏
       offlineManager?.dispose()

@@ -856,3 +856,17 @@ describe('timeTravelPlugin - maxSize edge cases', () => {
     expect(idx).toBeLessThan((store as any).__timeTravel__.getSnapshotCount())
   })
 })
+
+// ==================== BUG 回归 ====================
+describe('BUG 回归：importHistory 对 null JSON 的防御', () => {
+  it("importHistory('null') 不应抛 TypeError", () => {
+    const { timeTravelPlugin } = jest.requireActual('@/plugins/devtools/timeTravelPlugin')
+    const { createStore } = jest.requireActual('@/index')
+    const store = createStore({ name: 'null-json-store', state: { v: 1 } })
+    store.use(timeTravelPlugin())
+
+    expect(() => {
+      (store as unknown as { __timeTravel__: { importHistory: (json: string) => void } }).__timeTravel__.importHistory('null')
+    }).not.toThrow()
+  })
+})

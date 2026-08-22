@@ -112,6 +112,11 @@ export interface CacheOptions<K = unknown, V = unknown> {
  * })
  * ```
  */
+/** 高精度时间戳（毫秒）：performance.now 具亚毫秒精度，访问耗时统计依赖它 */
+function highResNow(): number {
+  return typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : Date.now()
+}
+
 export class LRUCache<K, V> {
   /** 当前容量 */
   private capacity: number
@@ -253,6 +258,8 @@ export class LRUCache<K, V> {
    * ```
    */
   get(key: K): V | undefined {
+    // 访问计时起点（trackAccessTime 且开启统计时才需要，避免多余的时钟调用）
+    const timing = this.options.trackAccessTime && this.options.enableStats ? highResNow() : 0
     const node = this.cache.get(key)
 
     if (!node) {
@@ -270,7 +277,8 @@ export class LRUCache<K, V> {
       node.lastAccessedAt = now
       if (this.options.enableStats) {
         this.hitCount++
-        this.totalAccessTime += 1 // 简化：每次命中计为 1ms（统计用途，不影响功能）
+        // 真实访问耗时（此前恒记 1ms，avgAccessTime 是无意义假数据）
+        this.totalAccessTime += highResNow() - timing
       }
     } else if (this.options.enableStats) {
       this.hitCount++
@@ -422,10 +430,13 @@ export class LRUCache<K, V> {
    * @returns {this} 支持链式调用
    */
   clear(): this {
-    // 触发淘汰回调
+    // 先快照并整体摘链，再逐个触发回调：迭代中调用 onEvict 若回调内
+    // 调用 delete()（淘汰回写场景的合理操作），removeFromList 会把 node.next
+    // 置 null 导致遍历提前终止、剩余条目不触发回调
+    const nodes: Array<{ key: unknown; value: unknown }> = []
     let node = this.head.next
     while (node && node !== this.tail) {
-      this.options.onEvict(node.key, node.value)
+      nodes.push({ key: node.key, value: node.value })
       node = node.next
     }
 
@@ -433,10 +444,17 @@ export class LRUCache<K, V> {
     this.head.next = this.tail
     this.tail.prev = this.head
     this._size = 0
-    this.hitCount = 0
-    this.missCount = 0
-    this.evictionCount = 0
-    this.totalAccessTime = 0
+
+    // clear 触发的全量回调与 evictLRU 同口径计入淘汰统计；
+    // 单个回调抛错不中断其余条目（与 evictLRU 的防护对齐）
+    this.evictionCount += nodes.length
+    for (const entry of nodes) {
+      try {
+        this.options.onEvict(entry.key as K, entry.value as V)
+      } catch {
+        // 淘汰回调失败不影响清空流程
+      }
+    }
 
     return this
   }

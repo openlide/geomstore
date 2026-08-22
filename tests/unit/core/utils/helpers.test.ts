@@ -482,29 +482,81 @@ describe('Helpers - 工具函数', () => {
     })
 
     describe('clone - 选项', () => {
-      it('HELPERS-062: deep=false应该是浅克隆', () => {
+      it('HELPERS-062: shallow 模式应该是浅克隆', () => {
         const obj = { a: { b: 1 } }
-        const cloned = clone(obj, { deep: false })
+        const cloned = clone(obj, { mode: 'shallow' })
 
         expect(cloned).toEqual(obj)
         expect(cloned).not.toBe(obj)
         expect(cloned.a).toBe(obj.a) // 嵌套对象是同一个引用
       })
 
-      it('HELPERS-063: safe=true应该使用JSON序列化', () => {
+      it('HELPERS-063: json 模式应该使用 JSON 序列化（旧 safe 语义）', () => {
         const obj = { a: 1, b: { c: 2 } }
-        const cloned = clone(obj, { safe: true })
+        const cloned = clone(obj, { mode: 'json' })
 
         expect(cloned).toEqual(obj)
         expect(cloned).not.toBe(obj)
       })
 
-      it('HELPERS-064: safe模式应该处理循环引用', () => {
+      it('HELPERS-063b: safe 模式应保真克隆 Date/Map/Set（不再 JSON 化）', () => {
+        const obj = { date: new Date(2024, 0, 1), map: new Map([['k', 1]]), set: new Set([1, 2]) }
+        const cloned = clone(obj, { mode: 'safe' })
+
+        expect(cloned).not.toBe(obj)
+        expect(cloned.date).toEqual(new Date(2024, 0, 1))
+        expect(cloned.date).toBeInstanceOf(Date) // json 模式会退化成字符串
+        expect(cloned.map).toBeInstanceOf(Map)
+        expect(cloned.set).toBeInstanceOf(Set)
+      })
+
+      it('HELPERS-063c: safe 模式应支持循环引用（克隆器原生支持，无需降级）', () => {
+        const obj: Record<string, unknown> = { a: 1 }
+        obj.self = obj
+        const cloned = clone(obj, { mode: 'safe' })
+
+        expect(cloned).not.toBe(obj)
+        expect((cloned as Record<string, unknown>).self).toBe(cloned)
+      })
+
+      it('HELPERS-063d: 旧选项 deep/safe 发出废弃告警', () => {
+        const warnSpy = jest.spyOn(console, 'warn').mockImplementation()
+        try {
+          clone({ a: 1 }, { deep: true })
+          expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('已废弃'))
+        } finally {
+          warnSpy.mockRestore()
+        }
+      })
+
+      it('HELPERS-063e: safe 模式深拷贝失败时降级返回原引用并告警', () => {
+        const warnSpy = jest.spyOn(console, 'warn').mockImplementation()
+        try {
+          // ownKeys 陷阱：instanceof 检查不触发（走原型链），
+          // 错误发生在 deepCloneState 内部的 Object.keys，被 safe catch 捕获
+          const hostile = new Proxy(
+            { a: 1 },
+            {
+              ownKeys: () => {
+                throw new Error('ownKeys boom')
+              },
+            },
+          )
+          const result = clone(hostile, { mode: 'safe' })
+          expect(result).toBe(hostile)
+          // console.warn 带两个参数（消息 + 原始错误）
+          expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('降级返回原引用'), expect.any(Error))
+        } finally {
+          warnSpy.mockRestore()
+        }
+      })
+
+      it('HELPERS-064: json 模式遇到循环引用应返回原引用', () => {
         const obj: any = { a: 1 }
         obj.self = obj
 
         const consoleSpy = jest.spyOn(console, 'error').mockImplementation()
-        const cloned = clone(obj, { safe: true })
+        const cloned = clone(obj, { mode: 'json' })
 
         // JSON序列化会抛出错误，应该返回原对象
         expect(cloned).toBe(obj)
@@ -706,10 +758,27 @@ describe('Helpers - 工具函数', () => {
       consoleSpy.mockRestore()
     })
 
-    it('HELPERS-COV-018: set中间路径为非对象时应该创建新对象', () => {
-      const obj: any = { a: 1 }
+    it('HELPERS-COV-018 (BUG 回归): set中间路径为原始值时应放弃写入并保留原值', () => {
+      const obj: any = { a: 1, list: [5] }
+      const consoleSpy = jest.spyOn(console, 'warn').mockImplementation()
+
+      // 修复前：原始值被静默替换为 {}（a: 1 → {b: 2}，list[0]: 5 → 对象），破坏既有数据
+      set(obj, 'a.b', 2)
+      expect(obj.a).toBe(1)
+
+      set(obj, 'list.0.done', true)
+      expect(obj.list[0]).toBe(5)
+      expect(consoleSpy).toHaveBeenCalled()
+      consoleSpy.mockRestore()
+    })
+
+    it('HELPERS-COV-018b: set中间路径为 null/缺失时仍应创建路径对象', () => {
+      const obj: any = { a: null }
       set(obj, 'a.b', 2)
       expect(obj.a).toEqual({ b: 2 })
+
+      set(obj, 'c.d', 3)
+      expect(obj.c).toEqual({ d: 3 })
     })
   })
 
@@ -733,14 +802,14 @@ describe('Helpers - 工具函数', () => {
 
     it('HELPERS-COV-021: clone浅克隆应该正确处理Date对象', () => {
       const date = new Date('2024-01-01')
-      const cloned = clone(date, { deep: false })
+      const cloned = clone(date, { mode: 'shallow' })
       expect(cloned).toEqual(date)
       expect(cloned).not.toBe(date)
     })
 
     it('HELPERS-COV-022: clone浅克隆应该正确处理RegExp对象', () => {
       const regex = /pattern/g
-      const cloned = clone(regex, { deep: false })
+      const cloned = clone(regex, { mode: 'shallow' })
       expect(cloned).toEqual(regex)
       expect(cloned).not.toBe(regex)
     })
@@ -772,7 +841,7 @@ describe('Helpers - 工具函数', () => {
 
     it('HELPERS-COV-026: clone浅克隆数组应该返回新数组', () => {
       const arr = [1, 2, 3]
-      const cloned = clone(arr, { deep: false })
+      const cloned = clone(arr, { mode: 'shallow' })
       expect(cloned).toEqual(arr)
       expect(cloned).not.toBe(arr)
       expect(Array.isArray(cloned)).toBe(true)
@@ -795,8 +864,8 @@ describe('Helpers - 工具函数', () => {
       const map = new Map([['k', 'v']])
       const set = new Set([1, 2])
 
-      const clonedMap = clone(map, { deep: false })
-      const clonedSet = clone(set, { deep: false })
+      const clonedMap = clone(map, { mode: 'shallow' })
+      const clonedSet = clone(set, { mode: 'shallow' })
 
       expect(clonedMap).toEqual(map)
       expect(clonedMap).not.toBe(map)

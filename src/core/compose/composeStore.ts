@@ -95,7 +95,9 @@ function findTargetStoreWithKey(key: string, stores: Store[], namespace?: string
     // 修复：检查是否有多个 store 包含相同的 key，避免非确定性行为
     const matchingStores = stores.filter((s) => {
       const state = s.getState()
-      return key in state
+      // own property 判定：`in` 会命中 Object 原型链（'toString'/'constructor' 等），
+      // 导致原型链属性名被误判为所有 store 都匹配并写入第一个 store
+      return Object.prototype.hasOwnProperty.call(state, key)
     })
 
     if (matchingStores.length > 1) {
@@ -165,6 +167,8 @@ class ComposedStore<S extends State = State> implements Store<S> {
   private _composedListeners: Set<StateListener<S>> = new Set()
   /** 对子 Store 的订阅句柄（destroy 时统一退订，避免闭包残留） */
   private _storeUnsubscribers: Array<() => void> = []
+  /** 已告警过的 state 键冲突组合（每个组合只告警一次，避免高频 getState 刷屏） */
+  private _warnedStateKeyConflicts = new Set<string>()
 
   constructor(stores: Store[], options: ComposeOptions = {}) {
     this._stores = stores
@@ -195,19 +199,66 @@ class ComposedStore<S extends State = State> implements Store<S> {
   getState(): S {
     this._ensureAlive('getState')
     // 合并所有store的state
-    const result: Record<string, unknown> = {}
-    for (const store of this._stores) {
-      if (this._namespace) {
+    if (this._namespace) {
+      const result: Record<string, unknown> = {}
+      for (const store of this._stores) {
         result[store.name] = store.getState()
-      } else {
-        Object.assign(result, store.getState())
+      }
+      return result as S
+    }
+    return this._mergeStateMaps((store) => store.getState() as Record<string, unknown>) as S
+  }
+
+  /**
+   * 非命名空间模式下平铺合并各 store 的 state 键。
+   *
+   * 同名键后者覆盖前者，与 action/getter 冲突的处理一致（取第一个/最后一个并提示）：
+   * 至少在开发模式下给出冲突告警，避免覆盖关系静默发生、排查困难。
+   *
+   * @private
+   */
+  private _mergeStateMaps(pick: (store: Store) => Record<string, unknown>): Record<string, unknown> {
+    const result: Record<string, unknown> = {}
+    const keyOwners = isProduction() ? undefined : new Map<string, string>()
+    for (const store of this._stores) {
+      const source = pick(store)
+      for (const key of Object.keys(source)) {
+        if (keyOwners) {
+          const previousOwner = keyOwners.get(key)
+          if (previousOwner !== undefined && previousOwner !== store.name) {
+            // 每个冲突组合只告警一次：getState/state 高频读取（渲染/computed）下
+            // 重复告警会刷屏并带来每次调用的 Map 构建开销
+            const conflictKey = `${key}(${previousOwner},${store.name})`
+            if (!this._warnedStateKeyConflicts.has(conflictKey)) {
+              this._warnedStateKeyConflicts.add(conflictKey)
+              console.warn(
+                `[composeStore] State key "${key}" exists in multiple stores (${previousOwner}, ${store.name}); ` +
+                  `"${store.name}" wins in merged state/snapshot. Consider using namespaced mode for disambiguation.`,
+              )
+            }
+          } else {
+            keyOwners.set(key, store.name)
+          }
+        }
+        result[key] = source[key]
       }
     }
-    return result as S
+    return result
   }
 
   get state(): S {
-    return this.getState()
+    this._ensureAlive('state')
+    if (this._namespace) {
+      const result: Record<string, unknown> = {}
+      for (const store of this._stores) {
+        result[store.name] = store.state
+      }
+      return Object.freeze(result) as S
+    }
+    // 取值源用子 store 的保护视图（store.state）而非内部裸引用（getState）：
+    // 顶层写入落在冻结容器上会抛错；嵌套写入被子 store 保护代理拦截。
+    // 此前直接合并裸引用，composed.state.nested.x = 1 会静默穿透进子 store 内部状态
+    return Object.freeze(this._mergeStateMaps((store) => store.state as unknown as Record<string, unknown>)) as S
   }
 
   setState<K extends keyof S>(key: K, value: S[K]): void {
@@ -254,7 +305,7 @@ class ComposedStore<S extends State = State> implements Store<S> {
       targetStore = this._stores.find((s) => s.name === storeName)
     } else {
       // 裸名查找：多 store 命中同名 action 时提示冲突（仍取第一个，保持兼容）
-      const matches = this._stores.filter((s) => s.actions && actualAction in s.actions)
+      const matches = this._stores.filter((s) => s.actions && Object.prototype.hasOwnProperty.call(s.actions, actualAction))
       if (matches.length > 1) {
         console.warn(
           `[composeStore] Action "${actualAction}" 存在于多个 store（${matches.map((s) => s.name).join(', ')}），将调用第一个 store 的定义；建议启用命名空间消除歧义`,
@@ -408,29 +459,40 @@ class ComposedStore<S extends State = State> implements Store<S> {
   subscribe(listener: StateListener<S>): () => void {
     this._ensureAlive('subscribe')
     this._composedListeners.add(listener)
-    const unsubscribers: Array<() => void> = []
 
-    // 订阅所有子 store，统一走实例级防抖调度
-    for (const store of this._stores) {
-      const unsubscribe = store.subscribe(() => this._scheduleNotify())
-      unsubscribers.push(unsubscribe)
-      this._storeUnsubscribers.push(unsubscribe)
+    // 单路复用：首个组合层监听器进入时对每个子 store 只建一份订阅。
+    // 此前每个监听器都重复订阅全部子 store，N 个监听器占用 N 份/子store 的
+    // 订阅额度，超出子 store maxSubscribers 时会静默驱逐应用直连的订阅者
+    if (this._composedListeners.size === 1 && this._storeUnsubscribers.length === 0) {
+      const established: Array<() => void> = []
+      try {
+        for (const store of this._stores) {
+          established.push(store.subscribe(() => this._scheduleNotify()))
+        }
+        this._storeUnsubscribers.push(...established)
+      } catch (error) {
+        // 某个子 store 订阅失败（如已被独立销毁）：回滚已建句柄并移除监听器，
+        // 避免监听器已入集合却收不到通知、也无法退订的半订阅状态
+        for (const unsubscribe of established) {
+          unsubscribe()
+        }
+        this._composedListeners.delete(listener)
+        throw error
+      }
     }
 
     // 与普通 Store.subscribe 保持一致：订阅时不立即回调，
     // 仅在子 store 状态变化时通知，避免带副作用的监听器在订阅时被意外执行
 
     return () => {
-      for (const unsubscribe of unsubscribers) {
-        unsubscribe()
-        // 同步清理组合层句柄记录：退订后残留句柄会在长会话
-        // （页面反复挂载/卸载）中累积，持有已退订回调的闭包引用
-        const index = this._storeUnsubscribers.indexOf(unsubscribe)
-        if (index !== -1) {
-          this._storeUnsubscribers.splice(index, 1)
-        }
-      }
       this._composedListeners.delete(listener)
+      // 最后一个监听器退订时撤销对子 store 的订阅，释放子 store 的订阅额度
+      if (this._composedListeners.size === 0 && this._storeUnsubscribers.length > 0) {
+        for (const unsubscribe of this._storeUnsubscribers) {
+          unsubscribe()
+        }
+        this._storeUnsubscribers = []
+      }
     }
   }
 
@@ -484,6 +546,7 @@ class ComposedStore<S extends State = State> implements Store<S> {
   // ==================== 缓存管理 ====================
 
   getCached<K extends keyof S>(key: K): S[K] {
+    this._ensureAlive('getCached')
     const keyStr = String(key)
     const [targetStore, actualKey] = findTargetStoreWithKey(keyStr, this._stores, this._namespace)
     if (!targetStore) {
@@ -548,38 +611,53 @@ class ComposedStore<S extends State = State> implements Store<S> {
   // ==================== 批量更新 ====================
 
   startBatch(): void {
+    this._ensureAlive('startBatch')
     for (const store of this._stores) {
       store.startBatch()
     }
   }
 
   endBatch(): void {
+    this._ensureAlive('endBatch')
+    this._endBatchOnStores()
+  }
+
+  /** 对各子 store 收尾批量深度：已被独立销毁的子 store 跳过 */
+  private _endBatchOnStores(): void {
     for (const store of this._stores) {
-      store.endBatch()
+      try {
+        store.endBatch()
+      } catch {
+        // 子 store 已被独立销毁：其订阅与状态已清理，跳过收尾
+      }
     }
   }
 
   batch<T>(fn: () => T): T {
+    this._ensureAlive('batch')
     this.startBatch()
     try {
       return fn()
     } finally {
-      this.endBatch()
+      // fn 内可能已销毁组合 store：此时不能再走 endBatch 的销毁守卫
+      // （守卫异常会掩盖 fn 的返回值/原始异常），但子 store 的批量深度
+      // 仍需正确收尾（否则其通知被永久抑制）
+      this._endBatchOnStores()
     }
   }
 
   // ==================== 快照管理 ====================
 
   $snapshot(): Readonly<S> {
-    const result: Record<string, unknown> = {}
-    for (const store of this._stores) {
-      if (this._namespace) {
+    if (this._namespace) {
+      const result: Record<string, unknown> = {}
+      for (const store of this._stores) {
         result[store.name] = store.$snapshot()
-      } else {
-        Object.assign(result, store.$snapshot())
       }
+      return result as Readonly<S>
     }
-    return result as Readonly<S>
+    // 非命名空间模式：与 getState 相同的冲突告警语义
+    return this._mergeStateMaps((store) => store.$snapshot() as Record<string, unknown>) as Readonly<S>
   }
 
   $restore(snapshot: Readonly<S>): void {

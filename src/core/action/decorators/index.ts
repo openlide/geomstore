@@ -15,6 +15,7 @@
 export { withLog } from './log'
 export { withDebounce } from './debounce'
 export { withThrottle } from './throttle'
+export type { ThrottleDecoratorOptions } from './throttle'
 export { withCache } from './cache'
 export { withRetry } from './retry'
 export { withTimeout } from './timeout'

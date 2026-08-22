@@ -50,7 +50,11 @@ export class MetricsCollector {
    * @param {PerformanceMetrics[]} metricsList - 性能指标数组
    */
   collectBatch(metricsList: PerformanceMetrics[]): void {
-    this.metrics.push(...metricsList)
+    // 循环写入而非 push(...list)：spread 展开为函数参数，
+    // 大数组（实测 20 万条）直接抛 RangeError 栈溢出
+    for (const metric of metricsList) {
+      this.metrics.push(metric)
+    }
     this._trim()
   }
 
@@ -109,11 +113,16 @@ export class MetricsCollector {
       }
     }
 
-    const durations = this.metrics.map((m) => m.duration)
-    const totalDuration = durations.reduce((sum, d) => sum + d, 0)
-    const avgDuration = totalDuration / durations.length
-    const maxDuration = Math.max(...durations)
-    const minDuration = Math.min(...durations)
+    // reduce 累计而非 Math.max(...durations)：大样本下 spread 同样栈溢出
+    let maxDuration = -Infinity
+    let minDuration = Infinity
+    let totalDuration = 0
+    for (const d of this.metrics) {
+      totalDuration += d.duration
+      if (d.duration > maxDuration) maxDuration = d.duration
+      if (d.duration < minDuration) minDuration = d.duration
+    }
+    const avgDuration = totalDuration / this.metrics.length
     const thresholdExceeded = this.metrics.filter((m) => m.exceedThreshold).length
 
     // 按操作分组（单次遍历，避免 O(n×k) 的重复 filter）
@@ -303,10 +312,14 @@ export class PerformanceAnalyzer {
 
     return Object.entries(byOperation)
       .map(([operation, ops]) => {
-        const durations = ops.map((o) => o.duration)
         const count = ops.length
-        const avgDuration = durations.reduce((sum, d) => sum + d, 0) / count
-        const maxDuration = Math.max(...durations)
+        let totalDuration = 0
+        let maxDuration = -Infinity
+        for (const o of ops) {
+          totalDuration += o.duration
+          if (o.duration > maxDuration) maxDuration = o.duration
+        }
+        const avgDuration = totalDuration / count
 
         let severity: 'low' | 'medium' | 'high' = 'low'
         if (avgDuration > threshold * 3) {
@@ -360,9 +373,11 @@ export class PerformanceAnalyzer {
     for (const [operation, currentDuration] of Object.entries(currentStats)) {
       const baselineDuration = baselineStats[operation]
 
-      if (baselineDuration) {
+      // 基线为 0（亚毫秒取整）此前被 falsy 判断静默跳过，回归不上报；
+      // 0 基线且当前恶化时按无限恶化处理
+      if (baselineDuration !== undefined) {
         const change = currentDuration - baselineDuration
-        const changePercent = change / baselineDuration
+        const changePercent = baselineDuration > 0 ? change / baselineDuration : currentDuration > 0 ? Infinity : 0
 
         if (changePercent > threshold) {
           regressions.push({

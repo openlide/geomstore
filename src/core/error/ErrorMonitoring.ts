@@ -105,7 +105,15 @@ function createDefaultRequest(options: RequestInit): HttpRequestImpl {
           method: method as 'POST',
           header: headers,
           data: body ? JSON.parse(body) : undefined,
-          success: () => resolve(),
+          // wx.request 的 success 回调在任何 HTTP 状态（含 4xx/5xx）都会触发，
+          // 必须校验 statusCode，否则上报失败（服务端拒绝/鉴权失效）被当作成功静默丢失
+          success: (res: { statusCode: number }) => {
+            if (res.statusCode >= 200 && res.statusCode < 300) {
+              resolve()
+            } else {
+              reject(new Error(`wx.request failed with HTTP ${res.statusCode}`))
+            }
+          },
           fail: (err: unknown) => reject(err instanceof Error ? err : new Error('wx.request failed')),
         })
       })
@@ -421,6 +429,8 @@ export class ErrorMonitoring {
   private aggregator: ErrorAggregator
   private batchTimer?: ReturnType<typeof setInterval>
   private isFlushing = false
+  /** 在途 flush 的 Promise（shutdown 等待其完成后再做最终上报） */
+  private inFlightFlush: Promise<void> | null = null
   private isShuttingDown = false
   private nonAggregatedErrorCount = 0 // 禁用聚合时记录的错误数
   private readonly maxQueueSize = 1000 // 防止队列无限增长的最大大小
@@ -495,10 +505,24 @@ export class ErrorMonitoring {
    */
   async flushReports(): Promise<void> {
     if (this.errorQueue.length === 0 || this.isFlushing) {
-      return
+      // 已有 flush 在途：返回其 Promise，调用方等待的是真实完成而非立即返回
+      return this.inFlightFlush ?? undefined
     }
 
     this.isFlushing = true
+    // 记录在途 flush 的 Promise：shutdown 需先等待它完成再做最终 flush，
+    // 否则最终 flush 被入口守卫跳过，进程可能在报文发出前退出导致尾部错误丢失
+    const flush = this.doFlushReports()
+    this.inFlightFlush = flush
+    return flush
+  }
+
+  /**
+   * 执行批量上报（flushReports 已设置 isFlushing 与 inFlightFlush）
+   *
+   * @private
+   */
+  private async doFlushReports(): Promise<void> {
     const batch = [...this.errorQueue]
     this.errorQueue = []
 
@@ -506,15 +530,19 @@ export class ErrorMonitoring {
     // flush 与周期调度是两个独立职责，若在 flush 中清除会导致
     // 阈值触发的 flush 永久杀死周期上报；调度器由 shutdown() 统一清理
 
-    // 上报到所有报告器
-    const promises = this.reporters.map((reporter) => Promise.race([reporter.reportBatch(batch), this.delay(this.reportTimeout)]))
-
     try {
+      // 上报到所有报告器。reportBatch 仅类型约束返回 Promise，同步抛错完全合法：
+      // 经 Promise.resolve().then 包装消除同步抛点，避免异常绕过 try/finally 使
+      // isFlushing 永久为 true，之后所有 flush（周期/阈值/shutdown）静默失效
+      const promises = this.reporters.map((reporter) =>
+        Promise.race([Promise.resolve().then(() => reporter.reportBatch(batch)), this.delay(this.reportTimeout)]).catch((error) => {
+          console.error('[ErrorMonitoring] Error in reportBatch:', error)
+        }),
+      )
       await Promise.allSettled(promises)
-    } catch (error) {
-      console.error('[ErrorMonitoring] Error in reportBatch:', error)
     } finally {
       this.isFlushing = false
+      this.inFlightFlush = null
     }
   }
 
@@ -610,6 +638,11 @@ export class ErrorMonitoring {
       this.batchTimer = undefined
     }
 
+    // 先等待在途 flush 完成：避免最终 flush 被 isFlushing 守卫跳过
+    if (this.inFlightFlush) {
+      await this.inFlightFlush.catch(() => {})
+    }
+
     // 上报剩余错误
     await this.flushReports()
   }
@@ -627,7 +660,7 @@ export class ErrorMonitoring {
     }, this.batchInterval)
     // 调用 unref() 让定时器不阻止 Node.js 进程退出（解决测试/小程序环境句柄泄漏）
     if (timer && typeof (timer as { unref?: () => void }).unref === 'function') {
-      ;(timer as { unref: () => void }).unref()
+      (timer as { unref: () => void }).unref()
     }
     this.batchTimer = timer
   }
@@ -645,7 +678,7 @@ export class ErrorMonitoring {
       // unref()：退避等待定时器不应阻止 Node.js 进程/测试 worker 退出
       // （与 batchTimer 的 unref 处理一致，小程序/浏览器环境无 unref 时跳过）
       if (typeof (timer as { unref?: () => void }).unref === 'function') {
-        ;(timer as { unref: () => void }).unref()
+        (timer as { unref: () => void }).unref()
       }
     })
   }
@@ -712,5 +745,15 @@ export const defaultMonitoring: ErrorMonitoring = new Proxy(Object.create(ErrorM
     const instance = getDefaultMonitoring()
     const value = (instance as unknown as Record<PropertyKey, unknown>)[prop]
     return typeof value === 'function' ? value.bind(instance) : value
+  },
+  // 缺少 set/deleteProperty 陷阱时，属性写入落在哑 target 上被静默丢弃，
+  // 用户配置（如 enableConsoleLog = false）不生效且无任何提示
+  set(_target, prop, value) {
+    (getDefaultMonitoring() as unknown as Record<PropertyKey, unknown>)[prop] = value
+    return true
+  },
+  deleteProperty(_target, prop) {
+    delete (getDefaultMonitoring() as unknown as Record<PropertyKey, unknown>)[prop]
+    return true
   },
 })

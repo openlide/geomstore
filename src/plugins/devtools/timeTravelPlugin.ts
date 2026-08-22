@@ -270,7 +270,9 @@ export const timeTravelPlugin = <S extends State = State>(options: TimeTravelOpt
         // 导入历史
         importHistory: (json: string): void => {
           const data = JSON.parse(json)
-          if (!Array.isArray(data.snapshots)) {
+          // JSON.parse('null') 合法但 data.snapshots 会抛 TypeError，与函数内
+          // 其余畸形数据静默跳过的防御风格保持一致
+          if (!data || typeof data !== 'object' || !Array.isArray(data.snapshots)) {
             return
           }
           // 结构校验：仅接受合法快照条目（state 为对象、timestamp 为数字），

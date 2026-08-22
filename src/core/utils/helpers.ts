@@ -364,7 +364,14 @@ export function set<T = unknown>(obj: T, path: string, value: unknown): void {
       const key = keys[i]
       // hasOwnProperty 排除原型链属性（如 __proto__/constructor），
       // 结合 defineOwnProperty 写入，防止路径段污染对象原型
-      if (!Object.prototype.hasOwnProperty.call(current, key) || current[key] === null || typeof current[key] !== 'object') {
+      const existing = Object.prototype.hasOwnProperty.call(current, key) ? current[key] : undefined
+      if (existing !== null && existing !== undefined && typeof existing !== 'object') {
+        // 中间路径已是原始值（如 'list.0.done' 而 list[0] 是数字）：
+        // 原始值无法下钻，静默替换为 {} 会破坏既有数据（[5] → [{}]），放弃写入并告警
+        console.warn(`[set] Cannot descend into primitive value at "${key}" (path: ${path})`)
+        return
+      }
+      if (existing === null || existing === undefined) {
         defineOwnProperty(current, key, {})
       }
       current = current[key] as Record<string, unknown>
@@ -405,14 +412,30 @@ export function uniqueId(prefix?: string): string {
 
 // ==================== 克隆函数 ====================
 
+/** 克隆模式 */
+export type CloneMode = 'deep' | 'shallow' | 'safe' | 'json'
+
 /**
  * 统一的克隆函数
+ *
  * @param obj 要克隆的对象
- * @param options 克隆选项
+ * @param options.mode 克隆模式（默认 'deep'）：
+ * - `deep`：递归深拷贝，支持 Date/RegExp/Map/Set 与循环引用（复用 deepCloneState）
+ * - `shallow`：仅复制一层（数组/Map/Set 展开复制，对象浅拷贝）
+ * - `safe`：尽力深拷贝且绝不抛错——结构保真与 deep 相同（Date/Map/Set 正确克隆），
+ *   仅在克隆器真正失败时降级返回原引用并告警。旧版 safe 的 JSON 序列化语义
+ *   （Date 变字符串、Map/Set 变 `{}`、丢 undefined/函数）已移至显式命名的 `json` 模式
+ * - `json`：JSON 序列化往返，产出可结构化克隆的纯数据副本（有损），
+ *   序列化失败（循环引用等）时返回原引用
  * @returns 克隆后的对象
  */
-export function clone<T>(obj: T, options?: { deep?: boolean; safe?: boolean }): T {
-  const { deep = true, safe = false } = options || {}
+export function clone<T>(obj: T, options?: { mode?: CloneMode } & Record<string, unknown>): T {
+  const rawOptions = (options || {}) as Record<string, unknown>
+  // 旧选项（deep/safe）已废弃：JS 调用方传入时静默按默认 deep 处理会改变行为，显式告警
+  if (('deep' in rawOptions || 'safe' in rawOptions) && !('mode' in rawOptions)) {
+    console.warn("[clone] 选项 { deep, safe } 已废弃：请使用 { mode: 'deep' | 'shallow' | 'safe' | 'json' }，当前调用按 mode='deep' 处理")
+  }
+  const { mode = 'deep' } = rawOptions as { mode?: CloneMode }
 
   if (obj === null || typeof obj !== 'object') {
     return obj
@@ -426,7 +449,7 @@ export function clone<T>(obj: T, options?: { deep?: boolean; safe?: boolean }): 
     return new RegExp(obj.source, obj.flags) as T
   }
 
-  if (!deep) {
+  if (mode === 'shallow') {
     // 浅克隆
     if (Array.isArray(obj)) {
       return [...obj] as T
@@ -440,13 +463,21 @@ export function clone<T>(obj: T, options?: { deep?: boolean; safe?: boolean }): 
     return { ...obj }
   }
 
-  if (safe) {
-    // safe 模式：序列化失败（如循环引用、无法序列化的类型）时返回原引用而非抛错，
-    // 调用方拿到的是未克隆的原始对象——共享可变状态的风险由调用方自行承担，
-    // 适用“宁可共享引用也不能抛错”的降级场景
+  if (mode === 'json') {
     try {
       return JSON.parse(JSON.stringify(obj))
     } catch {
+      return obj
+    }
+  }
+
+  // deep 与 safe 共用递归克隆器（支持 Map/Set 与循环引用）：
+  // safe 仅多一层"绝不抛错"的降级契约
+  if (mode === 'safe') {
+    try {
+      return deepCloneState(obj)
+    } catch (error) {
+      console.warn('[clone] safe 模式深拷贝失败，降级返回原引用（共享可变状态的风险由调用方承担）:', error)
       return obj
     }
   }

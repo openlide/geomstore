@@ -700,7 +700,7 @@ describe('composeStore', () => {
       const earlyUnsubscribe = store1.subscribe(() => {
         // 通知循环中途销毁组合层（不级联销毁子 store）
         // destroy(destroyStores) 为实现层签名，公共类型暴露无参版本，此处断言安全
-        ;(composed as any).destroy(false)
+        (composed as any).destroy(false)
       })
 
       // 再注册组合层订阅：wrapper 在同一通知循环内随后被调用
@@ -879,17 +879,21 @@ describe('composeStore', () => {
       expect(() => composed.destroy()).not.toThrow()
     })
 
-    test('subscribe 退订后应同步清理内部句柄记录', () => {
+    test('subscribe 单路复用：句柄随最后一个监听器退订而清空', () => {
       const composed = composeStore([store1, store2])
 
       const unsubscribe1 = composed.subscribe(() => {})
       const unsubscribe2 = composed.subscribe(() => {})
-      // 两次订阅各挂 2 个子 store 句柄
-      expect((composed as any)._storeUnsubscribers.length).toBe(4)
+      // 单路复用（BUG 回归）：无论多少组合层监听器，每个子 store 只占一份订阅，
+      // 不再随监听器数量成倍挤占子 store 的 maxSubscribers 额度
+      expect((composed as any)._storeUnsubscribers.length).toBe(2)
 
       unsubscribe1()
+      // 仍有监听器在册：子 store 订阅保持
+      expect((composed as any)._storeUnsubscribers.length).toBe(2)
+
       unsubscribe2()
-      // 退订后句柄记录应同步清空，避免页面反复挂载/卸载的长会话累积
+      // 最后一个监听器退订：句柄记录同步清空，释放子 store 订阅额度
       expect((composed as any)._storeUnsubscribers.length).toBe(0)
     })
 
@@ -1919,5 +1923,232 @@ describe('composeStore', () => {
       expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Getter "val"'))
       warnSpy.mockRestore()
     })
+  })
+})
+
+// ==================== BUG 修复回归测试 ====================
+describe('BUG 回归：非命名空间模式 state 键冲突静默覆盖', () => {
+  it('同名 state 键冲突时应给出告警且后注册 store 覆盖', () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation()
+    const storeA = createStore({ name: 'conflict-a', state: { shared: 1, onlyA: 'a' } })
+    const storeB = createStore({ name: 'conflict-b', state: { shared: 2 } })
+
+    const composed = composeStore([storeA, storeB])
+
+    expect(composed.getState()).toEqual({ shared: 2, onlyA: 'a' })
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('State key "shared"'))
+    warnSpy.mockRestore()
+  })
+
+  it('$snapshot 合并时间样应给出冲突告警', () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation()
+    const storeA = createStore({ name: 'snap-a', state: { shared: 1 } })
+    const storeB = createStore({ name: 'snap-b', state: { shared: 2 } })
+
+    const composed = composeStore([storeA, storeB])
+    composed.$snapshot()
+
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('State key "shared"'))
+    warnSpy.mockRestore()
+  })
+
+  it('无键冲突时不应产生告警', () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation()
+    const storeA = createStore({ name: 'clean-a', state: { a: 1 } })
+    const storeB = createStore({ name: 'clean-b', state: { b: 2 } })
+
+    const composed = composeStore([storeA, storeB])
+    composed.getState()
+
+    expect(warnSpy).not.toHaveBeenCalled()
+    warnSpy.mockRestore()
+  })
+})
+
+// ==================== BUG 回归：组合层订阅额度与 state 保护 ====================
+describe('BUG 回归：组合层订阅与 state 保护', () => {
+  it('多个组合层监听器不应挤占子 store 订阅额度导致外部订阅被驱逐', async () => {
+    const sub = createStore({
+      name: 'mux-sub',
+      state: { v: 0 },
+      subscription: { maxSubscribers: 2 },
+    })
+    const externalListener = jest.fn()
+    sub.subscribe(externalListener)
+
+    const composed = composeStore([sub])
+    const composedListeners = [jest.fn(), jest.fn(), jest.fn()]
+    const unsubscribers = composedListeners.map((cb) => composed.subscribe(cb))
+
+    composed.setState('v', 1)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    // 修复前：3 个组合监听器各占 1 份子 store 订阅（共 4 份 > 上限 2），
+    // 外部直连监听器被静默驱逐，收不到任何通知
+    expect(externalListener).toHaveBeenCalledTimes(1)
+    composedListeners.forEach((cb) => expect(cb).toHaveBeenCalled())
+
+    unsubscribers.forEach((unsubscribe) => unsubscribe())
+  })
+
+  it('composed.state 顶层写入应抛错（冻结容器）', () => {
+    const sub = createStore({ name: 'frozen-sub', state: { count: 1 } })
+    const composed = composeStore([sub])
+
+    expect(() => {
+(composed.state as Record<string, unknown>).count = 99
+    }).toThrow()
+
+    expect(sub.getState().count).toBe(1)
+  })
+
+  it('composed.state 嵌套写入应被子 store 保护代理拦截', () => {
+    const sub = createStore({ name: 'nested-prot-sub', state: { nested: { v: 1 } } })
+    const composed = composeStore([sub])
+
+    expect(() => {
+((composed.state as Record<string, unknown>).nested as Record<string, unknown>).v = 2
+    }).toThrow('Direct mutation of state')
+
+    // 修复前：合并的是子 store 裸状态引用，写入静默穿透进内部状态
+    expect(sub.getState().nested.v).toBe(1)
+  })
+
+  it('state 键冲突告警只触发一次（不随 getState 刷屏）', () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation()
+    const storeA = createStore({ name: 'dup-again-a', state: { k: 1 } })
+    const storeB = createStore({ name: 'dup-again-b', state: { k: 2 } })
+
+    const composed = composeStore([storeA, storeB])
+    composed.getState()
+    composed.getState()
+    composed.getState()
+
+    const conflicts = warnSpy.mock.calls.filter((call) => typeof call[0] === 'string' && call[0].includes('State key "k"'))
+    expect(conflicts).toHaveLength(1)
+
+    warnSpy.mockRestore()
+  })
+})
+
+// ==================== 低严重度 BUG 回归 ====================
+describe('BUG 回归：compose 原型链属性路由', () => {
+  it('原型链属性名（toString）不应被当作状态键写入子 store', () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation()
+    const sub = createStore({ name: 'proto-route-sub', state: { count: 0 } })
+    const composed = composeStore([sub])
+
+    // 修复前：`key in state` 命中原型链，toString 被写入第一个 store 的状态
+    composed.setState('toString' as never, 'injected' as never)
+
+    expect(Object.prototype.hasOwnProperty.call(sub.getState(), 'toString')).toBe(false)
+    expect(sub.getState().count).toBe(0)
+    // 也不应触发「多 store 歧义」告警
+    expect(warnSpy).not.toHaveBeenCalled()
+    warnSpy.mockRestore()
+  })
+
+  it('销毁后的组合 store 调用 getCached 应抛错', () => {
+    const sub = createStore({ name: 'cached-guard-sub', state: { v: 1 } })
+    const composed = composeStore([sub])
+    // 默认级联销毁同样先经 _ensureAlive 守卫
+    composed.destroy()
+
+    // Reflect.apply 保持方法与实例绑定（摘离 this 会先抛 TypeError 而非守卫错误）
+    expect(() => Reflect.apply(composed.getCached, composed, ['v'])).toThrow('destroyed ComposedStore')
+  })
+})
+
+// ==================== 本轮修复回归 + 覆盖率盲区 ====================
+describe('BUG 回归：订阅回滚与 batch 收尾', () => {
+  it('子 store 订阅失败时应回滚已建句柄并移除监听器', () => {
+    const subA = createStore({ name: 'rollback-a', state: { a: 1 } })
+    const subB = createStore({
+      name: 'rollback-b',
+      state: { b: 1 },
+      subscription: { maxSubscribers: 1, onLimit: 'throw' },
+    })
+    subB.subscribe(() => {}) // 占满额度，后续订阅将抛错
+
+    const composed = composeStore([subA, subB])
+    expect(() => composed.subscribe(() => {})).toThrow()
+
+    // 回滚：组合层监听器未入册；子 A 的订阅句柄已撤销
+    expect((composed as unknown as { _composedListeners: Set<unknown> })._composedListeners.size).toBe(0)
+    expect((composed as unknown as { _storeUnsubscribers: unknown[] })._storeUnsubscribers.length).toBe(0)
+
+    // 释放额度后重新订阅可正常工作
+    subB.getState() // no-op
+    const composed2 = composeStore([subA, createStore({ name: 'rollback-c', state: { c: 1 } })])
+    const listener = jest.fn()
+    composed2.subscribe(listener)
+    composed2.setState('a' as never, 2 as never)
+  })
+
+  it('batch 内销毁组合 store 不应掩盖返回值', () => {
+    const sub = createStore({ name: 'batch-destroy-sub', state: { v: 1 } })
+    const composed = composeStore([sub])
+
+    const result = composed.batch(() => {
+      composed.destroy(false)
+      return 'fn-value'
+    })
+
+    // 修复前：finally 中 endBatch 的销毁守卫抛错，返回值被丢弃
+    expect(result).toBe('fn-value')
+    // 子 store 的批量深度仍被正确收尾（通知不被永久抑制）
+    const listener = jest.fn()
+    sub.subscribe(listener)
+    sub.setState('v', 2)
+    expect(listener).toHaveBeenCalledTimes(1)
+  })
+
+  it('batch 内销毁组合 store 时 fn 的异常不被掩盖', () => {
+    const sub = createStore({ name: 'batch-destroy-err-sub', state: { v: 1 } })
+    const composed = composeStore([sub])
+
+    expect(() =>
+      composed.batch(() => {
+        composed.destroy(false)
+        throw new Error('original')
+      }),
+    ).toThrow('original')
+  })
+})
+
+describe('getters 合并', () => {
+  it('非命名空间模式返回裸名 getters，同名冲突取第一个 store', () => {
+    const s1 = createStore({
+      name: 'user',
+      state: { name: 'Alice' },
+      getters: { display: (s: any) => s.name },
+    })
+    const s2 = createStore({
+      name: 'app',
+      state: { theme: 'light' },
+      getters: { display: (s: any) => s.theme, theme: (s: any) => s.theme },
+    })
+
+    const composed = composeStore([s1, s2])
+    const getters = (composed as any).getters
+
+    expect(Object.keys(getters).sort()).toEqual(['display', 'theme'])
+    // 同名冲突：取第一个 store（user）的定义
+    expect(getters.display({ name: 'Bob' })).toBe('Bob')
+    expect(getters.theme({ theme: 'dark' })).toBe('dark')
+  })
+
+  it('命名空间模式返回 storeName/getterName 键', () => {
+    const s1 = createStore({
+      name: 'user',
+      state: { name: 'Alice' },
+      getters: { display: (s: any) => s.name },
+    })
+
+    const composed = composeStore([s1], { namespace: true })
+    const getters = (composed as any).getters
+
+    expect(Object.keys(getters)).toEqual(['user/display'])
+    expect(getters['user/display']({ name: 'Bob' })).toBe('Bob')
   })
 })

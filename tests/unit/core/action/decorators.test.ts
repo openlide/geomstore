@@ -1092,6 +1092,53 @@ describe('Action Decorators', () => {
 
       expect(instance.callCount).toBe(3)
     })
+
+    it('DECORATOR-CACHE-015: 参数无法序列化（循环引用）时跳过缓存直接执行', async () => {
+      class UnserializableClass {
+        callCount = 0
+
+        @withCache({ ttl: 1000 })
+        async getValue(arg: unknown) {
+          this.callCount++
+          return `value-${this.callCount}`
+        }
+      }
+
+      const instance = new UnserializableClass()
+      const circular: Record<string, unknown> = { name: 'circular' }
+      circular.self = circular
+
+      // 序列化失败返回 __uncacheable__ 唯一键：等效跳过缓存
+      const r1 = await instance.getValue(circular)
+      const r2 = await instance.getValue(circular)
+      expect(r1).toBe('value-1')
+      expect(r2).toBe('value-2')
+      expect(instance.callCount).toBe(2)
+    })
+
+    it('DECORATOR-CACHE-016: 写入新条目时回收已过期条目', async () => {
+      jest.useFakeTimers()
+      const deleteSpy = jest.spyOn(Map.prototype, 'delete')
+
+      class ExpiringClass {
+        callCount = 0
+
+        @withCache({ ttl: 1000 })
+        async getValue(key: string) {
+          this.callCount++
+          return `value-${key}-${this.callCount}`
+        }
+      }
+
+      const instance = new ExpiringClass()
+      await instance.getValue('a')
+      jest.advanceTimersByTime(1500)
+      await instance.getValue('b')
+
+      // 写入 b 时循环回收已过期的 a，避免长生命周期宿主上 Map 持续累积
+      expect(deleteSpy).toHaveBeenCalled()
+      jest.useRealTimers()
+    })
   })
 
   // ==================== withLog 装饰器测试 ====================
@@ -1334,6 +1381,56 @@ describe('Action Decorators', () => {
 
       jest.useRealTimers()
     })
+
+    it('DECORATOR-THROTTLE-002: leading/trailing 双 false 退化为纯 leading', () => {
+      jest.useFakeTimers()
+
+      class PureLeadingClass {
+        callCount = 0
+
+        @withThrottle(100, { leading: false, trailing: false })
+        method() {
+          this.callCount++
+          return 'executed'
+        }
+      }
+
+      const instance = new PureLeadingClass()
+      instance.method()
+      expect(instance.callCount).toBe(1) // 双 false 退化：首次立即执行
+      instance.method()
+      expect(instance.callCount).toBe(1) // 窗口内丢弃
+      jest.advanceTimersByTime(150)
+      instance.method()
+      expect(instance.callCount).toBe(2) // 新窗口执行
+      jest.useRealTimers()
+    })
+
+    it('DECORATOR-THROTTLE-003: leading=false 首次调用延后到窗口结束补发', () => {
+      jest.useFakeTimers()
+
+      class TrailingOnlyClass {
+        callCount = 0
+        lastArgs: unknown[] = []
+
+        @withThrottle(100, { leading: false })
+        method(...args: unknown[]) {
+          this.callCount++
+          this.lastArgs = args
+          return 'executed'
+        }
+      }
+
+      const instance = new TrailingOnlyClass()
+      const result = instance.method('first')
+      expect(instance.callCount).toBe(0) // 首次调用延后
+      expect(result).toBeUndefined() // 同步方法返回 undefined
+
+      jest.advanceTimersByTime(100)
+      expect(instance.callCount).toBe(1) // 窗口结束补发
+      expect(instance.lastArgs).toEqual(['first'])
+      jest.useRealTimers()
+    })
   })
 
   // ==================== createDecorator 补充覆盖 ====================
@@ -1463,5 +1560,260 @@ describe('Action Decorators', () => {
       expect(instance.run()).toBeUndefined()
       expect(callCount).toBe(1)
     })
+  })
+})
+
+// ==================== BUG 修复回归测试 ====================
+describe('withCache BUG 回归：并发同参调用无 in-flight 去重', () => {
+  it('DECORATOR-CACHE-BUG-001: 并发同参调用应复用进行中的 Promise 不重复执行', async () => {
+    const consoleLogSpy = jest.spyOn(console, 'log').mockImplementation()
+    let executions = 0
+    let resolveRequest!: (value: string) => void
+
+    class Service {
+      @withCache({ ttl: 5000 })
+      async fetch(key: string): Promise<string> {
+        executions++
+        await new Promise<string>((resolve) => {
+          resolveRequest = resolve
+        })
+        return `v-${key}`
+      }
+    }
+
+    const service = new Service()
+    const first = service.fetch('k')
+    const second = service.fetch('k') // in-flight：应复用 first，不重复执行
+
+    resolveRequest('done')
+    expect(await first).toBe('v-k')
+    expect(await second).toBe('v-k')
+    expect(executions).toBe(1) // 修复前：两次调用都执行原方法
+
+    consoleLogSpy.mockRestore()
+  })
+
+  it('DECORATOR-CACHE-BUG-002: in-flight 请求失败后应删除缓存条目，后续调用重新执行', async () => {
+    const consoleLogSpy = jest.spyOn(console, 'log').mockImplementation()
+    let executions = 0
+    let shouldFail = true
+
+    class Service {
+      @withCache({ ttl: 5000 })
+      async fetch(): Promise<string> {
+        executions++
+        if (shouldFail) throw new Error('boom')
+        return 'ok'
+      }
+    }
+
+    const service = new Service()
+    await expect(service.fetch()).rejects.toThrow('boom')
+
+    shouldFail = false
+    await expect(service.fetch()).resolves.toBe('ok') // 失败条目已删除，重新执行
+    expect(executions).toBe(2)
+
+    consoleLogSpy.mockRestore()
+  })
+})
+
+// ==================== BUG 回归：装饰器状态按方法隔离 ====================
+describe('BUG 回归：同一装饰器实例复用于多个方法时状态不应串扰', () => {
+  it('DECORATOR-BUG: withCache 两个方法共享缓存会静默返回错误数据', async () => {
+    const consoleLogSpy = jest.spyOn(console, 'log').mockImplementation()
+    const cached = withCache({ ttl: 5000 })
+
+    class Service {
+      m1Runs = 0
+      m2Runs = 0
+
+      @cached
+      async m1(key: string): Promise<string> {
+        this.m1Runs++
+        return `m1:${key}`
+      }
+
+      @cached
+      async m2(key: string): Promise<string> {
+        this.m2Runs++
+        return `m2:${key}`
+      }
+    }
+
+    const service = new Service()
+    await service.m1('same-arg')
+    const result = await service.m2('same-arg')
+
+    // 修复前：m2 命中 m1 的缓存条目，返回 'm1:same-arg' 且 m2Runs 为 0
+    expect(result).toBe('m2:same-arg')
+    expect(service.m1Runs).toBe(1)
+    expect(service.m2Runs).toBe(1)
+
+    consoleLogSpy.mockRestore()
+  })
+
+  it('DECORATOR-BUG: withDebounce 两个方法共享定时器会互相结算对方的调用', async () => {
+    jest.useFakeTimers()
+    const debounced = withDebounce(50)
+
+    class Service {
+      @debounced
+      async m1(): Promise<string> {
+        return 'r1'
+      }
+
+      @debounced
+      async m2(): Promise<string> {
+        return 'r2'
+      }
+    }
+
+    const service = new Service()
+    const p1 = service.m1()
+    const p2 = service.m2()
+    jest.advanceTimersByTime(60)
+
+    // 修复前：共享 pending 队列，m1 的调用方拿到 m2 的结果 'r2'
+    expect(await p1).toBe('r1')
+    expect(await p2).toBe('r2')
+
+    jest.useRealTimers()
+  })
+
+  it('DECORATOR-BUG: withThrottle 两个方法共享窗口会互吞调用', () => {
+    const throttled = withThrottle(1000)
+
+    class Service {
+      m1Runs = 0
+      m2Runs = 0
+
+      @throttled
+      m1(): string {
+        this.m1Runs++
+        return 'r1'
+      }
+
+      @throttled
+      m2(): string {
+        this.m2Runs++
+        return 'r2'
+      }
+    }
+
+    const service = new Service()
+    expect(service.m1()).toBe('r1')
+    // 修复前：m2 被 m1 的节流窗口吞掉，返回 undefined 且不执行
+    expect(service.m2()).toBe('r2')
+    expect(service.m1Runs).toBe(1)
+    expect(service.m2Runs).toBe(1)
+  })
+})
+
+// ==================== BUG 回归：Symbol 缓存键 ====================
+describe('BUG 回归：同 description 的不同 Symbol 应生成不同缓存键', () => {
+  it('两个同名 Symbol 参数不应串用缓存', async () => {
+    const consoleLogSpy = jest.spyOn(console, 'log').mockImplementation()
+    const registry = new Map<symbol, string>()
+
+    class Service {
+      @withCache({ ttl: 5000 })
+      async lookup(key: symbol): Promise<string> {
+        const cached = registry.get(key)
+        if (cached) return cached
+        const value = `v-${Date.now()}-${Math.random()}`
+        registry.set(key, value)
+        return value
+      }
+    }
+
+    const service = new Service()
+    const symA = Symbol('channel')
+    const symB = Symbol('channel')
+
+    const resultA = await service.lookup(symA)
+    const resultB = await service.lookup(symB)
+
+    // 修复前：两个 Symbol 都序列化为 symbol:Symbol(channel)，B 命中 A 的缓存
+    expect(resultB).not.toBe(resultA)
+    // 相同 Symbol 的第二次调用仍命中缓存
+    expect(await service.lookup(symA)).toBe(resultA)
+
+    consoleLogSpy.mockRestore()
+  })
+})
+
+// ==================== 0.x 设计变更：throttle trailing ====================
+describe('设计变更：withThrottle trailing 补发', () => {
+  it('窗口内被抑制的调用应在窗口结束时以最新参数补发', async () => {
+    jest.useFakeTimers()
+
+    class Scroll {
+      positions: number[] = []
+
+      @withThrottle(100)
+      handleScroll(position: number) {
+        this.positions.push(position)
+      }
+    }
+
+    const scroll = new Scroll()
+    scroll.handleScroll(1)
+    scroll.handleScroll(2)
+    scroll.handleScroll(3) // 被抑制，但作为窗口尾最新调用应被补发
+
+    expect(scroll.positions).toEqual([1])
+
+    await jest.advanceTimersByTimeAsync(100)
+    // trailing 以最新参数（3）补发，而非首次被抑制的参数（2）
+    expect(scroll.positions).toEqual([1, 3])
+
+    jest.useRealTimers()
+  })
+
+  it('trailing: false 保持纯 leading 语义（窗口内调用全部丢弃）', async () => {
+    jest.useFakeTimers()
+
+    class PureLeading {
+      runs = 0
+
+      @withThrottle(100, { trailing: false })
+      hit() {
+        this.runs++
+      }
+    }
+
+    const instance = new PureLeading()
+    instance.hit()
+    instance.hit()
+    instance.hit()
+
+    await jest.advanceTimersByTimeAsync(200)
+    expect(instance.runs).toBe(1)
+
+    jest.useRealTimers()
+  })
+
+  it('trailing 调用的异步 rejection 不应成为 unhandled rejection', async () => {
+    jest.useFakeTimers()
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation()
+
+    class Failing {
+      @withThrottle(50)
+      async boom(): Promise<void> {
+        throw new Error('trailing boom')
+      }
+    }
+
+    const instance = new Failing()
+    await instance.boom().catch(() => {}) // leading 执行，rejection 由调用方处理
+    void instance.boom().catch(() => {}) // 窗口内被抑制，trailing 补发将 reject
+
+    await jest.advanceTimersByTimeAsync(50)
+    // trailing 补发的 rejection 被 withThrottle 记录而非成为 unhandled rejection
+    expect(errorSpy).toHaveBeenCalledWith('[withThrottle] trailing invocation failed:', expect.any(Error))
+
+    errorSpy.mockRestore()
+    jest.useRealTimers()
   })
 })

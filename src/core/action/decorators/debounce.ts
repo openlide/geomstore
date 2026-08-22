@@ -44,9 +44,12 @@ interface DebounceState {
  */
 export function withDebounce(delay: number = 300): MethodDecorator {
   // 按宿主对象隔离状态，避免多实例共享；使用 WeakMap 以便宿主被回收时自动清理。
-  const store = new WeakMap<object, DebounceState>()
+  // 内层再按方法名分桶：同一装饰器实例（工厂返回值复用）装饰多个方法时，
+  // 共享同一份防抖状态会让一个方法的重置清掉另一个方法的定时器、
+  // 且 pending 队列互相结算对方的调用（返回值串扰）。
+  const store = new WeakMap<object, Map<string, DebounceState>>()
 
-  const getState = (host: unknown): DebounceState => {
+  const getState = (host: unknown, methodKey: string): DebounceState => {
     // 宿主不是对象（如 undefined / 基本类型）时，用一个一次性本地状态兜底，
     // 保证不会跨调用串扰，也不影响装饰器主用例（类方法）。
     if (typeof host !== 'object' || host === null) {
@@ -57,7 +60,12 @@ export function withDebounce(delay: number = 300): MethodDecorator {
         pendingArgs: [],
       }
     }
-    let state = store.get(host)
+    let byMethod = store.get(host)
+    if (!byMethod) {
+      byMethod = new Map()
+      store.set(host, byMethod)
+    }
+    let state = byMethod.get(methodKey)
     if (!state) {
       state = {
         timeoutId: null,
@@ -65,18 +73,19 @@ export function withDebounce(delay: number = 300): MethodDecorator {
         pendingRejects: [],
         pendingArgs: [],
       }
-      store.set(host, state)
+      byMethod.set(methodKey, state)
     }
     return state
   }
 
-  return function (_target: unknown, _propertyKey: string | symbol, descriptor: PropertyDescriptor): PropertyDescriptor {
+  return function (_target: unknown, propertyKey: string | symbol, descriptor: PropertyDescriptor): PropertyDescriptor {
     const originalMethod = descriptor.value
+    const methodKey = String(propertyKey)
 
     descriptor.value = function (this: unknown, ...args: unknown[]) {
-      const state = getState(this)
+      const state = getState(this, methodKey)
 
-      if (state.timeoutId) {
+      if (state.timeoutId !== null) {
         clearTimeout(state.timeoutId)
       }
 

@@ -61,13 +61,20 @@ export class SubscriptionManager<S extends State = State> implements Subscriptio
    * - throw：抛出错误，避免订阅者无声丢失状态更新
    */
   add(listener: StateListener<S>): void {
+    // 判重：已达上限时重复订阅已有监听器会先驱逐一个无辜的最旧监听器，
+    // 再对本就存在的 listener 执行 no-op add——净效果是静默丢一个订阅
+    if (this._listeners.has(listener)) {
+      return
+    }
     if (this._listeners.size >= this._maxSubscribers) {
       if (this._onLimit === 'throw') {
         throw new Error(
           `[GeomStore][${this._storeName}] Subscriber limit reached (${this._maxSubscribers}). Unsubscribe unused listeners or increase maxSubscribers.`,
         )
       }
-      console.warn(`[GeomStore][${this._storeName}] 订阅者数量已达到上限(${this._maxSubscribers})`)
+      if (!isProduction()) {
+        console.warn(`[GeomStore][${this._storeName}] 订阅者数量已达到上限(${this._maxSubscribers})`)
+      }
       const firstListener = this._listeners.values().next().value
       if (firstListener) {
         this._listeners.delete(firstListener)

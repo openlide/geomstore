@@ -6,14 +6,18 @@ import type { State } from './store'
 
 /**
  * 存储后端接口
+ *
+ * 仅支持同步后端：persistencePlugin 的恢复与保存均为同步语义，
+ * 异步后端（返回 Promise）会在运行时被检测并报错。
+ * 如需异步持久化，请在外部自行订阅 store 并处理异步写入。
  */
 export interface StorageBackend {
-  /** 获取值 */
-  getItem(key: string): Promise<string | null> | string | null
-  /** 设置值 */
-  setItem(key: string, value: string): Promise<void> | void
-  /** 删除值 */
-  removeItem(key: string): Promise<void> | void
+  /** 获取值（必须同步返回） */
+  getItem(key: string): string | null
+  /** 设置值（必须同步返回） */
+  setItem(key: string, value: string): void
+  /** 删除值（必须同步返回） */
+  removeItem(key: string): void
 }
 
 /**

@@ -973,7 +973,7 @@ store.use(persistencePlugin({
 | 参数             | 类型                               | 说明                                                                       |
 | ---------------- | ---------------------------------- | -------------------------------------------------------------------------- |
 | key              | string \| (name: string) => string | 存储键名                                                                   |
-| storage          | StorageBackend                     | 存储后端                                                                   |
+| storage          | StorageBackend                     | 存储后端（仅支持同步实现；异步后端运行时显式报错）                         |
 | filter           | (state: S) => Partial\<S\>         | 状态过滤器                                                                 |
 | validate         | (state: unknown) => state is S     | 状态验证器（恢复前校验，返回 false 则拒绝恢复）                            |
 | restore          | boolean                            | 是否在启动时恢复                                                           |
@@ -1765,8 +1765,13 @@ const obj = { a: { b: { c: 1 } } }
 get(obj, 'a.b.c') // 1
 set(obj, 'a.b.c', 2)
 
-// 克隆
+// 克隆（mode 默认 'deep'）
 const cloned = clone({ a: { b: 1 } })
+// 'deep'：递归深拷贝（Date/Map/Set/循环引用均支持）
+// 'shallow'：仅复制一层
+// 'safe'：尽力深拷贝且绝不抛错（结构保真，失败降级原引用并告警）
+// 'json'：JSON 往返副本（有损：Date 变字符串、Map/Set 变 {}、丢 undefined/函数）
+const lossless = clone(obj, { mode: 'safe' })
 ```
 
 ### 其他工具
@@ -1867,6 +1872,8 @@ function withThrottle(interval?: number): MethodDecorator
 || 参数 | 类型 | 默认值 | 说明 |
 ||------|------|--------|------|
 || interval | number | 300 | 节流间隔（毫秒） |
+|| options.leading | boolean | true | 新窗口首次调用是否立即执行 |
+|| options.trailing | boolean | true | 窗口结束时是否以最新参数补发被抑制的调用（fire-and-forget） |
 
 > ℹ️ 支持同步与异步方法：装饰异步方法时，被节流跳过的调用返回 `Promise<undefined>`（保持调用方 `await` 语义）。异步判定基于函数原型比较，构建压缩（混淆函数名）后依然可靠。
 
@@ -2080,11 +2087,11 @@ class ErrorBoundary<S = unknown> {
 
 **ErrorBoundaryOptions：**
 
-| 参数        | 类型               | 说明                                                       |
-| ----------- | ------------------ | ---------------------------------------------------------- |
-| fallback    | `ErrorFallback<S>` | 回退状态：固定值，或 `(error, currentState) => S` 计算函数 |
-| onError     | Function           | 错误回调                                                   |
-| recoverable | boolean            | 是否可恢复（默认 true）；为 false 时捕获错误后重新抛出     |
+| 参数        | 类型                   | 说明                                                                  |
+| ----------- | ---------------------- | --------------------------------------------------------------------- |
+| fallback    | `ErrorFallback<F, S>`  | 回退值：固定值，或 `(error, currentState) => F` 计算函数（F 与状态类型解耦） |
+| onError     | Function              | 错误回调                                                              |
+| recoverable | boolean               | 是否恢复（默认由 fallback 推导：提供 fallback 即恢复，否则重抛）；显式配置优先 |
 
 **示例：**
 

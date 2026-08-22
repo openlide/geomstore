@@ -279,13 +279,16 @@ describe('SelectorComposer', () => {
   describe('createRetrySelector', () => {
     it('应该创建重试选择器', () => {
       let attemptCount = 0
-      const selector = SelectorComposer.createRetrySelector((s: TestState) => {
-        attemptCount++
-        if (attemptCount < 3) {
-          throw new Error('Not yet')
-        }
-        return s.value
-      }, 3)
+      const selector = SelectorComposer.createRetrySelector(
+        (s: TestState) => {
+          attemptCount++
+          if (attemptCount < 3) {
+            throw new Error('Not yet')
+          }
+          return s.value
+        },
+        { retries: 3 },
+      )
 
       const result = selector(state)
       expect(result).toBe(42)
@@ -293,9 +296,12 @@ describe('SelectorComposer', () => {
     })
 
     it('应该在重试次数用尽后抛出错误', () => {
-      const selector = SelectorComposer.createRetrySelector(() => {
-        throw new Error('Always fails')
-      }, 2)
+      const selector = SelectorComposer.createRetrySelector(
+        () => {
+          throw new Error('Always fails')
+        },
+        { retries: 2 },
+      )
 
       expect(() => selector(state)).toThrow('Always fails')
     })
@@ -315,11 +321,72 @@ describe('SelectorComposer', () => {
       expect(attemptCount).toBe(4)
     })
 
-    it('maxRetries为负数时应该抛出兜底错误', () => {
-      // 循环体一次都不执行，lastError 保持 undefined，走防御性兜底分支
-      const selector = SelectorComposer.createRetrySelector((s: TestState) => s.value, -1)
+    it('retries 为负数时应在创建期抛出 TypeError', () => {
+      // 旧版负数会静默走防御性兜底分支，新版在创建期直接拒绝非法配置
+      expect(() => SelectorComposer.createRetrySelector((s: TestState) => s.value, { retries: -1 })).toThrow(TypeError)
+    })
 
-      expect(() => selector(state)).toThrow('[SelectorComposer] Retry selector failed without error')
+    it('失败抛出的错误应带 attempts 总尝试次数标注', () => {
+      const selector = SelectorComposer.createRetrySelector(
+        () => {
+          throw new Error('Always fails')
+        },
+        { retries: 2 },
+      )
+
+      try {
+        selector(state)
+        fail('应该抛出错误')
+      } catch (error) {
+        expect((error as Error & { attempts?: number }).attempts).toBe(3) // 1 次初始 + 2 次重试
+      }
+    })
+
+    it('shouldRetry 返回 false 时应立即停止重试', () => {
+      let attemptCount = 0
+      const selector = SelectorComposer.createRetrySelector(
+        () => {
+          attemptCount++
+          throw new Error('fatal')
+        },
+        { retries: 5, shouldRetry: () => false },
+      )
+
+      expect(() => selector(state)).toThrow('fatal')
+      expect(attemptCount).toBe(1)
+    })
+
+    it('createRetrySelectorAsync 应支持退避延迟重试', async () => {
+      jest.useFakeTimers()
+      let attemptCount = 0
+      const selector = SelectorComposer.createRetrySelectorAsync(
+        () => {
+          attemptCount++
+          if (attemptCount < 3) {
+            throw new Error('Not yet')
+          }
+          return 'ok'
+        },
+        { retries: 3, delay: (attempt) => 10 * attempt },
+      )
+
+      const promise = selector(state)
+      // 推进两轮退避延迟（10ms + 20ms）
+      await jest.advanceTimersByTimeAsync(30)
+      await expect(promise).resolves.toBe('ok')
+      expect(attemptCount).toBe(3)
+      jest.useRealTimers()
+    })
+
+    it('createRetrySelectorAsync 失败错误应带 attempts 标注', async () => {
+      const selector = SelectorComposer.createRetrySelectorAsync(
+        () => {
+          throw new Error('Always fails')
+        },
+        { retries: 1 },
+      )
+
+      await expect(selector(state)).rejects.toMatchObject({ message: 'Always fails', attempts: 2 })
     })
   })
 
@@ -547,5 +614,24 @@ describe('SelectorComposer', () => {
       selector(state)
       expect(callCount).toBe(2)
     })
+  })
+})
+
+describe('createRetrySelector 旧签名兼容', () => {
+  it('数字参数发出废弃告警并按重试次数工作', () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation()
+    try {
+      const selector = SelectorComposer.createRetrySelector((s: { value: number }) => s.value, 3)
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('已废弃'))
+      expect(selector({ value: 42 })).toBe(42)
+    } finally {
+      warnSpy.mockRestore()
+    }
+  })
+
+  it('createRetrySelectorAsync retries 非法时抛 TypeError', () => {
+    expect(() => SelectorComposer.createRetrySelectorAsync((s: { value: number }) => s.value, { retries: -1 } as any)).toThrow(
+      '[SelectorComposer] retries 必须是非负整数',
+    )
   })
 })

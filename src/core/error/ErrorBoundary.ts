@@ -38,13 +38,13 @@ import type { ErrorBoundaryOptions, ErrorFallback } from '../../types/error'
  * })
  * ```
  */
-export class ErrorBoundary<S = unknown> {
+export class ErrorBoundary<S = unknown, F = undefined> {
   /**
    * 回退状态（固定值或计算函数）
    * @private
-   * @type {ErrorFallback<S> | undefined}
+   * @type {ErrorFallback<F, S> | undefined}
    */
-  private fallback?: ErrorFallback<S>
+  private fallback?: ErrorFallback<F, S>
 
   /**
    * 错误回调函数
@@ -59,6 +59,8 @@ export class ErrorBoundary<S = unknown> {
    * @type {boolean}
    */
   private recoverable: boolean = false
+  /** recoverable 是否被显式设置（未显式时事后提供 fallback 视为恢复意图） */
+  private recoverableExplicit: boolean
 
   /**
    * 错误历史记录
@@ -81,10 +83,13 @@ export class ErrorBoundary<S = unknown> {
    * })
    * ```
    */
-  constructor(options: ErrorBoundaryOptions<S> = {}) {
+  constructor(options: ErrorBoundaryOptions<S, F> = {}) {
     this.fallback = options.fallback
     this.onErrorCallback = options.onError
-    this.recoverable = options.recoverable ?? true
+    // 默认由 fallback 推导恢复意图（显式 recoverable 优先）：
+    // 无 fallback 却吞错返回 undefined，错误会在远离根因处变成二次异常
+    this.recoverableExplicit = options.recoverable !== undefined
+    this.recoverable = options.recoverable ?? options.fallback !== undefined
   }
 
   /**
@@ -111,13 +116,12 @@ export class ErrorBoundary<S = unknown> {
    * // safeResult will be undefined, error is handled
    * ```
    */
-  execute<T>(fn: () => T, currentState?: S): T | undefined {
+  execute<T>(fn: () => T, currentState?: S): T | F {
     try {
       return fn()
     } catch (error) {
-      // fallback 值与 fn 返回类型可能不同（类型层面以 T 为准），
-      // 运行时不依赖类型，直接透传回退值
-      return this.handleError(error as Error, currentState) as T | undefined
+      // 返回类型 T | F 与配置完全一致：配了 fallback 返回 F，否则 undefined
+      return this.handleError(error as Error, currentState) as T | F
     }
   }
 
@@ -144,12 +148,12 @@ export class ErrorBoundary<S = unknown> {
    * }, state)
    * ```
    */
-  async executeAsync<T>(fn: () => Promise<T>, currentState?: S): Promise<T | undefined> {
+  async executeAsync<T>(fn: () => Promise<T>, currentState?: S): Promise<T | F> {
     try {
       return await fn()
     } catch (error) {
-      // 同 execute：回退值透传，类型层面以 T 为准
-      return this.handleError(error as Error, currentState) as T | undefined
+      // 同 execute：返回类型与配置一致（T | F）
+      return this.handleError(error as Error, currentState) as T | F
     }
   }
 
@@ -162,9 +166,14 @@ export class ErrorBoundary<S = unknown> {
    * @returns {S | undefined} 回退状态（若配置）；未配置回退时返回 undefined
    * @throws {Error} 如果错误且不可恢复
    */
-  private handleError(error: Error, currentState?: S): S | undefined {
+  private handleError(error: Error, currentState?: S): F | undefined {
     // 记录错误
     this.errorHistory.push(error)
+    // 上限保护：与 ErrorHandler.maxLogSize 同口径，高频失败场景下
+    // Error 对象无界累积（此前只增不减，需手动 clearErrorHistory）
+    if (this.errorHistory.length > 100) {
+      this.errorHistory.shift()
+    }
 
     // 调用错误回调
     if (this.onErrorCallback) {
@@ -182,8 +191,9 @@ export class ErrorBoundary<S = unknown> {
 
     // 返回回退状态：支持固定值与根据错误/当前状态动态计算
     if (this.fallback !== undefined) {
-      console.warn('[ErrorBoundary] Returning fallback state due to error:', error.message)
-      return typeof this.fallback === 'function' ? (this.fallback as (error: Error, currentState: S | undefined) => S)(error, currentState) : this.fallback
+      // 输出完整错误对象（含堆栈）而非仅 message：吞错路径的现场信息是排障唯一线索
+      console.warn('[ErrorBoundary] Returning fallback state due to error:', error)
+      return typeof this.fallback === 'function' ? (this.fallback as (error: Error, currentState: S | undefined) => F)(error, currentState) : this.fallback
     }
 
     return undefined
@@ -202,7 +212,7 @@ export class ErrorBoundary<S = unknown> {
    * }
    * ```
    */
-  getFallbackState(): S | undefined {
+  getFallbackState(): F | undefined {
     return typeof this.fallback === 'function' ? undefined : this.fallback
   }
 
@@ -216,8 +226,13 @@ export class ErrorBoundary<S = unknown> {
    * boundary.setFallbackState({ count: 0, user: null })
    * ```
    */
-  setFallbackState(state: S): void {
+  setFallbackState(state: F): void {
     this.fallback = state
+    // 构造时未显式设置 recoverable 时，事后提供 fallback 即声明恢复意图；
+    // 否则 fail-loud 默认在构造时锁死，fallback 永远不会被返回
+    if (!this.recoverableExplicit) {
+      this.recoverable = state !== undefined
+    }
   }
 
   /**
@@ -314,9 +329,10 @@ export class ErrorBoundary<S = unknown> {
 export function withErrorBoundary(options?: ErrorBoundaryOptions) {
   // 修复闭包陷阱：boundary 不得在工厂作用域创建，否则同一装饰器装饰的
   // 所有类实例共享同一份 errorHistory/恢复状态。现按宿主对象（this）懒创建并隔离。
-  const boundaryByHost = new WeakMap<object, ErrorBoundary>()
+  // F 取 unknown：装饰器选项的 fallback 类型由调用方决定，这里只承载运行时
+  const boundaryByHost = new WeakMap<object, ErrorBoundary<unknown, unknown>>()
 
-  const getBoundary = (host: unknown): ErrorBoundary => {
+  const getBoundary = (host: unknown): ErrorBoundary<unknown, unknown> => {
     if (typeof host !== 'object' || host === null) {
       // 宿主非对象（罕见）：每次调用一次性实例，不跨调用串扰
       return new ErrorBoundary(options)

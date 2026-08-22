@@ -220,10 +220,10 @@ describe('企业级方案 - 离线状态管理', () => {
       },
       actions: {
         addItem(item: string) {
-          ;(this.state as any).items.push(item)
+          (this.state as any).items.push(item)
         },
         syncToServer() {
-          ;(this.state as any).syncCount++
+          (this.state as any).syncCount++
           return Promise.resolve({ success: true })
         },
         failingAction() {
@@ -327,13 +327,20 @@ describe('企业级方案 - 离线状态管理', () => {
       expect(offlineManager.getQueueLength()).toBe(0)
     })
 
-    it('ENTERPRISE-052: 未知 action 应该被当作成功出队', async () => {
+    it('ENTERPRISE-052 (BUG 回归): 未知 action 应该走重试→死信路径而非被当作成功丢弃', async () => {
       mockStorage['ghost_queue'] = JSON.stringify([{ id: '1', type: 'ghostAction', payload: null, timestamp: Date.now(), retryCount: 0 }])
-      offlineManager = new OfflineManager(testStore, 'ghost_queue')
+      const onDrop = jest.fn()
+      // maxRetryCount=1：首次失败即超过上限，直接进入死信队列
+      offlineManager = new OfflineManager(testStore, 'ghost_queue', 1, onDrop)
+      offlineManager.clearDeadLetters()
 
       await offlineManager.syncQueue()
 
+      // 不再被当作成功出队：操作进入死信队列并触发 onDrop，而非无感丢失
       expect(offlineManager.getQueueLength()).toBe(0)
+      expect(offlineManager.getDeadLetters()).toHaveLength(1)
+      expect(offlineManager.getDeadLetters()[0].type).toBe('ghostAction')
+      expect(onDrop).toHaveBeenCalled()
     })
 
     it('ENTERPRISE-053: 同步失败时应该留在队列并提示', async () => {
@@ -392,7 +399,7 @@ describe('企业级方案 - 离线状态管理', () => {
     })
 
     it('ENTERPRISE-056: 断网时 isOnline 应该为 false', () => {
-      ;(mockWx.getNetworkType as jest.Mock).mockImplementationOnce((options: any) => options.success({ networkType: 'none' }))
+      (mockWx.getNetworkType as jest.Mock).mockImplementationOnce((options: any) => options.success({ networkType: 'none' }))
       offlineManager = new OfflineManager(testStore)
 
       expect((offlineManager as any).isOnline).toBe(false)
@@ -470,7 +477,7 @@ describe('企业级方案 - 离线状态管理', () => {
     })
 
     it('ENTERPRISE-067: dispose 幂等且只移除一次网络监听', () => {
-      ;(mockWx as any).offNetworkStatusChange = jest.fn()
+      (mockWx as any).offNetworkStatusChange = jest.fn()
       offlineManager = new OfflineManager(testStore)
 
       offlineManager.dispose()
@@ -557,6 +564,8 @@ describe('企业级方案 - 热更新状态恢复', () => {
         version: '1.0.0',
       }
       mockStorage['store_backup_before_update_hot-update-test-store'] = JSON.stringify(backupData)
+      // 更新确认后的首启：待更新重启标记存在
+      mockStorage['store_backup_before_update_hot-update-test-store__pending_update_launch'] = JSON.stringify(true)
 
       const result = restoreFromHotUpdate(testStore)
 
@@ -588,10 +597,12 @@ describe('企业级方案 - 热更新状态恢复', () => {
         version: '1.0.0',
       }
       mockStorage['store_backup_before_update_hot-update-test-store'] = JSON.stringify(backupData)
+      mockStorage['store_backup_before_update_hot-update-test-store__pending_update_launch'] = JSON.stringify(true)
 
       restoreFromHotUpdate(testStore)
 
       expect(mockStorage['store_backup_before_update_hot-update-test-store']).toBeUndefined()
+      expect(mockStorage['store_backup_before_update_hot-update-test-store__pending_update_launch']).toBeUndefined()
     })
 
     it('ENTERPRISE-024: 应该支持自定义备份 key', () => {
@@ -601,10 +612,28 @@ describe('企业级方案 - 热更新状态恢复', () => {
         version: '1.0.0',
       }
       mockStorage['custom_backup_key'] = JSON.stringify(backupData)
+      mockStorage['custom_backup_key__pending_update_launch'] = JSON.stringify(true)
 
       const result = restoreFromHotUpdate(testStore, 'custom_backup_key')
 
       expect(result).toBe(true)
+    })
+
+    it('ENTERPRISE-055 (BUG 回归): 拒绝更新后的普通重启不应回滚状态', () => {
+      // 备份存在（onUpdateReady 时写入）但用户拒绝了更新、也未写入重启标记
+      const backupData = {
+        timestamp: Date.now() - 1000 * 60 * 5,
+        state: { userData: { name: 'Backup Point', score: 1 }, settings: { theme: 'dark' } },
+        version: '1.0.0',
+      }
+      mockStorage['store_backup_before_update_hot-update-test-store'] = JSON.stringify(backupData)
+      testStore.$patch({ userData: { name: 'After Decline', score: 99 } })
+
+      const result = restoreFromHotUpdate(testStore)
+
+      // 修复前：普通重启也会恢复备份，备份点之后的变更被静默回滚
+      expect(result).toBe(false)
+      expect(testStore.state.userData).toEqual({ name: 'After Decline', score: 99 })
     })
 
     it('ENTERPRISE-025: 损坏的备份数据应该返回 false', () => {
@@ -612,6 +641,17 @@ describe('企业级方案 - 热更新状态恢复', () => {
 
       const result = restoreFromHotUpdate(testStore)
 
+      expect(result).toBe(false)
+    })
+
+    it('ENTERPRISE-025b: wx.getStorageSync 抛错时 storage.get 降级返回 null', () => {
+      (mockWx.getStorageSync as jest.Mock).mockImplementationOnce(() => {
+        throw new Error('storage boom')
+      })
+
+      const result = restoreFromHotUpdate(testStore)
+
+      // 存储读取失败按"无备份"处理：返回 false（不抛错）
       expect(result).toBe(false)
     })
   })
@@ -658,7 +698,7 @@ describe('企业级方案 - StoreManager 完整场景', () => {
     expect(storeAAgain.state.userInfo).toEqual({ name: 'User A' })
   })
 
-  it('ENTERPRISE-028: LRU 清理场景', () => {
+  it('ENTERPRISE-028 (BUG 回归): LRU 清理场景——驱逐时防抖写入已落盘，新实例可恢复', () => {
     // 创建 6 个用户（超过默认限制 5）
     const stores: any[] = []
     for (let i = 0; i < 6; i++) {
@@ -666,10 +706,12 @@ describe('企业级方案 - StoreManager 完整场景', () => {
       stores[i].dispatch('setUserInfo', { index: i })
     }
 
-    // 第一个用户应该被清理
-    // 再次获取第一个用户应该创建新实例
+    // 第一个用户应该被清理（防抖窗口内的最后写入在驱逐卸载时同步落盘）
+    // 再次获取第一个用户会创建新实例，并从持久化存储恢复数据
     const newUser0 = manager.getUserStore('user-lru-0')
-    expect(newUser0.state.userInfo).toBeNull() // 新实例，没有之前的数据
+    expect(newUser0).not.toBe(stores[0])
+    // 修复前：卸载丢弃防抖写入 → storage 无数据 → 恢复为 null（丢最后一次变更）
+    expect(newUser0.state.userInfo).toEqual({ index: 0 })
   })
 
   it('ENTERPRISE-058: maxStores 为 0 时不应该抛错', () => {
@@ -680,7 +722,7 @@ describe('企业级方案 - StoreManager 完整场景', () => {
   })
 
   it('ENTERPRISE-059: 幽灵用户 ID 时 getCurrentStore 应该返回 null', () => {
-    ;(manager as any).currentUserId = 'ghost-user'
+    (manager as any).currentUserId = 'ghost-user'
 
     expect(manager.getCurrentStore()).toBeNull()
   })
@@ -772,7 +814,7 @@ describe('企业级方案 - 网络同步', () => {
   })
 
   it('ENTERPRISE-035: syncWithServer 应该从服务器同步用户信息', async () => {
-    ;(mockWx.request as jest.Mock).mockImplementation((options: any) => {
+    (mockWx.request as jest.Mock).mockImplementation((options: any) => {
       options.success({ data: { userInfo: { id: 9, name: 'Server User' } } })
     })
     const store = createUserStore({ userId: 'sync-user' })
@@ -784,7 +826,7 @@ describe('企业级方案 - 网络同步', () => {
   })
 
   it('ENTERPRISE-036: syncWithServer 请求失败时应该 reject', async () => {
-    ;(mockWx.request as jest.Mock).mockImplementation((options: any) => {
+    (mockWx.request as jest.Mock).mockImplementation((options: any) => {
       options.fail?.(new Error('Network error'))
     })
     const store = createUserStore({ userId: 'sync-user-fail' })
@@ -793,7 +835,7 @@ describe('企业级方案 - 网络同步', () => {
   })
 
   it('ENTERPRISE-065: syncWithServer 非 2xx 状态码应该 reject 且不污染状态', async () => {
-    ;(mockWx.request as jest.Mock).mockImplementation((options: any) => {
+    (mockWx.request as jest.Mock).mockImplementation((options: any) => {
       options.success({ statusCode: 500, data: { userInfo: null } })
     })
     const store = createUserStore({ userId: 'sync-user-500' })
@@ -896,11 +938,11 @@ describe('企业级方案 - 后台/前台状态同步', () => {
   }
 
   beforeAll(() => {
-    ;(global as any).App = mockApp
+    (global as any).App = mockApp
   })
 
   afterAll(() => {
-    ;(global as any).App = originalApp
+    (global as any).App = originalApp
   })
 
   beforeEach(() => {
@@ -916,7 +958,7 @@ describe('企业级方案 - 后台/前台状态同步', () => {
       state: { refreshed: 0 },
       actions: {
         refreshData() {
-          ;(this.state as any).refreshed++
+          (this.state as any).refreshed++
         },
       },
     })
@@ -924,7 +966,7 @@ describe('企业级方案 - 后台/前台状态同步', () => {
 
   /** 注册 App 并返回包装后的 options（触发 initBackgroundSync 后调用） */
   const registerApp = (options: Record<string, any> = {}): Record<string, any> => {
-    ;(global as any).App(options)
+    (global as any).App(options)
     return appOptions!
   }
 
@@ -994,7 +1036,7 @@ describe('企业级方案 - 后台/前台状态同步', () => {
       state: { a: 0 },
       actions: {
         refreshData() {
-          ;(this.state as any).a++
+          (this.state as any).a++
         },
       },
     })
@@ -1032,7 +1074,7 @@ describe('企业级方案 - 后台/前台状态同步', () => {
       state: { refreshed: 0 },
       actions: {
         refreshData() {
-          ;(this.state as any).refreshed++
+          (this.state as any).refreshed++
         },
       },
     })
@@ -1052,7 +1094,7 @@ describe('企业级方案 - 后台/前台状态同步', () => {
     try {
       expect(() => initBackgroundSync({ store: testStore, maxInactiveTime: -1 })).not.toThrow()
     } finally {
-      ;(global as any).App = original
+      (global as any).App = original
     }
   })
 })
@@ -1067,11 +1109,11 @@ describe('企业级方案 - App 集成', () => {
   }
 
   beforeAll(() => {
-    ;(global as any).App = mockApp
+    (global as any).App = mockApp
   })
 
   afterAll(() => {
-    ;(global as any).App = originalApp
+    (global as any).App = originalApp
   })
 
   beforeEach(() => {
@@ -1199,4 +1241,58 @@ describe('企业级方案 - App 集成', () => {
     expect(app.getStore()).toBeNull()
     expect(app.getOfflineManager()).toBeNull()
   })
+})
+
+// ==================== 本轮修复回归 ====================
+it('ENTERPRISE-060 (BUG 回归): syncQueue 中途异常不应丢失未处理完的队列项', async () => {
+  // 第一个 action 成功；第二个超过重试上限进死信时 onDrop 抛错中断循环；
+  // 第三个尚未迭代——修复前永久丢失且残缺队列覆盖磁盘
+  mockStorage['partial_queue'] = JSON.stringify([
+    { id: '1', type: 'setUserInfo', payload: { index: 1 }, timestamp: Date.now(), retryCount: 99 },
+    { id: '3', type: 'setUserInfo', payload: { index: 3 }, timestamp: Date.now(), retryCount: 0 },
+  ])
+  const onDrop = jest.fn(() => {
+    throw new Error('onDrop callback boom')
+  })
+  const localStore = createStore({ name: 'partial-queue-store', state: { userInfo: null } })
+  const offlineManager = new OfflineManager(localStore, 'partial_queue', 1, onDrop)
+
+  await expect(offlineManager.syncQueue()).rejects.toThrow('onDrop callback boom')
+
+  // 未迭代到的第 3 项必须保留在队列中（重新入队）
+  const queue = JSON.parse(mockStorage['partial_queue'])
+  expect(queue.some((a: { id: string }) => a.id === '3')).toBe(true)
+})
+
+it('ENTERPRISE-061 (BUG 回归): initHotUpdate 幂等安装不累积监听', () => {
+  const sharedManager = {
+    onUpdateReady: jest.fn((callback: () => void) => {
+      mockUpdateListeners.onReady = callback
+    }),
+    onUpdateFailed: jest.fn((callback: () => void) => {
+      mockUpdateListeners.onFailed = callback
+    }),
+    applyUpdate: jest.fn(),
+  }
+  const originalGetter = mockWx.getUpdateManager
+  ;(mockWx.getUpdateManager as jest.Mock).mockImplementation(() => sharedManager)
+
+  const localStore = createStore({ name: 'hot-idempotent-store', state: { v: 1 } })
+  try {
+    initHotUpdate({ store: localStore })
+    initHotUpdate({ store: localStore })
+    initHotUpdate({ store: localStore })
+
+    // 同一 updateManager 实例只安装一次监听
+    expect(sharedManager.onUpdateReady).toHaveBeenCalledTimes(1)
+    expect(sharedManager.onUpdateFailed).toHaveBeenCalledTimes(1)
+
+    // 切换保护目标后再触发：备份来自最新注册的 store
+    const otherStore = createStore({ name: 'hot-update-switch-store', state: { v: 7 } })
+    initHotUpdate({ store: otherStore })
+    mockUpdateListeners.onReady!()
+    expect(mockStorage['store_backup_before_update_hot-update-switch-store']).toBeDefined()
+  } finally {
+    (mockWx.getUpdateManager as jest.Mock).mockImplementation(originalGetter)
+  }
 })

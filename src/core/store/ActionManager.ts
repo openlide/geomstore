@@ -33,6 +33,10 @@ export interface ActionManagerOptions {
   getMutationCount?: () => number
   /** dispatch 结束后刷新缓存（供 action 直接变异状态时同步缓存） */
   refreshCache?: () => void
+  /** 获取最近一次通知已覆盖到的变更计数（用于补发去重，仅 onlyOnChange 需要） */
+  getLastNotifiedMutationCount?: () => number
+  /** 是否处于批量更新中（batch 进行中的补发由 batch 收尾统一通知） */
+  isInBatch?: () => boolean
 }
 
 /**
@@ -54,6 +58,8 @@ export class ActionManager<S extends State = State, A extends Actions = Actions>
   private readonly _notifyOnlyOnChange: boolean
   private readonly _getMutationCount: () => number
   private readonly _refreshCache?: () => void
+  private readonly _getLastNotifiedMutationCount?: () => number
+  private readonly _isInBatch?: () => boolean
 
   constructor(options: ActionManagerOptions) {
     this._storeName = options.storeName
@@ -64,6 +70,8 @@ export class ActionManager<S extends State = State, A extends Actions = Actions>
     this._notifyOnlyOnChange = options.notifyOnlyOnChange ?? false
     this._getMutationCount = options.getMutationCount ?? (() => 0)
     this._refreshCache = options.refreshCache
+    this._getLastNotifiedMutationCount = options.getLastNotifiedMutationCount
+    this._isInBatch = options.isInBatch
   }
 
   /**
@@ -90,8 +98,9 @@ export class ActionManager<S extends State = State, A extends Actions = Actions>
     // 创建 action 上下文代理，使 this.actionName() 可用
     const actionContext = new Proxy(contextBase as unknown as Record<string, unknown>, {
       get(target: Record<string, unknown>, prop: string | symbol) {
-        // 优先返回绑定的 action
-        if (typeof prop === 'string' && prop in boundActions) {
+        // 优先返回绑定的 action（own property 判定：`in` 会命中原型链，
+        // 使 this.toString()/this.hasOwnProperty() 等返回 undefined）
+        if (typeof prop === 'string' && Object.prototype.hasOwnProperty.call(boundActions, prop)) {
           return boundActions[prop]
         }
         // 否则返回 Store 实例的属性
@@ -123,7 +132,9 @@ export class ActionManager<S extends State = State, A extends Actions = Actions>
   execute(actionName: string, ...args: unknown[]): unknown
   execute(actionName: string | keyof A, ...args: unknown[]): unknown {
     const name = actionName as string
-    if (!(name in this._boundActions)) {
+    // own property 判定：`in` 会命中原型链，dispatch('toString') 会绕过
+    // 存在性检查后在调用 inherited 值时抛出误导性的 TypeError
+    if (!Object.prototype.hasOwnProperty.call(this._boundActions, name)) {
       throw createError(ErrorCode.ACTION_NOT_FOUND, `Action "${name}" not found in store "${this._storeName}"`, {
         storeName: this._storeName,
         actionName: name,
@@ -144,22 +155,43 @@ export class ActionManager<S extends State = State, A extends Actions = Actions>
       // 同步刷新缓存：action 可能通过 this.state.xxx = ... 直接变异状态，
       // 绕过 setState/$patch 导致缓存陈旧，此处按状态源强制回写
       this._safeRefreshCache()
-      // 异步 action：完成后再刷新一次（不改变返回值与拒绝语义）
-      if (result instanceof Promise) {
-        result.then(
-          () => this._safeRefreshCache(),
-          () => {
-            /* 拒绝由调用方处理，此处不吞错 */
-          },
-        )
+      // 异步 action：通知统一延迟到 Promise 结束（fulfill 或 reject）时补发。
+      // 同步段不单独通知——其变更会被完成时的补发覆盖，否则与续段 setState 的
+      // 自发通知、完成补发叠加成三重通知。
+      // await 之后的续段运行在内部访问作用域之外，对裸状态的直接写入既无通知也无计数：
+      // - 默认模式无任何变更跟踪，完成时无条件补发（裸写入不可检测，宁多勿漏）
+      // - onlyOnChange 模式按「计数 > 已通知覆盖计数」精确补发：
+      //   续段 setState 已自发通知过的（计数已被覆盖）不再重复
+      const onSettled = (): void => {
+        this._safeRefreshCache()
+        // 外层 dispatch 或 batch 进行中时跳过，由其收尾统一通知
+        if (this._dispatchDepth > 0 || this._isInBatch?.()) return
+        if (!this._notifyOnlyOnChange || this._getMutationCount() > (this._getLastNotifiedMutationCount?.() ?? -1)) {
+          this._notifyListeners()
+        }
       }
-      if (!this._notifyOnlyOnChange || this._getMutationCount() > mutationsBefore) {
+      if (result instanceof Promise) {
+        result.then(onSettled, onSettled)
+        return result
+      }
+      // 同步 action：仅最外层 dispatch 且不在 batch 中时通知——
+      // 内层 dispatch 结束时深度仍大于 0，提前通知会让监听器收到
+      // 外层 action 尚未完成的中间状态；batch 中则由收尾统一通知
+      if (this._dispatchDepth === 0 && !this._isInBatch?.() && (!this._notifyOnlyOnChange || this._getMutationCount() > mutationsBefore)) {
         this._notifyListeners()
       }
       return result
     } catch (error) {
       this._exitDispatch()
       this._hooks.emit('onError', error)
+      // 失败路径同样处理已发生的变更：action 抛错前的 setState/直接变异
+      // 因 _dispatching 被抑制了通知，此处补刷缓存并在最外层补发，
+      // 否则「先置 loading 再失败」的中间状态对监听器永久不可见
+      this._safeRefreshCache()
+      // batch 进行中由 batch 收尾统一通知，不在中途泄漏
+      if (this._dispatchDepth === 0 && !this._isInBatch?.() && (!this._notifyOnlyOnChange || this._getMutationCount() > mutationsBefore)) {
+        this._notifyListeners()
+      }
       throw createError(ErrorCode.ACTION_EXECUTION_ERROR, `Action "${name}" execution failed`, {
         storeName: this._storeName,
         actionName: name,
@@ -252,7 +284,9 @@ export class GetterManager<S extends State = State, G extends Record<string, (st
   execute(getterName: string): unknown
   execute(getterName: string | keyof G): unknown {
     const name = getterName as string
-    if (!this._getters || !(name in this._getters)) {
+    // own property 判定：`in` 会命中原型链，getter('toString') 会静默调用
+    // 继承方法并把非 getter 结果返回给调用方
+    if (!this._getters || !Object.prototype.hasOwnProperty.call(this._getters, name)) {
       throw createError(ErrorCode.SELECTOR_NOT_FOUND, `Getter "${name}" not found in store "${this._storeName}"`, {
         storeName: this._storeName,
         getterName: name,

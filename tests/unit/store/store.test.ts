@@ -248,7 +248,7 @@ describe('Store - 核心功能', () => {
         state: { count: 0 },
         actions: {
           increment(..._args: unknown[]) {
-            ;(this.state as any).count++
+            (this.state as any).count++
           },
         },
       })
@@ -262,7 +262,7 @@ describe('Store - 核心功能', () => {
         state: { count: 0 },
         actions: {
           increment(..._args: unknown[]) {
-            ;(this.state as any).count++
+            (this.state as any).count++
           },
         },
       })
@@ -345,10 +345,10 @@ describe('Store - 核心功能', () => {
         state: { count: 0, name: 'test' },
         actions: {
           increment(..._args: unknown[]) {
-            ;(this.state as any).count++
+            (this.state as any).count++
           },
           decrement(..._args: unknown[]) {
-            ;(this.state as any).count--
+            (this.state as any).count--
           },
           setName(...args: unknown[]) {
             const [name] = args as [string]
@@ -1709,7 +1709,7 @@ describe('Store - 核心功能', () => {
         state: { count: 0, total: 0 },
         actions: {
           increment(..._args: unknown[]) {
-            ;(this.state as any).count++
+            (this.state as any).count++
           },
           incrementAndSum(..._args: unknown[]) {
             this.dispatch('increment')
@@ -1757,7 +1757,7 @@ describe('Store - 核心功能', () => {
       // 尝试通过 proxy 修改状态，触发 set 拦截器中的 isInternalAccess
       // 在开发模式下，直接修改 state 会抛出错误
       expect(() => {
-        ;(state2 as any).count = 999
+        (state2 as any).count = 999
       }).toThrow('prohibited')
     })
   })
@@ -1791,8 +1791,308 @@ describe('Store - 核心功能', () => {
       // 尝试通过 proxy 修改状态，触发 set 拦截器中的 isInternalAccess
       // 在开发模式下，直接修改 state 会抛出错误
       expect(() => {
-        ;(s3 as any).count = 999
+        (s3 as any).count = 999
       }).toThrow('prohibited')
     })
   })
+
+  // ==================== BUG 修复回归测试 ====================
+  describe('BUG 回归：异步 action 通知与嵌套 dispatch', () => {
+    it('BUG: 异步 action 在 await 后直接变异状态应触发通知（默认模式）', async () => {
+      const store = createStore({
+        state: { count: 0 },
+        actions: {
+          async load(this: any) {
+            await Promise.resolve()
+            // 默认模式 action 上下文拿到的是裸状态：异步续段中的直接写入
+            // 修复前既不通知也不刷新缓存
+            this.state.count = 42
+          },
+        },
+      })
+      const listener = jest.fn()
+      store.subscribe(listener)
+
+      await store.dispatch('load')
+
+      expect(store.getState().count).toBe(42)
+      // 通知统一延迟到 Promise 完成时补发（同步段不单独通知，避免三重通知）
+      expect(listener).toHaveBeenCalledTimes(1)
+      expect((listener.mock.calls[0][0] as { count: number }).count).toBe(42)
+    })
+
+    it('BUG: onlyOnChange 模式下异步 action 应按变更计数精确补发通知', async () => {
+      const store = createStore({
+        state: { count: 0 },
+        notify: { onlyOnChange: true },
+        actions: {
+          async load(this: any) {
+            await Promise.resolve()
+            // 脏跟踪代理递增变更计数
+            this.state.count = 42
+          },
+          async untouched(this: any) {
+            await Promise.resolve()
+            // 不修改任何状态
+          },
+        },
+      })
+      const listener = jest.fn()
+      store.subscribe(listener)
+
+      await store.dispatch('untouched')
+      expect(listener).not.toHaveBeenCalled()
+
+      await store.dispatch('load')
+      expect(listener).toHaveBeenCalledTimes(1)
+      expect((listener.mock.calls[0][0] as { count: number }).count).toBe(42)
+    })
+
+    it('BUG: 嵌套 dispatch 内层结束不应提前通知中间状态', () => {
+      const received: number[] = []
+      const store = createStore({
+        state: { count: 0 },
+        actions: {
+          inner(this: any) {
+            this.setState('count', this.state.count + 1)
+          },
+          outer(this: any) {
+            this.dispatch('inner')
+            this.setState('count', this.state.count + 1)
+          },
+        },
+      })
+      store.subscribe((state) => received.push((state as { count: number }).count))
+
+      store.dispatch('outer')
+
+      expect(store.getState().count).toBe(2)
+      // 修复前内层 action 结束即通知中间态（count=1），破坏批量语义
+      expect(received).toEqual([2])
+    })
+  })
+
+  describe('BUG 回归：原型链属性', () => {
+    it('BUG: action 上下文的原型方法应可用', () => {
+      const store = createStore({
+        state: { count: 0 },
+        actions: {
+          probe(this: unknown) {
+            // 修复前 'toString' in boundActions 命中原型链，返回 undefined
+            return typeof (this as { toString?: unknown }).toString
+          },
+        },
+      })
+
+      expect(store.dispatch('probe')).toBe('function')
+    })
+
+    it('BUG: dispatch 原型链属性名应报 ACTION_NOT_FOUND 而非 TypeError', () => {
+      const store = createStore({
+        state: { count: 0 },
+        actions: { increment: () => undefined },
+      })
+
+      expect(() => store.dispatch('toString')).toThrow('Action "toString" not found')
+    })
+
+    it('BUG: getter 原型链属性名应报 SELECTOR_NOT_FOUND 而非静默返回继承方法结果', () => {
+      const store = createStore({
+        state: { count: 1 },
+        getters: {
+          double: (state: { count: number }) => state.count * 2,
+        },
+      })
+
+      // 修复前 getter('toString') 会调用 Object.prototype.toString 并返回错误结果
+      expect(() => store.getter('toString')).toThrow('Getter "toString" not found')
+    })
+  })
 })
+
+  // ==================== BUG 回归：失败路径的状态变更通知 ====================
+  describe('BUG 回归：action 失败路径的状态变更通知', () => {
+    it('同步 action 抛错前已写入的状态应通知监听器', () => {
+      const store = createStore({
+        state: { loading: false },
+        actions: {
+          fail(this: { setState: (k: 'loading', v: boolean) => void }) {
+            this.setState('loading', true)
+            throw new Error('boom')
+          },
+        },
+      })
+      const listener = jest.fn()
+      store.subscribe(listener)
+
+      expect(() => store.dispatch('fail')).toThrow()
+
+      // 修复前：失败路径不通知，监听器永远看不到 loading=true 的中间状态
+      expect(listener).toHaveBeenCalledTimes(1)
+      expect((listener.mock.calls[0][0] as { loading: boolean }).loading).toBe(true)
+    })
+
+    it('异步 action 拒绝前已写入的状态应通知监听器', async () => {
+      const store = createStore({
+        state: { loading: false },
+        actions: {
+          async fail(this: { setState: (k: 'loading', v: boolean) => void }) {
+            this.setState('loading', true)
+            await Promise.resolve()
+            throw new Error('boom')
+          },
+        },
+      })
+      const listener = jest.fn()
+      store.subscribe(listener)
+
+      await expect(store.dispatch('fail')).rejects.toThrow('boom')
+
+      const lastState = listener.mock.calls[listener.mock.calls.length - 1][0] as { loading: boolean }
+      expect(lastState.loading).toBe(true)
+    })
+
+    it('onlyOnChange 模式下 action 内 defineProperty 变更也应触发通知', () => {
+      const store = createStore({
+        state: { count: 0 },
+        notify: { onlyOnChange: true },
+        actions: {
+          mutate(this: { state: Record<string, unknown> }) {
+            Object.defineProperty(this.state, 'count', { value: 7, writable: true, enumerable: true, configurable: true })
+          },
+        },
+      })
+      const listener = jest.fn()
+      store.subscribe(listener)
+
+      store.dispatch('mutate')
+
+      expect(store.getState().count).toBe(7)
+      // 修复前：脏跟踪代理缺 defineProperty 陷阱，计数不增长 → 不通知
+      expect(listener).toHaveBeenCalledTimes(1)
+    })
+  })
+
+  // ==================== BUG 回归：订阅判重 ====================
+  describe('BUG 回归：重复订阅不应驱逐无辜监听器', () => {
+    it('已达上限时重复订阅已有监听器应直接忽略', () => {
+      const store = createStore({
+        name: 'dedupe-store',
+        state: { v: 0 },
+        subscription: { maxSubscribers: 2 },
+      })
+      const listenerA = jest.fn()
+      const listenerB = jest.fn()
+      store.subscribe(listenerA)
+      store.subscribe(listenerB)
+
+      // 重复订阅 B：修复前会先驱逐 A（最旧）再对 B 做 no-op add，A 静默丢失
+      store.subscribe(listenerB)
+      store.setState('v', 1)
+
+      expect(listenerA).toHaveBeenCalledTimes(1)
+      expect(listenerB).toHaveBeenCalledTimes(1)
+    })
+
+    it('onlyOnChange 模式下无变更的 batch 结束不应通知', async () => {
+      const store = createStore({
+        name: 'batch-silent-store',
+        state: { v: 0 },
+        notify: { onlyOnChange: true },
+      })
+      const listener = jest.fn()
+      store.subscribe(listener)
+
+      store.batch(() => {
+        // 批量期间无任何状态变更
+      })
+      await new Promise((resolve) => setTimeout(resolve, 0))
+
+      expect(listener).not.toHaveBeenCalled()
+    })
+  })
+
+  // ==================== 本轮修复回归：通知去重与 batch 语义 ====================
+  describe('BUG 回归：通知去重与 batch 语义', () => {
+    it('onlyOnChange 模式下异步续段 setState 不再重复通知', async () => {
+      const store = createStore({
+        state: { v: 0 },
+        notify: { onlyOnChange: true },
+        actions: {
+          async save(this: { setState: (k: 'v', val: number) => void }) {
+            await Promise.resolve()
+            this.setState('v', 1) // 续段 setState：自身已通知
+          },
+        },
+      })
+      const listener = jest.fn()
+      store.subscribe(listener)
+
+      await store.dispatch('save')
+
+      // 修复前：setState 自发通知 1 次 + 完成补发 1 次（计数已超过 syncEnd 基线）
+      expect(listener).toHaveBeenCalledTimes(1)
+    })
+
+    it('batch() 记录基线：此前有历史变更时空 batch 也不通知（onlyOnChange）', () => {
+      const store = createStore({
+        state: { v: 0 },
+        notify: { onlyOnChange: true },
+      })
+      store.setState('v', 1) // 历史变更使计数 > 0
+      const listener = jest.fn()
+      store.subscribe(listener)
+
+      store.batch(() => {
+        // 无任何变更
+      })
+
+      // 修复前：batch() 绕过 startBatch 的基线记录，用陈旧基线 0 判定有变更而误通知
+      expect(listener).not.toHaveBeenCalled()
+    })
+
+    it('同步 dispatch 在 batch 中不中途通知，由 batch 收尾统一通知', () => {
+      const store = createStore({
+        state: { v: 0 },
+        actions: {
+          set(this: { setState: (k: 'v', val: number) => void }) {
+            this.setState('v', 5)
+          },
+        },
+      })
+      const listener = jest.fn()
+      store.subscribe(listener)
+
+      store.batch(() => {
+        store.dispatch('set')
+        // 修复前：dispatch 收尾在 batch 中途立即通知一次
+        expect(listener).not.toHaveBeenCalled()
+      })
+
+      expect(listener).toHaveBeenCalledTimes(1)
+    })
+
+    it('batch 中的 action 抛错不在中途泄漏通知', () => {
+      const store = createStore({
+        state: { v: 0 },
+        actions: {
+          fail(this: { setState: (k: 'v', val: number) => void }) {
+            this.setState('v', 9)
+            throw new Error('boom')
+          },
+        },
+      })
+      const listener = jest.fn()
+      store.subscribe(listener)
+
+      expect(() =>
+        store.batch(() => {
+          expect(() => store.dispatch('fail')).toThrow()
+          expect(listener).not.toHaveBeenCalled()
+        }),
+      ).not.toThrow()
+
+      // batch 收尾统一通知（默认模式收尾必通知）
+      expect(listener).toHaveBeenCalledTimes(1)
+    })
+  })
