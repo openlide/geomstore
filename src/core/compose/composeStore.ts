@@ -167,6 +167,8 @@ class ComposedStore<S extends State = State> implements Store<S> {
   private _composedListeners: Set<StateListener<S>> = new Set()
   /** 对子 Store 的订阅句柄（destroy 时统一退订，避免闭包残留） */
   private _storeUnsubscribers: Array<() => void> = []
+  /** 已告警过的 state 键冲突组合（每个组合只告警一次，避免高频 getState 刷屏） */
+  private _warnedStateKeyConflicts = new Set<string>()
 
   constructor(stores: Store[], options: ComposeOptions = {}) {
     this._stores = stores
@@ -197,19 +199,66 @@ class ComposedStore<S extends State = State> implements Store<S> {
   getState(): S {
     this._ensureAlive('getState')
     // 合并所有store的state
-    const result: Record<string, unknown> = {}
-    for (const store of this._stores) {
-      if (this._namespace) {
+    if (this._namespace) {
+      const result: Record<string, unknown> = {}
+      for (const store of this._stores) {
         result[store.name] = store.getState()
-      } else {
-        Object.assign(result, store.getState())
+      }
+      return result as S
+    }
+    return this._mergeStateMaps((store) => store.getState() as Record<string, unknown>) as S
+  }
+
+  /**
+   * 非命名空间模式下平铺合并各 store 的 state 键。
+   *
+   * 同名键后者覆盖前者，与 action/getter 冲突的处理一致（取第一个/最后一个并提示）：
+   * 至少在开发模式下给出冲突告警，避免覆盖关系静默发生、排查困难。
+   *
+   * @private
+   */
+  private _mergeStateMaps(pick: (store: Store) => Record<string, unknown>): Record<string, unknown> {
+    const result: Record<string, unknown> = {}
+    const keyOwners = isProduction() ? undefined : new Map<string, string>()
+    for (const store of this._stores) {
+      const source = pick(store)
+      for (const key of Object.keys(source)) {
+        if (keyOwners) {
+          const previousOwner = keyOwners.get(key)
+          if (previousOwner !== undefined && previousOwner !== store.name) {
+            // 每个冲突组合只告警一次：getState/state 高频读取（渲染/computed）下
+            // 重复告警会刷屏并带来每次调用的 Map 构建开销
+            const conflictKey = `${key}(${previousOwner},${store.name})`
+            if (!this._warnedStateKeyConflicts.has(conflictKey)) {
+              this._warnedStateKeyConflicts.add(conflictKey)
+              console.warn(
+                `[composeStore] State key "${key}" exists in multiple stores (${previousOwner}, ${store.name}); ` +
+                  `"${store.name}" wins in merged state/snapshot. Consider using namespaced mode for disambiguation.`,
+              )
+            }
+          } else {
+            keyOwners.set(key, store.name)
+          }
+        }
+        result[key] = source[key]
       }
     }
-    return result as S
+    return result
   }
 
   get state(): S {
-    return this.getState()
+    this._ensureAlive('state')
+    if (this._namespace) {
+      const result: Record<string, unknown> = {}
+      for (const store of this._stores) {
+        result[store.name] = store.state
+      }
+      return Object.freeze(result) as S
+    }
+    // 取值源用子 store 的保护视图（store.state）而非内部裸引用（getState）：
+    // 顶层写入落在冻结容器上会抛错；嵌套写入被子 store 保护代理拦截。
+    // 此前直接合并裸引用，composed.state.nested.x = 1 会静默穿透进子 store 内部状态
+    return Object.freeze(this._mergeStateMaps((store) => store.state as unknown as Record<string, unknown>)) as S
   }
 
   setState<K extends keyof S>(key: K, value: S[K]): void {

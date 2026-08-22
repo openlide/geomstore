@@ -4,4 +4,5 @@
 
 export { createSelector, createMemoizedSelector, createParametricSelector, createStructuredSelector, SelectorFactory } from './createSelector'
 export { SelectorComposer } from './selectorComposer'
+export type { RetrySelectorOptions, AsyncRetrySelectorOptions } from './selectorComposer'
 export type { Selector, SelectorOptions, SelectorCacheItem, SelectorResult, SelectorComposerInput, ParametricSelector } from '../../types/selector'

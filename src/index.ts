@@ -93,6 +93,7 @@ export {
   uniqueId,
   clone,
 } from './core/utils/helpers'
+export type { CloneMode } from './core/utils/helpers'
 
 // ==================== 插件系统 ====================
 export { HookSystem, usePlugin } from './core/hooks/index'

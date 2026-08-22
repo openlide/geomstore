@@ -5,17 +5,24 @@
 
 import type { Store, State } from '../types/store'
 import type { Plugin } from '../types/plugin'
-import type { PersistenceOptions } from '../types/persistence'
+import type { PersistenceOptions, StorageBackend } from '../types/persistence'
 import { isPlainObject } from '../core/utils/helpers'
 import { isProduction } from '../core/store/utils'
 
 /**
- * 同步存储后端接口（用于微信小程序等同步存储场景）
+ * 运行时检测异步存储后端。
+ * JS 调用方仍可能传入异步实现（如 localStorage 的 Promise 封装），
+ * 静默使用会导致恢复时 JSON.parse(Promise) 抛错、保存时异步 rejection 逃出
+ * try/catch —— 数据丢失且无感知，因此必须显式报错。
  */
-interface SyncStorageBackend {
-  getItem(key: string): string | null
-  setItem(key: string, value: string): void
-  removeItem(key: string): void
+function assertSyncStorageResult(result: unknown, method: string): void {
+  if (result !== null && (typeof result === 'object' || typeof result === 'function') && typeof (result as PromiseLike<unknown>).then === 'function') {
+    throw new Error(
+      `[GeomStore][persistence] storage.${method}() 返回了 Promise：persistencePlugin 仅支持同步存储后端` +
+        `（如 wx.getStorageSync、WxStorageBackend 或同步封装的 localStorage）。` +
+        `异步后端请在外部自行订阅 store 实现持久化。`,
+    )
+  }
 }
 
 export const loggerPlugin: Plugin = {
@@ -115,9 +122,25 @@ function installPersistence<S extends State>(store: Store<S>, options: Persisten
   // 否则使用微信小程序的 wx.getStorageSync / setStorageSync / removeStorageSync；
   // 非微信环境（如测试/Node）wx 不存在，降级为内存存储避免 ReferenceError
   const userStorage = options.storage
-  let storageAdapter: SyncStorageBackend
+  let storageAdapter: StorageBackend
   if (userStorage && typeof userStorage === 'object' && 'getItem' in userStorage) {
-    storageAdapter = userStorage as SyncStorageBackend
+    const backend = userStorage as StorageBackend
+    // 包装用户后端：拦截异步返回值并显式报错，避免恢复/保存被静默丢弃
+    storageAdapter = {
+      getItem: (k: string) => {
+        const value = backend.getItem(k)
+        assertSyncStorageResult(value, 'getItem')
+        return value
+      },
+      setItem: (k: string, v: string) => {
+        const result = backend.setItem(k, v)
+        assertSyncStorageResult(result, 'setItem')
+      },
+      removeItem: (k: string) => {
+        const result = backend.removeItem(k)
+        assertSyncStorageResult(result, 'removeItem')
+      },
+    }
   } else {
     // 微信小程序 wx 为全局变量，经 globalThis 读取避免直接引用未声明标识符（TS2304）
     const wxGlobal = (

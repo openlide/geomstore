@@ -357,6 +357,11 @@ export interface HotUpdateConfig<S extends State = State> {
 const DEFAULT_BACKUP_KEY = 'store_backup_before_update'
 const CURRENT_VERSION = '1.0.0'
 
+/** 待更新重启标记键：确认更新时写入，用于区分「更新后首启」与「普通重启」 */
+function pendingLaunchKey(backupKey: string): string {
+  return `${backupKey}__pending_update_launch`
+}
+
 /**
  * 备份当前状态
  */
@@ -373,24 +378,55 @@ function backupState<S extends State = State>(store: Store<S>, backupKey: string
  * 初始化热更新处理
  * 在小程序更新时自动备份和恢复状态
  */
+/** 热更新当前保护的 store 配置：重复调用（账号切换）时切换保护目标 */
+let hotUpdateRegistration: { store: Store<State>; backupKey: string; onBeforeUpdate?: () => void } | null = null
+/** 已安装监听的 updateManager 实例：真实环境为全局单例（幂等安装防止监听累积），
+ *  测试环境的每个 mock 实例各自安装 */
+let hotUpdateManagerInstalled: unknown = null
+
 export function initHotUpdate<S extends State = State>(config: HotUpdateConfig<S>): void {
   const { store, backupKey, onBeforeUpdate } = config
   // 默认按 store 名派生备份键：多账号/多 Store 实例并存时热更新备份互不覆盖
   const resolvedBackupKey = backupKey ?? `${DEFAULT_BACKUP_KEY}_${store.name}`
+  hotUpdateRegistration = { store: store as unknown as Store<State>, backupKey: resolvedBackupKey, onBeforeUpdate }
 
   const updateManager = wx.getUpdateManager()
+  // onUpdateReady 是累加式注册且无对应 off API：按 manager 实例幂等安装，
+  // 否则每次 login 重新调用都会累积一个监听（多弹窗、多份备份、标记竞态）
+  if (hotUpdateManagerInstalled === updateManager) return
+  hotUpdateManagerInstalled = updateManager
 
   updateManager.onUpdateReady(() => {
     logger.log('HotUpdate', '新版本准备就绪')
 
-    backupState(store, resolvedBackupKey)
-    onBeforeUpdate?.()
+    const registration = hotUpdateRegistration
+    if (!registration) return
+    // store 已被外部销毁（LRU 淘汰/logout）时 $snapshot 会抛错，
+    // 异常发生在 wx 回调内无人捕获——跳过已销毁 store
+    if (registration.store.destroyed) {
+      logger.warn('HotUpdate', `store "${registration.store.name}" 已销毁，跳过备份`)
+      return
+    }
+    try {
+      backupState(registration.store, registration.backupKey)
+      registration.onBeforeUpdate?.()
+    } catch (error) {
+      logger.error('HotUpdate', '备份状态失败:', error)
+    }
 
     wx.showModal({
       title: '更新提示',
       content: '新版本已准备好，是否重启应用？',
       success: (res) => {
         if (res.confirm) {
+          // 先写待更新重启标记再 applyUpdate：重启后凭标记区分「更新后首启」与
+          // 「拒绝更新后的普通重启」，避免普通重启把备份点之后的持久化变更回滚。
+          // 标记写入失败（存储配额满）不阻断更新：损失的只是恢复语义
+          try {
+            storage.set(pendingLaunchKey(registration.backupKey), true)
+          } catch (markerError) {
+            logger.error('HotUpdate', '写入待更新重启标记失败:', markerError)
+          }
           updateManager.applyUpdate()
         }
       },
@@ -409,8 +445,13 @@ export function initHotUpdate<S extends State = State>(config: HotUpdateConfig<S
 export function restoreFromHotUpdate<S extends State = State>(store: Store<S>, backupKey?: string): boolean {
   // 默认按 store 名派生备份键，与 initHotUpdate 保持一致
   const resolvedBackupKey = backupKey ?? `${DEFAULT_BACKUP_KEY}_${store.name}`
+  const markerKey = pendingLaunchKey(resolvedBackupKey)
   const backup = storage.get<BackupData>(resolvedBackupKey)
-  if (!backup) return false
+  if (!backup) {
+    // 备份不存在时顺带清理可能残留的孤儿标记
+    storage.remove(markerKey)
+    return false
+  }
 
   const backupAge = Date.now() - backup.timestamp
 
@@ -418,12 +459,22 @@ export function restoreFromHotUpdate<S extends State = State>(store: Store<S>, b
   if (backupAge > BACKUP_EXPIRY_MS) {
     logger.warn('HotUpdate', '备份数据已过期（超过1小时）')
     storage.remove(resolvedBackupKey)
+    storage.remove(markerKey)
+    return false
+  }
+
+  // 仅更新确认后的首次启动才恢复：用户在弹窗中拒绝更新后继续使用，
+  // 期间的变更已持久化，普通冷启动时恢复会把状态回滚到备份点，
+  // 备份点之后的所有变更静默丢失
+  if (!storage.get<boolean>(markerKey)) {
+    logger.log('HotUpdate', '存在备份但非更新后首启，跳过恢复')
     return false
   }
 
   try {
     store.$restore(backup.state as S)
     storage.remove(resolvedBackupKey)
+    storage.remove(markerKey)
     logger.log('HotUpdate', `状态已从备份恢复（版本: ${backup.version}）`)
     return true
   } catch (error) {
@@ -940,6 +991,11 @@ export function createEnterpriseApp(config: EnterpriseAppConfig = {}) {
         unregisterBackgroundSync(previousStore)
       }
       initBackgroundSync({ store: newStore, maxInactiveTime })
+      // 热更新保护切换到新 store：监听幂等安装（不累积），保护目标切换。
+      // 首次登录（previousStore 为 null，onLaunch 因无 store 未注册）也必须注册
+      if (previousStore !== newStore) {
+        initHotUpdate({ store: newStore })
+      }
 
       // 重新初始化离线管理器：先释放旧实例的网络监听，防止泄漏
       offlineManager?.dispose()

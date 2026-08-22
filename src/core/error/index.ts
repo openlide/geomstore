@@ -5,7 +5,7 @@
 export { ErrorHandlerImpl } from './ErrorHandler'
 export { ErrorBoundary, withErrorBoundary } from './ErrorBoundary'
 export { defaultErrorHandler, createErrorContext } from './ErrorHandler'
-export type { ErrorContext, ErrorHandler, ErrorLevel, OperationType, ErrorBoundaryOptions } from '../../types/error'
+export type { ErrorContext, ErrorHandler, ErrorLevel, OperationType, ErrorBoundaryOptions, ErrorFallback } from '../../types/error'
 
 // 自定义错误类
 export {
