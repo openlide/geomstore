@@ -251,6 +251,10 @@ export class StoreManager {
   getUserStore(userId: string): Store<UserState> {
     const existingStore = this.stores.get(userId)
     if (existingStore) {
+      // 命中即刷新插入顺序：Map 迭代序即淘汰顺序，不刷新则高频使用的账号
+      // 会被当作最旧淘汰（FIFO 而非注释宣称的 LRU）
+      this.stores.delete(userId)
+      this.stores.set(userId, existingStore)
       return existingStore
     }
 
@@ -313,11 +317,13 @@ export class StoreManager {
   private cleanupOldestStore(excludeUserId: string): void {
     if (this.stores.size < this.maxStores) return
 
-    // 跳过排除用户找到最早插入的 Store：若 LRU 头部恰好是排除用户时不清理，
-    // 会导致 stores 超限，需继续向后查找可清理项
+    // 跳过排除用户与当前活跃用户找到最久未使用的 Store：
+    // - 若 LRU 头部恰好是排除用户时不清理，会导致 stores 超限，需继续向后查找
+    // - currentUserId 的 store 被淘汰会让 getCurrentStore() 返回 null、
+    //   页面订阅被 destroy 静默清除，因此也必须排除
     let oldestKey: string | undefined
     for (const key of this.stores.keys()) {
-      if (key !== excludeUserId) {
+      if (key !== excludeUserId && key !== this.currentUserId) {
         oldestKey = key
         break
       }
@@ -488,9 +494,12 @@ export class OfflineManager<S extends State = State> {
     if (this.isOnline) {
       try {
         return await action()
-      } catch {
+      } catch (error) {
         this.enqueue(type, payload)
-        throw new Error(`操作执行失败，已加入离线队列: ${type}`)
+        // 保留原始错误（网络/HTTP/业务错误）作为 cause，排障不被吞
+        const wrapped = new Error(`操作执行失败，已加入离线队列: ${type}`)
+        ;(wrapped as Error & { cause?: unknown }).cause = error
+        throw wrapped
       }
     }
 
@@ -507,14 +516,17 @@ export class OfflineManager<S extends State = State> {
     if (this.syncing || this.actionQueue.length === 0) return
 
     this.syncing = true
+    const failedActions: OfflineAction[] = []
+    let pendingActions: OfflineAction[] = []
+    let nextIndex = 0
     try {
       // 快照-清空模式：先取走当前队列，同步期间新入队的操作保留在 this.actionQueue，
       // 结束后整体赋值会丢弃同步期间入队的操作，需在失败项回填时合并保留
-      const pendingActions = this.actionQueue
+      pendingActions = this.actionQueue
       this.actionQueue = []
-      const failedActions: OfflineAction[] = []
 
-      for (const action of pendingActions) {
+      for (; nextIndex < pendingActions.length; nextIndex++) {
+        const action = pendingActions[nextIndex]
         const success = await this.tryExecuteAction(action)
         if (!success) {
           action.retryCount++
@@ -530,14 +542,20 @@ export class OfflineManager<S extends State = State> {
         }
       }
 
-      // 失败项回填队首，同步期间新入队的操作保持在后
-      this.actionQueue = [...failedActions, ...this.actionQueue]
-      this.saveQueue()
-
       if (failedActions.length > 0) {
         wx.showToast({ title: `${failedActions.length}个操作同步失败`, icon: 'none' })
       }
     } finally {
+      // 回填必须覆盖循环未迭代到的剩余项：中途异常（死信落盘配额满、
+      // onDrop 用户回调抛错）时，剩余项既不在 failedActions 也不在已清空的
+      // this.actionQueue——遗漏会让残缺队列落盘覆盖磁盘完整旧队列，丢失成为永久。
+      // 含当前项（at-least-once：异常中的操作重新入队重试，可能重复进死信，可接受）
+      this.actionQueue = [...failedActions, ...pendingActions.slice(nextIndex), ...this.actionQueue]
+      try {
+        this.saveQueue()
+      } catch (error) {
+        logger.error('OfflineManager', '同步后保存队列失败:', error)
+      }
       this.syncing = false
     }
   }
@@ -605,9 +623,12 @@ export class OfflineManager<S extends State = State> {
     // hasOwnProperty 校验：`in` 会命中原型链（如 'toString'），
     // 导致对非自有 action 发起无意义的 dispatch
     const actions = this.store.actions as Record<string, unknown>
-    if (Object.prototype.hasOwnProperty.call(actions, actionName)) {
-      await this.store.dispatch(actionName, action.payload)
+    if (!Object.prototype.hasOwnProperty.call(actions, actionName)) {
+      // 未知 action 必须抛错进入重试→死信路径：静默返回会让 tryExecuteAction
+      // 视为成功并将操作移出队列，离线操作无感知丢失（不进死信、不触发 onDrop）
+      throw new Error(`[OfflineManager] Unknown queued action "${actionName}"`)
     }
+    await this.store.dispatch(actionName, action.payload)
   }
 
   /**
@@ -748,18 +769,36 @@ function installAppLifecycleHooks(): void {
       if (inactiveDuration > handler.maxInactiveTime) {
         logger.log('BackgroundSync', `非活跃时间过长(${inactiveDuration}ms)，刷新状态`)
         if ('refreshData' in handler.store.actions) {
-          handler.store.dispatch('refreshData')
+          try {
+            // 异步 action 的 rejection 不会被同步 try/catch 捕获，
+            // 显式接住避免 unhandled rejection
+            Promise.resolve(handler.store.dispatch('refreshData')).catch((error) => {
+              logger.error('BackgroundSync', '刷新状态失败:', error)
+            })
+          } catch (error) {
+            // 单个 store 刷新失败不应沿 App.onShow 传播：
+            // 否则后续 handler 被跳过、用户自己的 onShow 回调不再执行
+            logger.error('BackgroundSync', '刷新状态失败:', error)
+          }
         }
       }
       handler.lastActiveTime = now
-      handler.onForeground?.()
+      try {
+        handler.onForeground?.()
+      } catch (error) {
+        logger.error('BackgroundSync', 'onForeground 回调执行失败:', error)
+      }
     }
   }
 
   const runBackgroundChecks = (): void => {
     for (const handler of [...backgroundSyncHandlers]) {
       handler.lastActiveTime = Date.now()
-      handler.onBackground?.()
+      try {
+        handler.onBackground?.()
+      } catch (error) {
+        logger.error('BackgroundSync', 'onBackground 回调执行失败:', error)
+      }
     }
   }
 

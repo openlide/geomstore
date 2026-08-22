@@ -175,6 +175,8 @@ function installPersistence<S extends State>(store: Store<S>, options: Persisten
 
   let debounceTimer: ReturnType<typeof setTimeout> | null = null
   let isUninstalled = false // 标记是否已卸载，防止卸载后定时器回调仍执行
+  // 防抖窗口内最近一次待写入的状态：卸载时用于同步补写，避免最后一次变更丢失
+  let pendingState: Partial<S> | null = null
 
   const unsubscribe = store.subscribe((state) => {
     const stateToSave = filter ? filter(state) : state
@@ -183,9 +185,11 @@ function installPersistence<S extends State>(store: Store<S>, options: Persisten
       if (debounceTimer) {
         clearTimeout(debounceTimer)
       }
+      pendingState = stateToSave
       debounceTimer = setTimeout(() => {
         // 卸载后不再执行保存操作
         if (isUninstalled) return
+        pendingState = null
         saveState(stateToSave)
       }, debounceMs)
     } else {
@@ -206,11 +210,18 @@ function installPersistence<S extends State>(store: Store<S>, options: Persisten
   }
 
   return () => {
-    isUninstalled = true
+    // 防抖窗口内卸载：pendingState 尚未落盘，先同步补写最后一次变更
+    // （clearOnUninstall 时数据即将清除，无需补写），
+    // 否则「卸载仅停止监听、保留已持久化数据」的语义下会丢最后一次写入
     if (debounceTimer) {
       clearTimeout(debounceTimer)
       debounceTimer = null
+      if (pendingState !== null && !clearOnUninstall) {
+        saveState(pendingState)
+      }
+      pendingState = null
     }
+    isUninstalled = true
     unsubscribe()
     // 仅在配置了 clearOnUninstall 时才清除存储数据
     if (clearOnUninstall) {

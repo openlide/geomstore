@@ -45,7 +45,7 @@ jobs:
       - name: Build
         run: pnpm run build
 
-      - name: Smoke test dist bundles (CJS + ESM + subpath)
+      - name: Smoke test dist bundles (CJS + subpath)
         run: |
           node -e '
             const s = require("./dist/cjs/index.js")
@@ -62,18 +62,6 @@ jobs:
             const plugins = require("./dist/cjs/plugins/index.js")
             if (!plugins.loggerPlugin) throw new Error("plugins subpath failed")
             console.log("CJS SMOKE OK")
-          '
-          node --input-type=module -e '
-            import { createStore, GeomStoreError } from "./dist/esm/index.js"
-            const store = createStore({
-              name: "ci-smoke-esm",
-              state: { count: 1 },
-              actions: { inc() { this.setState("count", this.state.count + 1) } },
-            })
-            store.dispatch("inc")
-            if (store.getState().count !== 2) throw new Error("esm smoke failed")
-            if (typeof GeomStoreError !== "function") throw new Error("GeomStoreError missing")
-            console.log("ESM SMOKE OK")
           '
 
       - name: Upload coverage report

@@ -49,10 +49,12 @@ export class ActionLoader {
 
   /**
    * loading 引用计数（按 loading 键）：同一 action 重叠调用时，
-   * 首个调用置 true、最后一个完成才置 false，避免共享布尔键的提前翻转
+   * 首个调用置 true、最后一个完成才置 false，避免共享布尔键的提前翻转。
+   * 可注入共享存储（withLoading 场景）：同宿主上不同选项签名的装饰器
+   * 对同一 loading 键的计数必须集中，否则仍会互相提前翻转
    * @private
    */
-  private loadingRefCounts: Map<string, number> = new Map()
+  private loadingRefCounts: Map<string, number>
 
   /**
    * 错误映射
@@ -73,7 +75,7 @@ export class ActionLoader {
    * @private
    * @type {Required<ActionLoaderOptions>}
    */
-  private options: Required<ActionLoaderOptions>
+  private options: Required<Omit<ActionLoaderOptions, 'sharedLoadingCounts'>>
 
   /**
    * 创建Action加载器实例
@@ -95,6 +97,7 @@ export class ActionLoader {
    * ```
    */
   constructor(options: ActionLoaderOptions = {}) {
+    this.loadingRefCounts = options.sharedLoadingCounts ?? new Map()
     this.options = {
       autoLoading: options.autoLoading ?? true,
       loadingKey: options.loadingKey ?? 'loading',
@@ -137,9 +140,16 @@ export class ActionLoader {
    */
   wrap<T extends (...args: unknown[]) => Promise<unknown>>(action: T, actionName: string, setState: (key: string, value: unknown) => void): T {
     return (async (...args: unknown[]) => {
-      // 设置loading状态（引用计数）
+      // 设置loading状态（引用计数）。increment 在 try 之外且内部先计数再 setState：
+      // setState 同步抛错（如 store 已销毁）时计数残留 +1，loading 永远无法回 false，
+      // 失败时回滚计数
       if (this.options.autoLoading) {
-        this.incrementLoading(actionName, setState)
+        try {
+          this.incrementLoading(actionName, setState)
+        } catch (error) {
+          this.decrementLoading(actionName, () => {})
+          throw error
+        }
       }
 
       try {
@@ -441,10 +451,64 @@ export class ActionLoader {
  * // store.state.loading = false (执行时为true)
  * ```
  */
+/**
+ * 模块级 loader 注册表：宿主 → 选项签名 → ActionLoader。
+ *
+ * 每次 `@withLoading(...)` 装饰器应用都是一次独立的工厂调用，若各自按宿主持有
+ * 独立 loader，同一宿主上多个被装饰方法的引用计数互相不可见：默认单键模式下
+ * 两个方法并发时，先完成的方法会把共享的 loading 键提前置 false。
+ * 按宿主 + 选项签名共享 loader 使计数集中。
+ */
+const loaderRegistry = new WeakMap<object, Map<string, ActionLoader>>()
+
+/**
+ * 模块级 loading 引用计数注册表：宿主 → loading 签名 → 计数 Map。
+ *
+ * loader 注册表按完整选项签名分桶，但 loading 键只由
+ * (autoLoading, loadingKey, perActionKeys) 决定——相同 loading 键、不同
+ * errorKey 的两个装饰器仍会分到独立 loader，各自的计数写同一个状态键。
+ * 引用计数必须按 loading 签名（而非完整签名）集中，注入各 loader 共享。
+ */
+const loadingCountRegistry = new WeakMap<object, Map<string, Map<string, number>>>()
+
+/**
+ * 计算选项签名（与 ActionLoader 默认值同口径归一），用于注册表按配置分桶
+ */
+function resolveLoaderSignature(options: ActionLoaderOptions): string {
+  return [
+    options.autoLoading ?? true,
+    options.loadingKey ?? 'loading',
+    options.errorKey ?? 'error',
+    options.errorDataKey ?? 'errorData',
+    options.perActionKeys ?? false,
+  ].join('|')
+}
+
+/**
+ * 计算 loading 签名：仅包含决定 loading 状态键的选项
+ */
+function resolveLoadingSignature(options: ActionLoaderOptions): string {
+  return [options.autoLoading ?? true, options.loadingKey ?? 'loading', options.perActionKeys ?? false].join('|')
+}
+
+/** 获取（或创建）宿主上按 loading 签名集中共享的引用计数存储 */
+function getSharedLoadingCounts(host: object, options: ActionLoaderOptions): Map<string, number> {
+  let byLoading = loadingCountRegistry.get(host)
+  if (!byLoading) {
+    byLoading = new Map()
+    loadingCountRegistry.set(host, byLoading)
+  }
+  const loadingSignature = resolveLoadingSignature(options)
+  let counts = byLoading.get(loadingSignature)
+  if (!counts) {
+    counts = new Map()
+    byLoading.set(loadingSignature, counts)
+  }
+  return counts
+}
+
 export function withLoading(options: ActionLoaderOptions = {}): MethodDecorator {
-  // 修复闭包陷阱：loaderInstance 不得在装饰器函数体创建（按方法共享、跨宿主实例串扰），
-  // 改为按宿主对象（this）懒创建并隔离，各实例的 loading/error 状态互不影响
-  const loaderByHost = new WeakMap<object, ActionLoader>()
+  const signature = resolveLoaderSignature(options)
 
   return function (_target: unknown, propertyKey: string | symbol, descriptor: PropertyDescriptor): PropertyDescriptor {
     const originalMethod = descriptor.value
@@ -452,7 +516,7 @@ export function withLoading(options: ActionLoaderOptions = {}): MethodDecorator 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     descriptor.value = async function (this: any, ...args: unknown[]) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const setState = (this as any).setState?.bind(this)
+      const setState = (this as any)?.setState?.bind(this)
 
       if (!setState) {
         throw new Error('[withLoading] Method must be used in a Store instance')
@@ -460,10 +524,15 @@ export function withLoading(options: ActionLoaderOptions = {}): MethodDecorator 
 
       let loaderInstance: ActionLoader
       if (typeof this === 'object' && this !== null) {
-        let loader = loaderByHost.get(this)
+        let byOptions = loaderRegistry.get(this)
+        if (!byOptions) {
+          byOptions = new Map()
+          loaderRegistry.set(this, byOptions)
+        }
+        let loader = byOptions.get(signature)
         if (!loader) {
-          loader = new ActionLoader(options)
-          loaderByHost.set(this, loader)
+          loader = new ActionLoader({ ...options, sharedLoadingCounts: getSharedLoadingCounts(this, options) })
+          byOptions.set(signature, loader)
         }
         loaderInstance = loader
       } else {

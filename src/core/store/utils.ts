@@ -105,10 +105,18 @@ export function deepFreezeState<T>(value: T, seen?: WeakSet<object>): T {
  * @returns 格式化的错误消息字符串
  */
 export function createMutationErrorMessage(path: string, value: unknown, operation: string): string {
+  // BigInt / 循环引用等会让 stringify 抛 TypeError，掩盖真正的保护错误；
+  // 生产 warn/silent 处理器依赖此函数不抛错（放行写入），必须兜底
+  let serialized: string
+  try {
+    serialized = JSON.stringify(value)
+  } catch {
+    serialized = String(value)
+  }
   return (
     `[GeomStore] Direct mutation of state "${path}" is prohibited. Use setState() or $patch() methods instead.\n` +
     `Operation: ${operation}\n` +
-    `Attempted value: ${JSON.stringify(value)}`
+    `Attempted value: ${serialized}`
   )
 }
 

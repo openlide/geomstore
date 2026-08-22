@@ -164,7 +164,9 @@ export class StateFingerprint {
    * @returns {number} 哈希值
    */
   generate(state: unknown): number {
-    return this.hashValue(state)
+    // 记忆化生命周期必须限于单次调用：跨调用缓存会因状态可变性产生过期指纹，
+    // 且强持有旧状态引用阻碍 GC
+    return this.hashValue(state, undefined, new Map())
   }
 
   /**
@@ -177,9 +179,10 @@ export class StateFingerprint {
    * @private
    * @param {unknown} value - 要哈希的值
    * @param {WeakSet<object>} [seen] - 递归链上已访问的容器节点（循环引用守卫）
+   * @param {Map<object, number>} [memo] - 单次调用内的子树哈希记忆化（DAG 共享引用去重）
    * @returns {number} 哈希值
    */
-  private hashValue(value: unknown, seen?: WeakSet<object>): number {
+  private hashValue(value: unknown, seen?: WeakSet<object>, memo?: Map<object, number>): number {
     if (value === null) return this.hashString('[null]')
     if (value === undefined) return this.hashString('[undefined]')
 
@@ -193,7 +196,7 @@ export class StateFingerprint {
       case 'string':
         return this.hashCombine(this.hashString('[string]'), this.hashString(value as string))
       case 'object':
-        return this.hashObject(value as Record<string, unknown>, seen)
+        return this.hashObject(value as Record<string, unknown>, seen, memo)
       default:
         return this.hashCombine(this.hashString('[other]'), this.hashString(String(value)))
     }
@@ -205,10 +208,10 @@ export class StateFingerprint {
    * @private
    */
   private hashNumber(num: number): number {
-    // 处理特殊情况：NaN 与 Infinity 需区分开，
-    // 否则同一类型内不同值（NaN vs Infinity）指纹相同
+    // 处理特殊情况：NaN 与 ±Infinity 需区分开，
+    // 否则同一类型内不同值（NaN vs Infinity vs -Infinity）指纹相同
     if (isNaN(num)) return this.hashString('[nan]')
-    if (!isFinite(num)) return this.hashString('[infinity]')
+    if (!isFinite(num)) return this.hashString(num > 0 ? '[+infinity]' : '[-infinity]')
 
     // 使用位运算混合数字
     const hash = (num * 2654435761) | 0
@@ -240,15 +243,28 @@ export class StateFingerprint {
    *
    * @private
    */
-  private hashObject(obj: Record<string, unknown>, seen?: WeakSet<object>): number {
+  private hashObject(obj: Record<string, unknown>, seen?: WeakSet<object>, memo?: Map<object, number>): number {
     const visited = seen ?? new WeakSet<object>()
+    // 记忆化命中：该子树在本调用内已完整哈希过，直接复用。
+    // 递归栈上的节点（真回边）尚未写入 memo，不会误命中。
+    // 无记忆化时 DAG 共享结构（如 2^n 路径的持久化数据结构）会被指数级重哈希。
+    const memoized = memo?.get(obj as object)
+    if (memoized !== undefined) {
+      return memoized
+    }
     if (visited.has(obj as object)) {
       return this.hashString('[circular]')
     }
 
     if (Array.isArray(obj)) {
       visited.add(obj as object)
-      return this.hashCombine(this.hashString('[array]'), this.hashArray(obj, visited))
+      const hash = this.hashCombine(this.hashString('[array]'), this.hashArray(obj, visited, memo))
+      // 递归返回后移除：仅守卫当前递归栈上的回边。
+      // 若只加不删，兄弟路径共享同一引用（DAG，如 {a: x, b: x}）的第二次
+      // 出现会被误判为循环，指纹误报「状态已变化」
+      visited.delete(obj as object)
+      memo?.set(obj as object, hash)
+      return hash
     }
 
     // 内建类型：Object.keys 对 Date/Map/Set/RegExp 恒为空，
@@ -265,9 +281,11 @@ export class StateFingerprint {
       visited.add(obj as object)
       let hash = this.hashString('[map]')
       for (const [key, val] of obj) {
-        hash = this.hashCombine(hash, this.hashValue(key, visited))
-        hash = this.hashCombine(hash, this.hashValue(val, visited))
+        hash = this.hashCombine(hash, this.hashValue(key, visited, memo))
+        hash = this.hashCombine(hash, this.hashValue(val, visited, memo))
       }
+      visited.delete(obj as object)
+      memo?.set(obj as object, hash)
       return hash
     }
 
@@ -277,13 +295,15 @@ export class StateFingerprint {
       visited.add(obj as object)
       const elementHashes: number[] = []
       for (const item of obj) {
-        elementHashes.push(this.hashValue(item, visited))
+        elementHashes.push(this.hashValue(item, visited, memo))
       }
+      visited.delete(obj as object)
       elementHashes.sort((a, b) => a - b)
       let hash = this.hashString('[set]')
       for (const elementHash of elementHashes) {
         hash = this.hashCombine(hash, elementHash)
       }
+      memo?.set(obj as object, hash)
       return hash
     }
 
@@ -293,10 +313,12 @@ export class StateFingerprint {
 
     for (const key of keys) {
       const keyHash = this.hashString(key)
-      const valueHash = this.hashValue(obj[key], visited)
+      const valueHash = this.hashValue(obj[key], visited, memo)
       hash = this.hashCombine(hash, keyHash)
       hash = this.hashCombine(hash, valueHash)
     }
+    visited.delete(obj as object)
+    memo?.set(obj as object, hash)
 
     return hash
   }
@@ -306,11 +328,11 @@ export class StateFingerprint {
    *
    * @private
    */
-  private hashArray(arr: unknown[], seen?: WeakSet<object>): number {
+  private hashArray(arr: unknown[], seen?: WeakSet<object>, memo?: Map<object, number>): number {
     let hash = 0
 
     for (let i = 0; i < arr.length; i++) {
-      const elementHash = this.hashValue(arr[i], seen)
+      const elementHash = this.hashValue(arr[i], seen, memo)
       hash = this.hashCombine(hash, elementHash)
     }
 
@@ -504,25 +526,60 @@ export function debounce<T extends (...args: any[]) => unknown>(fn: T, delay: nu
  */
 // 约束说明同 debounce（函数参数逆变下 any[] 是唯一可接受任意签名的写法）
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function throttle<T extends (...args: any[]) => unknown>(fn: T, interval: number): (...args: Parameters<T>) => void {
+export function throttle<T extends (...args: any[]) => unknown>(
+  fn: T,
+  interval: number,
+  options: { leading?: boolean; trailing?: boolean } = {},
+): (...args: Parameters<T>) => void {
+  const trailing = options.trailing ?? true
+  // 双 false 永不执行无意义：退化为纯 leading（与 lodash 处理一致）
+  let leading = options.leading ?? true
+  if (!leading && !trailing) {
+    leading = true
+  }
   let lastCall = 0
   let timer: ReturnType<typeof setTimeout> | null = null
+  // 窗口内最近一次被抑制调用的参数：trailing 补发必须用最新参数，
+  // 此前用的是首次被抑制调用的参数（定时器只在无 timer 时调度，后续调用未更新）
+  let pendingArgs: Parameters<T> | null = null
 
   return function (this: unknown, ...args: Parameters<T>) {
     const now = Date.now()
+    const host = this
+
+    const fireTrailing = () => {
+      timer = null
+      if (pendingArgs !== null) {
+        const trailingArgs = pendingArgs
+        pendingArgs = null
+        lastCall = Date.now()
+        fn.apply(host, trailingArgs)
+      }
+    }
 
     if (now - lastCall >= interval) {
-      fn.apply(this, args)
+      if (leading) {
+        lastCall = now
+        pendingArgs = null
+        fn.apply(this, args)
+        return
+      }
       lastCall = now
-    } else if (!timer) {
-      timer = setTimeout(
-        () => {
-          fn.apply(this, args)
-          lastCall = Date.now()
-          timer = null
-        },
-        interval - (now - lastCall),
-      ) as unknown as ReturnType<typeof setTimeout>
+      pendingArgs = args
+      if (timer) {
+        clearTimeout(timer)
+      }
+      timer = setTimeout(fireTrailing, interval) as unknown as ReturnType<typeof setTimeout>
+      return
+    }
+
+    if (trailing) {
+      pendingArgs = args
+      const delay = Math.max(0, lastCall + interval - now)
+      if (timer) {
+        clearTimeout(timer)
+      }
+      timer = setTimeout(fireTrailing, delay) as unknown as ReturnType<typeof setTimeout>
     }
   }
 }

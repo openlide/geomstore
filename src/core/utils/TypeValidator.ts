@@ -143,6 +143,10 @@ export class TypeValidator {
   private errors: ValidationError[] = []
   private warnings: string[] = []
   private visitedObjects = new WeakSet<object>()
+  /** 当前描述符链嵌套深度（防 schema.type 自引用栈溢出） */
+  private schemaDepth = 0
+  /** 已验证通过的 (值 → 描述符 → 结果) 记忆化：DAG 共享引用跳过重复完整展开 */
+  private validatedPairs = new WeakMap<object, Map<unknown, unknown>>()
 
   /**
    * 验证值是否符合类型描述
@@ -165,6 +169,8 @@ export class TypeValidator {
     this.errors = []
     this.warnings = []
     this.visitedObjects = new WeakSet<object>()
+    this.validatedPairs = new WeakMap()
+    this.schemaDepth = 0
 
     const validatedValue = this.validateValue(value, descriptor, '')
 
@@ -193,17 +199,55 @@ export class TypeValidator {
   private validateValue(value: unknown, descriptor: TypeDescriptor, path: string): unknown {
     if (typeof value === 'object' && value !== null) {
       if (this.visitedObjects.has(value)) {
-        // 循环引用（回边），直接返回值
-        return value
+        // 真回边（祖先链上的重复引用）：跳过递归展开防止栈溢出，
+        // 但仍执行描述符的类型层校验——循环引用对 type: 'object' 合法，
+        // 而期望 string/number 等原始类型时循环值应报错，不能静默放过
+        return this.validateBackEdge(value, descriptor, path)
+      }
+      // 记忆化：同一 (值, 描述符) 组合校验通过后，兄弟路径再次出现时直接
+      // 复用结论——避免菱形共享结构最坏 2^n 次重复完整展开（校验挂死）
+      const memoized = this.validatedPairs.get(value)?.get(descriptor)
+      if (memoized !== undefined) {
+        return memoized
       }
       this.visitedObjects.add(value)
+      const errorsBefore = this.errors.length
       try {
-        return this.validateDescriptor(value, descriptor, path)
+        const result = this.validateDescriptor(value, descriptor, path)
+        if (this.errors.length === errorsBefore) {
+          let memo = this.validatedPairs.get(value)
+          if (!memo) {
+            memo = new Map()
+            this.validatedPairs.set(value, memo)
+          }
+          memo.set(descriptor, result)
+        }
+        return result
       } finally {
         this.visitedObjects.delete(value)
       }
     }
     return this.validateDescriptor(value, descriptor, path)
+  }
+
+  /**
+   * 回边值的类型层校验：只检查描述符声明的类型是否与值兼容，
+   * 不做属性/元素递归展开（展开会无限递归）
+   *
+   * @private
+   * @param {unknown} value - 回边命中的循环引用值（必为对象）
+   * @param {TypeDescriptor} descriptor - 该位置声明的类型描述符
+   * @param {string} path - 当前路径
+   * @returns {unknown} 原值
+   */
+  private validateBackEdge(value: unknown, descriptor: TypeDescriptor, path: string): unknown {
+    if (typeof descriptor === 'string') {
+      return this.validateBasicType(value, descriptor, path)
+    }
+    if (typeof descriptor === 'object' && descriptor !== null && typeof descriptor.type === 'string') {
+      return this.validateBasicType(value, descriptor.type, path)
+    }
+    return value
   }
 
   /**
@@ -295,6 +339,21 @@ export class TypeValidator {
    * @returns {unknown} 验证后的值
    */
   private validateSchema(value: unknown, schema: TypeSchema, path: string): unknown {
+    // 描述符链深度守卫：validateDescriptor 链不经 validateValue 的回边守卫，
+    // schema.type 直接/间接自引用时会无限递归栈溢出
+    if (this.schemaDepth > 50) {
+      this.addError(path, 'schema', value, 'Type schema nesting too deep (possible self-reference)')
+      return value
+    }
+    this.schemaDepth++
+    try {
+      return this.validateSchemaInner(value, schema, path)
+    } finally {
+      this.schemaDepth--
+    }
+  }
+
+  private validateSchemaInner(value: unknown, schema: TypeSchema, path: string): unknown {
     // 检查必需值
     if (value === undefined || value === null) {
       if (schema.required) {
@@ -331,8 +390,11 @@ export class TypeValidator {
       }
     }
 
-    // 验证类型
-    let validatedValue = this.validateValue(value, schema.type, path)
+    // 验证类型。直接走 validateDescriptor 而非 validateValue：此处 value 仍在
+    // 递归栈上，经 validateValue 会必然命中回边短路，导致 type 为嵌套 schema 时
+    // 内层的 validator/enum/properties/items 约束全部被跳过；
+    // validateDescriptor 对字符串描述符无递归，嵌套 schema 的再入仍会被回边截断，天然终止
+    let validatedValue = this.validateDescriptor(value, schema.type, path)
 
     // 类型特定的验证
     if (typeof schema.type === 'string') {

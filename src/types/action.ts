@@ -31,6 +31,15 @@ export interface ActionLoaderOptions {
    * loading/error 状态互相覆盖的问题；单个异步 action 场景可保持默认
    */
   perActionKeys?: boolean
+  /**
+   * 共享的 loading 引用计数存储
+   *
+   * @internal 供 withLoading 装饰器按宿主 + loading 键注入：
+   * 同一宿主上不同选项签名（如不同 errorKey）的装饰器实例各自持有计数时，
+   * 对同一 loading 键的并发计数互不可见，先完成的调用会提前翻转共享布尔键。
+   * 直接构造 ActionLoader 的调用方无需提供。
+   */
+  sharedLoadingCounts?: Map<string, number>
 }
 
 /**

@@ -226,22 +226,28 @@ export class PerformanceMonitor implements PerformanceMonitorInterface {
       return
     }
 
-    // 添加内存使用信息
+    // 添加内存使用信息：写入副本而非调用方传入的对象，
+    // 避免副作用泄漏到调用方（复用/比较该对象的代码受影响）
+    let record = metrics
     if (this.options.trackMemory) {
       try {
         // memory 为 Chrome 系环境扩展属性，不依赖 DOM lib 的 Performance 类型
         const perf = performance as { memory?: { usedJSHeapSize?: number } }
         const memory = perf.memory
         if (memory && memory.usedJSHeapSize !== undefined) {
-          metrics.memoryUsage = memory.usedJSHeapSize
+          record = { ...metrics, memoryUsage: memory.usedJSHeapSize }
         }
       } catch {
         // 内存监控可能不可用
       }
     }
 
+    // 顺手清理超时未结束的计时条目：调用方缺 try/finally 时 end() 永不执行，
+    // currentOperations 会随错误次数无限增长
+    this.pruneStaleOperations()
+
     // 记录指标
-    this.metrics.push(metrics)
+    this.metrics.push(record)
 
     // 限制数量
     if (this.metrics.length > this.options.maxSize) {
@@ -274,6 +280,22 @@ export class PerformanceMonitor implements PerformanceMonitorInterface {
   getMetrics(): PerformanceMetrics[] {
     return [...this.metrics]
   }
+
+  /** 清理超时未结束的计时条目（调用方遗漏 end() 时的兜底，防止 Map 无限增长） */
+  private pruneStaleOperations(): void {
+    if (this.currentOperations.size === 0) return
+    // 必须与 start() 写入条目时使用同一时钟基准（_getTimestamp 可能是
+    // performance.now 的进程相对时间，与 Date.now 混用会把新条目误判为超时）
+    const now = this._getTimestamp()
+    for (const [key, startTime] of this.currentOperations) {
+      if (now - startTime > PerformanceMonitor.MAX_OPERATION_AGE_MS) {
+        this.currentOperations.delete(key)
+      }
+    }
+  }
+
+  /** 计时条目的最大保留时长：超过视为调用方遗漏 end() 的泄漏条目 */
+  private static readonly MAX_OPERATION_AGE_MS = 10 * 60 * 1000
 
   /**
    * 获取统计信息
@@ -312,11 +334,16 @@ export class PerformanceMonitor implements PerformanceMonitorInterface {
       }
     }
 
-    const durations = this.metrics.map((m) => m.duration)
-    const totalDuration = durations.reduce((sum, d) => sum + d, 0)
-    const avgDuration = totalDuration / durations.length
-    const maxDuration = Math.max(...durations)
-    const minDuration = Math.min(...durations)
+    // 循环累计而非 Math.max(...durations)：大样本下 spread 栈溢出
+    let maxDuration = -Infinity
+    let minDuration = Infinity
+    let totalDuration = 0
+    for (const m of this.metrics) {
+      totalDuration += m.duration
+      if (m.duration > maxDuration) maxDuration = m.duration
+      if (m.duration < minDuration) minDuration = m.duration
+    }
+    const avgDuration = totalDuration / this.metrics.length
     const thresholdExceeded = this.metrics.filter((m) => m.exceedThreshold).length
 
     // 按操作分组统计（单次遍历，避免 O(n×k) 的重复 filter）

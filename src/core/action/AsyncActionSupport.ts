@@ -390,7 +390,8 @@ export class ActionExecutor<A extends AsyncActions = AsyncActions> {
    */
   getHistory(actionName?: string): ActionResult[] {
     if (actionName) {
-      return this.actionResults.get(actionName) || []
+      // 返回副本：直接返回内部数组会让外部 push/splice 污染历史与 getStats 统计
+      return [...(this.actionResults.get(actionName) ?? [])]
     }
 
     // 返回所有action的历史

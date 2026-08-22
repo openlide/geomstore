@@ -172,12 +172,16 @@ function installAnalyzer(store: Store, options: PerformanceOptions): (() => void
   // 监听 onError 立即结束全部未完成计时：记录「到错误发生为止」的耗时
   // （对定位错误操作的性能开销有参考价值），同时清空栈保证后续配对正确
   const discardPendingEnds = (): void => {
-    for (const stack of pendingEnds.values()) {
-      while (stack.length > 0) {
-        stack.pop()?.()
+    // onError 无法区分错误来源（action 抛错、persistence 保存失败、缓存刷新
+    // 失败共用同一钩子），全量清空会把无关操作的进行中计时一并误终止。
+    // 只弹出各配对栈最顶端一条：内层出错终止内层计时，
+    // 外层未出错操作的计时保留并在正常完成时正确配对
+    for (const [key, stack] of pendingEnds) {
+      stack.pop()?.()
+      if (stack.length === 0) {
+        pendingEnds.delete(key)
       }
     }
-    pendingEnds.clear()
   }
 
   // 使用钩子系统替代 monkey-patching，避免多插件冲突
@@ -282,5 +286,10 @@ function installAnalyzer(store: Store, options: PerformanceOptions): (() => void
     }
 
     monitor.clear()
+    // 清理实例上的 monitor 引用（与 timeTravel 插件的 __timeTravel__ 清理对齐）。
+    // 身份守卫：同 store 后装的第二实例会覆盖该属性，只清理属于自己的
+    if ((storeProxy as Record<string | symbol, unknown>).__performanceMonitor__ === monitor) {
+      delete (storeProxy as Record<string | symbol, unknown>).__performanceMonitor__
+    }
   }
 }

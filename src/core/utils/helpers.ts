@@ -364,7 +364,14 @@ export function set<T = unknown>(obj: T, path: string, value: unknown): void {
       const key = keys[i]
       // hasOwnProperty 排除原型链属性（如 __proto__/constructor），
       // 结合 defineOwnProperty 写入，防止路径段污染对象原型
-      if (!Object.prototype.hasOwnProperty.call(current, key) || current[key] === null || typeof current[key] !== 'object') {
+      const existing = Object.prototype.hasOwnProperty.call(current, key) ? current[key] : undefined
+      if (existing !== null && existing !== undefined && typeof existing !== 'object') {
+        // 中间路径已是原始值（如 'list.0.done' 而 list[0] 是数字）：
+        // 原始值无法下钻，静默替换为 {} 会破坏既有数据（[5] → [{}]），放弃写入并告警
+        console.warn(`[set] Cannot descend into primitive value at "${key}" (path: ${path})`)
+        return
+      }
+      if (existing === null || existing === undefined) {
         defineOwnProperty(current, key, {})
       }
       current = current[key] as Record<string, unknown>

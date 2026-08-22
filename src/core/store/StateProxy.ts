@@ -154,7 +154,7 @@ export class StateProxyManager<S extends State = State> {
           self._handleIllegalMutation(fullPath, value)
         }
 
-        ;(obj as Record<string | symbol, unknown>)[key] = value
+        (obj as Record<string | symbol, unknown>)[key] = value
         return true
       },
 
@@ -207,7 +207,7 @@ export class StateProxyManager<S extends State = State> {
           self._handleIllegalMutation(fullPath, value)
         }
 
-        ;(obj as Record<string | symbol, unknown>)[key] = value
+        (obj as Record<string | symbol, unknown>)[key] = value
         return true
       },
 
@@ -220,6 +220,19 @@ export class StateProxyManager<S extends State = State> {
         }
 
         delete (obj as Record<string | symbol, unknown>)[key]
+        return true
+      },
+
+      /** 属性描述符拦截：defineProperty 可绕过 set 陷阱写入，必须同等拦截 */
+      defineProperty(obj: T, key: string | symbol, descriptor: PropertyDescriptor): boolean {
+        const fullPath = path ? `${path}.${String(key)}` : String(key)
+
+        if (!self._isInternalAccess()) {
+          // 拒绝路径总是抛错；生产 warn/silent 处理后放行定义
+          self._handleIllegalMutation(fullPath, descriptor.value, 'defineProperty')
+        }
+
+        Object.defineProperty(obj, key, descriptor)
         return true
       },
     })
@@ -288,7 +301,7 @@ export class StateProxyManager<S extends State = State> {
           self._handleIllegalMutation(fullPath, value)
         }
 
-        ;(arr as unknown as Record<string | symbol, unknown>)[key] = value
+        (arr as unknown as Record<string | symbol, unknown>)[key] = value
         return true
       },
 
@@ -301,6 +314,20 @@ export class StateProxyManager<S extends State = State> {
         }
 
         delete (arr as unknown as Record<string | symbol, unknown>)[key]
+        return true
+      },
+
+      /** 属性描述符拦截：Object.defineProperty(arr, 0, {...}) 不经过 set 陷阱，
+       *  缺失该陷阱时数组写保护可被直接绕过 */
+      defineProperty(arr: T, key: string | symbol, descriptor: PropertyDescriptor): boolean {
+        const fullPath = `${path}[${String(key)}]`
+
+        if (!self._isInternalAccess()) {
+          // 拒绝路径总是抛错；生产 warn/silent 处理后放行定义
+          self._handleIllegalMutation(fullPath, descriptor.value, 'defineProperty')
+        }
+
+        Object.defineProperty(arr, key, descriptor)
         return true
       },
     })

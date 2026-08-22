@@ -162,9 +162,14 @@ export class ErrorBoundary<S = unknown> {
    * @returns {S | undefined} 回退状态（若配置）；未配置回退时返回 undefined
    * @throws {Error} 如果错误且不可恢复
    */
-  private handleError(error: Error, currentState?: S): S | undefined {
+  private handleError(error: Error, currentState?: S): F | undefined {
     // 记录错误
     this.errorHistory.push(error)
+    // 上限保护：与 ErrorHandler.maxLogSize 同口径，高频失败场景下
+    // Error 对象无界累积（此前只增不减，需手动 clearErrorHistory）
+    if (this.errorHistory.length > 100) {
+      this.errorHistory.shift()
+    }
 
     // 调用错误回调
     if (this.onErrorCallback) {
@@ -182,8 +187,9 @@ export class ErrorBoundary<S = unknown> {
 
     // 返回回退状态：支持固定值与根据错误/当前状态动态计算
     if (this.fallback !== undefined) {
-      console.warn('[ErrorBoundary] Returning fallback state due to error:', error.message)
-      return typeof this.fallback === 'function' ? (this.fallback as (error: Error, currentState: S | undefined) => S)(error, currentState) : this.fallback
+      // 输出完整错误对象（含堆栈）而非仅 message：吞错路径的现场信息是排障唯一线索
+      console.warn('[ErrorBoundary] Returning fallback state due to error:', error)
+      return typeof this.fallback === 'function' ? (this.fallback as (error: Error, currentState: S | undefined) => F)(error, currentState) : this.fallback
     }
 
     return undefined

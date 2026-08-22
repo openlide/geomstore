@@ -10,6 +10,23 @@
  * @module SnapshotManager
  */
 
+import { deepEqual } from '../utils/helpers'
+
+/** 集合差异结构匹配的规模护栏：超出后退化为整体/规模对比（防 O(n²) 放大） */
+const MAX_STRUCTURAL_DIFF_MATCH = 1000
+
+/**
+ * 快照中止信号：onError 回调返回 false 时抛出。
+ * processQueue 据此区分"单节点克隆失败（可兜底）"与"用户要求中止（须传播）"，
+ * 否则中止意图会被兜底 catch 吞掉，异步快照错误地继续成功。
+ */
+class SnapshotAbortError extends Error {
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : 'Snapshot aborted by onError')
+    this.name = 'SnapshotAbortError'
+  }
+}
+
 // ==================== 类型定义 ====================
 
 /**
@@ -177,6 +194,39 @@ interface AsyncCloneTask {
     container: Record<string, unknown> | unknown[] | Map<unknown, unknown> | Set<unknown>
     /** 填充位置（prop/index 为 key/index，mapValue 为克隆后的键，可为任意类型） */
     key?: unknown
+    /** 源属性描述符（仅 prop）：填充时经 defineProperty 还原 writable/enumerable/configurable */
+    descriptor?: { writable: boolean; enumerable: boolean; configurable: boolean }
+  }
+}
+
+/**
+ * 安全读取属性值：读取本身可能抛错（访问器 getter 抛错、Proxy get 陷阱拒绝），
+ * catch 载荷组装时必须避免二次触发同一个 getter
+ */
+function safeReadProperty(target: Record<string | symbol, unknown>, key: string | symbol): unknown {
+  try {
+    return target[key]
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * 估算单个节点的字节占用（粗估：容器只计头部开销，子节点单独累加）。
+ * 此前 estimatedSize 从未被累加，metadata.size 恒为 0。
+ */
+function estimateNodeSize(value: unknown): number {
+  if (value === null || value === undefined) return 4
+  switch (typeof value) {
+    case 'string':
+      return 16 + (value as string).length * 2
+    case 'number':
+      return 8
+    case 'boolean':
+      return 4
+    default:
+      // 对象/数组等容器：仅计引用与头部开销，内容由子节点任务累加
+      return 8
   }
 }
 
@@ -393,12 +443,30 @@ export class SnapshotManager {
         : null
 
     // 计算预估总节点数
+    // 经属性描述符读取：直接求值会额外触发 getter（副作用双调用），
+    // getter 抛错时整个异步快照在入口即失败，不走 onError 降级路径
     const estimateNodeCount = (obj: unknown, depth = 0): number => {
       if (depth > 10 || obj === null || typeof obj !== 'object') return 1
       if (Array.isArray(obj)) {
         return obj.reduce((sum, item) => sum + estimateNodeCount(item, depth + 1), 1)
       }
-      return Object.keys(obj).reduce((sum, key) => sum + estimateNodeCount((obj as Record<string, unknown>)[key], depth + 1), 1)
+      try {
+        // Object.keys 与描述符读取都可能触发 Proxy 陷阱抛错，估算失败按叶子计数
+        return Object.keys(obj).reduce((sum, key) => {
+          try {
+            const descriptor = Object.getOwnPropertyDescriptor(obj, key)
+            // 访问器属性按叶子计数（不触发 getter）
+            const child = descriptor && 'value' in descriptor ? descriptor.value : undefined
+            return sum + estimateNodeCount(child, depth + 1)
+          } catch {
+            // 单键描述符读取失败按叶子计数，其余键继续估算
+            return sum + 1
+          }
+        }, 1)
+      } catch {
+        // ownKeys/枚举验证阶段失败：整个对象按叶子计数
+        return 1
+      }
     }
     const totalCount = estimateNodeCount(data)
 
@@ -425,61 +493,87 @@ export class SnapshotManager {
 
     // 处理队列：每批处理 batchSize 个节点，批间让出控制权
     const processQueue = async (): Promise<void> => {
-      while (queue.length > 0 && !hasTimedOut) {
-        const batch: AsyncCloneTask[] = []
+      try {
+        while (queue.length > 0 && !hasTimedOut) {
+          const batch: AsyncCloneTask[] = []
 
-        while (queue.length > 0 && batch.length < opts.batchSize) {
-          const task = queue.shift()
-          if (task) {
-            batch.push(task)
-          }
-        }
-
-        if (batch.length === 0) break
-
-        // 处理批次
-        for (const task of batch) {
-          let result: unknown
-          try {
-            result = this.processNodeAsync(task, opts, errors, stats, counters, enqueue)
-          } catch {
-            // 单节点克隆失败时用原值兜底，保证整个快照不中断
-            result = task.value
-          }
-          processedCount++
-          // stats.cloneOperations 由 processNodeAsync 内部按克隆节点累加
-          // （与同步路径同口径），此处不可用任务数覆盖，否则统计口径错乱
-
-          // 填充到父容器（根任务无 target，作为整体结果返回）
-          if (task.target) {
-            const t = task.target
-            if (t.kind === 'prop') {
-              ;(t.container as Record<string, unknown>)[t.key as string] = result
-            } else if (t.kind === 'index') {
-              ;(t.container as unknown[])[t.key as number] = result
-            } else if (t.kind === 'mapValue') {
-              ;(t.container as Map<unknown, unknown>).set(t.key, result)
-            } else {
-              ;(t.container as Set<unknown>).add(result)
+          while (queue.length > 0 && batch.length < opts.batchSize) {
+            const task = queue.shift()
+            if (task) {
+              batch.push(task)
             }
+          }
+
+          if (batch.length === 0) break
+
+          // 处理批次
+          for (const task of batch) {
+            let result: unknown
+            try {
+              result = this.processNodeAsync(task, opts, errors, stats, counters, enqueue)
+            } catch (error) {
+              if (error instanceof SnapshotAbortError) {
+                // onError 返回 false 要求中止：向上传播，整个快照以失败结果交付
+                throw error
+              }
+              // 单节点克隆失败时用原值兜底，保证整个快照不中断
+              result = task.value
+            }
+            processedCount++
+            // stats.cloneOperations 由 processNodeAsync 内部按克隆节点累加
+            // （与同步路径同口径），此处不可用任务数覆盖，否则统计口径错乱
+
+            // 填充到父容器（根任务无 target，作为整体结果返回）
+            if (task.target) {
+              const t = task.target
+              try {
+                if (t.kind === 'prop') {
+                  if (t.descriptor) {
+                    Object.defineProperty(t.container as object, t.key as string, {
+                      value: result,
+                      writable: t.descriptor.writable,
+                      enumerable: t.descriptor.enumerable,
+                      configurable: t.descriptor.configurable,
+                    })
+                  } else {
+                    (t.container as Record<string, unknown>)[t.key as string] = result
+                  }
+                } else if (t.kind === 'index') {
+                  (t.container as unknown[])[t.key as number] = result
+                } else if (t.kind === 'mapValue') {
+                  (t.container as Map<unknown, unknown>).set(t.key, result)
+                } else {
+                  (t.container as Set<unknown>).add(result)
+                }
+              } catch (error) {
+                // 单个位置填充失败只降级记录错误，不中断队列：
+                // 此处抛出的异常会绕过 rootResolve，导致外层 await 永久挂起
+                errors.push({
+                  type: 'cloneError',
+                  message: `Failed to fill cloned value at ${task.context.path}: ${error instanceof Error ? error.message : String(error)}`,
+                  path: task.context.path,
+                  originalError: error instanceof Error ? error : undefined,
+                })
+              }
+            } else {
+              rootResult = result
+            }
+          }
+
+          // 报告进度（每批一次）
+          reportProgress(batch[batch.length - 1].context.path)
+
+          // 让出控制权
+          if (opts.batchInterval > 0) {
+            await new Promise((r) => setTimeout(r, opts.batchInterval))
           } else {
-            rootResult = result
+            await new Promise((r) => setTimeout(r, 0))
           }
         }
-
-        // 报告进度（每批一次）
-        reportProgress(batch[batch.length - 1].context.path)
-
-        // 让出控制权
-        if (opts.batchInterval > 0) {
-          await new Promise((r) => setTimeout(r, opts.batchInterval))
-        } else {
-          await new Promise((r) => setTimeout(r, 0))
-        }
+      } finally {
+        // 无论正常结束还是中途异常都交付根结果，防止外层 await 永久挂起
+        rootResolve(rootResult)
       }
-
-      // 队列处理完毕（或超时中断），交付根结果
-      rootResolve(rootResult)
     }
 
     try {
@@ -568,7 +662,7 @@ export class SnapshotManager {
   compareSnapshots<T1, T2>(snapshot1: SnapshotResult<T1>, snapshot2: SnapshotResult<T2>): SnapshotDiff {
     // 对比最大深度：超出后停止递归，防止深度嵌套导致栈溢出
     const MAX_COMPARE_DEPTH = 100
-    const changes: Array<{ path: string; oldValue: unknown; newValue: unknown }> = []
+    const changes: Array<{ path: string; oldValue: unknown; newValue: unknown; kind?: 'changed' | 'added' | 'removed' }> = []
 
     const compare = (obj1: unknown, obj2: unknown, path: string, depth: number): void => {
       // 深度保护：超出最大深度后停止递归，避免深层嵌套导致栈溢出
@@ -609,35 +703,115 @@ export class SnapshotManager {
         const map1 = obj1 as Map<unknown, unknown>
         const map2 = obj2 as Map<unknown, unknown>
         if (!(obj1 instanceof Map && obj2 instanceof Map) || map1.size !== map2.size) {
-          changes.push({ path, oldValue: obj1, newValue: obj2 })
+          changes.push({ path, oldValue: obj1, newValue: obj2, kind: 'changed' })
           return
         }
+        // 键匹配分两层：引用匹配（O(1) 快路径）后，未匹配的键做结构匹配——
+        // Map 的语义是键值映射，结构等价的不同引用键应视为同一键，
+        // 否则等价 Map 会因键对象重建而被误报为全量差异
+        const unmatched1: Array<{ key: unknown; value: unknown; index: number }> = []
         let i = 0
         for (const [key, value] of map1) {
-          // 键按引用相等匹配（对象键的深匹配超出本工具职责）；值递归比较
-          if (!map2.has(key)) {
-            changes.push({ path: `${path}.key[${i}]`, oldValue: key, newValue: undefined })
-          } else {
+          if (map2.has(key)) {
             compare(value, map2.get(key), `${path}.key[${i}]`, depth + 1)
+          } else {
+            unmatched1.push({ key, value, index: i })
           }
           i++
         }
+        const unmatched2: Array<{ key: unknown; value: unknown; index: number }> = []
+        let j = 0
+        for (const [key, value] of map2) {
+          if (!map1.has(key)) {
+            unmatched2.push({ key, value, index: j })
+          }
+          j++
+        }
+
+        if (unmatched1.length > MAX_STRUCTURAL_DIFF_MATCH || unmatched2.length > MAX_STRUCTURAL_DIFF_MATCH) {
+          // 规模护栏：结构匹配 O(n×m)，超限退化为整体差异报告。
+          // 进入本分支即存在未匹配键（数量相等但内容可能完全不同），
+          // 且引用匹配此前已失败，无法进一步区分——按整体差异报告（宁多勿漏）
+          changes.push({ path, oldValue: obj1, newValue: obj2, kind: 'changed' })
+          return
+        }
+
+        const used2 = new Array<boolean>(unmatched2.length).fill(false)
+        for (const entry1 of unmatched1) {
+          let found = -1
+          for (let k = 0; k < unmatched2.length; k++) {
+            if (!used2[k] && (entry1.key === unmatched2[k].key || deepEqual(entry1.key, unmatched2[k].key))) {
+              found = k
+              break
+            }
+          }
+          if (found === -1) {
+            changes.push({ path: `${path}.key[${entry1.index}]`, oldValue: entry1.key, newValue: undefined, kind: 'removed' })
+          } else {
+            used2[found] = true
+            compare(entry1.value, unmatched2[found].value, `${path}.key[${entry1.index}]`, depth + 1)
+          }
+        }
+        unmatched2.forEach((entry2, k) => {
+          if (!used2[k]) {
+            changes.push({ path: `${path}.key[${entry2.index}]`, oldValue: undefined, newValue: entry2.key, kind: 'added' })
+          }
+        })
         return
       }
 
       if (obj1 instanceof Set || obj2 instanceof Set) {
         const set1 = obj1 as Set<unknown>
         const set2 = obj2 as Set<unknown>
-        if (!(obj1 instanceof Set && obj2 instanceof Set) || set1.size !== set2.size) {
-          changes.push({ path, oldValue: obj1, newValue: obj2 })
+        if (!(obj1 instanceof Set && obj2 instanceof Set)) {
+          changes.push({ path, oldValue: obj1, newValue: obj2, kind: 'changed' })
           return
         }
-        // Set 迭代顺序即插入顺序，按序配对比较元素
+        // Set 是无序集合：语义等价的集合不应因插入顺序不同被报告为差异。
+        // 无序结构匹配（规模护栏内 O(n×m)，超限退化为引用粗匹配）
         const items1 = [...set1]
         const items2 = [...set2]
-        for (let i = 0; i < items1.length; i++) {
-          compare(items1[i], items2[i], `${path}[${i}]`, depth + 1)
+        if (items1.length !== items2.length) {
+          changes.push({ path, oldValue: obj1, newValue: obj2, kind: 'changed' })
+          return
         }
+        if (items1.length > MAX_STRUCTURAL_DIFF_MATCH) {
+          // 同规模但超限：仅能做引用级匹配，失败时报整体差异
+          const remaining = new Set(items2)
+          let refMatched = true
+          for (const item of items1) {
+            if (remaining.has(item)) {
+              remaining.delete(item)
+            } else {
+              refMatched = false
+              break
+            }
+          }
+          if (!refMatched) {
+            changes.push({ path, oldValue: obj1, newValue: obj2, kind: 'changed' })
+          }
+          return
+        }
+        const matched2 = new Array<boolean>(items2.length).fill(false)
+        for (let i = 0; i < items1.length; i++) {
+          let found = -1
+          for (let k = 0; k < items2.length; k++) {
+            if (!matched2[k] && (items1[i] === items2[k] || deepEqual(items1[i], items2[k]))) {
+              found = k
+              break
+            }
+          }
+          if (found === -1) {
+            changes.push({ path: `${path}[removed:${i}]`, oldValue: items1[i], newValue: undefined, kind: 'removed' })
+          } else {
+            matched2[found] = true
+          }
+        }
+        items2.forEach((item, k) => {
+          if (!matched2[k]) {
+            changes.push({ path: `${path}[added:${k}]`, oldValue: undefined, newValue: item, kind: 'added' })
+          }
+        })
         return
       }
 
@@ -689,10 +863,13 @@ export class SnapshotManager {
         message: `Maximum depth ${options.maxDepth} exceeded at ${context.path}`,
         path: context.path,
       })
-      return value
+      // 基本类型不可变，直接返回不影响隔离；对象若原样返回，
+      // 后续对活状态的修改会穿透进快照，破坏快照隔离契约
+      return value !== null && typeof value === 'object' ? '[MaxDepth Exceeded]' : value
     }
 
     counters.nodeCount++
+    counters.estimatedSize += estimateNodeSize(value)
     counters.maxDepthReached = Math.max(counters.maxDepthReached, context.depth)
 
     // 基本类型直接返回
@@ -836,7 +1013,27 @@ export class SnapshotManager {
     const cloned: Record<string, unknown> = {}
     context.visited.set(value as object, cloned)
 
-    const keys = options.includeNonEnumerable ? Object.getOwnPropertyNames(value) : Object.keys(value)
+    // keys 计算纳入 try：Proxy 的 ownKeys/getOwnPropertyDescriptor 陷阱抛错时
+    // 走 onError 降级，而非冲出整个快照
+    let keys: string[]
+    try {
+      keys = options.includeNonEnumerable ? Object.getOwnPropertyNames(value) : Object.keys(value)
+    } catch (error) {
+      stats.cloneOperations++
+      const shouldContinue = options.onError(
+        {
+          type: 'cloneError',
+          message: error instanceof Error ? error.message : 'Clone error',
+          path: context.path,
+          originalError: error instanceof Error ? error : undefined,
+        },
+        { path: context.path, depth: context.depth, value, recoverable: true },
+      )
+      if (!shouldContinue) {
+        throw error
+      }
+      return cloned
+    }
 
     for (const key of keys) {
       try {
@@ -845,8 +1042,14 @@ export class SnapshotManager {
           continue
         }
 
+        // 访问器属性（getter/setter）：descriptor.value 恒为 undefined，
+        // 直接取值会静默丢失数据——以 getter 求值结果克隆为数据属性
+        // （getter 抛错由下方 catch 走 onError 路径）
+        const isAccessor = descriptor.get !== undefined || descriptor.set !== undefined
+        const sourceValue = isAccessor ? (descriptor.get ? (value as Record<string, unknown>)[key] : undefined) : descriptor.value
+
         const clonedValue = this.cloneDeep(
-          descriptor.value,
+          sourceValue,
           {
             ...context,
             path: `${context.path}.${key}`,
@@ -862,7 +1065,7 @@ export class SnapshotManager {
 
         Object.defineProperty(cloned, key, {
           value: clonedValue,
-          writable: descriptor.writable,
+          writable: isAccessor ? true : descriptor.writable,
           enumerable: descriptor.enumerable,
           configurable: descriptor.configurable,
         })
@@ -878,7 +1081,7 @@ export class SnapshotManager {
           {
             path: `${context.path}.${key}`,
             depth: context.depth,
-            value: (value as Record<string, unknown>)[key],
+            value: safeReadProperty(value as Record<string, unknown>, key),
             recoverable: true,
           },
         )
@@ -924,10 +1127,13 @@ export class SnapshotManager {
         message: `Maximum depth ${options.maxDepth} exceeded at ${context.path}`,
         path: context.path,
       })
-      return value
+      // 基本类型不可变，直接返回不影响隔离；对象若原样返回，
+      // 后续对活状态的修改会穿透进快照，破坏快照隔离契约
+      return value !== null && typeof value === 'object' ? '[MaxDepth Exceeded]' : value
     }
 
     counters.nodeCount++
+    counters.estimatedSize += estimateNodeSize(value)
     counters.maxDepthReached = Math.max(counters.maxDepthReached, context.depth)
 
     // 基本类型直接返回
@@ -998,21 +1204,19 @@ export class SnapshotManager {
           counters,
         )
 
-        if (v !== null && typeof v === 'object') {
-          enqueue({
-            value: v,
-            context: {
-              ...context,
-              path: `${context.path}[${String(k)}]`,
-              depth: context.depth + 1,
-              parent: value,
-              key: k,
-            },
-            target: { kind: 'mapValue', container: cloned, key: clonedKey },
-          })
-        } else {
-          cloned.set(clonedKey, v)
-        }
+        // 所有值统一入队：原始值立即 set、对象值延后填充会打乱 Map 迭代序
+        // （迭代序以 set 插入顺序为准，是 Map 语义的一部分）
+        enqueue({
+          value: v,
+          context: {
+            ...context,
+            path: `${context.path}[${String(k)}]`,
+            depth: context.depth + 1,
+            parent: value,
+            key: k,
+          },
+          target: { kind: 'mapValue', container: cloned, key: clonedKey },
+        })
       }
 
       stats.cloneOperations++
@@ -1025,21 +1229,18 @@ export class SnapshotManager {
 
       let index = 0
       for (const item of value) {
-        if (item !== null && typeof item === 'object') {
-          enqueue({
-            value: item,
-            context: {
-              ...context,
-              path: `${context.path}[${index}]`,
-              depth: context.depth + 1,
-              parent: value,
-              key: index,
-            },
-            target: { kind: 'setItem', container: cloned },
-          })
-        } else {
-          cloned.add(item)
-        }
+        // 所有条目统一入队：原始值立即 add、对象值延后填充会打乱 Set 迭代序
+        enqueue({
+          value: item,
+          context: {
+            ...context,
+            path: `${context.path}[${index}]`,
+            depth: context.depth + 1,
+            parent: value,
+            key: index,
+          },
+          target: { kind: 'setItem', container: cloned },
+        })
         index++
       }
 
@@ -1079,7 +1280,26 @@ export class SnapshotManager {
     const cloned: Record<string, unknown> = {}
     context.visited.set(value as object, cloned)
 
-    const keys = options.includeNonEnumerable ? Object.getOwnPropertyNames(value) : Object.keys(value)
+    // keys 计算纳入 try（与同步路径同语义：陷阱抛错走 onError 降级）
+    let keys: string[]
+    try {
+      keys = options.includeNonEnumerable ? Object.getOwnPropertyNames(value) : Object.keys(value)
+    } catch (error) {
+      stats.cloneOperations++
+      const shouldContinue = options.onError(
+        {
+          type: 'cloneError',
+          message: error instanceof Error ? error.message : 'Clone error',
+          path: context.path,
+          originalError: error instanceof Error ? error : undefined,
+        },
+        { path: context.path, depth: context.depth, value, recoverable: true },
+      )
+      if (!shouldContinue) {
+        throw new SnapshotAbortError(error)
+      }
+      return cloned
+    }
 
     for (const key of keys) {
       try {
@@ -1088,17 +1308,24 @@ export class SnapshotManager {
           continue
         }
 
-        if (descriptor.value !== null && typeof descriptor.value === 'object') {
-          // 先占位（保留属性描述符），子任务完成后赋值填充
+        // 访问器属性：以 getter 求值结果克隆为数据属性（与同步路径同语义）
+        const isAccessor = descriptor.get !== undefined || descriptor.set !== undefined
+        const sourceValue = isAccessor ? (descriptor.get ? (value as Record<string, unknown>)[key] : undefined) : descriptor.value
+        const targetWritable = isAccessor ? true : (descriptor.writable ?? false)
+
+        if (sourceValue !== null && typeof sourceValue === 'object') {
+          // 占位属性必须可写可配置：源属性可能不可写，占位若继承该标志，
+          // 严格模式下的填充赋值会抛 TypeError 中断整个队列；
+          // 源描述符随任务携带，填充时经 defineProperty 还原真实标志
           Object.defineProperty(cloned, key, {
             value: undefined,
-            writable: descriptor.writable,
+            writable: true,
             enumerable: descriptor.enumerable,
-            configurable: descriptor.configurable,
+            configurable: true,
           })
 
           enqueue({
-            value: descriptor.value,
+            value: sourceValue,
             context: {
               ...context,
               path: `${context.path}.${key}`,
@@ -1106,12 +1333,21 @@ export class SnapshotManager {
               parent: value,
               key,
             },
-            target: { kind: 'prop', container: cloned, key },
+            target: {
+              kind: 'prop',
+              container: cloned,
+              key,
+              descriptor: {
+                writable: targetWritable,
+                enumerable: descriptor.enumerable ?? false,
+                configurable: descriptor.configurable ?? false,
+              },
+            },
           })
         } else {
           Object.defineProperty(cloned, key, {
-            value: descriptor.value,
-            writable: descriptor.writable,
+            value: sourceValue,
+            writable: targetWritable,
             enumerable: descriptor.enumerable,
             configurable: descriptor.configurable,
           })
@@ -1128,13 +1364,13 @@ export class SnapshotManager {
           {
             path: `${context.path}.${key}`,
             depth: context.depth,
-            value: (value as Record<string, unknown>)[key],
+            value: safeReadProperty(value as Record<string, unknown>, key),
             recoverable: true,
           },
         )
 
         if (!shouldContinue) {
-          throw error
+          throw new SnapshotAbortError(error)
         }
       }
     }
@@ -1174,8 +1410,8 @@ export class SnapshotManager {
 export interface SnapshotDiff {
   /** 是否发生变化 */
   changed: boolean
-  /** 变化列表 */
-  changes: Array<{ path: string; oldValue: unknown; newValue: unknown }>
+  /** 变化列表（kind 缺省为 'changed'；集合差异使用 'added' / 'removed'） */
+  changes: Array<{ path: string; oldValue: unknown; newValue: unknown; kind?: 'changed' | 'added' | 'removed' }>
   /** 第一个快照时间戳 */
   timestamp1: number
   /** 第二个快照时间戳 */
