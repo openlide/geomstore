@@ -1198,3 +1198,100 @@ describe('throttle 边界情况', () => {
     expect(fn).toHaveBeenCalledTimes(2) // 延迟执行
   })
 })
+
+// ==================== BUG 修复回归测试 ====================
+describe('StateFingerprint BUG 回归：共享引用（DAG）被误判为循环引用', () => {
+  it('兄弟路径共享同一引用应与等价深拷贝结构产生相同指纹', () => {
+    const fingerprint = new StateFingerprint()
+    const shared = { v: 1 }
+    const dag = { x: shared, y: shared }
+    const deepCopy = { x: { v: 1 }, y: { v: 1 } }
+
+    // 修复前：shared 第二次出现被当作 [circular]，dag 与 deepCopy 指纹不同，
+    // 等价结构被误报为「状态已变化」
+    expect(fingerprint.generate(dag)).toBe(fingerprint.generate(deepCopy))
+  })
+
+  it('同一 DAG 结构的指纹应稳定', () => {
+    const fingerprint = new StateFingerprint()
+    const shared = [1, 2]
+    const state = { a: shared, b: shared, m: new Map([['k', shared]]) }
+
+    expect(fingerprint.generate(state)).toBe(fingerprint.generate(state))
+  })
+
+  it('真正的循环引用仍应正常终止且指纹稳定', () => {
+    const fingerprint = new StateFingerprint()
+    const circular: Record<string, unknown> = { name: 'a' }
+    circular.self = circular
+
+    expect(() => fingerprint.generate(circular)).not.toThrow()
+    expect(fingerprint.generate(circular)).toBe(fingerprint.generate(circular))
+  })
+
+  it('DAG 中内容修改后指纹应变化', () => {
+    const fingerprint = new StateFingerprint()
+    const shared = { v: 1 }
+    const state = { x: shared, y: shared }
+
+    const before = fingerprint.generate(state)
+    shared.v = 2
+    expect(fingerprint.generate(state)).not.toBe(before)
+  })
+})
+
+// ==================== BUG 回归：DAG 共享结构指数级重哈希 ====================
+describe('StateFingerprint BUG 回归：DAG 记忆化', () => {
+  it('大规模共享结构（2^18 条路径）应在毫秒级完成哈希', () => {
+    const fingerprint = new StateFingerprint()
+    // 每个节点引用前一节点两次：n 层产生 2^n 条路径
+    let node: unknown = { v: 0 }
+    for (let i = 1; i < 18; i++) {
+      node = { a: node, b: node, v: i }
+    }
+
+    const start = Date.now()
+    const hash = fingerprint.generate(node)
+    const elapsed = Date.now() - start
+
+    expect(Number.isFinite(hash)).toBe(true)
+    // 修复前（无记忆化）：2^20 路径实测约 7 秒
+    expect(elapsed).toBeLessThan(1000)
+  })
+
+  it('记忆化不影响指纹正确性：内容修改后指纹变化', () => {
+    const fingerprint = new StateFingerprint()
+    const shared = { v: 1 }
+    const state = { x: shared, y: shared }
+
+    const before = fingerprint.generate(state)
+    shared.v = 2
+    expect(fingerprint.generate(state)).not.toBe(before)
+  })
+
+  it('±Infinity 应产生不同指纹', () => {
+    const fingerprint = new StateFingerprint()
+    expect(fingerprint.generate(Infinity)).not.toBe(fingerprint.generate(-Infinity))
+  })
+})
+
+// ==================== 覆盖率盲区：throttle leading=false ====================
+describe('throttle 工具函数 leading=false 分支', () => {
+  it('首次调用不立即执行，窗口结束时以最新参数执行', () => {
+    jest.useFakeTimers()
+    const calls: number[] = []
+    const throttled = throttle((...args: number[]) => {
+      calls.push(...args)
+    }, 100, { leading: false })
+
+    throttled(1)
+    expect(calls).toEqual([]) // leading=false：不立即执行
+
+    throttled(2)
+    throttled(3)
+    jest.advanceTimersByTime(100)
+    expect(calls).toEqual([3]) // 窗口尾以最新参数执行
+
+    jest.useRealTimers()
+  })
+})

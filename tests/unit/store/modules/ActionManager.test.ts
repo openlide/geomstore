@@ -381,3 +381,39 @@ describe('GetterManager', () => {
     })
   })
 })
+
+describe('ActionManager refreshCache 失败处理', () => {
+  it('refreshCache 抛错时通过 hooks onError 上报且 dispatch 正常返回', () => {
+    const onError = jest.fn()
+    const hooks = new HookSystem()
+    hooks.on('onError', onError)
+
+    const manager = new ActionManager<{ count: number }, { ping: () => string }>({
+      storeName: 'refresh-cache-store',
+      withInternalAccess: <T>(fn: () => T): T => fn(),
+      setDispatching: () => {},
+      notifyListeners: jest.fn(),
+      hooks,
+      refreshCache: () => {
+        throw new Error('cache refresh failed')
+      },
+    })
+
+    const context: ActionContextBase<{ count: number }> = {
+      name: 'refresh-cache-store',
+      get state() {
+        return { count: 0 }
+      },
+      setState: jest.fn(),
+      $patch: jest.fn(),
+      $replaceState: jest.fn(),
+      getState: () => ({ count: 0 }),
+      dispatch: jest.fn(),
+    }
+    manager.initialize({ ping: () => 'pong' }, context)
+
+    // 缓存刷新失败不应影响 dispatch 主流程，只上报 onError
+    expect(manager.execute('ping')).toBe('pong')
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'cache refresh failed' }))
+  })
+})

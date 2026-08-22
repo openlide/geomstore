@@ -853,7 +853,7 @@ describe('SnapshotManager', () => {
       expect(result.data).toEqual({ evil })
     })
 
-    test('异步克隆 onError 返回 false 时单节点失败应该用原值兜底', async () => {
+    test('异步克隆 onError 返回 false 时中止快照并返回失败结果', async () => {
       const manager = new SnapshotManager()
       let calls = 0
       const evil = new Proxy(
@@ -870,10 +870,10 @@ describe('SnapshotManager', () => {
         },
       )
 
-      // 根节点失败：processQueue 兜底用原值交付，快照不中断
+      // onError(false)：中止整个快照（与同步路径 success:false 语义一致），失败结果携带原始数据
       const result = await manager.createSnapshotAsync(evil, { onError: () => false })
 
-      expect(result.success).toBe(true)
+      expect(result.success).toBe(false)
       expect(result.data).toBe(evil)
     })
   })
@@ -1637,13 +1637,15 @@ describe('SnapshotManager', () => {
       })
     })
 
-    test('maxDepth 截断应记录错误并返回原值', async () => {
+    test('maxDepth 截断应记录错误并以占位符替代', async () => {
       const manager = new SnapshotManager()
 
       const result = await manager.createSnapshotAsync({ a: { b: { c: 1 } } }, { maxDepth: 1 })
 
       expect(result.errors.some((e) => e.type === 'maxDepth')).toBe(true)
       expect(result.stats.maxDepthHits).toBeGreaterThan(0)
+      // maxDepth 为包含式边界：深度 1 的 a 正常克隆，深度 2 的 b 被占位符替代
+      expect((result.data as any).a.b).toBe('[MaxDepth Exceeded]')
     })
 
     test('循环引用且 onError 拒绝继续时返回占位标记', async () => {
@@ -1695,6 +1697,78 @@ describe('SnapshotManager', () => {
     })
   })
 
+  describe('BUG-10: maxDepth 超限时返回原始引用破坏快照隔离', () => {
+    test('同步快照：超限对象应以占位符替代，修改原状态不影响快照', () => {
+      const manager = new SnapshotManager()
+      const original = { deep: { value: 1 } }
+
+      // maxDepth 为包含式边界：深度 1 的 original 正常克隆，深度 2 的 deep 被截断
+      const result = manager.createSnapshot({ a: original }, { maxDepth: 1 })
+
+      expect((result.data as any).a.deep).toBe('[MaxDepth Exceeded]')
+      // 修复前此处返回 original.deep 的活引用，修改会穿透进快照
+      original.deep.value = 999
+      expect((result.data as any).a.deep).toBe('[MaxDepth Exceeded]')
+    })
+
+    test('异步快照：超限对象应以占位符替代，修改原状态不影响快照', async () => {
+      const manager = new SnapshotManager()
+      const original = { deep: { value: 1 } }
+
+      const result = await manager.createSnapshotAsync({ a: original }, { maxDepth: 1 })
+
+      expect((result.data as any).a.deep).toBe('[MaxDepth Exceeded]')
+      original.deep.value = 999
+      expect((result.data as any).a.deep).toBe('[MaxDepth Exceeded]')
+    })
+
+    test('maxDepth 超限处的原始类型叶子可直接返回', () => {
+      const manager = new SnapshotManager()
+
+      const result = manager.createSnapshot({ a: { b: 'leaf' } }, { maxDepth: 1 })
+
+      // 'leaf' 位于深度 2 超限，但原始类型不可变，原样返回不破坏隔离
+      expect((result.data as any).a).toEqual({ b: 'leaf' })
+      expect(result.stats.maxDepthHits).toBeGreaterThan(0)
+    })
+  })
+
+  describe('BUG-11: 异步快照对不可写属性填充时永久挂起', () => {
+    test('含不可写对象属性的源数据应正常完成快照且值被正确填充', async () => {
+      const manager = new SnapshotManager()
+
+      // 构造含不可写对象属性的数据（修复前：占位符继承 writable:false，
+      // 严格模式下填充赋值抛 TypeError，rootResolve 永不执行，await 永久挂起）
+      const source: Record<string, unknown> = {}
+      Object.defineProperty(source, 'frozen', {
+        value: { inner: 1 },
+        writable: false,
+        enumerable: true,
+        configurable: false,
+      })
+      Object.defineProperty(source, 'readonly', {
+        value: { inner: 2 },
+        writable: false,
+        enumerable: true,
+        configurable: true,
+      })
+
+      const result = await manager.createSnapshotAsync(source, { includeNonEnumerable: false })
+
+      expect(result.success).toBe(true)
+      expect((result.data as any).frozen).toEqual({ inner: 1 })
+      expect((result.data as any).readonly).toEqual({ inner: 2 })
+
+      // 快照应还原源属性描述符标志
+      const frozenDesc = Object.getOwnPropertyDescriptor(result.data, 'frozen')
+      expect(frozenDesc?.writable).toBe(false)
+      expect(frozenDesc?.configurable).toBe(false)
+      const readonlyDesc = Object.getOwnPropertyDescriptor(result.data, 'readonly')
+      expect(readonlyDesc?.writable).toBe(false)
+      expect(readonlyDesc?.configurable).toBe(true)
+    }, 5000)
+  })
+
   // ==================== 结构性不可达分支说明 ====================
   // 以下分支在当前实现中是结构性不可达的（防御性代码或逻辑上不可能触发）：
   //
@@ -1713,4 +1787,331 @@ describe('SnapshotManager', () => {
   // 4. reportProgress 中的 percentage > 0 false → 0 分支（cond-expr 的 false 分支）
   //    原因：reportProgress 在每批处理完后调用（processedCount >= batchSize > 0），
   //    所以 percentage = (processedCount / totalCount) * 100 > 0。
+})
+
+// ==================== 低严重度 BUG 回归 ====================
+describe('BUG 回归：size 估算 / 访问器克隆 / 异步 Map/Set 保序', () => {
+  test('metadata.size 应反映数据规模而非恒为 0', () => {
+    const manager = new SnapshotManager()
+    const result = manager.createSnapshot({ a: 'hello world', b: 42, c: { d: [1, 2, 3] } })
+
+    expect(result.metadata.size).toBeGreaterThan(0)
+  })
+
+  test('可枚举访问器属性应以 getter 求值结果克隆', () => {
+    const manager = new SnapshotManager()
+    const source: Record<string, unknown> = { fixed: 1 }
+    Object.defineProperty(source, 'computed', {
+      get() {
+        return 99
+      },
+      enumerable: true,
+      configurable: true,
+    })
+
+    const result = manager.createSnapshot(source)
+    // 修复前：descriptor.value 恒为 undefined，访问器数据静默丢失
+    expect((result.data as Record<string, unknown>).computed).toBe(99)
+  })
+
+  test('异步快照 Map 迭代顺序应与源一致（原始值与对象值交错）', async () => {
+    const manager = new SnapshotManager()
+    const source = new Map<string, unknown>([
+      ['prim1', 'a'],
+      ['obj1', { id: 1 }],
+      ['prim2', 'b'],
+      ['obj2', { id: 2 }],
+      ['prim3', 'c'],
+    ])
+
+    const result = await manager.createSnapshotAsync(source)
+    const entries = [...(result.data as Map<string, unknown>).entries()]
+
+    // 修复前：原始值立即 set、对象值延后填充，迭代序变为 prim1,prim2,prim3,obj1,obj2
+    expect(entries.map(([k]) => k)).toEqual(['prim1', 'obj1', 'prim2', 'obj2', 'prim3'])
+    expect(entries[1][1]).toEqual({ id: 1 })
+    expect(entries[3][1]).toEqual({ id: 2 })
+  })
+
+  test('异步快照 Set 迭代顺序应与源一致', async () => {
+    const manager = new SnapshotManager()
+    const source = new Set<unknown>(['a', { id: 1 }, 'b', { id: 2 }, 'c'])
+
+    const result = await manager.createSnapshotAsync(source)
+    const items = [...(result.data as Set<unknown>)]
+
+    expect(items[0]).toBe('a')
+    expect(items[1]).toEqual({ id: 1 })
+    expect(items[2]).toBe('b')
+    expect(items[3]).toEqual({ id: 2 })
+    expect(items[4]).toBe('c')
+  })
+})
+
+// ==================== 0.x 设计变更：集合语义差异比较 ====================
+describe('设计变更：compareSnapshots 集合语义', () => {
+  it('Set 元素相同但插入顺序不同应无差异', () => {
+    const manager = new SnapshotManager()
+    const s1 = manager.createSnapshot({ set: new Set([1, { a: 1 }, 'x']) })
+    const s2 = manager.createSnapshot({ set: new Set(['x', 1, { a: 1 }]) })
+
+    const diff = manager.compareSnapshots(s1, s2)
+    expect(diff.changed).toBe(false)
+  })
+
+  it('Set 元素增删应以 added/removed 报告而非按位配对', () => {
+    const manager = new SnapshotManager()
+    const s1 = manager.createSnapshot({ set: new Set([1, 2, 3]) })
+    const s2 = manager.createSnapshot({ set: new Set([2, 3, 4]) })
+
+    const diff = manager.compareSnapshots(s1, s2)
+    expect(diff.changed).toBe(true)
+    const kinds = diff.changes.map((c) => c.kind)
+    expect(kinds).toContain('removed') // 元素 1 被移除
+    expect(kinds).toContain('added') // 元素 4 新增
+    // 结构等价的元素（2、3）不应被误报
+    expect(diff.changes.length).toBe(2)
+  })
+
+  it('Map 键结构等价时应视为同一键，仅比较值', () => {
+    const manager = new SnapshotManager()
+    const s1 = manager.createSnapshot({ m: new Map([[{ id: 1 }, 'old']]) })
+    const s2 = manager.createSnapshot({ m: new Map([[{ id: 1 }, 'new']]) })
+
+    const diff = manager.compareSnapshots(s1, s2)
+    expect(diff.changed).toBe(true)
+    // 修复前：键按引用匹配失败，被误报为键增删（两个 change）；
+    // 现在结构等价键匹配成功，只报值变化（一个 change）
+    expect(diff.changes.length).toBe(1)
+  })
+
+  it('Map 键真正增删时以 added/removed 报告', () => {
+    const manager = new SnapshotManager()
+    const s1 = manager.createSnapshot({ m: new Map([['a', 1]]) })
+    const s2 = manager.createSnapshot({ m: new Map([['b', 2]]) })
+
+    const diff = manager.compareSnapshots(s1, s2)
+    expect(diff.changed).toBe(true)
+    expect(diff.changes.some((c) => c.kind === 'removed')).toBe(true)
+    expect(diff.changes.some((c) => c.kind === 'added')).toBe(true)
+  })
+})
+
+// ==================== 本轮修复回归 + 覆盖率盲区 ====================
+describe('BUG 回归：getter 抛错与护栏分支', () => {
+  test('同步快照：getter 抛错应走 onError 降级而非冲出', () => {
+    const manager = new SnapshotManager()
+    const onError = jest.fn().mockReturnValue(true)
+    const source: Record<string, unknown> = { ok: 1 }
+    Object.defineProperty(source, 'evil', {
+      get() {
+        throw new Error('getter boom')
+      },
+      enumerable: true,
+      configurable: true,
+    })
+
+    // 修复前：catch 载荷二次触发 getter，在 catch 内再抛，整体冲出快照
+    const result = manager.createSnapshot(source, { onError })
+
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({ type: 'cloneError', message: 'getter boom' }), expect.anything())
+    expect(result.success).toBe(true)
+    expect((result.data as Record<string, unknown>).ok).toBe(1)
+  })
+
+  test('异步快照：getter 抛错不应在入口失败且走 onError 降级', async () => {
+    const manager = new SnapshotManager()
+    const onError = jest.fn().mockReturnValue(true)
+    const source: Record<string, unknown> = { ok: 1 }
+    Object.defineProperty(source, 'evil', {
+      get() {
+        throw new Error('getter boom')
+      },
+      enumerable: true,
+      configurable: true,
+    })
+
+    // 修复前：入口 estimateNodeCount 直接求值属性，getter 抛错使整个异步快照失败
+    const result = await manager.createSnapshotAsync(source, { onError })
+
+    expect(onError).toHaveBeenCalled()
+    expect(result.success).toBe(true)
+    expect((result.data as Record<string, unknown>).ok).toBe(1)
+  })
+
+  test('护栏：Map 未匹配键超限且数量相等时必须报告差异', () => {
+    const manager = new SnapshotManager()
+    // 1001 个互不相同的对象键：结构匹配被护栏禁用
+    const m1 = new Map(Array.from({ length: 1001 }, (_, i) => [{ k: i }, i]))
+    const m2 = new Map(Array.from({ length: 1001 }, (_, i) => [{ j: i }, i]))
+
+    const s1 = manager.createSnapshot({ m: m1 })
+    const s2 = manager.createSnapshot({ m: m2 })
+
+    // 修复前：数量相等 → 静默 return → 漏报为无差异
+    expect(manager.compareSnapshots(s1, s2).changed).toBe(true)
+  })
+
+  test('护栏：Set 超限时原始值乱序（引用级匹配可命中）应无差异', () => {
+    const manager = new SnapshotManager()
+    // 快照是深克隆：引用同一性不会保留，引用级匹配只对原始值生效
+    const values = Array.from({ length: 1001 }, (_, i) => i)
+    const s1 = manager.createSnapshot({ set: new Set(values) })
+    const s2 = manager.createSnapshot({ set: new Set([...values].reverse()) })
+
+    expect(manager.compareSnapshots(s1, s2).changed).toBe(false)
+  })
+
+  test('护栏：Set 超限且引用不匹配时应报告差异', () => {
+    const manager = new SnapshotManager()
+    const s1 = manager.createSnapshot({ set: new Set(Array.from({ length: 1001 }, (_, i) => ({ a: i }))) })
+    const s2 = manager.createSnapshot({ set: new Set(Array.from({ length: 1001 }, (_, i) => ({ b: i }))) })
+
+    expect(manager.compareSnapshots(s1, s2).changed).toBe(true)
+  })
+})
+
+describe('Proxy 陷阱容错', () => {
+  test('estimateNodeCount 遇 getOwnPropertyDescriptor 陷阱抛错时降级计数', () => {
+    const manager = new SnapshotManager()
+    const hostile = new Proxy(
+      { a: 1, b: 2 },
+      {
+        getOwnPropertyDescriptor: () => {
+          throw new Error('descriptor trap boom')
+        },
+      },
+    )
+
+    // 估算失败按叶子计数，快照仍应成功
+    const result = manager.createSnapshot(hostile, { onError: () => true })
+    expect(result.success).toBe(true)
+  })
+
+  test('compareSnapshots: Set 与非 Set 类型不匹配报告 changed', () => {
+    const manager = new SnapshotManager()
+    const snapshot1 = manager.createSnapshot({ data: new Set([1, 2]) })
+    const snapshot2 = manager.createSnapshot({ data: [1, 2] })
+
+    const diff = manager.compareSnapshots(snapshot1, snapshot2)
+    expect(diff.changed).toBe(true)
+    expect(diff.changes.some((c: any) => c.path === 'root.data' && c.kind === 'changed')).toBe(true)
+  })
+
+  test('createSnapshotAsync: estimateNodeCount 遇描述符陷阱抛错时降级计数', async () => {
+    const manager = new SnapshotManager()
+    // 陷阱无条件抛错：Object.keys 的枚举验证阶段即失败，走外层降级（整对象按叶子计数）
+    const hostile = new Proxy(
+      { a: 1 },
+      {
+        getOwnPropertyDescriptor: () => {
+          throw new Error('descriptor boom')
+        },
+      },
+    )
+
+    // 估算失败按叶子计数，克隆时 onError 决定继续
+    const result = await manager.createSnapshotAsync(hostile, { onError: () => true } as any)
+    expect(result.success).toBe(true)
+  })
+
+  test('createSnapshotAsync: estimateNodeCount 单键描述符读取失败按叶子计数', async () => {
+    const manager = new SnapshotManager()
+    // 计数陷阱：首次调用（Object.keys 枚举验证）成功，reduce 回调内描述符读取抛错 → 走内层降级
+    let calls = 0
+    const hostile = new Proxy(
+      { a: 1 },
+      {
+        getOwnPropertyDescriptor(target, key) {
+          calls++
+          if (calls > 1) {
+            throw new Error('inner descriptor boom')
+          }
+          return Object.getOwnPropertyDescriptor(target, key)
+        },
+      },
+    )
+
+    const result = await manager.createSnapshotAsync(hostile, { onError: () => true } as any)
+    expect(result.success).toBe(true)
+  })
+
+  test('createSnapshotAsync: 根对象 ownKeys 陷阱抛错时入口降级并按 onError 决定', async () => {
+    const manager = new SnapshotManager()
+    const hostile = new Proxy(
+      { a: 1 },
+      {
+        ownKeys: () => {
+          throw new Error('entry ownKeys boom')
+        },
+      },
+    )
+
+    // 估算失败降级为叶子计数，克隆时 onError 默认继续：快照成功（不再入口即失败）
+    const result = await manager.createSnapshotAsync(hostile)
+    expect(result.success).toBe(true)
+  })
+
+  test('createSnapshotAsync: 深层对象 ownKeys 陷阱抛错时 onError 决定继续或中止', async () => {
+    const manager = new SnapshotManager()
+    const hostile = new Proxy(
+      { a: 1 },
+      {
+        ownKeys: () => {
+          throw new Error('deep ownKeys boom')
+        },
+      },
+    )
+    // 深度 >10：estimateNodeCount 跳过（不触发陷阱），processNodeAsync 处理时触发
+    let data: unknown = hostile
+    for (let i = 0; i < 12; i++) {
+      data = { next: data }
+    }
+
+    // onError 返回 false：中止整个快照，返回失败结果（与同步路径语义一致）
+    const failed = await manager.createSnapshotAsync(data, { onError: () => false } as any)
+    expect(failed.success).toBe(false)
+    expect(failed.errors.some((e: any) => e.message.includes('deep ownKeys boom'))).toBe(true)
+
+    // onError 返回 true：降级返回部分克隆
+    const result = await manager.createSnapshotAsync(data, { onError: () => true } as any)
+    expect(result.success).toBe(true)
+  })
+
+  test('createSnapshotAsync: getOwnPropertyDescriptor 返回 undefined 时跳过该键', async () => {
+    const manager = new SnapshotManager()
+    const ghost = new Proxy(
+      { a: 1 },
+      {
+        ownKeys: () => ['a', 'ghost'],
+        getOwnPropertyDescriptor: (target, key) => {
+          if (key === 'ghost') return undefined
+          return Object.getOwnPropertyDescriptor(target, key)
+        },
+      },
+    )
+
+    // Object.keys 会过滤描述符为 undefined 的键；getOwnPropertyNames 不会，
+    // 从而覆盖循环内 descriptor 为 undefined 的跳过分支
+    const result = await manager.createSnapshotAsync(ghost, { includeNonEnumerable: true } as any)
+    expect(result.success).toBe(true)
+    expect((result.data as any).a).toBe(1)
+  })
+
+  test('createSnapshotAsync: 属性描述符陷阱抛错且 onError=false 时中止快照', async () => {
+    const manager = new SnapshotManager()
+    const evil = new Proxy(
+      { a: 1 },
+      {
+        getOwnPropertyDescriptor: () => {
+          throw new Error('descriptor boom')
+        },
+      },
+    )
+
+    // 中止意图不再被兜底 catch 吞掉：返回失败结果并携带原始错误
+    const failed = await manager.createSnapshotAsync(evil, { onError: () => false } as any)
+    expect(failed.success).toBe(false)
+    expect(failed.errors.some((e: any) => e.message.includes('descriptor boom'))).toBe(true)
+  })
 })

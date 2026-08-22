@@ -1142,3 +1142,16 @@ describe('PerformanceAnalyzer', () => {
     })
   })
 })
+
+// ==================== BUG 回归 ====================
+describe('BUG 回归：大数组 spread 栈溢出', () => {
+  it('collectBatch 处理 20 万条指标不应抛 RangeError', () => {
+    const { MetricsCollector } = jest.requireActual('@/core/performance/metrics')
+    const collector = new MetricsCollector(1000)
+    const metric = { operation: 'bulk', type: 'dispatch', duration: 1, timestamp: Date.now(), exceedThreshold: false }
+    const large = new Array(200000).fill(metric)
+
+    expect(() => collector.collectBatch(large)).not.toThrow()
+    expect(collector.getAll().length).toBe(1000)
+  })
+})

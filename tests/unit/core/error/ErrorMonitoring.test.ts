@@ -631,6 +631,31 @@ describe('HttpReporter', () => {
       await expect(reporter.report(context)).resolves.toBeUndefined()
       expect(consoleErrorSpy).toHaveBeenCalledWith('[HttpReporter] Failed to report error:', expect.any(Error))
     })
+
+    it('MONITOR-045b: wx.request 非 2xx 状态码应视为上报失败并记录', async () => {
+      const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation()
+
+      wxRequestMock.mockImplementationOnce((options: { success?: (res: { statusCode: number }) => void }) => {
+        options.success?.({ statusCode: 500 })
+      })
+
+      const reporter = new HttpReporter('https://api.example.com/errors')
+
+      const context: ErrorContext = {
+        storeName: 'test-store',
+        operation: 'dispatch',
+        error: new Error('Test error'),
+        level: 'error',
+        timestamp: Date.now(),
+      }
+
+      // 修复前：success 回调在任何 HTTP 状态都触发，4xx/5xx 被当作成功静默丢失
+      await reporter.report(context)
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        '[HttpReporter] Failed to report error:',
+        expect.objectContaining({ message: 'wx.request failed with HTTP 500' }),
+      )
+    })
   })
 })
 
@@ -1700,14 +1725,14 @@ describe('ErrorMonitoring', () => {
       expect(mockReporter.reportBatch).not.toHaveBeenCalled()
     })
 
-    it('MONITOR-COV-006: batch scheduler 定时器触发时 flushReports 抛错应捕获', async () => {
+    it('MONITOR-COV-006 (BUG 回归): reportBatch 同步抛错不应使 isFlushing 永久卡死', async () => {
       jest.useFakeTimers()
 
       const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation()
 
-      // 创建一个 reportBatch 同步抛异常的 reporter
-      // 这会导致 flushReports 内的 this.reporters.map(...) 抛出异常（在 try 块之外）
-      // 从而 flushReports 的 Promise 被 reject，触发 batch scheduler 的 .catch()
+      // reportBatch 同步抛异常的 reporter（类型只约束返回 Promise，完全合法）。
+      // 修复前：map 在 try 之外同步抛出 → flushReports reject 且 finally 不执行
+      // → isFlushing 永久为 true，之后所有 flush（周期/阈值/shutdown）静默失效
       const syncThrowReporter: jest.Mocked<ErrorReporter> = {
         getName: jest.fn(() => 'sync-throw'),
         report: jest.fn().mockResolvedValue(undefined),
@@ -1734,25 +1759,24 @@ describe('ErrorMonitoring', () => {
       await schedulerMonitoring.report(context)
 
       // 快进定时器触发 batch scheduler 的 flushReports
-      // flushReports 内部 this.reporters.map 会因 reportBatch 同步抛出而 reject
-      // 从而触发 flushReports().catch() -> 第604-605行
       jest.advanceTimersByTime(150)
 
       // 切回真实定时器，等待微任务和宏任务
       jest.useRealTimers()
       await new Promise((r) => setTimeout(r, 100))
 
-      // 验证 batch scheduler 的 catch 被触发（第605行 console.error）
-      // 查找包含 'batch scheduler' 的错误日志
-      const batchSchedulerErrors = consoleErrorSpy.mock.calls.filter((call) => typeof call[0] === 'string' && call[0].includes('batch scheduler'))
-      expect(batchSchedulerErrors.length).toBeGreaterThan(0)
+      // 修复后语义：同步抛错被转化为已处理的 rejection 并记录日志
+      const reportErrors = consoleErrorSpy.mock.calls.filter((call) => typeof call[0] === 'string' && call[0].includes('Error in reportBatch'))
+      expect(reportErrors.length).toBeGreaterThan(0)
+
+      // isFlushing 必须已复位：后续 flush 不再被入口守卫拦截
+      expect((schedulerMonitoring as unknown as { isFlushing: boolean }).isFlushing).toBe(false)
 
       consoleErrorSpy.mockRestore()
       await schedulerMonitoring.shutdown()
     })
 
-    it('MONITOR-COV-007: flushReports 在 Promise.allSettled 抛异常时应捕获并输出错误', async () => {
-      // 通过 mock Promise.allSettled 使其抛出异常，覆盖 catch 块（第497行）
+    it('MONITOR-COV-007 (BUG 回归): flushReports 内部异常时 finally 仍应复位 isFlushing', async () => {
       const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation()
       const originalAllSettled = Promise.allSettled
       Promise.allSettled = jest.fn().mockRejectedValue(new Error('allSettled crashed')) as any
@@ -1767,10 +1791,10 @@ describe('ErrorMonitoring', () => {
         }
 
         await monitoring.report(context)
-        await monitoring.flushReports()
-
-        // 应该捕获错误并输出到控制台
-        expect(consoleErrorSpy).toHaveBeenCalledWith('[ErrorMonitoring] Error in reportBatch:', expect.any(Error))
+        // allSettled 被替换为 reject：flushReports 向调用方传播异常，
+        // 但 finally 必须复位 isFlushing，监控系统不能因此瘫痪
+        await expect(monitoring.flushReports()).rejects.toThrow('allSettled crashed')
+        expect((monitoring as unknown as { isFlushing: boolean }).isFlushing).toBe(false)
       } finally {
         Promise.allSettled = originalAllSettled
         consoleErrorSpy.mockRestore()
@@ -1898,5 +1922,106 @@ describe('ConsoleReporter 分组降级回归（BUG-16）', () => {
       ;(console as any).groupEnd = originalGroupEnd
       consoleErrorSpy.mockRestore()
     }
+  })
+
+  it('REGR-MONITOR-003: 降级平铺输出应包含 payload 信息', async () => {
+    const reporter = new ConsoleReporter('[Test]')
+    const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation()
+    const originalGroup = console.group
+    const originalGroupEnd = console.groupEnd
+    ;(console as any).group = undefined
+    ;(console as any).groupEnd = undefined
+
+    try {
+      const context: ErrorContext = {
+        storeName: 'test-store',
+        operation: 'dispatch',
+        error: new Error('boom'),
+        level: 'error',
+        timestamp: Date.now(),
+        payload: { action: 'testAction', retry: 2 },
+      }
+
+      await reporter.report(context)
+
+      expect(consoleErrorSpy).toHaveBeenCalledWith(expect.stringContaining('Payload:'), { action: 'testAction', retry: 2 })
+    } finally {
+      (console as any).group = originalGroup
+      ;(console as any).groupEnd = originalGroupEnd
+      consoleErrorSpy.mockRestore()
+    }
+  })
+})
+
+describe('ErrorMonitoring 边界行为', () => {
+  it('MONITOR-BND-001: shutdown 应等待在途 flush 完成（含失败）', async () => {
+    let rejectFlush!: (error: Error) => void
+    const pendingReporter: ErrorReporter = {
+      getName: () => 'pending',
+      report: jest.fn(),
+      reportBatch: jest.fn(
+        () =>
+          new Promise<void>((_resolve, reject) => {
+            rejectFlush = reject
+          }),
+      ),
+    }
+    const monitoring = new ErrorMonitoring({
+      reporters: [pendingReporter],
+      batchInterval: 60000,
+      batchThreshold: 1,
+    })
+
+    monitoring.report({ storeName: 's', operation: 'dispatch', error: new Error('x'), level: 'error' }).catch(() => {})
+    // 让出微任务：reportBatch 经 Promise.resolve().then 包装后才被调用
+    await Promise.resolve()
+    const shutdownPromise = monitoring.shutdown()
+    rejectFlush(new Error('flush boom'))
+    await expect(shutdownPromise).resolves.toBeUndefined()
+    expect(pendingReporter.reportBatch).toHaveBeenCalled()
+  })
+
+  it('MONITOR-BND-002: 批量调度器遇到在途 flush 失败时记录错误', async () => {
+    jest.useFakeTimers()
+    const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation()
+    const monitoring = new ErrorMonitoring({
+      reporters: [],
+      batchInterval: 50,
+      batchThreshold: 100,
+    })
+
+    // 先上报一条启动批量调度器，再清空队列并注入在途失败的 flush：
+    // doFlushReports 内部已吞掉 reporter 错误，调度器 catch 仅在
+    // flushReports 本身 reject（返回在途失败）时可达
+    monitoring.report({ storeName: 's', operation: 'dispatch', error: new Error('x'), level: 'error' }).catch(() => {})
+    ;(monitoring as any).errorQueue = []
+    let rejectInjected!: (error: Error) => void
+    const injected = new Promise<void>((_resolve, reject) => {
+      rejectInjected = reject
+    })
+    ;(monitoring as any).inFlightFlush = injected
+
+    await jest.advanceTimersByTimeAsync(50)
+    rejectInjected(new Error('scheduler boom'))
+    await jest.advanceTimersByTimeAsync(0)
+
+    expect(consoleErrorSpy).toHaveBeenCalledWith('[ErrorMonitoring] Error in batch scheduler:', expect.any(Error))
+    await monitoring.shutdown().catch(() => {})
+    jest.useRealTimers()
+    consoleErrorSpy.mockRestore()
+  })
+
+  it('MONITOR-BND-003: defaultMonitoring 代理 set/delete 转发到默认实例', () => {
+    const instance = getDefaultMonitoring()
+    const originalConsoleLog = (instance as any).enableConsoleLog
+
+    ;(defaultMonitoring as any).enableConsoleLog = false
+    expect((instance as any).enableConsoleLog).toBe(false)
+    ;(defaultMonitoring as any).__proxyTestProp = 42
+    expect((instance as any).__proxyTestProp).toBe(42)
+
+    delete (defaultMonitoring as any).__proxyTestProp
+    expect((instance as any).__proxyTestProp).toBeUndefined()
+    ;(defaultMonitoring as any).enableConsoleLog = originalConsoleLog
   })
 })

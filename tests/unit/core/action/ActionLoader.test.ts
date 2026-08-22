@@ -528,3 +528,130 @@ describe('withLoading 装饰器', () => {
     expect(typeof (states.errorData as any).timestamp).toBe('number')
   })
 })
+
+// ==================== BUG 修复回归测试 ====================
+describe('withLoading BUG 回归：同宿主多装饰器引用计数隔离', () => {
+  it('两个 @withLoading 方法并发时先完成者不应把共享 loading 键提前置 false', async () => {
+    const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+    const state: Record<string, unknown> = {}
+
+    class HostStore {
+      setState(key: string, value: unknown): void {
+        state[key] = value
+      }
+
+      @withLoading()
+      async slowMethod(): Promise<string> {
+        await sleep(30)
+        return 'slow'
+      }
+
+      @withLoading()
+      async fastMethod(): Promise<string> {
+        await sleep(5)
+        return 'fast'
+      }
+    }
+
+    const host = new HostStore()
+    const slow = host.slowMethod()
+    const fast = host.fastMethod()
+    expect(state.loading).toBe(true)
+
+    await fast
+    // 修复前：两个装饰器各自持有独立引用计数，fast 完成即把 loading 置 false，
+    // 而 slow 仍在执行
+    expect(state.loading).toBe(true)
+
+    await slow
+    expect(state.loading).toBe(false)
+  })
+
+  it('不同选项（不同 loadingKey）的装饰器仍各自独立', async () => {
+    const state: Record<string, unknown> = {}
+
+    class HostStore {
+      setState(key: string, value: unknown): void {
+        state[key] = value
+      }
+
+      @withLoading({ loadingKey: 'loadingA' })
+      async methodA(): Promise<void> {}
+
+      @withLoading({ loadingKey: 'loadingB' })
+      async methodB(): Promise<void> {}
+    }
+
+    const host = new HostStore()
+    await host.methodA()
+    await host.methodB()
+
+    expect(state.loadingA).toBe(false)
+    expect(state.loadingB).toBe(false)
+  })
+})
+
+// ==================== BUG 回归：跨选项签名的 loading 计数集中 ====================
+describe('withLoading BUG 回归：相同 loadingKey 不同 errorKey 的并发计数', () => {
+  it('先完成的方法不应把共享 loading 键提前置 false', async () => {
+    const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+    const state: Record<string, unknown> = {}
+
+    class HostStore {
+      setState(key: string, value: unknown): void {
+        state[key] = value
+      }
+
+      @withLoading({ errorKey: 'errA' })
+      async slowMethod(): Promise<string> {
+        await sleep(30)
+        return 'slow'
+      }
+
+      @withLoading({ errorKey: 'errB' })
+      async fastMethod(): Promise<string> {
+        await sleep(5)
+        return 'fast'
+      }
+    }
+
+    const host = new HostStore()
+    const slow = host.slowMethod()
+    const fast = host.fastMethod()
+    expect(state.loading).toBe(true)
+
+    await fast
+    // 修复前：两个装饰器选项签名不同（errorKey）→ 独立 loader → 独立计数，
+    // fast 完成即把 loading 置 false，而 slow 仍在执行
+    expect(state.loading).toBe(true)
+
+    await slow
+    expect(state.loading).toBe(false)
+  })
+})
+
+describe('loading 计数回滚', () => {
+  it('setState 同步抛错时回滚计数并重抛，后续调用正常', async () => {
+    const loaderInstance = new ActionLoader({
+      autoLoading: true,
+      loadingKey: 'loading',
+      errorKey: 'error',
+      errorDataKey: 'errorData',
+    })
+    const setState = jest.fn()
+    const action = jest.fn(async () => 'ok')
+    const wrapped = loaderInstance.wrap(action, 'rollbackAction', setState)
+
+    // 首次 setState 同步抛错（如 store 已销毁）：计数残留 +1 会导致 loading 永不复位
+    setState.mockImplementationOnce(() => {
+      throw new Error('store destroyed')
+    })
+    await expect(wrapped()).rejects.toThrow('store destroyed')
+
+    // 计数已回滚：再次调用能正常设置并清除 loading
+    await wrapped()
+    expect(setState).toHaveBeenCalledWith('loading', true)
+    expect(setState).toHaveBeenCalledWith('loading', false)
+    loaderInstance.clear()
+  })
+})

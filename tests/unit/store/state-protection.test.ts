@@ -522,4 +522,133 @@ describe('状态保护机制', () => {
       expect(proxy.length).toBe(110)
     })
   })
+
+  describe('BUG 回归：defineProperty 绕过写保护', () => {
+    it('PROTECT-BUG-001: 应该拦截通过 defineProperty 修改数组元素', () => {
+      const store = createStore({
+        name: 'test-store',
+        state: { items: [1, 2, 3] },
+      })
+
+      // 修复前数组代理缺少 defineProperty 陷阱，写入直接生效
+      expect(() => {
+        Object.defineProperty(store.state.items, 0, { value: 99, writable: true, enumerable: true, configurable: true })
+      }).toThrow('Direct mutation of state')
+      expect(store.getState().items[0]).toBe(1)
+    })
+
+    it('PROTECT-BUG-002: 浅层保护模式也应拦截 defineProperty 修改顶层属性', () => {
+      const store = createStore({
+        name: 'test-store',
+        state: { count: 0 },
+        stateProtection: { deep: false },
+      })
+
+      expect(() => {
+        Object.defineProperty(store.state, 'count', { value: 99, writable: true, enumerable: true, configurable: true })
+      }).toThrow('Direct mutation of state')
+      expect(store.getState().count).toBe(0)
+    })
+
+    it('PROTECT-BUG-003: 深层保护模式应拦截 defineProperty 修改嵌套对象属性', () => {
+      const store = createStore({
+        name: 'test-store',
+        state: { nested: { value: 1 } },
+      })
+
+      expect(() => {
+        Object.defineProperty(store.state.nested, 'value', { value: 99, writable: true, enumerable: true, configurable: true })
+      }).toThrow('Direct mutation of state')
+      expect(store.getState().nested.value).toBe(1)
+    })
+  })
+})
+
+// ==================== BUG 回归：报错消息安全序列化 ====================
+describe('BUG 回归：变异报错消息的序列化兜底', () => {
+  it('PROTECT-BUG-004: BigInt 值的变异报错不应被序列化 TypeError 掩盖', () => {
+    const store = createStore({
+      name: 'bigint-store',
+      state: { big: 1n },
+    })
+
+    // 修复前：消息构建中 JSON.stringify(2n) 先抛出
+    // "Do not know how to serialize a BigInt" 的 TypeError
+    expect(() => {
+      (store.state as Record<string, unknown>).big = 2n
+    }).toThrow('Direct mutation of state')
+  })
+
+  it('PROTECT-BUG-005: 循环引用值的变异报错不应被序列化异常掩盖', () => {
+    const store = createStore({
+      name: 'circular-value-store',
+      state: { holder: null },
+    })
+    const circular: Record<string, unknown> = {}
+    circular.self = circular
+
+    expect(() => {
+      (store.state as Record<string, unknown>).holder = circular
+    }).toThrow('Direct mutation of state')
+  })
+})
+
+// ==================== 生产模式处理器行为 ====================
+// StateProxy 以命名空间属性访问方式调用 isProduction（ts-jest CJS 编译），
+// 通过 spyOn 模块导出即可模拟生产环境，无需重载整个模块树
+describe('生产模式处理器', () => {
+  afterEach(() => {
+    jest.restoreAllMocks()
+  })
+
+  it('PROTECT-PROD-001: warn 处理器放行修改并告警（含 defineProperty 路径）', () => {
+     
+    const utilsModule = require('../../../src/core/store/utils')
+    jest.spyOn(utilsModule, 'isProduction').mockReturnValue(true)
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation()
+
+    const store = createStore({
+      name: 'prod-warn-store',
+      state: { count: 0, items: [1, 2] },
+      stateProtection: { productionHandler: 'warn' },
+    })
+
+    // 直接写入：放行 + 告警
+    expect(() => {
+      store.state.count = 42
+    }).not.toThrow()
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Direct mutation of state'))
+    expect(store.getState().count).toBe(42)
+
+    // 对象 defineProperty 放行路径（开发模式不可达的放行分支）
+    expect(() => {
+      Object.defineProperty(store.state, 'count', { value: 99, writable: true, enumerable: true, configurable: true })
+    }).not.toThrow()
+    expect(store.getState().count).toBe(99)
+
+    // 数组 defineProperty 放行路径
+    expect(() => {
+      Object.defineProperty(store.state.items, 0, { value: 9, writable: true, enumerable: true, configurable: true })
+    }).not.toThrow()
+    expect(store.getState().items[0]).toBe(9)
+  })
+
+  it('PROTECT-PROD-002: silent 处理器静默放行且不告警', () => {
+     
+    const utilsModule = require('../../../src/core/store/utils')
+    jest.spyOn(utilsModule, 'isProduction').mockReturnValue(true)
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation()
+
+    const store = createStore({
+      name: 'prod-silent-store',
+      state: { count: 0 },
+      stateProtection: { productionHandler: 'silent' },
+    })
+
+    expect(() => {
+      store.state.count = 1
+    }).not.toThrow()
+    expect(warnSpy).not.toHaveBeenCalled()
+    expect(store.getState().count).toBe(1)
+  })
 })

@@ -1081,3 +1081,77 @@ describe('共享引用与循环引用回归（BUG-14）', () => {
     expect(result.errors ?? []).toHaveLength(0)
   })
 })
+
+// ==================== BUG 修复回归测试 ====================
+describe('BUG 回归：循环引用回边处静默跳过类型校验', () => {
+  it('回边处期望原始类型时应报类型错误', () => {
+    const validator = new TypeValidator()
+    const circular: Record<string, unknown> = {}
+    circular.self = circular
+
+    // 修复前：回边命中直接返回值，self 期望 string 却是循环对象，被静默漏检
+    const result = validator.validate(circular, { type: 'object', properties: { self: { type: 'string' } } })
+    expect(result.valid).toBe(false)
+    expect(result.errors?.some((e) => e.context?.path === 'self')).toBe(true)
+  })
+
+  it('回边处期望 object 类型时仍应合法', () => {
+    const validator = new TypeValidator()
+    const circular: Record<string, unknown> = {}
+    circular.self = circular
+
+    const result = validator.validate(circular, { type: 'object', properties: { self: { type: 'object' } } })
+    expect(result.valid).toBe(true)
+  })
+
+  it('回边处期望 array 类型时应报类型错误', () => {
+    const validator = new TypeValidator()
+    const circular: Record<string, unknown> = {}
+    circular.self = circular
+
+    const result = validator.validate(circular, { type: 'object', properties: { self: { type: 'array' } } })
+    expect(result.valid).toBe(false)
+  })
+})
+
+// ==================== 低严重度 BUG 回归 ====================
+describe('BUG 回归：嵌套 type schema 校验', () => {
+  it('type 为嵌套 schema 时内层属性约束应被执行', () => {
+    const validator = new TypeValidator()
+    const schema: TypeSchema = {
+      type: { type: 'object', properties: { name: { type: 'string' } } },
+    }
+
+    const bad = validator.validate({ name: 123 }, schema)
+    // 修复前：value 在递归栈上被回边短路，内层 properties 校验被跳过
+    expect(bad.valid).toBe(false)
+
+    const good = validator.validate({ name: 'ok' }, schema)
+    expect(good.valid).toBe(true)
+  })
+
+  it('DAG 共享引用校验通过后再次出现应复用结论（性能）', () => {
+    const validator = new TypeValidator()
+    const shared = { v: 1 }
+    const diamond = { a: shared, b: shared, c: shared }
+
+    const result = validator.validate(diamond, {
+      type: 'object',
+      properties: { a: { type: 'object' }, b: { type: 'object' }, c: { type: 'object' } },
+    })
+    expect(result.valid).toBe(true)
+  })
+})
+
+// ==================== 本轮修复回归 ====================
+describe('BUG 回归：schema.type 自引用', () => {
+  it('自引用描述符应报深度错误而非栈溢出', () => {
+    const validator = new TypeValidator()
+    const selfRef: Record<string, unknown> = { type: 'object' }
+    selfRef.type = selfRef // type 指向自身
+
+    const result = validator.validate({ a: 1 }, selfRef as unknown as Record<string, unknown>)
+    expect(result.valid).toBe(false)
+    expect(result.errors?.some((e) => e.message.includes('nesting too deep'))).toBe(true)
+  })
+})

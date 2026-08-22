@@ -5,7 +5,7 @@
 import { ErrorBoundary, withErrorBoundary } from '@/core/error'
 
 describe('ErrorBoundary', () => {
-  let errorBoundary: ErrorBoundary<{ count: number }>
+  let errorBoundary: ErrorBoundary<{ count: number }, { count: number }>
   let testState: { count: number }
 
   beforeEach(() => {
@@ -68,12 +68,14 @@ describe('ErrorBoundary', () => {
 
     it('应该调用错误回调', () => {
       const onError = jest.fn()
+      // 无 fallback 时默认 fail-loud（重抛），但错误回调仍应被调用
       const boundary = new ErrorBoundary({ onError })
       const error = new Error('Test error')
       const fn = jest.fn(() => {
         throw error
       })
-      boundary.execute(fn, testState)
+      // 无 fallback 默认 fail-loud：重抛错误，但 onError 回调仍被调用
+      expect(() => boundary.execute(fn, testState)).toThrow(error)
       expect(onError).toHaveBeenCalledWith(error)
     })
 
@@ -347,7 +349,7 @@ describe('ErrorBoundary 边界条件', () => {
 
     boundary.execute(fn, currentState)
 
-    expect(warnSpy).toHaveBeenCalledWith('[ErrorBoundary] Returning fallback state due to error:', error.message)
+    expect(warnSpy).toHaveBeenCalledWith('[ErrorBoundary] Returning fallback state due to error:', error)
 
     warnSpy.mockRestore()
   })
@@ -407,13 +409,13 @@ describe('ErrorBoundary 边界条件', () => {
 
     await boundary.executeAsync(fn, currentState)
 
-    expect(warnSpy).toHaveBeenCalledWith('[ErrorBoundary] Returning fallback state due to error:', error.message)
+    expect(warnSpy).toHaveBeenCalledWith('[ErrorBoundary] Returning fallback state due to error:', error)
 
     warnSpy.mockRestore()
   })
 
   it('REGR-ERRB-001: 函数型 fallback 应根据错误与当前状态动态计算', () => {
-    const boundary = new ErrorBoundary<{ count: number }>({
+    const boundary = new ErrorBoundary<{ count: number }, { count: number }>({
       fallback: (error, currentState) => ({ count: (currentState?.count ?? 0) + 1 }),
       recoverable: true,
     })
@@ -435,5 +437,78 @@ describe('ErrorBoundary 边界条件', () => {
     }
 
     expect(boundary.execute(fn, { count: 1 })).toBeUndefined()
+  })
+})
+
+// ==================== 0.x 设计变更：fail-loud 默认与类型诚实泛型 ====================
+describe('设计变更：恢复意图由 fallback 推导', () => {
+  it('无 fallback 时默认重抛（fail-loud），不再吞错返回 undefined', () => {
+    const boundary = new ErrorBoundary()
+    expect(() => boundary.execute(() => { throw new Error('boom') })).toThrow('boom')
+  })
+
+  it('提供 fallback 即声明恢复意图：吞错并返回 fallback', () => {
+    const boundary = new ErrorBoundary<unknown, { count: number }>({ fallback: { count: 0 } })
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation()
+
+    const result = boundary.execute(() => { throw new Error('boom') })
+    expect(result).toEqual({ count: 0 })
+
+    warnSpy.mockRestore()
+  })
+
+  it('显式 recoverable 仍然优先于推导', () => {
+    // 有 fallback 但显式要求不可恢复 → 重抛
+    const boundary = new ErrorBoundary({ fallback: { count: 0 }, recoverable: false })
+    expect(() => boundary.execute(() => { throw new Error('boom') })).toThrow('boom')
+
+    // 无 fallback 但显式可恢复 → 吞错返回 undefined
+    const swallow = new ErrorBoundary({ recoverable: true })
+    expect(swallow.execute(() => { throw new Error('boom') })).toBeUndefined()
+  })
+
+  it('吞错路径的 warn 应包含完整错误对象（含堆栈）', () => {
+    const boundary = new ErrorBoundary<unknown, number>({ fallback: 42 })
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation()
+    const error = new Error('with stack')
+
+    boundary.execute(() => { throw error })
+
+    expect(warnSpy).toHaveBeenCalledWith('[ErrorBoundary] Returning fallback state due to error:', error)
+    warnSpy.mockRestore()
+  })
+
+  it('withErrorBoundary 无选项时默认重抛而非静默吞错', () => {
+    class LoudClass {
+      @((withErrorBoundary as unknown as () => MethodDecorator)())
+      method(): number {
+        throw new Error('should propagate')
+      }
+    }
+    expect(() => new LoudClass().method()).toThrow('should propagate')
+  })
+})
+
+// ==================== 本轮修复回归 ====================
+describe('BUG 回归：事后 setFallbackState 应生效', () => {
+  it('构造时无 fallback、事后设置 fallback 应切换为恢复模式', () => {
+    const boundary = new ErrorBoundary<unknown, number>()
+    // 构造时无 fallback：默认 fail-loud
+    expect(() => boundary.execute(() => { throw new Error('first') })).toThrow('first')
+
+    boundary.setFallbackState(42)
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation()
+
+    // 事后提供 fallback 即声明恢复意图
+    expect(boundary.execute(() => { throw new Error('second') })).toBe(42)
+
+    warnSpy.mockRestore()
+  })
+
+  it('显式 recoverable: false 不被 setFallbackState 翻转', () => {
+    const boundary = new ErrorBoundary<unknown, number>({ recoverable: false })
+    boundary.setFallbackState(42)
+
+    expect(() => boundary.execute(() => { throw new Error('boom') })).toThrow('boom')
   })
 })

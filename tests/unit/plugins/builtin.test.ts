@@ -106,7 +106,7 @@ describe('Builtin Plugins - 内置插件', () => {
 
     beforeEach(() => {
       // Mock wx API
-      ;(global as any).wx.setStorageSync = mockSetStorageSync
+      (global as any).wx.setStorageSync = mockSetStorageSync
       ;(global as any).wx.getStorageSync = mockGetStorageSync
       mockSetStorageSync.mockClear()
       mockGetStorageSync.mockClear()
@@ -360,7 +360,7 @@ describe('Builtin Plugins - 内置插件', () => {
       }, 100)
     })
 
-    it('PERSIST-013: 卸载时应该清除防抖定时器', () => {
+    it('PERSIST-013 (BUG 回归): 卸载时应同步落盘防抖窗口内的最后一次写入', () => {
       mockGetStorageSync.mockReturnValue(null)
 
       const customPersistencePlugin = {
@@ -380,10 +380,15 @@ describe('Builtin Plugins - 内置插件', () => {
       const unsubscribe = store.use(customPersistencePlugin)
       store.setState('count', 5)
 
-      // 卸载插件
+      // 卸载插件：防抖定时器尚未触发，最后一次变更应被同步补写而非丢弃
       unsubscribe()
 
-      // 验证保存没有被触发
+      expect(mockSetStorageSync).toHaveBeenCalledTimes(1)
+      expect(mockSetStorageSync).toHaveBeenCalledWith('geomstore_test-store', JSON.stringify({ count: 5 }))
+
+      // 卸载后不再有任何写入（定时器已清除且回调短路）
+      mockSetStorageSync.mockClear()
+      store.setState('count', 6)
       expect(mockSetStorageSync).not.toHaveBeenCalled()
     })
 
@@ -584,7 +589,7 @@ describe('Builtin Plugins - 内置插件', () => {
         state: { count: 0 },
         actions: {
           increment(n: number) {
-            ;(this.state as any).count += n
+            (this.state as any).count += n
           },
         } as any,
       })
@@ -772,7 +777,7 @@ describe('Builtin Plugins 补充覆盖', () => {
     const mockGetStorageSync = jest.fn()
 
     beforeEach(() => {
-      ;(global as any).wx.setStorageSync = mockSetStorageSync
+      (global as any).wx.setStorageSync = mockSetStorageSync
       ;(global as any).wx.getStorageSync = mockGetStorageSync
       mockSetStorageSync.mockClear()
       mockGetStorageSync.mockClear()
@@ -820,7 +825,7 @@ describe('Builtin Plugins 补充覆盖', () => {
     const mockGetStorageSync = jest.fn()
 
     beforeEach(() => {
-      ;(global as any).wx.setStorageSync = mockSetStorageSync
+      (global as any).wx.setStorageSync = mockSetStorageSync
       ;(global as any).wx.getStorageSync = mockGetStorageSync
       mockSetStorageSync.mockClear()
       mockGetStorageSync.mockClear()
@@ -975,8 +980,81 @@ describe('Builtin Plugins 补充覆盖', () => {
         store.setState('count', 5)
         expect(store.getState().count).toBe(5)
       } finally {
-        ;(global as any).wx = originalWx
+        (global as any).wx = originalWx
         consoleWarnSpy.mockRestore()
+      }
+    })
+  })
+
+  describe('persistencePlugin 异步存储后端检测（BUG 回归）', () => {
+    it('PERSIST-BUG-001: getItem 返回 Promise 时应明确报错而非静默解析失败', () => {
+      const asyncStorage = {
+        getItem: jest.fn().mockResolvedValue(JSON.stringify({ count: 42 })),
+        setItem: jest.fn().mockResolvedValue(undefined),
+        removeItem: jest.fn().mockResolvedValue(undefined),
+      }
+
+      const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation()
+
+      try {
+        const store = createStore({
+          name: 'test-store',
+          state: { count: 0 },
+        })
+
+        store.use({
+          name: 'async-storage-persistence',
+          install: (s: any) => (persistencePlugin as any).install(s, { storage: asyncStorage }),
+        })
+
+        // 恢复被拦截：不抛异常，但必须给出明确的异步后端错误提示
+        expect(consoleErrorSpy).toHaveBeenCalledWith(
+          '[GeomStore] Failed to restore state:',
+          expect.objectContaining({
+            message: expect.stringContaining('返回了 Promise'),
+          }),
+        )
+        // 异步返回值不得被当作数据恢复
+        expect(store.getState().count).toBe(0)
+      } finally {
+        consoleErrorSpy.mockRestore()
+      }
+    })
+
+    it('PERSIST-BUG-002: setItem 返回 Promise 时应报错并触发 onError 钩子', () => {
+      const asyncStorage = {
+        getItem: jest.fn().mockReturnValue(null),
+        setItem: jest.fn().mockResolvedValue(undefined),
+        removeItem: jest.fn().mockResolvedValue(undefined),
+      }
+
+      const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation()
+      const onError = jest.fn()
+
+      try {
+        const store = createStore({
+          name: 'test-store',
+          state: { count: 0 },
+        })
+        store.hooks.on('onError', onError)
+
+        store.use({
+          name: 'async-storage-persistence',
+          install: (s: any) => (persistencePlugin as any).install(s, { storage: asyncStorage }),
+        })
+
+        store.setState('count', 5)
+
+        // 保存被拦截：明确报错 + onError 钩子收到含指引的错误
+        expect(consoleErrorSpy).toHaveBeenCalledWith(
+          '[GeomStore] Failed to persist state:',
+          expect.objectContaining({
+            message: expect.stringContaining('返回了 Promise'),
+          }),
+        )
+        expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining('仅支持同步存储后端') }), 'persistence')
+      } finally {
+        consoleErrorSpy.mockRestore()
       }
     })
   })
@@ -1273,7 +1351,7 @@ describe('Builtin Plugins 补充覆盖', () => {
       }
 
       // 先恢复 globalThis，再使用 expect
-      ;(global as any).globalThis = originalGlobalThis
+      (global as any).globalThis = originalGlobalThis
       expect(threw).toBe(false)
     })
 
@@ -1295,7 +1373,7 @@ describe('Builtin Plugins 补充覆盖', () => {
       }
 
       // 先恢复 globalThis，再使用 expect
-      ;(global as any).globalThis = originalGlobalThis
+      (global as any).globalThis = originalGlobalThis
       expect(threw).toBe(false)
     })
   })
@@ -1520,6 +1598,54 @@ describe('Builtin Plugins 补充覆盖', () => {
 
         expect(mockRemoveStorageSync).toHaveBeenCalledWith('geomstore_wx-uninstall-removeitem-store')
       } finally {
+        consoleLogSpy.mockRestore()
+      }
+    })
+
+    it('PERSIST-COVER-029: 卸载时应该调用自定义 storage 的 removeItem', () => {
+      const customStorage = {
+        getItem: jest.fn().mockReturnValue(null),
+        setItem: jest.fn(),
+        removeItem: jest.fn(),
+      }
+
+      const consoleLogSpy = jest.spyOn(console, 'log').mockImplementation()
+
+      try {
+        const store = createStore({
+          name: 'custom-uninstall-removeitem-store',
+          state: { count: 0 },
+        })
+
+        const uninstall = store.use(persistencePlugin({ storage: customStorage, clearOnUninstall: true }))
+        uninstall()
+
+        // 自定义 storage 的 removeItem 包装路径（含同步结果断言）被调用
+        expect(customStorage.removeItem).toHaveBeenCalledWith('geomstore_custom-uninstall-removeitem-store')
+      } finally {
+        consoleLogSpy.mockRestore()
+      }
+    })
+
+    it('PERSIST-COVER-030: 无 wx 无 storage 时卸载走内存存储 removeItem', () => {
+      const originalWx = (global as any).wx
+      const consoleWarnSpy = jest.spyOn(console, 'warn').mockImplementation()
+      const consoleLogSpy = jest.spyOn(console, 'log').mockImplementation()
+
+      try {
+        delete (global as any).wx
+
+        const store = createStore({
+          name: 'mem-uninstall-removeitem-store',
+          state: { count: 0 },
+        })
+
+        const uninstall = store.use(persistencePlugin({ clearOnUninstall: true }))
+        // 内存存储 removeItem 静默成功即可
+        expect(() => uninstall()).not.toThrow()
+      } finally {
+        (global as any).wx = originalWx
+        consoleWarnSpy.mockRestore()
         consoleLogSpy.mockRestore()
       }
     })

@@ -247,7 +247,7 @@ describe('withPageStore - Page集成', () => {
         state: { count: 0 },
         actions: {
           increment(...args: unknown[]) {
-            ;(this.state as any).count++
+            (this.state as any).count++
           },
         },
       })
@@ -266,7 +266,7 @@ describe('withPageStore - Page集成', () => {
         state: { count: 0 },
         actions: {
           increment(...args: unknown[]) {
-            ;(this.state as any).count++
+            (this.state as any).count++
           },
         },
       })
@@ -423,7 +423,7 @@ describe('withPageStore - Page集成', () => {
         },
         actions: {
           increment(...args: unknown[]) {
-            ;(this.state as any).count++
+            (this.state as any).count++
           },
         },
       })
@@ -451,7 +451,7 @@ describe('withPageStore - Page集成', () => {
         },
         actions: {
           increment(...args: unknown[]) {
-            ;(this.state as any).count++
+            (this.state as any).count++
           },
         },
       })
@@ -561,7 +561,7 @@ describe('withComponentStore - Component集成', () => {
         state: { count: 0 },
         actions: {
           increment(...args: unknown[]) {
-            ;(this.state as any).count++
+            (this.state as any).count++
           },
         },
       })
@@ -580,7 +580,7 @@ describe('withComponentStore - Component集成', () => {
         state: { count: 0 },
         actions: {
           increment(...args: unknown[]) {
-            ;(this.state as any).count++
+            (this.state as any).count++
           },
         },
       })
@@ -694,7 +694,7 @@ describe('withComponentStore - Component集成', () => {
         },
         actions: {
           increment(...args: unknown[]) {
-            ;(this.state as any).count++
+            (this.state as any).count++
           },
         },
       })
@@ -722,7 +722,7 @@ describe('withComponentStore - Component集成', () => {
         },
         actions: {
           increment(...args: unknown[]) {
-            ;(this.state as any).count++
+            (this.state as any).count++
           },
         },
       })
@@ -901,7 +901,7 @@ describe('withComponentStore - 覆盖率补全', () => {
       state: { count: 0 },
       actions: {
         increment(..._args: unknown[]) {
-          ;(this.state as any).count++
+          (this.state as any).count++
         },
       },
     })
@@ -936,7 +936,7 @@ describe('withComponentStore - 覆盖率补全', () => {
       state: { count: 0 },
       actions: {
         increment(..._args: unknown[]) {
-          ;(this.state as any).count++
+          (this.state as any).count++
         },
       },
     })
@@ -1103,7 +1103,7 @@ describe('withComponentStore - 覆盖率补全', () => {
       state: { count: 0 },
       actions: {
         increment(..._args: unknown[]) {
-          ;(this.state as any).count++
+          (this.state as any).count++
         },
       },
     })
@@ -1170,7 +1170,7 @@ describe('withComponentStore - 覆盖率补全', () => {
       state: { count: 0 },
       actions: {
         increment(..._args: unknown[]) {
-          ;(this.state as any).count++
+          (this.state as any).count++
         },
       },
     })

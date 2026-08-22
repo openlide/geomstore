@@ -270,10 +270,17 @@ describe('ActionUtils', () => {
       expect(result1).toBe(10)
 
       jest.advanceTimersByTime(100)
-
-      const result4 = instance.method(20)
+      // trailing 默认开启：窗口尾补发（参数 15）后 callCount 为 2，
+      // 且补发重置了窗口起点
       expect(instance.callCount).toBe(2)
-      expect(result4).toBe(40)
+
+      // 恰在补发时刻的调用落入新窗口内 → 被抑制（返回 undefined），
+      // 其参数（20）将在下一窗口尾补发
+      const result4 = instance.method(20)
+      expect(result4).toBeUndefined()
+
+      jest.advanceTimersByTime(100)
+      expect(instance.callCount).toBe(3) // 参数 20 的补发
     })
 
     it('应该使用默认间隔', async () => {
