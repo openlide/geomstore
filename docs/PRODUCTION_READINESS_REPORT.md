@@ -7,6 +7,8 @@
 | **评审方式** | 逐文件静态审查 + 子代理分片交叉复核 + 类型检查 + 全量测试与覆盖率 + lint 门禁 |
 | **评审结论** | ✅ **推荐生产使用**（质量门禁全绿，无阻塞项）                                  |
 
+> **状态说明（2026-08-22）**：本报告为 v0.1.2 时期的时点评审快照。其后 v0.1.3 引入若干行为契约变更（StorageBackend 同步收窄、ErrorFallback 泛型反转、clone mode 重构等，见 CHANGELOG 0.1.3 Breaking Changes），兼容性结论请以 CHANGELOG 为准；构建产物现为 **CJS 单产物**（ESM 已移除）、**14 个子路径导出**、40 测试套件 / 2233 用例。文中测试数、覆盖率与「双产物」表述均为评审时点数据。
+
 ---
 
 ## 目录
@@ -37,7 +39,7 @@
 | 测试覆盖   | 99/100 | ✅ 卓越 | 覆盖率 99.86%，1986 个测试全部通过          |
 | 性能表现   | 95/100 | ✅ 优秀 | 零拷贝通知、脏跟踪、批量合并、LRU 缓存      |
 | 安全性     | 94/100 | ✅ 优秀 | 零运行时依赖，原型污染防护，上报脱敏        |
-| 兼容性     | 93/100 | ✅ 优秀 | CJS/ESM 双产物，15 个子路径导出，Node 22/24 |
+| 兼容性     | 93/100 | ✅ 优秀 | CJS 单产物（评审时点为双产物），14 个子路径导出，Node 22/24 |
 | 文档完整性 | 93/100 | ✅ 优秀 | 文档与实现已对齐，评审报告齐备              |
 | 可维护性   | 93/100 | ✅ 优秀 | 模块化清晰，CI 门禁完备，覆盖率阈值高       |
 
@@ -52,13 +54,13 @@
 | 类型检查   | `tsc --noEmit`（src）**0 错误**                                                       |
 | lint       | `eslint src tests` **0 errors / 0 warnings**                                          |
 | 语言/引擎  | TypeScript `^6.0.3`、Node `>=22.0.0`、pnpm `11.21.0`                                  |
-| 构建产物   | `dist/cjs` + `dist/esm` 双产物，`sideEffects: false`                                  |
+| 构建产物   | `dist/cjs` 单产物（评审时点为双产物），`sideEffects: false`                           |
 | CI         | GitHub Actions：Node 22/24 矩阵，lint → typecheck → 测试+覆盖率 → 构建 → 产物冒烟     |
 
 ### 1.3 核心优势
 
 1. **零运行时依赖** — 无供应链攻击面，包体积极小，符合「轻量级小程序库」定位。
-2. **TypeScript 原生** — 严格模式，完整类型定义与泛型推导，双产物类型声明（`dist/esm/index.d.ts` + `dist/cjs/index.d.ts`）。
+2. **TypeScript 原生** — 严格模式，完整类型定义与泛型推导，类型声明（评审时点为 ESM+CJS 双声明，现仅 `dist/cjs/index.d.ts`）。
 3. **高性能设计** — 异步批量通知、可选零拷贝通知（`notify.clone: false`）、脏跟踪（`onlyOnChange`）、状态指纹、LRU 缓存、分片异步快照克隆。
 4. **安全加固到位** — `deepMerge`/`set` 阻断原型污染；错误上报脱敏；无 `eval`/`Function`/`innerHTML`。
 5. **功能完备** — 状态管理、getter/selector、action 装饰器（debounce/throttle/cache/retry/timeout/log）、错误边界与恢复、快照时间旅行、插件系统、Store 组合、企业版集成。
@@ -88,7 +90,7 @@
 | 示例代码   | `examples/` 12 个文件（basic/advanced/cache/weapp）                                                                                                                                                             |
 | 测试代码   | `tests/` 43 个文件（单元 + 集成 + 回归）                                                                                                                                                                        |
 | 构建与工程 | `tsconfig.*`、`eslint.config.js`、`jest.config.cjs`、`.github/workflows/ci.yml`、`package.json`                                                                                                                 |
-| 文档       | `docs/` 9 份 + 根目录 README/CHANGELOG                                                                                                                                                                          |
+| 文档       | `docs/` 10 份（评审时点 9 份）+ 根目录 README/CHANGELOG                                                                                                                                                                          |
 
 ### 2.2 评审方法
 
@@ -115,7 +117,7 @@
 
 ### 3.1 TypeScript 配置
 
-`tsconfig.json` 采用严格模式，关键安全选项全部启用：`strict`、`noUnusedLocals`、`noUnusedParameters`、`noImplicitReturns`、`noFallthroughCasesInSwitch`、`declaration`、`sourceMap`。产物拆分为 `tsconfig.cjs.json` / `tsconfig.esm.json` 双目标（`module: Node16`），`rootDir: "./src"` 确保产物路径正确。
+`tsconfig.json` 采用严格模式，关键安全选项全部启用：`strict`、`noUnusedLocals`、`noUnusedParameters`、`noImplicitReturns`、`noFallthroughCasesInSwitch`、`declaration`、`sourceMap`。产物为 `tsconfig.cjs.json` 单目标（`module: Node16`；评审时点的 `tsconfig.esm.json` 双目标已移除），`rootDir: "./src"` 确保产物路径正确。
 
 **评估结果**：✅ 优秀。类型检查 `tsc --noEmit` 0 错误。
 
@@ -268,10 +270,10 @@ Lines        : 99.86% ( 3632/3637 )
 
 ### 7.2 模块与构建产物
 
-- **双产物**：`dist/cjs`（CommonJS）+ `dist/esm`（ESM），`sideEffects: false` 支持 tree-shaking。
-- **15 个子路径导出**：`/store`、`/hooks`、`/plugins`、`/plugins/devtools`、`/plugins/performance`、`/integrations`、`/integrations/enterprise`、`/error`、`/compose`、`/selectors`、`/snapshot`、`/performance`、`/actions`、`/cache`。
-- **类型声明**：ESM 与 CJS 均附带 `.d.ts`，`import`/`require` 各自解析到对应类型。
-- **CI 冒烟**：CJS + ESM + 子路径产物均经冒烟验证。
+- **单产物**：`dist/cjs`（CommonJS；评审时点为 cjs+esm 双产物，ESM 已移除），`sideEffects: false`。
+- **14 个子路径导出**：`/store`、`/hooks`、`/plugins`、`/plugins/devtools`、`/plugins/performance`、`/integrations`、`/integrations/enterprise`、`/error`、`/compose`、`/selectors`、`/snapshot`、`/performance`、`/actions`、`/cache`。
+- **类型声明**：`dist/cjs/index.d.ts`（评审时点 ESM 与 CJS 各附一份）。
+- **CI 冒烟**：CJS + 子路径产物均经冒烟验证（评审时点含 ESM）。
 
 ### 7.3 兼容性评分
 
@@ -382,7 +384,7 @@ GeomStore v0.1.2 在「正确性、安全性、性能、可维护性、工程化
 ✅ 覆盖率 >= 阈值（99.86% / 98.58%）
 ✅ lint 0 errors / 0 warnings
 ✅ TypeScript 类型检查 0 错误
-✅ CJS + ESM 双产物构建 + 子路径冒烟通过
+✅ 构建产物冒烟通过（评审时点为 CJS + ESM 双产物，现为 CJS 单产物）
 ✅ 零运行时依赖
 ✅ CHANGELOG 与评审报告齐备
 ⏳ 敏感字段持久化排除/加密（按业务配置）
@@ -454,7 +456,7 @@ ts-node                           ^10.9.2
 
 ---
 
-**报告版本**：v0.1.2（重写）
+**报告版本**：v0.1.2（重写）；2026-08-22 补充状态说明与产物口径勘误
 **报告生成**：2026-08-17
 **下次评审建议**：v0.2.0 发布前，或 6 个月后
 

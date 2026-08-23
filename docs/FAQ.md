@@ -28,7 +28,7 @@
 小程序项目/
 └── utils/
     └── geomstore/
-        └── dist/
+        └── dist/      # 入口为 dist/cjs/index.js（CJS 单产物）
 ```
 
 **方式二：NPM 安装**
@@ -51,7 +51,7 @@ npm install @openlide/geomstore
 1. **路径是否正确**
 ```javascript
 // 确认路径正确
-const { createStore } = require('./utils/geomstore/dist/index.js')
+const { createStore } = require('./utils/geomstore/dist/cjs/index.js')
 ```
 
 2. **NPM 是否构建**
@@ -63,7 +63,7 @@ const { createStore } = require('./utils/geomstore/dist/index.js')
 3. **文件是否存在**
 ```bash
 # 检查文件是否存在
-ls utils/geomstore/dist/index.js
+ls utils/geomstore/dist/cjs/index.js
 ```
 
 ---
@@ -515,7 +515,9 @@ recovery.configure({
 try {
   await store.dispatch('fetchData')
 } catch (error) {
-  // 注意：recover 仅支持恢复 GeomStoreError 实例（dispatch 抛出的错误通常是）
+  // 注意：recover 仅支持 GeomStoreError 实例。同步 action 抛出的错误会被库
+  // 包装为 GeomStoreError；异步 action 的 rejection 保持原始 Error，
+  // 需先用 createError 包装再传入 recover
   const result = await recovery.recover(error)
 }
 ```
@@ -539,7 +541,7 @@ App({
     wx.onUnhandledRejection((event) => {
       monitoring.report({
         storeName: 'global',
-        operation: 'unhandledRejection',
+        operation: 'action-execution', // OperationType 联合类型中的合法值
         error: event.reason,
         level: 'error',
         timestamp: Date.now()
@@ -780,7 +782,7 @@ Page(withPageStore(userStore, { mapState: ['user'] })({
 
 ---
 
-## 行为变更与进阶（v0.1.1）
+## 行为变更与进阶（v0.1.1 引入，后续版本均保持这些行为；当前版本 v0.2.0）
 
 ### Q: 为什么修改 `$snapshot()` 返回的快照会报错？
 

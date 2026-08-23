@@ -1,6 +1,6 @@
 # 迁移指南（Migration Guide）
 
-> 本文档面向正在使用其他小程序状态管理方案、希望迁移到 **GeomStore v0.1.2** 的开发者。
+> 本文档面向正在使用其他小程序状态管理方案、希望迁移到 **GeomStore v0.2.0** 的开发者。
 >
 > GeomStore 是零运行时依赖、TypeScript 优先、面向微信小程序（兼容 Skyline / WebView）的轻量级状态管理库。
 
@@ -183,7 +183,7 @@ MobX 与 GeomStore 的映射关系最直观：
 
 | MobX-MiniProgram               | GeomStore                                                    |
 | ------------------------------ | ------------------------------------------------------------ |
-| `observable({ ... })`          | `createStore({ state: { ... } })`                            |
+| `observable({ ... })`          | `createStore({ state: () => ({ ... }) })`                            |
 | `action` 装饰器/函数           | `createStore({ actions: { ... } })`（`this.state` 访问状态） |
 | `computed`                     | `createStore({ getters: { ... } })` 或 `createSelector`      |
 | `observer` 包装组件            | `withComponentStore` / `withPageStore`                       |

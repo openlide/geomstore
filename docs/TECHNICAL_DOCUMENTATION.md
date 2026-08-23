@@ -1,4 +1,4 @@
-# GeomStore v0.1.2 技术文档
+# GeomStore v0.2.0 技术文档
 
 > 轻量级微信小程序状态管理库 - 企业级生产就绪
 
@@ -25,7 +25,7 @@
 
 | 属性     | 值                                        |
 | -------- | ----------------------------------------- |
-| 版本     | 0.1.2                                     |
+| 版本     | 0.2.0                                     |
 | 许可证   | MIT                                       |
 | 运行环境 | Node.js ≥22.0.0, 微信小程序基础库 ≥2.10.0 |
 | 语言     | TypeScript 6.0+                           |
@@ -86,9 +86,12 @@ GeomStore/
 │   │   │   ├── HookSystem.ts     # 钩子系统实现
 │   │   │   └── index.ts          # 导出入口
 │   │   ├── selector/             # 选择器系统
-│   │   │   └── createSelector.ts # 选择器工厂
+│   │   │   ├── createSelector.ts   # 选择器工厂
+│   │   │   ├── selectorComposer.ts # 选择器组合器（重试 / 记忆化）
+│   │   │   └── index.ts            # 导出入口
 │   │   ├── cache/                # 缓存系统
-│   │   │   └── LRUCache.ts       # LRU 缓存实现
+│   │   │   ├── LRUCache.ts       # LRU 缓存实现
+│   │   │   └── index.ts          # 导出入口
 │   │   ├── error/                # 错误处理
 │   │   │   ├── GeomStoreError.ts # 错误类定义
 │   │   │   ├── ErrorHandler.ts   # 错误处理器
@@ -293,11 +296,16 @@ Store 是 GeomStore 的核心，负责状态管理、状态保护、订阅通知
 │                            Store<S, A, G>                           │
 ├─────────────────────────────────────────────────────────────────────┤
 │  - _state: S                                                        │
-│  - _proxyCache: WeakMap<object, unknown>                           │
+│  - _proxyCache: ProxyCache                                          │
 │  - _stateProtection: StateProtectionOptions                        │
-│  - _listeners: Set<StateListener<S>>                               │
 │  - _plugins: Plugin[]                                               │
-│  - _cache: LRUCache<keyof S, S[keyof S]>                           │
+├─────────────────────────────────────────────────────────────────────┤
+│  子模块实例（模块化重构后）：                                        │
+│  - _subscriptionManager: SubscriptionManager<S>  （订阅管理）       │
+│  - _cacheManager: StoreCacheManager<S>           （LRU 级缓存）     │
+│  - _stateProxyManager / _actionManager                              │
+│  - _getterManager / _batchManager                                   │
+│  + hooks: HookSystem（实例级）                                      │
 ├─────────────────────────────────────────────────────────────────────┤
 │  + name: string                                                     │
 │  + state: S                                                         │
@@ -457,7 +465,6 @@ console.log(userStore.getter('isAuthenticated')) // true
 │  - _stores: Store[]                                                 │
 │  - _namespace: string                                                │
 │  - _strict: boolean                                                  │
-│  - _pendingNotification: boolean                                    │
 │  - _notificationScheduled: boolean                                  │
 ├─────────────────────────────────────────────────────────────────────┤
 │  + name: string                                                      │
@@ -831,7 +838,7 @@ recovery.configure({
 | `afterDispatch`  | Action 执行后 | (actionName, args, result) |
 | `onError`        | 错误发生时    | (error, context)           |
 
-#### 3.6.3 内置插件
+#### 3.6.4 内置插件用法
 
 ```typescript
 import { 
@@ -870,7 +877,7 @@ store.use(
 )
 ```
 
-#### 3.6.4 自定义插件
+#### 3.6.5 自定义插件
 
 ```typescript
 import type { Plugin } from '@openlide/geomstore'
@@ -1515,10 +1522,10 @@ import { createStore } from 'miniprogram_npm/geomstore'
 ```json
 {
   "name": "@openlide/geomstore",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "main": "dist/cjs/index.js",
   "types": "dist/cjs/index.d.ts",
-  "files": ["dist", "CHANGELOG.md"],
+  "files": ["dist", "CHANGELOG.md", "store", "hooks", "plugins", "integrations", "error", "compose", "selectors", "snapshot", "performance", "actions", "cache"],
   "scripts": {
     "build": "tsc -p tsconfig.cjs.json && node scripts/postbuild-dist.cjs",
     "test": "jest",
@@ -1902,7 +1909,7 @@ Component(withComponentStore(globalStore, { /* ... */ })({ /* 组件配置 */ })
 ### 7.1 基准测试结果
 
 ```
-GeomStore v0.1.2 性能基准测试
+GeomStore v0.2.0 性能基准测试
 ==============================
 
 测试环境:
@@ -1981,8 +1988,13 @@ store.dispatch('fetchUsers') // ❌ 拼写错误
 #### 错误 2: State mutation outside action
 
 ```
-错误信息: 禁止直接修改状态 "xxx"，请使用 setState() 或 $patch() 方法
+错误信息: [GeomStore] Direct mutation of state "xxx" is prohibited.
+          Use setState() or $patch() methods instead.
+          Operation: set
+          Attempted value: ...
 ```
+
+> 生产模式下若 `stateProtection.productionHandler` 配置为 `'warn'` / `'silent'`，则仅告警或放行而不抛错。
 
 **原因**: 在 Action 外部直接修改状态
 
@@ -2112,6 +2124,9 @@ console.log('After:', snapshot2)
 | ----- | ---------- | ----------------------------------------------------- |
 | 0.1.0 | 2026-08-17 | 初始版本发布                                          |
 | 0.1.1 | 2026-08-19 | Round-2 全量源码审阅修复（16 项）+ typecheck 0 errors |
+| 0.1.2 | 2026-08-20 | 文档全面审阅对齐源码、导入统一 NPM 包路径、CJS 单产物 / 14 子路径导出 |
+| 0.1.3 | 2026-08-22 | 契约变更（StorageBackend 同步收窄、ErrorFallback 泛型反转、clone mode 重构等）+ 全量审查修复约 50 项 |
+| 0.2.0 | 2026-08-22 | 全量审查第二轮修复：订阅引用计数、快照数组 diff 与克隆契约、错误系统映射、企业版存储尽力而为语义等约 25 项 |
 
 ### C. 参与贡献
 
@@ -2122,6 +2137,6 @@ console.log('After:', snapshot2)
 
 ---
 
-**GeomStore v0.1.2** - 轻量级微信小程序状态管理库
+**GeomStore v0.2.0** - 轻量级微信小程序状态管理库
 
 Copyright (c) 2026 GeomStore Team. Licensed under MIT.
