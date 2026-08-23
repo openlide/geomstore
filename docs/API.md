@@ -1,12 +1,12 @@
-# GeomStore v0.1.2 API 参考文档
+# GeomStore v0.2.0 API 参考文档
 
-完整的 API 参考文档，包含所有公开接口、类型定义和使用示例。
+核心公开接口的 API 参考文档，包含类型定义与使用示例（企业版集成、ActionLoader、StoreRegistry 细节等见对应子路径文档或源码 TSDoc）。
 
 ---
 
 ## 目录
 
-- [GeomStore v0.1.2 API 参考文档](#geomstore-v012-api-参考文档)
+- [GeomStore v0.2.0 API 参考文档](#geomstore-v020-api-参考文档)
   - [目录](#目录)
   - [核心 API](#核心-api)
     - [createStore](#createstore)
@@ -476,6 +476,8 @@ store.dispatch('addRange', 1, 10)
 await store.dispatch('fetchData')
 ```
 
+> ℹ️ 异步 action 以 reject 结束时，会先触发 `onError` 钩子再进入失败收尾（拒绝值保持原始错误，不包装）；依赖 onError 的监控/上报插件对异步失败同样可见。
+
 ---
 
 ### Action 上下文
@@ -637,6 +639,8 @@ Page({
 })
 ```
 
+> ℹ️ **重复订阅语义：** 同一监听器函数注册 N 次会被通知 N 次（按注册次数计数）；每次调用退订函数只抵消一份注册，全部抵消后才真正移除。重复订阅已有监听器不计入订阅上限，也不会触发 evict-oldest 驱逐。
+
 ---
 
 ## 钩子系统
@@ -715,6 +719,10 @@ hooks.listenerCount('beforeSetState') // 1
 ### batch
 
 在批量更新上下文中执行操作，只触发一次更新。
+
+> ⚠️ 若在 action（dispatch 进行中）内部调用 `batch`，批结束时不会立即通知订阅者——通知由 dispatch 收尾统一补发，避免 action 中间态外泄与重复通知。
+>
+> ⚠️ `fn` 返回 Promise 时（异步回调），批保护仅覆盖同步段：`await` 之后的变更脱离批保护逐条通知，开发模式下会输出告警。请把异步段移出 batch，或在异步完成后再手动 startBatch/endBatch。
 
 **签名：**
 
@@ -1047,6 +1055,8 @@ timeTravel.goTo(5)
 将 Store 连接到页面。
 
 `S` / `A` / `G` 均从 store 参数自动推断，`O` 保留 options 字面量类型用于精确推导：`mapState` / `mapGetters` / `mapActions` 的键与值拼错时会在编译期报错；装饰器返回类型重写所有方法的 `this` 为 `PageThis`，使方法内 `this.data` / `this.xxx` 自动获得精确类型推导（含 data、actions、自定义方法）。
+
+> ℹ️ `ExtractPageData` 为有意宽松的契约（交叉完整 `S`）：未在 mapState/mapGetters 中映射的状态键在类型上可见，但运行时不一定存在于 data（访问得 undefined）；需要严格的「仅映射键」类型请使用 `ExtractMappedState`。
 
 **签名：**
 
@@ -1666,6 +1676,9 @@ LRU 缓存实现。
 | keys     | () => K[]                  | 获取所有键               |
 | values   | () => V[]                  | 获取所有值               |
 | getStats | () => LRUCacheStats        | 获取统计                 |
+| setMany  | (entries: Array<[K, V]>) => this | 批量设置           |
+| getOrSet | (key: K, factory: () => V) => V  | 取值，不存在时以 factory 计算并缓存（未命中计入 misses 统计） |
+| forEach  | (callback: (value: V, key: K) => void) => void | 按访问新→旧顺序遍历（回调内删除当前项安全） |
 
 **示例：**
 
@@ -1700,6 +1713,12 @@ console.log(cache.getStats())
 | createSnapshot      | \<T\>(data: T, options?) => SnapshotResult\<T\>            | 创建快照     |
 | createSnapshotAsync | \<T\>(data: T, options?) => Promise\<SnapshotResult\<T\>\> | 异步创建快照 |
 | compareSnapshots    | \<T\>(s1, s2) => SnapshotDiff                              | 对比快照     |
+
+**行为说明：**
+
+- `createSnapshot` / `createSnapshotAsync` 对克隆失败**不抛错**：结果以 `{ data, metadata, success, errors, stats }` 交付；存在 `type: 'cloneError'` 的条目时 `success: false`（循环引用/超深属可恢复降级，不影响 success）。克隆失败的节点被丢弃并在 `errors` 中记录路径，原始活引用不会被兜底写入快照。
+- 快照副本保留源对象原型：类实例快照后仍可调用其原型方法。
+- `compareSnapshots` 对数组按索引逐元素比较：新增元素产出 `path[added:i]`（kind `'added'`），删除元素产出 `path[removed:i]`（kind `'removed'`）；数组与非数组比较报整体 `changed`。`changes` 条目均带可选 `kind: 'changed' | 'added' | 'removed'` 字段。
 
 **示例：**
 
@@ -1835,9 +1854,9 @@ function withDebounce(delay?: number): MethodDecorator
 
 **参数：**
 
-|| 参数 | 类型 | 默认值 | 说明 |
-||------|------|--------|------|
-|| delay | number | 300 | 防抖等待时间（毫秒） |
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| delay | number | 300 | 防抖等待时间（毫秒） |
 
 **示例：**
 
@@ -1864,16 +1883,19 @@ class SearchService {
 **签名：**
 
 ```typescript
-function withThrottle(interval?: number): MethodDecorator
+function withThrottle(
+  interval?: number,
+  options?: { leading?: boolean; trailing?: boolean }
+): MethodDecorator
 ```
 
 **参数：**
 
-|| 参数 | 类型 | 默认值 | 说明 |
-||------|------|--------|------|
-|| interval | number | 300 | 节流间隔（毫秒） |
-|| options.leading | boolean | true | 新窗口首次调用是否立即执行 |
-|| options.trailing | boolean | true | 窗口结束时是否以最新参数补发被抑制的调用（fire-and-forget） |
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| interval | number | 300 | 节流间隔（毫秒） |
+| options.leading | boolean | true | 新窗口首次调用是否立即执行 |
+| options.trailing | boolean | true | 窗口结束时是否以最新参数补发被抑制的调用（fire-and-forget） |
 
 > ℹ️ 支持同步与异步方法：装饰异步方法时，被节流跳过的调用返回 `Promise<undefined>`（保持调用方 `await` 语义）。异步判定基于函数原型比较，构建压缩（混淆函数名）后依然可靠。
 
@@ -1907,10 +1929,10 @@ function withCache(options?: CacheDecoratorOptions): MethodDecorator
 
 **CacheDecoratorOptions：**
 
-|| 参数 | 类型 | 默认值 | 说明 |
-||------|------|--------|------|
-|| ttl | number | 5000 | 缓存有效期（毫秒） |
-|| keyFn | Function | 按参数序列化 | 自定义缓存键生成函数 |
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| ttl | number | 5000 | 缓存有效期（毫秒） |
+| keyFn | Function | 按参数序列化 | 自定义缓存键生成函数 |
 
 > ℹ️ 支持同步与异步方法：异步方法缓存命中时直接返回缓存的 `Promise`（不会重复发起底层调用），判定基于函数原型比较，构建压缩后依然可靠。
 
@@ -1943,11 +1965,11 @@ function withRetry(options?: RetryDecoratorOptions): MethodDecorator
 
 **RetryDecoratorOptions：**
 
-|| 参数 | 类型 | 默认值 | 说明 |
-||------|------|--------|------|
-|| retries | number | 3 | 最大重试次数 |
-|| delay | number | 100 | 重试延迟（毫秒） |
-|| shouldRetry | Function | 始终重试 | 自定义重试条件（接收错误对象） |
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| retries | number | 3 | 最大重试次数 |
+| delay | number | 100 | 重试延迟（毫秒） |
+| shouldRetry | Function | 始终重试 | 自定义重试条件（接收错误对象） |
 
 **示例：**
 
@@ -1982,9 +2004,9 @@ function withTimeout(timeout?: number): MethodDecorator
 
 **参数：**
 
-|| 参数 | 类型 | 默认值 | 说明 |
-||------|------|--------|------|
-|| timeout | number | 5000 | 超时时间（毫秒） |
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| timeout | number | 5000 | 超时时间（毫秒） |
 
 **示例：**
 
@@ -2120,14 +2142,14 @@ const asyncResult = await boundary.executeAsync(() => riskyAsyncOperation())
 
 ## 性能优化工具
 
-除了 PerformanceMonitor，GeomStore 还提供了一系列性能优化工具：
+除了 PerformanceMonitor（主入口导出），GeomStore 还提供了一系列性能优化工具——**以下工具从 `@openlide/geomstore/performance` 子路径导入**：
 
 ### AsyncBatchNotifier
 
 异步批量通知器，合并多次状态更新。
 
 ```javascript
-const { AsyncBatchNotifier } = require('@openlide/geomstore')
+const { AsyncBatchNotifier } = require('@openlide/geomstore/performance')
 
 // 构造函数无参数：同一微任务内的多次 notify 只触发一次订阅回调
 const notifier = new AsyncBatchNotifier()
@@ -2153,7 +2175,7 @@ unsubscribe()
 状态指纹，用于快速检测状态变化。
 
 ```javascript
-const { StateFingerprint } = require('@openlide/geomstore')
+const { StateFingerprint } = require('@openlide/geomstore/performance')
 
 const fingerprint = new StateFingerprint()
 
@@ -2177,7 +2199,7 @@ const {
   createAsyncBatchNotifier, // 创建异步批量通知器
   createStateFingerprint,   // 创建状态指纹
   createSubscriptionManager // 创建订阅管理器
-} = require('@openlide/geomstore')
+} = require('@openlide/geomstore/performance')
 
 // 使用示例
 const isEqual = iterativeDeepEqual(obj1, obj2)
@@ -2233,6 +2255,13 @@ type MappedGetters<S, G, M extends (keyof G)[]> = {
 
 ## 版本历史
 
+- **v0.2.0** - 全量审查第二轮修复
+  - 订阅引用计数、dispatch 内 batch 守卫、快照数组逐元素 diff 与克隆契约收紧、错误级别映射补齐、企业版存储尽力而为语义等（详见 CHANGELOG）
+- **v0.1.3** - 契约变更与全量审查修复
+  - Breaking：StorageBackend 收窄纯同步；ErrorFallback 泛型 `<F, S>` 反转；clone `{ mode }` 重构；withThrottle 补 trailing；compareSnapshots Set/Map 集合语义；createRetrySelector 选项化并新增 createRetrySelectorAsync
+  - Fixed：异步 action 统一补发通知；dispatch/getter own-property 判定；defineProperty 绕过补齐；订阅上限驱逐修正；快照 maxDepth 占位符等（详见 CHANGELOG）
+- **v0.1.2** - 文档全面审阅与构建收敛
+  - 全部文档示例与 API 引用对齐源码；导入统一 NPM 包路径；CJS 单产物、14 个子路径导出；state 工厂函数形式统一
 - **v0.1.1** - Round-2 全量源码审阅修复
   - persistencePlugin 恢复改用合并语义（$patch）
   - analyzerPlugin 错误路径清理配对栈

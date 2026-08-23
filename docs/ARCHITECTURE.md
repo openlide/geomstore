@@ -425,7 +425,7 @@ dispatch(actionName, payload)
           ▼
 ┌───────────────────┐
 │  通知订阅者        │
-│  notifyChange()   │
+│ notifyListeners() │
 └─────────┬─────────┘
           │
           ▼

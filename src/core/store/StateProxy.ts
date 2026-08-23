@@ -22,7 +22,7 @@ const ARRAY_MUTATING_METHODS = ['push', 'pop', 'shift', 'unshift', 'splice', 'so
  * Map/Set 的写操作（set/add/delete）走内部槽位、不触发 set 陷阱，写保护失效；
  * 且 Proxy 无法被 structuredClone 等序列化机制克隆。故不代理，直接返回原始引用。
  */
-function isBuiltinObject(value: object): boolean {
+export function isBuiltinObject(value: object): boolean {
   return (
     value instanceof Date || value instanceof RegExp || value instanceof Map || value instanceof Set || value instanceof WeakMap || value instanceof WeakSet
   )
@@ -239,17 +239,39 @@ export class StateProxyManager<S extends State = State> {
   }
 
   /**
+   * 数组代理子值包装：对象值经缓存包装为保护代理，内建对象与原始值原样返回。
+   * 索引键、symbol 键与自定义属性共用同一入口，避免任一路径裸返回对象绕过写保护
+   */
+  private _wrapArrayChild(value: unknown, path: string, keySuffix: string): unknown {
+    if (value === null || typeof value !== 'object') {
+      return value
+    }
+    // 内建对象不代理（见 isBuiltinObject 注释）
+    if (isBuiltinObject(value as object)) {
+      return value
+    }
+    const cached = this._proxyCache.get(value as object)
+    if (cached) {
+      return cached
+    }
+    const nestedProxy = this._createDeepProxy(value as object, `${path}${keySuffix}`)
+    this._proxyCache.set(value as object, nestedProxy)
+    return nestedProxy
+  }
+
+  /**
    * 创建数组 Proxy
    */
   private _createArrayProxy<T extends unknown[]>(target: T, path: string): T {
     const self = this
-    const proxyCache = this._proxyCache
 
     return new Proxy(target, {
       get(arr: T, key: string | symbol): unknown {
-        // Symbol 类型直接返回原始值
+        // Symbol 键：函数值原样返回（Symbol.iterator 等内部方法需要原始 this 语义）；
+        // 对象值必须走与索引键一致的包装逻辑——裸返回会让挂在 symbol 键上的
+        // 对象绕过全部写保护
         if (typeof key === 'symbol') {
-          return (arr as Record<string | symbol, unknown>)[key]
+          return self._wrapArrayChild((arr as Record<string | symbol, unknown>)[key], path, `[${String(key)}]`)
         }
 
         // 处理数字索引：严格规范十进制整数字符串判断（不允许前导零）。
@@ -257,20 +279,7 @@ export class StateProxyManager<S extends State = State> {
         // '/^\d+$/' 会误匹配 '01'，均会导致非规范数字字符串键被误当作索引返回错误元素
         if (typeof key === 'string' && /^(0|[1-9]\d*)$/.test(key)) {
           const numKey = Number(key)
-          const value = arr[numKey]
-          if (typeof value === 'object' && value !== null) {
-            // 内建对象不代理（见 isBuiltinObject 注释）
-            if (isBuiltinObject(value)) {
-              return value
-            }
-            const cached = proxyCache.get(value)
-            if (cached) return cached
-
-            const nestedProxy = self._createDeepProxy(value, `${path}[${numKey}]`)
-            proxyCache.set(value, nestedProxy)
-            return nestedProxy
-          }
-          return value
+          return self._wrapArrayChild(arr[numKey], path, `[${numKey}]`)
         }
 
         // 数组方法特殊处理
@@ -289,8 +298,13 @@ export class StateProxyManager<S extends State = State> {
           }
         }
 
-        // 其他属性直接返回
-        return (arr as unknown as Record<string | symbol, unknown>)[key]
+        // 其他属性（非索引/length/变异方法）：对象值同样需要包装保护，
+        // 裸返回会让挂在数组自定义属性上的对象绕过写保护
+        return self._wrapArrayChild(
+          (arr as unknown as Record<string | symbol, unknown>)[key],
+          path,
+          `.${String(key)}`
+        )
       },
 
       set(arr: T, key: string | symbol, value: unknown): boolean {

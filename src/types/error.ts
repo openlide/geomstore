@@ -69,12 +69,14 @@ export const defaultErrorHandler: ErrorHandler = (context: ErrorContext): void =
   const { storeName, operation, error, level } = context
   const prefix = `[GeomStore][${level.toUpperCase()}][${storeName}]`
 
-  if (level === 'error') {
+  // 'critical' 与 'warn' 别名此前落入 info 分支：致命错误只打 console.info、
+  // 无堆栈，监控台几乎不可见——分别映射到 error / warning 同级处理
+  if (level === 'error' || level === 'critical') {
     console.error(prefix, `Error in ${operation}:`, error)
     if (error.stack) {
       console.error(prefix, 'Stack:', error.stack)
     }
-  } else if (level === 'warning') {
+  } else if (level === 'warning' || level === 'warn') {
     console.warn(prefix, `Warning in ${operation}:`, error.message)
   } else {
     console.info(prefix, `Info in ${operation}:`, error.message)

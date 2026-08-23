@@ -88,6 +88,11 @@ export type ExtractMappedActions<
 
 /**
  * 从 ConnectOptions 提取完整的页面 data 类型
+ *
+ * 类型契约（有意宽松）：交叉 `S` 使方法内可访问全部状态键，覆盖
+ * autoInject 注入、页面 data 手动声明同名初始值等场景；仅按需映射时，
+ * 未映射键运行时并不一定存在于 data 中，直接访问得到 undefined。
+ * 需要「仅映射键」的严格类型请改用 ExtractMappedState。
  */
 export type ExtractPageData<
   S extends State,

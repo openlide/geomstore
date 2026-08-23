@@ -550,3 +550,63 @@ describe('LRUCache', () => {
     })
   })
 })
+
+// ==================== #24/#25/#26 修复回归 ====================
+describe('LRUCache 防护与统计口径回归', () => {
+  it('#24: NaN/Infinity 容量回退默认容量，不会变成无界缓存', () => {
+    const cache = new LRUCache<string, number>({ capacity: NaN })
+    expect(cache.getCapacity()).toBe(100)
+
+    for (let i = 0; i < 150; i++) {
+      cache.set(`k${i}`, i)
+    }
+    expect(cache.size()).toBe(100)
+
+    const infCache = new LRUCache<string, number>({ capacity: Infinity })
+    expect(infCache.getCapacity()).toBe(100)
+  })
+
+  it('#24: resize(NaN) 保持容量不变', () => {
+    const cache = new LRUCache<string, number>(5)
+    cache.resize(NaN)
+    expect(cache.getCapacity()).toBe(5)
+  })
+
+  it('#25: forEach 回调中删除当前节点不中断遍历', () => {
+    const cache = new LRUCache<string, number>(10)
+    cache.set('a', 1).set('b', 2).set('c', 3)
+
+    const seen: string[] = []
+    cache.forEach((_v, k) => {
+      seen.push(k)
+      cache.delete(k)
+    })
+
+    // 迭代顺序为最近使用优先（head 侧）：set a→b→c 后遍历序为 c、b、a
+    expect(seen).toEqual(['c', 'b', 'a'])
+    expect(cache.size()).toBe(0)
+  })
+
+  it('#26: getOrSet 未命中计入 miss 统计', () => {
+    const cache = new LRUCache<string, number>({ capacity: 10 })
+    cache.getOrSet('k1', () => 1)
+    expect(cache.getStats().misses).toBe(1)
+
+    cache.getOrSet('k1', () => 2)
+    expect(cache.getStats().hits).toBe(1)
+  })
+
+  it('#26: missRate 与 hits/misses 计数一致', () => {
+    const cache = new LRUCache<string, number>({ capacity: 10 })
+    cache.set('hit', 1)
+    cache.get('hit') // hit
+    cache.get('m1')
+    cache.get('m2')
+    cache.get('m3')
+
+    const stats = cache.getStats()
+    expect(stats.hits).toBe(1)
+    expect(stats.misses).toBe(3)
+    expect(stats.missRate).toBe(75)
+  })
+})

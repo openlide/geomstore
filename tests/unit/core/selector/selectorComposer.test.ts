@@ -635,3 +635,60 @@ describe('createRetrySelector 旧签名兼容', () => {
     )
   })
 })
+
+describe('createThrottledSelector 抛错恢复（P1 回归）', () => {
+  it('首次调用抛错后窗口内重试应重新计算而非返回 undefined', () => {
+    let shouldThrow = true
+    const selector = SelectorComposer.createThrottledSelector<{ v: number }, number>((s) => {
+      if (shouldThrow) throw new Error('boom')
+      return s.v * 2
+    }, 60_000)
+
+    const state = { v: 21 }
+    expect(() => selector(state)).toThrow('boom')
+
+    // 修复前：lastCall 在取值前已提交，窗口内重试走不到重算分支，静默返回 undefined
+    shouldThrow = false
+    expect(selector(state)).toBe(42)
+  })
+})
+
+// ==================== #41 回归：attempts 记录实际尝试次数 ====================
+describe('#41 attempts 实际次数标注', () => {
+  const localState = { value: 42, name: 'test', items: [1, 2, 3] }
+
+  it('shouldRetry 提前拒绝时同步重试的 attempts 为真实执行次数', () => {
+    let calls = 0
+    const selector = SelectorComposer.createRetrySelector(
+      () => {
+        calls++
+        throw new Error('fatal')
+      },
+      { retries: 5, shouldRetry: () => false },
+    )
+
+    try {
+      selector(localState)
+      fail('应该抛出错误')
+    } catch (error) {
+      // 上限为 retries + 1 = 6 次，但 shouldRetry 首次即拒绝 → 实际仅执行 1 次
+      expect(calls).toBe(1)
+      expect((error as Error & { attempts?: number }).attempts).toBe(1)
+    }
+  })
+
+  it('shouldRetry 提前拒绝时异步重试的 attempts 为真实执行次数', async () => {
+    let calls = 0
+    const selector = SelectorComposer.createRetrySelectorAsync(
+      () => {
+        calls++
+        throw new Error('fatal')
+      },
+      { retries: 4, shouldRetry: (_error, attempt) => attempt < 2 },
+    )
+
+    // 首次失败后 shouldRetry(attempt=1) 放行一次，attempt=2 拒绝 → 共 2 次
+    await expect(selector(localState)).rejects.toMatchObject({ message: 'fatal', attempts: 2 })
+    expect(calls).toBe(2)
+  })
+})

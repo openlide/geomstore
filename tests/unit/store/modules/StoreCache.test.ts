@@ -398,3 +398,26 @@ describe('StoreCacheManager', () => {
     })
   })
 })
+
+// ==================== #15 时间戳清理回归 ====================
+describe('StoreCacheManager clearOldState 时间戳清理', () => {
+  const createCacheManager = (ttl = 0) =>
+    new StoreCacheManager<{ count: number; name: string }>({
+      cache: new LRUCache<'count' | 'name', string | number>({ capacity: 100, enableStats: true }),
+      ttl,
+    })
+
+  it('clearOldState 应同步删除对应时间戳条目，避免陈旧条目累积', () => {
+    const manager = createCacheManager(1000)
+    const state = { count: 1, name: 'test' }
+
+    manager.enable(undefined, (key) => state[key], ['count', 'name'])
+    manager.get('count', () => state.count)
+    manager.get('name', () => state.name)
+    expect((manager as unknown as { _timestamps: Map<string, number> })._timestamps.size).toBe(2)
+
+    manager.clearOldState(['count'])
+
+    expect((manager as unknown as { _timestamps: Map<string, number> })._timestamps.has('count')).toBe(false)
+  })
+})

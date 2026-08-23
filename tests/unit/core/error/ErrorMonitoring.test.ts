@@ -2025,3 +2025,40 @@ describe('ErrorMonitoring 边界行为', () => {
     ;(defaultMonitoring as any).enableConsoleLog = originalConsoleLog
   })
 })
+
+// ==================== #37 回归：全部报告器失败时重新入队 ====================
+describe('#37 回归：flush 全部报告器失败', () => {
+  test('正常运行时失败批次应重新入队等待下次 flush 重试', async () => {
+    const failingReporter: ErrorReporter = {
+      getName: () => 'failing',
+      report: jest.fn(),
+      reportBatch: jest.fn().mockRejectedValue(new Error('network down')),
+    }
+    const monitoring = new ErrorMonitoring({ reporters: [failingReporter], batchInterval: 60000, batchThreshold: 100 })
+
+    await monitoring.report({ storeName: 's', operation: 'dispatch', error: new Error('x'), level: 'error' })
+    await monitoring.flushReports()
+
+    // 上报已尝试且批次重新入队（网络抖动期间的错误不静默丢弃）
+    expect(failingReporter.reportBatch).toHaveBeenCalledTimes(1)
+    expect((monitoring as unknown as { errorQueue: unknown[] }).errorQueue).toHaveLength(1)
+
+    await monitoring.shutdown()
+  })
+
+  test('shutdown 阶段不再重试：最终 flush 后队列排空且 shutdown 正常返回', async () => {
+    const failingReporter: ErrorReporter = {
+      getName: () => 'failing-shutdown',
+      report: jest.fn(),
+      reportBatch: jest.fn().mockRejectedValue(new Error('down')),
+    }
+    const monitoring = new ErrorMonitoring({ reporters: [failingReporter], batchInterval: 60000, batchThreshold: 100 })
+
+    await monitoring.report({ storeName: 's', operation: 'dispatch', error: new Error('x'), level: 'error' })
+
+    // 若 shutdown 阶段仍重新入队，最终 flush 会再次调用已失败的 reportBatch
+    await expect(monitoring.shutdown()).resolves.toBeUndefined()
+    expect(failingReporter.reportBatch).toHaveBeenCalledTimes(1)
+    expect((monitoring as unknown as { errorQueue: unknown[] }).errorQueue).toHaveLength(0)
+  })
+})

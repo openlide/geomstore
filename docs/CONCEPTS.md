@@ -36,7 +36,7 @@ const store = createStore({
 | ----------- | -------------- | -------------------- |
 | **State**   | 应用状态数据   | 响应式、不可直接修改 |
 | **Actions** | 修改状态的方法 | 唯一的状态修改入口   |
-| **Getters** | 派生状态计算   | 缓存、惰性求值       |
+| **Getters** | 派生状态计算   | 惰性求值（每次读取即时计算，无缓存） |
 
 ### State（状态）
 
@@ -139,20 +139,23 @@ getters: {
 }
 ```
 
-**缓存机制：**
+**求值时机：**
 
-Getter 会缓存计算结果，只有依赖的状态变化时才重新计算：
+Getter 采用惰性求值：只在被调用时执行，不访问不计算。但 getter 结果**不会缓存**——每次调用都会重新执行函数：
 
 ```javascript
 getters: {
   expensiveGetter(state) {
-    // 这个昂贵的计算只会在 state.items 变化时重新执行
     return state.items.reduce((sum, item) => {
       // 复杂计算...
     }, 0)
   }
 }
+
+// store.getter('expensiveGetter') 每次调用都会重新执行
 ```
+
+需要缓存的昂贵派生计算请使用选择器 API（`createSelector` / `createMemoizedSelector` / `createParametricSelector`，见「性能优化策略」）。
 
 ---
 
@@ -345,27 +348,30 @@ class Store {
 
 ```javascript
 class Store {
-  // 订阅者集合
-  private _listeners = new Set<StateListener>()
+  // 监听器 → 注册次数：同一函数重复订阅 N 次会被通知 N 次，
+  // 任一份退订只减一，归零才真正移除；重复订阅不计入订阅上限
+  private _listeners = new Map<StateListener, number>()
 
   // 订阅状态变化
   subscribe(listener: StateListener) {
-    this._listeners.add(listener)
+    this._listeners.set(listener, (this._listeners.get(listener) ?? 0) + 1)
 
-    // 返回取消订阅函数
+    // 返回取消订阅函数（多份注册时只抵消一份）
     return () => {
-      this._listeners.delete(listener)
+      /* 计数减一，归零移除 */
     }
   }
 
   // 通知所有订阅者
   private notifyChange() {
-    const snapshot = this.getState()
-    this._listeners.forEach(listener => {
+    // 默认对状态深拷贝一次（cloneOnNotify），保证监听器之间引用隔离
+    const payload = deepCloneState(this.getState())
+    this._listeners.forEach((_count, listener) => {
       try {
-        listener(snapshot)
+        listener(payload)
       } catch (error) {
-        console.error('Listener error:', error)
+        // 生产环境静默，开发模式输出 '[GeomStore] Error in state listener:'
+        console.error('[GeomStore] Error in state listener:', error)
       }
     })
   }
@@ -413,6 +419,11 @@ class Store {
   }
 }
 ```
+
+> 注意两个补充语义：
+>
+> - action 执行体内调用 `batch()` 时，批量收尾**不提前通知**，统一由外层 dispatch 结束时补发一次，避免 action 中间态外泄；
+> - `batch(fn)` 的批保护仅覆盖同步段：开发模式下传入异步回调（返回 Promise）会收到告警，`await` 之后的变更将逐条通知。
 
 ---
 
@@ -470,21 +481,26 @@ class Store {
   createReadOnlyProxy(state) {
     return new Proxy(state, {
       set(target, key, value) {
-        if (this._stateProtection) {
-          console.warn(
-            `[GeomStore] 不能直接修改状态，请使用 action`
-          )
-          return false
+        if (!isInternalAccess()) {
+          if (isProduction()) {
+            // 生产模式由 productionHandler 配置决定：
+            // 'warn'（默认）→ 输出告警后放行写入；'silent' → 静默放行；'error' → 抛错
+            handleProduction()
+          } else {
+            // 开发模式总是抛错
+            throw new Error(
+              `[GeomStore] Direct mutation of state "${String(key)}" is prohibited. ` +
+              'Use setState() or $patch() methods instead.'
+            )
+          }
         }
         return Reflect.set(target, key, value)
       },
 
       deleteProperty(target, key) {
-        if (this._stateProtection) {
-          console.warn(
-            `[GeomStore] 不能直接删除状态属性`
-          )
-          return false
+        if (!isInternalAccess()) {
+          // 同上：开发模式抛错，生产模式由 productionHandler 决定
+          handleIllegalDelete(key)
         }
         return Reflect.deleteProperty(target, key)
       }
@@ -505,10 +521,7 @@ GeomStore 使用 ES6 Proxy 实现响应式系统：
 function createReactiveObject(target) {
   return new Proxy(target, {
     get(target, key, receiver) {
-      // 收集依赖
-      track(target, key)
-
-      // 递归代理嵌套对象
+      // 无逐键依赖收集：递归代理嵌套对象，保证深层写入同样被拦截
       const result = Reflect.get(target, key, receiver)
       if (typeof result === 'object' && result !== null) {
         return createReactiveObject(result)
@@ -517,17 +530,9 @@ function createReactiveObject(target) {
     },
 
     set(target, key, value, receiver) {
-      const oldValue = target[key]
-
-      // 设置新值
-      const result = Reflect.set(target, key, value, receiver)
-
-      // 值变化时触发更新
-      if (oldValue !== value) {
-        trigger(target, key)
-      }
-
-      return result
+      // 写入本身不直接触发更新：通知由 setState/$patch/dispatch 流程收尾统一发出。
+      // 默认每次变更都广播完整状态；开启 notify.onlyOnChange 后仅在实际发生写入时通知
+      return Reflect.set(target, key, value, receiver)
     }
   })
 }
@@ -536,14 +541,21 @@ function createReactiveObject(target) {
 ### 变化检测策略
 
 ```javascript
-// 基础比较
-function hasChanged(oldValue, newValue) {
-  return !Object.is(oldValue, newValue)
-}
+// 基础比较使用 Object.is，按需内嵌在各处（未单独导出 hasChanged）
+// 导出的工具为 shallowEqual 与 deepEqual
 
 // 浅比较（用于数组/对象）
 function shallowEqual(objA, objB) {
   if (Object.is(objA, objB)) return true
+
+  // 内建对象（Date/RegExp/Map/Set）自有可枚举键恒为空，只比 Object.keys
+  // 会把内容不同的实例误判为相等——按内容比较（Date/RegExp 直接比对，
+  // Map/Set 复用 deepEqual）
+  if ([Date, RegExp, Map, Set].some(
+    (T) => objA instanceof T || objB instanceof T
+  )) {
+    return deepEqual(objA, objB)
+  }
 
   const keysA = Object.keys(objA)
   const keysB = Object.keys(objB)

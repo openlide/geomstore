@@ -534,12 +534,30 @@ export class ErrorMonitoring {
       // 上报到所有报告器。reportBatch 仅类型约束返回 Promise，同步抛错完全合法：
       // 经 Promise.resolve().then 包装消除同步抛点，避免异常绕过 try/finally 使
       // isFlushing 永久为 true，之后所有 flush（周期/阈值/shutdown）静默失效
+      let anyReporterSucceeded = false
       const promises = this.reporters.map((reporter) =>
-        Promise.race([Promise.resolve().then(() => reporter.reportBatch(batch)), this.delay(this.reportTimeout)]).catch((error) => {
-          console.error('[ErrorMonitoring] Error in reportBatch:', error)
-        }),
+        Promise.race([Promise.resolve().then(() => reporter.reportBatch(batch)), this.delay(this.reportTimeout)])
+          .then(
+            () => {
+              anyReporterSucceeded = true
+            },
+            (error) => {
+              console.error('[ErrorMonitoring] Error in reportBatch:', error)
+            },
+          ),
       )
       await Promise.allSettled(promises)
+
+      // 关闭中不重试：shutdown 会用最终 flushReports 排空队列，
+      // 若此处重新入队，最终 flush 会再次调用已失败的 reportBatch——
+      // 对挂起/已退出的上报端无限等待，shutdown 永不返回
+      if (!this.isShuttingDown && !anyReporterSucceeded && batch.length > 0) {
+        // 全部报告器失败：报文重新入队等待下次 flush 重试，否则网络抖动
+        // 期间产生的错误会被静默丢弃。置于队首保持时序；超过容量上限时
+        // 从队尾丢弃新条目（与 enqueue 的淘汰方向一致，保旧优先）
+        const requeued = [...batch, ...this.errorQueue]
+        this.errorQueue = requeued.length > this.maxQueueSize ? requeued.slice(requeued.length - this.maxQueueSize) : requeued
+      }
     } finally {
       this.isFlushing = false
       this.inFlightFlush = null

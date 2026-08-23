@@ -1,4 +1,4 @@
-# GeomStore v0.1.2 最佳实践
+# GeomStore v0.2.0 最佳实践
 
 本文档总结了在微信小程序项目中使用 GeomStore 的最佳实践，帮助开发者构建高质量、可维护的应用。
 
@@ -58,7 +58,7 @@ miniprogram/
     └── analytics.js           # 分析插件
 ```
 
-> 📌 本文示例默认采用 NPM 安装方式（`require('@openlide/geomstore')` 等包路径，需在微信开发者工具中执行「构建 npm」）；若使用复制安装（上述 `utils/geomstore/` 目录），请将包路径替换为 `utils/geomstore/dist/index.js` 全路径。
+> 📌 本文示例默认采用 NPM 安装方式（`require('@openlide/geomstore')` 等包路径，需在微信开发者工具中执行「构建 npm」）；若使用复制安装（上述 `utils/geomstore/` 目录），请将整个 `dist` 目录复制过去，并把包路径替换为 `utils/geomstore/dist/cjs/index.js` 全路径（入口为 `dist/cjs/index.js`）。
 
 ### Store 文件组织
 
@@ -429,6 +429,8 @@ store.batch(() => {
 })
 ```
 
+> 注意：batch 仅保证同步段的批语义；action 内部使用 batch 时通知统一延迟到 dispatch 收尾补发一次；传入异步回调（返回 Promise）时开发模式会收到告警——`await` 之后的变更逐条通知。
+
 ---
 
 ## Getter 使用技巧
@@ -569,7 +571,9 @@ App(withAppStore(createStore({
     }
   }
 }))({
-  stores: { userStore, cartStore, settingsStore }, // 挂载 stores
+  // 注意：withAppStore 只包装单个全局 store（本例为 globalStore），
+  // 并通过 this.store / this.getStore() / this.dispatch() 暴露访问入口；
+  // 没有「挂载多个 stores」的选项，其余 store 需像下面这样自行赋值到 App 实例
 
   onLaunch(options) {
     // 初始化
@@ -940,8 +944,10 @@ const { ErrorRecovery, RecoveryStrategy, createError, ErrorCode } = require('@op
 const recovery = new ErrorRecovery()
 
 // 配置恢复策略（键必须是 ErrorCode 枚举值，与 recover 传入的错误 code 对应）
+// 注意：RETRY 的语义是「按退避延迟后重抛原错误」——ErrorRecovery 不持有原操作引用，
+// 无法在库内自动重跑；是否重试由调用方决定。若只想兜底默认值请配置 FALLBACK。
 recovery.configure({
-  // action 执行失败：重试
+  // action 执行失败：延迟后重抛，由调用方决定是否重试
   [ErrorCode.ACTION_EXECUTION_ERROR]: {
     strategy: RecoveryStrategy.RETRY,
     maxRetries: 3,
@@ -971,10 +977,16 @@ actions: {
       const res = await fetchApi()
       this.state.data = res.data
     } catch (error) {
-      // recover 只接受 GeomStoreError，普通 Error 需先用 createError 包装
+      // recover 只接受 GeomStoreError，普通 Error 需先用 createError 包装。
+      // ACTION_EXECUTION_ERROR 配置为 RETRY：recover 会延迟后重抛原错误，
+      // 需调用方自行捕获并重试；「直接拿兜底默认值」请改用 FALLBACK 策略的错误码
       const geomError = createError(ErrorCode.ACTION_EXECUTION_ERROR, error.message || String(error))
-      const result = await recovery.recover(geomError)
-      this.state.data = result || []
+      try {
+        await recovery.recover(geomError)
+      } catch (retryError) {
+        // RETRY 重抛：这里执行真正的重试或降级
+        this.state.data = []
+      }
     }
   }
 }

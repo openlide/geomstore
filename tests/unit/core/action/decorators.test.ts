@@ -1817,3 +1817,33 @@ describe('设计变更：withThrottle trailing 补发', () => {
     jest.useRealTimers()
   })
 })
+
+// ==================== #35 symbolIds 表容量上限回归 ====================
+describe('withCache symbolIds 容量上限', () => {
+  it('超限时整表重置且缓存键不串用', async () => {
+    class Host {
+      calls = 0
+      @withCache({ ttl: 60000 })
+      fetch(token: symbol): number {
+        this.calls++
+        return this.calls
+      }
+    }
+    const host = new Host()
+
+    // 常规 Symbol 参数命中缓存
+    const symA = Symbol('a')
+    await host.fetch(symA)
+    const second = await host.fetch(symA)
+    expect(second).toBe(1)
+
+    // 大量一次性 Symbol（模拟请求令牌）把表推过上限
+    for (let i = 0; i < 1100; i++) {
+      await host.fetch(Symbol(`token-${i}`))
+    }
+
+    // 表被清空重建：symA 的旧键失配为 miss，重新执行返回新值（不串用旧结果）
+    const afterReset = await host.fetch(symA)
+    expect(afterReset).toBeGreaterThan(1)
+  })
+})

@@ -870,3 +870,32 @@ describe('BUG 回归：importHistory 对 null JSON 的防御', () => {
     }).not.toThrow()
   })
 })
+
+// ==================== #39 回归：卸载身份守卫 ====================
+describe('#39 回归：timeTravel 卸载只清理属于自己的引用', () => {
+  it('先装实例卸载后，后装实例的实例/全局 API 不应被误删', () => {
+    const store = createStore({ name: 'tt-guard-store', state: { count: 0 } })
+
+    const uninstallFirst = store.use(timeTravelPlugin())
+    const uninstallSecond = store.use(timeTravelPlugin())
+
+    // 先装实例卸载：后装实例的接口必须原样保留
+    uninstallFirst()
+
+    const storeWithApi = store as unknown as { __timeTravel__?: unknown }
+    expect(storeWithApi.__timeTravel__).toBeDefined()
+
+    const globalEntry = (globalThis as unknown as { __GEOMSTORE_TIME_TRAVEL__?: Record<string, unknown> }).__GEOMSTORE_TIME_TRAVEL__
+    expect(globalEntry?.['tt-guard-store']).toBe(storeWithApi.__timeTravel__)
+
+    const apiBefore = storeWithApi.__timeTravel__
+    store.setState('count', 1)
+    // 后装实例功能正常（快照记录未被破坏）
+    expect((apiBefore as { getSnapshotCount(): number }).getSnapshotCount()).toBeGreaterThanOrEqual(2)
+
+    // 后装实例卸载：全部清理
+    uninstallSecond()
+    expect(storeWithApi.__timeTravel__).toBeUndefined()
+    expect((globalThis as unknown as { __GEOMSTORE_TIME_TRAVEL__?: Record<string, unknown> }).__GEOMSTORE_TIME_TRAVEL__?.['tt-guard-store']).toBeUndefined()
+  })
+})

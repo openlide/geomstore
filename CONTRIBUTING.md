@@ -90,15 +90,17 @@ docs/                       # 文档
 
 ## 5. 开发工作流
 
-提交 PR 前，请确保以下门禁**全部通过**（与 CI 一致）：
+提交 PR 前，请确保以下门禁**全部通过**（与 CI 一致，见 `.github/workflows/ci.yml`）：
 
 ```bash
-pnpm lint            # ESLint：0 errors / 0 warnings
-pnpm typecheck       # tsc --noEmit（src，strict）
-pnpm typecheck:tests # tsc --noEmit（src + tests）
-pnpm test:coverage   # Jest + 覆盖率阈值
-pnpm build           # 构建 + 产物冒烟
+pnpm lint:ci              # ESLint（CI 门禁：--max-warnings 70 警告预算）
+pnpm typecheck            # tsc --noEmit（src，strict）
+pnpm typecheck:examples   # 示例类型检查（CI 门禁）
+pnpm test:ci              # Jest --ci --coverage（覆盖率阈值门禁）
+pnpm build                # 构建 + 产物冒烟
 ```
+
+> 本地开发建议额外跑 `pnpm lint`（0 警告标准，严于 CI）与 `pnpm typecheck:tests`（源码 + 测试）。
 
 ### 脚本速查
 
@@ -161,9 +163,10 @@ pnpm build           # 构建 + 产物冒烟
 - `PERF-*`：性能工具
 - `SNAP-*`：快照系统
 - `STORE-*`：Store 核心
+- `PROTECT-*`：安全防护类用例（原型污染 / 路径写入 / 变异拦截）
 - `REGR-*`：针对已修复缺陷的回归用例
 
-新增 bug 修复时，请补充对应 `REGR-*` 用例；新增功能时补充覆盖主路径与边界分支的用例。
+新增 bug 修复时，请补充对应 `REGR-*` 用例；新增功能时补充覆盖主路径与边界分支的用例（补覆盖变体使用 `*-COV` 后缀，如 `STORE-COV`、`HELPERS-COV`）。
 
 ### 7.3 类型级测试
 

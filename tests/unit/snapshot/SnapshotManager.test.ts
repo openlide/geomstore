@@ -333,9 +333,9 @@ describe('SnapshotManager', () => {
       const onError = jest.fn().mockReturnValue(true)
       const result = manager.createSnapshot(data, { onError })
 
-      // Error may or may not be called depending on implementation
-      // but the snapshot should succeed
-      expect(result.success).toBe(true)
+      // #28 契约：克隆错误落账后 success=false，不再静默成功
+      expect(result.success).toBe(false)
+      expect(result.errors?.some((e) => e.type === 'cloneError')).toBe(true)
       expect((result.data as any).normal).toBe('value')
     })
 
@@ -353,6 +353,53 @@ describe('SnapshotManager', () => {
         onError,
       })
 
+      expect(result.success).toBe(false)
+    })
+
+    test('P1 回归：同步克隆 onError 返回 false 应一次咨询后整体中止', () => {
+      const manager = new SnapshotManager()
+      const data: any = { l1: { l2: { l3: { keep: 1 } }, keep: 2 }, other: 7 }
+      Object.defineProperty(data.l1.l2.l3, 'boom', {
+        get() {
+          throw new Error('deep getter boom')
+        },
+        enumerable: true,
+        configurable: true,
+      })
+
+      let consults = 0
+      const result = manager.createSnapshot(data, {
+        onError: () => {
+          consults++
+          return false
+        },
+      })
+
+      // 修复前：同一故障被祖先层 catch 反复捕获反复咨询（三层实测 4 次）
+      expect(result.success).toBe(false)
+      expect(consults).toBe(1)
+    })
+
+    test('P1 回归：同步克隆中途改答不能把「中止」降级为静默丢子树', () => {
+      const manager = new SnapshotManager()
+      const data: any = { l1: { l2: { l3: { keep: 1 } }, keep: 2 }, other: 7 }
+      Object.defineProperty(data.l1.l2.l3, 'boom', {
+        get() {
+          throw new Error('deep getter boom')
+        },
+        enumerable: true,
+        configurable: true,
+      })
+
+      let calls = 0
+      const result = manager.createSnapshot(data, {
+        onError: () => {
+          calls++
+          return calls === 1 ? false : true
+        },
+      })
+
+      // 修复前：第二次咨询改答 true 会让 l3 子树静默消失且快照标记成功
       expect(result.success).toBe(false)
     })
 
@@ -621,6 +668,51 @@ describe('SnapshotManager', () => {
 
       expect(result).toBeDefined()
     })
+
+    test('P0 回归：异步快照克隆器抛错不得把活引用嵌入快照', async () => {
+      const manager = new SnapshotManager()
+      const live = { special: { secret: 1 }, normal: 1 }
+
+      const result = await manager.createSnapshotAsync(live, {
+        customCloner: (value) => {
+          if (value && typeof value === 'object' && (value as { secret?: number }).secret !== undefined) {
+            throw new Error('cloner boom')
+          }
+          return undefined
+        },
+      })
+
+      // 错误必须可见：记录 cloneError 且不再静默 success
+      expect(result.errors.some((e) => e.type === 'cloneError')).toBe(true)
+      expect(result.success).toBe(false)
+
+      const data = result.data as typeof live
+      // 出错子树被丢弃（与同步路径同语义），而不是嵌入原始活引用
+      expect(data.special).toBeUndefined()
+      expect(data.normal).toBe(1)
+      // 隔离契约：修改活状态不影响快照
+      live.special.secret = 42
+      expect((data as Record<string, unknown>).special).toBeUndefined()
+    })
+
+    test('P0 回归：异步克隆器抛错且 onError 返回 false 时整体中止', async () => {
+      const manager = new SnapshotManager()
+      const live = { special: { secret: 1 } }
+
+      let consults = 0
+      const result = await manager.createSnapshotAsync(live, {
+        customCloner: () => {
+          throw new Error('cloner boom')
+        },
+        onError: () => {
+          consults++
+          return false
+        },
+      })
+
+      expect(result.success).toBe(false)
+      expect(consults).toBe(1)
+    })
   })
 
   describe('不可枚举属性', () => {
@@ -771,7 +863,8 @@ describe('SnapshotManager', () => {
       expect(errArg.type).toBe('cloneError')
       expect(errArg.message).toBe('Evil descriptor')
       expect(errArg.originalError).toBeInstanceOf(Error)
-      expect(result.success).toBe(true)
+      // #28 契约：cloneError 落账后 success=false
+      expect(result.success).toBe(false)
     })
 
     test('异步克隆 descriptor 抛出非 Error 时应该记录通用错误', async () => {
@@ -799,7 +892,8 @@ describe('SnapshotManager', () => {
       expect(errArg.type).toBe('cloneError')
       expect(errArg.message).toBe('Clone error')
       expect(errArg.originalError).toBeUndefined()
-      expect(result.success).toBe(true)
+      // #28 契约：cloneError 落账后 success=false
+      expect(result.success).toBe(false)
     })
 
     test('同步克隆 descriptor 抛出非 Error 时应该记录通用错误', () => {
@@ -827,7 +921,8 @@ describe('SnapshotManager', () => {
       expect(errArg.type).toBe('cloneError')
       expect(errArg.message).toBe('Clone error')
       expect(errArg.originalError).toBeUndefined()
-      expect(result.success).toBe(true)
+      // #28 契约：cloneError 落账后 success=false
+      expect(result.success).toBe(false)
     })
 
     test('同步克隆 onError 返回 false 时应该抛出并返回原数据', () => {
@@ -1915,7 +2010,8 @@ describe('BUG 回归：getter 抛错与护栏分支', () => {
     const result = manager.createSnapshot(source, { onError })
 
     expect(onError).toHaveBeenCalledWith(expect.objectContaining({ type: 'cloneError', message: 'getter boom' }), expect.anything())
-    expect(result.success).toBe(true)
+    // #28 契约：getter 抛错已落账为 cloneError，success=false
+    expect(result.success).toBe(false)
     expect((result.data as Record<string, unknown>).ok).toBe(1)
   })
 
@@ -1935,7 +2031,8 @@ describe('BUG 回归：getter 抛错与护栏分支', () => {
     const result = await manager.createSnapshotAsync(source, { onError })
 
     expect(onError).toHaveBeenCalled()
-    expect(result.success).toBe(true)
+    // #28 契约：getter 抛错已落账为 cloneError，success=false
+    expect(result.success).toBe(false)
     expect((result.data as Record<string, unknown>).ok).toBe(1)
   })
 
@@ -1983,9 +2080,9 @@ describe('Proxy 陷阱容错', () => {
       },
     )
 
-    // 估算失败按叶子计数，快照仍应成功
+    // 估算失败按叶子计数；克隆错误落账后 success=false（#28 契约）
     const result = manager.createSnapshot(hostile, { onError: () => true })
-    expect(result.success).toBe(true)
+    expect(result.success).toBe(false)
   })
 
   test('compareSnapshots: Set 与非 Set 类型不匹配报告 changed', () => {
@@ -2010,9 +2107,9 @@ describe('Proxy 陷阱容错', () => {
       },
     )
 
-    // 估算失败按叶子计数，克隆时 onError 决定继续
+    // 估算失败按叶子计数，克隆时 onError 决定继续；错误落账后 success=false（#28 契约）
     const result = await manager.createSnapshotAsync(hostile, { onError: () => true } as any)
-    expect(result.success).toBe(true)
+    expect(result.success).toBe(false)
   })
 
   test('createSnapshotAsync: estimateNodeCount 单键描述符读取失败按叶子计数', async () => {
@@ -2033,7 +2130,8 @@ describe('Proxy 陷阱容错', () => {
     )
 
     const result = await manager.createSnapshotAsync(hostile, { onError: () => true } as any)
-    expect(result.success).toBe(true)
+    // #28 契约：内层描述符抛错已落账，success=false
+    expect(result.success).toBe(false)
   })
 
   test('createSnapshotAsync: 根对象 ownKeys 陷阱抛错时入口降级并按 onError 决定', async () => {
@@ -2047,9 +2145,10 @@ describe('Proxy 陷阱容错', () => {
       },
     )
 
-    // 估算失败降级为叶子计数，克隆时 onError 默认继续：快照成功（不再入口即失败）
+    // 估算失败降级为叶子计数，不再入口即失败；ownKeys 抛错已落账为 cloneError，
+    // 按新契约 success=false（#28）
     const result = await manager.createSnapshotAsync(hostile)
-    expect(result.success).toBe(true)
+    expect(result.success).toBe(false)
   })
 
   test('createSnapshotAsync: 深层对象 ownKeys 陷阱抛错时 onError 决定继续或中止', async () => {
@@ -2073,9 +2172,9 @@ describe('Proxy 陷阱容错', () => {
     expect(failed.success).toBe(false)
     expect(failed.errors.some((e: any) => e.message.includes('deep ownKeys boom'))).toBe(true)
 
-    // onError 返回 true：降级返回部分克隆
+    // onError 返回 true：降级返回部分克隆，但 cloneError 已落账，success=false（#28 契约）
     const result = await manager.createSnapshotAsync(data, { onError: () => true } as any)
-    expect(result.success).toBe(true)
+    expect(result.success).toBe(false)
   })
 
   test('createSnapshotAsync: getOwnPropertyDescriptor 返回 undefined 时跳过该键', async () => {
@@ -2113,5 +2212,152 @@ describe('Proxy 陷阱容错', () => {
     const failed = await manager.createSnapshotAsync(evil, { onError: () => false } as any)
     expect(failed.success).toBe(false)
     expect(failed.errors.some((e: any) => e.message.includes('descriptor boom'))).toBe(true)
+  })
+})
+
+// ==================== #17/#19/#20/#21/#23/#27 修复回归 ====================
+describe('P2 快照批修复回归', () => {
+  it('#17: estimateNodeCount 数组分支陷阱抛错时降级计数，异步快照入口不失败', async () => {
+    const manager = new SnapshotManager()
+    // 数组包装 Proxy：getOwnPropertyDescriptor 无条件抛错，估算阶段 reduce 触发陷阱
+    const hostile = new Proxy([1, 2, 3], {
+      getOwnPropertyDescriptor: () => {
+        throw new Error('array descriptor trap')
+      },
+    })
+
+    const result = await manager.createSnapshotAsync({ arr: hostile })
+    // 入口不再抛错；克隆错误已落账（#28 契约）
+    expect(result).toBeDefined()
+    expect(Array.isArray(result.errors)).toBe(true)
+  })
+
+  it('#19: 同步快照保留类实例原型', () => {
+    const manager = new SnapshotManager()
+    class User {
+      constructor(public name: string) {}
+      greet(): string {
+        return `hi ${this.name}`
+      }
+    }
+
+    const result = manager.createSnapshot({ user: new User('Alice') })
+    const user = (result.data as { user: User }).user
+    expect(user.greet()).toBe('hi Alice')
+  })
+
+  it('#19: 异步快照保留类实例原型', async () => {
+    const manager = new SnapshotManager()
+    class Counter {
+      n = 3
+      double(): number {
+        return this.n * 2
+      }
+    }
+
+    const result = await manager.createSnapshotAsync({ counter: new Counter() })
+    expect((result.data as { counter: Counter }).counter.double()).toBe(6)
+  })
+
+  it('#20: 循环引用的异步快照 success 与同步路径同口径', async () => {
+    const manager = new SnapshotManager()
+    const obj: Record<string, unknown> = { name: 'circular' }
+    obj.self = obj
+
+    const syncResult = manager.createSnapshot(obj as never)
+    const asyncResult = await manager.createSnapshotAsync(obj)
+
+    // circular 属可恢复降级：两条路径都应标记成功并记录错误
+    expect(syncResult.success).toBe(true)
+    expect(asyncResult.success).toBe(true)
+    // 循环引用计入统计计数（不产生 errors 记录），两条路径口径一致
+    expect(syncResult.stats.circularReferences).toBeGreaterThanOrEqual(1)
+    expect(asyncResult.stats.circularReferences).toBeGreaterThanOrEqual(1)
+  })
+
+  it('#21: 同步与异步快照的 cloneOperations 同口径', async () => {
+    const manager = new SnapshotManager()
+    const data = { arr: [1, 2], map: new Map([['k', 1]]), set: new Set([1]) }
+
+    const syncResult = manager.createSnapshot(data)
+    const asyncResult = await manager.createSnapshotAsync(data)
+
+    // 修复前同步路径 Map/Set/数组容器不计入 cloneOperations，统计偏小
+    expect(syncResult.stats.cloneOperations).toBe(4)
+    expect(asyncResult.stats.cloneOperations).toBe(4)
+  })
+
+  it('#23: compareSnapshots 数组 vs 数组按索引比较并区分增删', () => {
+    const manager = new SnapshotManager()
+    const s1 = manager.createSnapshot({ list: [1, 2, 3] })
+    const s2 = manager.createSnapshot({ list: [1, 9] })
+
+    const diff = manager.compareSnapshots(s1, s2)
+    expect(diff.changed).toBe(true)
+    // 内层标量差异 kind 缺省（即 changed 语义）
+    expect(diff.changes.some((c) => c.path === 'root.list[1]')).toBe(true)
+    expect(diff.changes.some((c) => c.path === 'root.list[removed:2]' && c.kind === 'removed')).toBe(true)
+  })
+
+  it('#23: compareSnapshots 数组 vs 非数组报告整体差异而非键级比较', () => {
+    const manager = new SnapshotManager()
+    const s1 = manager.createSnapshot({ data: [1, 2] as unknown })
+    const s2 = manager.createSnapshot({ data: { 0: 1, 1: 2 } as unknown })
+
+    const diff = manager.compareSnapshots(s1, s2)
+    expect(diff.changed).toBe(true)
+    expect(diff.changes).toHaveLength(1)
+    expect(diff.changes[0].kind).toBe('changed')
+  })
+
+  it('#27: getter 抛错时 catch 载荷不二次触发同一 getter（同步）', () => {
+    const manager = new SnapshotManager()
+    let calls = 0
+    const source: Record<string, unknown> = { ok: 1 }
+    Object.defineProperty(source, 'evil', {
+      get() {
+        calls++
+        throw new Error('boom once')
+      },
+      enumerable: true,
+      configurable: true,
+    })
+
+    manager.createSnapshot(source, { onError: () => true })
+
+    // 修复前 catch 载荷经 safeReadProperty 再触发一次 → calls=2
+    expect(calls).toBe(1)
+  })
+
+  it('#27: getter 抛错时 catch 载荷不二次触发同一 getter（异步）', async () => {
+    const manager = new SnapshotManager()
+    let calls = 0
+    const source: Record<string, unknown> = { ok: 1 }
+    Object.defineProperty(source, 'evil', {
+      get() {
+        calls++
+        throw new Error('boom once')
+      },
+      enumerable: true,
+      configurable: true,
+    })
+
+    await manager.createSnapshotAsync(source, { onError: () => true })
+
+    expect(calls).toBe(1)
+  })
+})
+
+// ==================== #23 回归补充：数组尾部新增元素路径 ====================
+describe('compareSnapshots 数组新增元素（#23 补充）', () => {
+  it('尾部扩容报 [added:i] 且 kind 为 added', () => {
+    const manager = new SnapshotManager()
+    const s1 = manager.createSnapshot({ list: [1] })
+    const s2 = manager.createSnapshot({ list: [1, 5, 6] })
+
+    const diff = manager.compareSnapshots(s1, s2)
+    expect(diff.changed).toBe(true)
+    expect(diff.changes.some((c) => c.path === 'root.list[added:1]' && c.kind === 'added')).toBe(true)
+    expect(diff.changes.some((c) => c.path === 'root.list[added:2]' && c.kind === 'added')).toBe(true)
   })
 })

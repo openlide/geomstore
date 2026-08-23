@@ -27,6 +27,13 @@ class SnapshotAbortError extends Error {
   }
 }
 
+/**
+ * 单节点丢弃哨兵：onError 选择继续但该节点无法产出安全克隆（如自定义克隆器抛错）时，
+ * processNodeAsync 返回它，processQueue 据此跳过父容器填充——
+ * 绝不能把原始活引用兜底进快照，否则后续对活状态的修改会穿透进快照（隔离契约）
+ */
+const SKIP_CLONE_NODE = Symbol('SKIP_CLONE_NODE')
+
 // ==================== 类型定义 ====================
 
 /**
@@ -448,7 +455,12 @@ export class SnapshotManager {
     const estimateNodeCount = (obj: unknown, depth = 0): number => {
       if (depth > 10 || obj === null || typeof obj !== 'object') return 1
       if (Array.isArray(obj)) {
-        return obj.reduce((sum, item) => sum + estimateNodeCount(item, depth + 1), 1)
+        // 数组元素读取同样可能触发 Proxy 陷阱抛错：与对象分支同口径按叶子计数
+        try {
+          return obj.reduce((sum, item) => sum + estimateNodeCount(item, depth + 1), 1)
+        } catch {
+          return 1
+        }
       }
       try {
         // Object.keys 与描述符读取都可能触发 Proxy 陷阱抛错，估算失败按叶子计数
@@ -516,10 +528,31 @@ export class SnapshotManager {
                 // onError 返回 false 要求中止：向上传播，整个快照以失败结果交付
                 throw error
               }
-              // 单节点克隆失败时用原值兜底，保证整个快照不中断
-              result = task.value
+              // 未预期的内部异常：记录错误并跳过该节点。绝不能把原始活引用
+              // 兜底填入快照——后续对活状态的修改会穿透进快照，破坏隔离契约
+              errors.push({
+                type: 'cloneError',
+                message: `Failed to clone node at ${task.context.path}: ${error instanceof Error ? error.message : String(error)}`,
+                path: task.context.path,
+                originalError: error instanceof Error ? error : undefined,
+              })
+              processedCount++
+              continue
             }
             processedCount++
+            if (result === SKIP_CLONE_NODE) {
+              // onError 选择继续但节点被丢弃：跳过填充；prop 占位一并移除，
+              // 与同步路径「丢弃该属性」的语义一致（Map/Set/数组位置本就无占位）
+              const skipped = task.target
+              if (skipped && skipped.kind === 'prop') {
+                try {
+                  delete (skipped.container as Record<string, unknown>)[skipped.key as string]
+                } catch {
+                  // 占位清理失败不影响整体流程
+                }
+              }
+              continue
+            }
             // stats.cloneOperations 由 processNodeAsync 内部按克隆节点累加
             // （与同步路径同口径），此处不可用任务数覆盖，否则统计口径错乱
 
@@ -615,7 +648,8 @@ export class SnapshotManager {
       return {
         data: clonedData as T,
         metadata,
-        success: !hasTimedOut && errors.length === 0,
+        // 与同步路径同口径：仅 cloneError 视为失败，circular/maxDepth 属可恢复降级
+        success: !hasTimedOut && (errors.length === 0 || !errors.some((e) => e.type === 'cloneError')),
         errors: hasTimedOut ? [...errors, { type: 'timeout', message: 'Snapshot creation timed out', path: 'root' }] : errors,
         stats,
       }
@@ -815,6 +849,29 @@ export class SnapshotManager {
         return
       }
 
+      // 数组分支与对象比较互斥：数组 vs 非数组直接报整体差异，
+      // 数组 vs 数组按索引比较并区分 added/removed——此前数组落入
+      // Object.keys 通用比较，长度差异被误报为键级 changed
+      if (Array.isArray(obj1) || Array.isArray(obj2)) {
+        if (!(Array.isArray(obj1) && Array.isArray(obj2))) {
+          changes.push({ path, oldValue: obj1, newValue: obj2, kind: 'changed' })
+          return
+        }
+        const arr1 = obj1 as unknown[]
+        const arr2 = obj2 as unknown[]
+        const maxLen = Math.max(arr1.length, arr2.length)
+        for (let i = 0; i < maxLen; i++) {
+          if (i >= arr1.length) {
+            changes.push({ path: `${path}[added:${i}]`, oldValue: undefined, newValue: arr2[i], kind: 'added' })
+          } else if (i >= arr2.length) {
+            changes.push({ path: `${path}[removed:${i}]`, oldValue: arr1[i], newValue: undefined, kind: 'removed' })
+          } else {
+            compare(arr1[i], arr2[i], `${path}[${i}]`, depth + 1)
+          }
+        }
+        return
+      }
+
       const keys1 = Object.keys(obj1 as object)
       const keys2 = Object.keys(obj2 as object)
       const allKeys = new Set([...keys1, ...keys2])
@@ -955,6 +1012,7 @@ export class SnapshotManager {
         cloned.set(clonedKey, clonedValue)
       }
 
+      stats.cloneOperations++
       return cloned
     }
 
@@ -981,6 +1039,7 @@ export class SnapshotManager {
         index++
       }
 
+      stats.cloneOperations++
       return cloned
     }
 
@@ -1006,11 +1065,17 @@ export class SnapshotManager {
         )
       }
 
+      stats.cloneOperations++
       return cloned
     }
 
     // 处理普通对象
-    const cloned: Record<string, unknown> = {}
+    // 保留源对象原型：类实例快照后仍是该类实例（方法/继承链可用），
+    // 仅复制自有可枚举属性，不触发任何构造器或 getter
+    const cloned: Record<string, unknown> = Object.create(Object.getPrototypeOf(value) as object | null) as Record<
+      string,
+      unknown
+    >
     context.visited.set(value as object, cloned)
 
     // keys 计算纳入 try：Proxy 的 ownKeys/getOwnPropertyDescriptor 陷阱抛错时
@@ -1019,7 +1084,19 @@ export class SnapshotManager {
     try {
       keys = options.includeNonEnumerable ? Object.getOwnPropertyNames(value) : Object.keys(value)
     } catch (error) {
+      // 中止信号直接上抛：这是用户在更深层做出的决定，二次咨询 onError
+      // 会把「中止」被中途改答降级为静默丢子树且快照仍标记成功
+      if (error instanceof SnapshotAbortError) {
+        throw error
+      }
       stats.cloneOperations++
+      // 错误必须落账：静默丢弃会让克隆降级对调用方不可见（与异步路径同口径）
+      errors.push({
+        type: 'cloneError',
+        message: error instanceof Error ? error.message : 'Clone error',
+        path: context.path,
+        originalError: error instanceof Error ? error : undefined,
+      })
       const shouldContinue = options.onError(
         {
           type: 'cloneError',
@@ -1030,14 +1107,15 @@ export class SnapshotManager {
         { path: context.path, depth: context.depth, value, recoverable: true },
       )
       if (!shouldContinue) {
-        throw error
+        throw new SnapshotAbortError(error)
       }
       return cloned
     }
 
     for (const key of keys) {
+      let descriptor: PropertyDescriptor | undefined
       try {
-        const descriptor = Object.getOwnPropertyDescriptor(value, key)
+        descriptor = Object.getOwnPropertyDescriptor(value, key)
         if (!descriptor) {
           continue
         }
@@ -1070,7 +1148,19 @@ export class SnapshotManager {
           configurable: descriptor.configurable,
         })
       } catch (error) {
+        // 中止信号直接上抛（见上方 keys catch 的说明）
+        if (error instanceof SnapshotAbortError) {
+          throw error
+        }
         stats.cloneOperations++
+        // 错误必须落账：静默丢弃会让克隆降级对调用方不可见（与异步路径同口径），
+        // 也让 success 判定能识别 cloneError
+        errors.push({
+          type: 'cloneError',
+          message: error instanceof Error ? error.message : 'Clone error',
+          path: `${context.path}.${key}`,
+          originalError: error instanceof Error ? error : undefined,
+        })
         const shouldContinue = options.onError(
           {
             type: 'cloneError',
@@ -1081,13 +1171,20 @@ export class SnapshotManager {
           {
             path: `${context.path}.${key}`,
             depth: context.depth,
-            value: safeReadProperty(value as Record<string, unknown>, key),
+            // 数据属性复用已取到的描述符值；访问器属性的 getter 已证明会抛错，
+            // 不经 safeReadProperty 二次触发；描述符都拿不到才尝试兜底读取
+            value:
+              descriptor && 'value' in descriptor
+                ? descriptor.value
+                : descriptor
+                  ? undefined
+                  : safeReadProperty(value as Record<string, unknown>, key),
             recoverable: true,
           },
         )
 
         if (!shouldContinue) {
-          throw error
+          throw new SnapshotAbortError(error)
         }
       }
     }
@@ -1170,8 +1267,34 @@ export class SnapshotManager {
       return context.visited.get(value as object)
     }
 
-    // 自定义克隆
-    const customResult = options.customCloner(value, context)
+    // 自定义克隆：用户克隆器抛错时与同步路径同语义——咨询 onError，
+    // 继续则丢弃该子树（返回哨兵，禁止把原值兜底进快照），中止则向上传播
+    let customResult: unknown
+    try {
+      customResult = options.customCloner(value, context)
+    } catch (error) {
+      stats.cloneOperations++
+      // 错误必须落账：静默丢弃会让隔离降级对调用方不可见
+      errors.push({
+        type: 'cloneError',
+        message: error instanceof Error ? error.message : 'Clone error',
+        path: context.path,
+        originalError: error instanceof Error ? error : undefined,
+      })
+      const shouldContinue = options.onError(
+        {
+          type: 'cloneError',
+          message: error instanceof Error ? error.message : 'Clone error',
+          path: context.path,
+          originalError: error instanceof Error ? error : undefined,
+        },
+        { path: context.path, depth: context.depth, value, recoverable: true },
+      )
+      if (!shouldContinue) {
+        throw new SnapshotAbortError(error)
+      }
+      return SKIP_CLONE_NODE
+    }
     if (customResult !== undefined) {
       return customResult
     }
@@ -1277,7 +1400,12 @@ export class SnapshotManager {
     }
 
     // 处理普通对象
-    const cloned: Record<string, unknown> = {}
+    // 保留源对象原型：类实例快照后仍是该类实例（方法/继承链可用），
+    // 仅复制自有可枚举属性，不触发任何构造器或 getter
+    const cloned: Record<string, unknown> = Object.create(Object.getPrototypeOf(value) as object | null) as Record<
+      string,
+      unknown
+    >
     context.visited.set(value as object, cloned)
 
     // keys 计算纳入 try（与同步路径同语义：陷阱抛错走 onError 降级）
@@ -1286,6 +1414,13 @@ export class SnapshotManager {
       keys = options.includeNonEnumerable ? Object.getOwnPropertyNames(value) : Object.keys(value)
     } catch (error) {
       stats.cloneOperations++
+      // 错误必须落账：静默丢弃会让克隆降级对调用方不可见（与同步路径同口径）
+      errors.push({
+        type: 'cloneError',
+        message: error instanceof Error ? error.message : 'Clone error',
+        path: context.path,
+        originalError: error instanceof Error ? error : undefined,
+      })
       const shouldContinue = options.onError(
         {
           type: 'cloneError',
@@ -1302,8 +1437,9 @@ export class SnapshotManager {
     }
 
     for (const key of keys) {
+      let descriptor: PropertyDescriptor | undefined
       try {
-        const descriptor = Object.getOwnPropertyDescriptor(value, key)
+        descriptor = Object.getOwnPropertyDescriptor(value, key)
         if (!descriptor) {
           continue
         }
@@ -1353,7 +1489,17 @@ export class SnapshotManager {
           })
         }
       } catch (error) {
+        if (error instanceof SnapshotAbortError) {
+          throw error
+        }
         stats.cloneOperations++
+        // 错误必须落账：静默丢弃会让克隆降级对调用方不可见（与同步路径同口径）
+        errors.push({
+          type: 'cloneError',
+          message: error instanceof Error ? error.message : 'Clone error',
+          path: `${context.path}.${key}`,
+          originalError: error instanceof Error ? error : undefined,
+        })
         const shouldContinue = options.onError(
           {
             type: 'cloneError',
@@ -1364,7 +1510,14 @@ export class SnapshotManager {
           {
             path: `${context.path}.${key}`,
             depth: context.depth,
-            value: safeReadProperty(value as Record<string, unknown>, key),
+            // 数据属性复用已取到的描述符值；访问器属性的 getter 已证明会抛错，
+            // 不经 safeReadProperty 二次触发；描述符都拿不到才尝试兜底读取
+            value:
+              descriptor && 'value' in descriptor
+                ? descriptor.value
+                : descriptor
+                  ? undefined
+                  : safeReadProperty(value as Record<string, unknown>, key),
             recoverable: true,
           },
         )

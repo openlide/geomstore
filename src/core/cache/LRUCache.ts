@@ -180,7 +180,9 @@ export class LRUCache<K, V> {
       onEvict: config.onEvict ?? (() => {}),
     }
 
-    this.capacity = Math.max(1, this.options.capacity)
+    // NaN/Infinity 容量会使 Math.max 产生 NaN，_size > NaN 恒为 false → 缓存无界；
+    // 非有限值回退默认容量
+    this.capacity = Number.isFinite(this.options.capacity) ? Math.max(1, this.options.capacity) : 100
     this.cache = new Map()
     this._size = 0
     this.hitCount = 0
@@ -375,6 +377,12 @@ export class LRUCache<K, V> {
       return this.get(key) as V
     }
 
+    // 未命中同样计入统计：getOrSet 只在命中路径经 get 计 hit，
+    // miss 不落账会让 hitRate 系统性偏高
+    if (this.options.enableStats) {
+      this.missCount++
+    }
+
     const value = factory()
     this.set(key, value)
     return value
@@ -492,7 +500,8 @@ export class LRUCache<K, V> {
    * ```
    */
   resize(newCapacity: number): this {
-    const validCapacity = Math.max(1, newCapacity)
+    // 与构造器同守卫：NaN/Infinity 容量会让淘汰判定失效导致缓存无界
+    const validCapacity = Number.isFinite(newCapacity) ? Math.max(1, newCapacity) : this.capacity
 
     if (validCapacity < this._size) {
       // 需要淘汰多余的项
@@ -566,8 +575,11 @@ export class LRUCache<K, V> {
     let node = this.head.next
 
     while (node && node !== this.tail) {
+      // 先取后继再回调：回调内删除当前节点会经 removeFromList 把 next 置空，
+      // 活指针遍历会在下一步中断，剩余条目被静默跳过
+      const next = node.next
       callback(node.value, node.key)
-      node = node.next
+      node = next
     }
   }
 
@@ -587,9 +599,9 @@ export class LRUCache<K, V> {
     const total = this.hitCount + this.missCount
     const hitRate = total > 0 ? (this.hitCount / total) * 100 : 0
 
-    // 计算平均访问时间
-    const totalAccesses = this.hitCount + this.missCount
-    const avgAccessTime = totalAccesses > 0 && this.options.trackAccessTime ? this.totalAccessTime / totalAccesses : 0
+    // totalAccessTime 仅在命中路径累加：按命中次数求平均，
+    // 用 hit+miss 做分母会系统性稀释平均值
+    const avgAccessTime = this.hitCount > 0 && this.options.trackAccessTime ? this.totalAccessTime / this.hitCount : 0
 
     // 单次遍历计算多个统计信息以优化性能
     const now = Date.now()
@@ -610,7 +622,8 @@ export class LRUCache<K, V> {
       misses: this.missCount,
       totalAccesses: total,
       hitRate: Math.round(hitRate * 100) / 100, // hitRate 已是百分比形式(如80)，这里做小数处理
-      missRate: total > 0 ? Math.round((100 - hitRate) * 100) / 100 : 0, // missRate = 100 - hitRate
+      // missRate 直接由计数计算，与 hitRate 同口径；经 100-hitRate 推导会累积舍入偏差
+      missRate: total > 0 ? Math.round((this.missCount / total) * 10000) / 100 : 0,
       evictions: this.evictionCount,
       keys: keys.map((k) => String(k)),
       avgAccessTime: Math.round(avgAccessTime * 1000) / 1000,

@@ -14,6 +14,10 @@
 import { LRUCache } from '../cache/LRUCache'
 export { LRUCache }
 
+/** hashNumber 的位视图缓冲（模块级复用避免每次调用分配；同步使用无重入问题） */
+const FINGERPRINT_F64 = new Float64Array(1)
+const FINGERPRINT_U32 = new Uint32Array(FINGERPRINT_F64.buffer)
+
 // ==================== 异步批量通知 ====================
 
 /**
@@ -213,9 +217,13 @@ export class StateFingerprint {
     if (isNaN(num)) return this.hashString('[nan]')
     if (!isFinite(num)) return this.hashString(num > 0 ? '[+infinity]' : '[-infinity]')
 
-    // 使用位运算混合数字
-    const hash = (num * 2654435761) | 0
-    return hash ^ (hash >>> 16)
+    // 位级精确混合：`num * 常数 | 0` 的乘法混合在常见量级（时间戳 ~1.7e12）
+    // 就超出 int32/Float64 精度，小幅增量（实测 +4181）即产生相同指纹；
+    // 且 |num|·常数 < 1 的小数全部 |0 归零。改为按 IEEE754 位模式取高低
+    // 32 位分别经 Math.imul 混合：每个有限 number 的位模式唯一，不再塌缩
+    FINGERPRINT_F64[0] = num
+    const mixed = Math.imul(FINGERPRINT_U32[0], 0x9e3779b1) ^ Math.imul(FINGERPRINT_U32[1], 0x85ebca6b)
+    return mixed ^ (mixed >>> 16)
   }
 
   /**
@@ -501,8 +509,15 @@ export function debounce<T extends (...args: any[]) => unknown>(fn: T, delay: nu
     }
 
     timer = setTimeout(() => {
-      fn.apply(this, args)
+      // 先复位再执行：fn 同步抛错时若保持 timer 引用，下次调用会 clearTimeout
+      // 一个已触发的句柄（无害但语义混乱）；抛错本身经 try/catch 记录，
+      // 避免定时器回调中的异常成为 uncaught exception
       timer = null
+      try {
+        fn.apply(this, args)
+      } catch (error) {
+        console.error('[GeomStore] debounced function threw:', error)
+      }
     }, delay) as unknown as ReturnType<typeof setTimeout>
   }
 }
@@ -553,7 +568,13 @@ export function throttle<T extends (...args: any[]) => unknown>(
         const trailingArgs = pendingArgs
         pendingArgs = null
         lastCall = Date.now()
-        fn.apply(host, trailingArgs)
+        // 尾随补发运行在定时器回调中：同步抛错没有调用方栈可传播，
+        // 会成为 uncaught exception；记录后保持节流器可用（与防抖同口径）
+        try {
+          fn.apply(host, trailingArgs)
+        } catch (error) {
+          console.error('[GeomStore] throttled function threw:', error)
+        }
       }
     }
 

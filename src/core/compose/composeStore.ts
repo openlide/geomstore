@@ -7,10 +7,23 @@
  */
 
 import type { Store, State, Actions, Getters, StateListener, CacheStats, InferGetterReturn } from '../../types/store'
-import type { Plugin } from '../../types/plugin'
+import type { Plugin, HookName } from '../../types/plugin'
 import type { ComposeOptions, StoreTreeNode, StoreLike, ExtractStates, ExtractActions, ExtractGetters } from '../../types/compose'
 import { HookSystem } from '../hooks/index'
 import { isProduction } from '../store/utils'
+
+/** 全部生命周期钩子名：组合层桥接子 Store 钩子时逐个转发 */
+const ALL_HOOK_NAMES: HookName[] = [
+  'beforeSetState',
+  'afterSetState',
+  'beforePatch',
+  'afterPatch',
+  'beforeDispatch',
+  'afterDispatch',
+  'beforeReplaceState',
+  'afterReplaceState',
+  'onError',
+]
 
 /**
  * 根据命名空间分发操作到对应 store
@@ -161,7 +174,6 @@ class ComposedStore<S extends State = State> implements Store<S> {
   public stores: Record<string, Store> = {}
 
   /** 防抖相关：实例级统一调度，避免多个订阅者各自维护标志导致非首个订阅者丢通知 */
-  private _pendingNotification: boolean = false
   private _notificationScheduled: boolean = false
   /** 当前活跃的订阅者集合 */
   private _composedListeners: Set<StateListener<S>> = new Set()
@@ -169,6 +181,8 @@ class ComposedStore<S extends State = State> implements Store<S> {
   private _storeUnsubscribers: Array<() => void> = []
   /** 已告警过的 state 键冲突组合（每个组合只告警一次，避免高频 getState 刷屏） */
   private _warnedStateKeyConflicts = new Set<string>()
+  /** 子 Store 钩子桥接的退订函数（destroy 时统一移除，防止闭包残留） */
+  private _hookUnsubscribers: Array<() => void> = []
 
   constructor(stores: Store[], options: ComposeOptions = {}) {
     this._stores = stores
@@ -182,6 +196,22 @@ class ComposedStore<S extends State = State> implements Store<S> {
     // 构建 stores 引用
     for (const store of stores) {
       this.stores[store.name] = store
+    }
+
+    // 钩子桥接：子 store 触发的生命周期事件在组合层同步重发。
+    // 此前 hooks 只在 destroy 时被 clear，从不接收任何事件——通过
+    // composed.hooks.on 注册的监听器永远收不到回调（静默失效）
+    for (const store of stores) {
+      const childHooks = store.hooks
+      if (!childHooks) continue
+      for (const hookName of ALL_HOOK_NAMES) {
+        // 箭头函数按 hookName 捕获，转发原始参数透传给组合层监听器
+        const forward = (...args: unknown[]): void => {
+          this.hooks.emit(hookName, ...args)
+        }
+        const off = childHooks.on(hookName, forward)
+        this._hookUnsubscribers.push(off)
+      }
     }
   }
 
@@ -336,7 +366,9 @@ class ComposedStore<S extends State = State> implements Store<S> {
       const subGetters = store.getters
       for (const key of Object.keys(subGetters)) {
         const mappedKey = this._namespace ? `${store.name}/${key}` : key
-        if (!(mappedKey in result)) {
+        // own property 判定：`in` 会命中 Object 原型链（'toString' 等），
+        // 原型链属性名会误判为已存在而跳过真实 getter 的合并
+        if (!Object.prototype.hasOwnProperty.call(result, mappedKey)) {
           result[mappedKey] = subGetters[key] as (state: S) => unknown
         }
       }
@@ -426,9 +458,11 @@ class ComposedStore<S extends State = State> implements Store<S> {
    */
   private _scheduleNotify(): void {
     if (this.destroyed) return
-    // 如果已经有待处理的通知，标记后由微任务统一补发
+    // 已有待处理通知时直接返回：微任务里的 _notifyListeners() 读取实时
+    // 合并状态，此刻到达的变化必然已被这次广播覆盖——补发只会让监听器
+    // 收到两次完全相同的状态（小程序侧桥接 setData 的订阅者会双倍渲染）。
+    // 通知回调期间的新变化在复位后走到下方重新入队，语义正确
     if (this._notificationScheduled) {
-      this._pendingNotification = true
       return
     }
 
@@ -437,14 +471,8 @@ class ComposedStore<S extends State = State> implements Store<S> {
     const runNotify = () => {
       this._notificationScheduled = false
 
-      // 通知所有监听器
+      // 通知所有监听器（载荷为通知时刻的实时合并状态）
       this._notifyListeners()
-
-      // 如果在等待期间又有新的变化，再通知一次
-      if (this._pendingNotification) {
-        this._pendingNotification = false
-        this._notifyListeners()
-      }
     }
 
     // 使用微任务合并同一事件循环内的多次状态变化；
@@ -503,9 +531,20 @@ class ComposedStore<S extends State = State> implements Store<S> {
     const uninstalls: Array<() => void> = []
 
     for (const store of this._stores) {
-      const uninstall = store.use(plugin)
+      let uninstall: unknown
+      try {
+        uninstall = store.use(plugin)
+      } catch (error) {
+        // 某个子 store 安装失败：回滚已完成安装的子 store，
+        // 避免半安装插件残留（部分 store 有插件、部分没有）
+        for (const fn of uninstalls) {
+          fn()
+        }
+        throw error
+      }
+      // 运行时防御：接口约定 use 返回卸载函数，但 mock/异构实现可能返回其他值
       if (typeof uninstall === 'function') {
-        uninstalls.push(uninstall)
+        uninstalls.push(uninstall as () => void)
       }
     }
 
@@ -533,6 +572,11 @@ class ComposedStore<S extends State = State> implements Store<S> {
       unsubscribe()
     }
     this._storeUnsubscribers = []
+    // 桥接退订：移除对子 store 钩子的监听（子 store 可能被保留时尤其重要）
+    for (const off of this._hookUnsubscribers) {
+      off()
+    }
+    this._hookUnsubscribers = []
     if (destroyStores) {
       for (const store of this._stores) {
         store.destroy()
@@ -559,6 +603,7 @@ class ComposedStore<S extends State = State> implements Store<S> {
   }
 
   enableCache(keys?: Array<keyof S>): void {
+    this._ensureAlive('enableCache')
     for (const store of this._stores) {
       // 子 store 的泛型与组合后的 S 不同构，键集合仅在运行时传递，此处断言安全
       store.enableCache(keys as Array<keyof State> | undefined)
@@ -566,12 +611,14 @@ class ComposedStore<S extends State = State> implements Store<S> {
   }
 
   disableCache(): void {
+    this._ensureAlive('disableCache')
     for (const store of this._stores) {
       store.disableCache()
     }
   }
 
   invalidateCache<K extends keyof S>(key?: K): void {
+    this._ensureAlive('invalidateCache')
     if (key !== undefined) {
       const keyStr = String(key)
       const [targetStore, actualKey] = findTargetStoreWithKey(keyStr, this._stores, this._namespace)
@@ -588,6 +635,7 @@ class ComposedStore<S extends State = State> implements Store<S> {
   }
 
   getCacheStats(): CacheStats {
+    this._ensureAlive('getCacheStats')
     const stats: CacheStats = {
       enabled: false,
       size: 0,
@@ -649,6 +697,7 @@ class ComposedStore<S extends State = State> implements Store<S> {
   // ==================== 快照管理 ====================
 
   $snapshot(): Readonly<S> {
+    this._ensureAlive('$snapshot')
     if (this._namespace) {
       const result: Record<string, unknown> = {}
       for (const store of this._stores) {
@@ -661,6 +710,7 @@ class ComposedStore<S extends State = State> implements Store<S> {
   }
 
   $restore(snapshot: Readonly<S>): void {
+    this._ensureAlive('$restore')
     dispatchByNamespace(this._stores, this._namespace, snapshot as Record<string, unknown>, this._strict, (store, value) =>
       store.$restore(value as Readonly<S>),
     )

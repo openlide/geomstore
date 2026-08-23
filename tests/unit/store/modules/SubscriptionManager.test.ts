@@ -155,29 +155,18 @@ describe('SubscriptionManager', () => {
       const manager = createManager(1)
       const warnSpy = jest.spyOn(console, 'warn').mockImplementation()
 
-      // 添加监听器
-      manager.add(jest.fn())
+      // 直接替换内部 Map（模拟极端腐坏情况）：
+      // size 迭代计出 2（超过上限），但 keys().next().value 为 undefined
+      const mockMap = {
+        forEach: (cb: (count: number) => void) => cb(2),
+        get: () => undefined,
+        keys: () => ({ next: () => ({ value: undefined, done: true }) }),
+        set: () => mockMap,
+        delete: () => true,
+      }
+      ;(manager as any)._listeners = mockMap
 
-      // 直接清空内部 Set（模拟极端情况）
-      const listeners = (manager as any)._listeners
-      listeners.clear()
-
-      // 现在添加新监听器时，虽然 size < maxSubscribers
-      // 但我们重新设置 size 为超过限制来触发警告
-      const mockSet = new Set()
-      Object.defineProperty(mockSet, 'size', { get: () => 2 })
-      Object.defineProperty(mockSet, 'values', {
-        value: () => ({
-          next: () => ({ value: undefined, done: false }),
-        }),
-      })
-      Object.defineProperty(mockSet, 'add', { value: (v: any) => mockSet })
-      Object.defineProperty(mockSet, 'delete', { value: () => true })
-
-      // 替换内部 Set
-      ;(manager as any)._listeners = mockSet
-
-      // 添加监听器应该不会抛出错误
+      // 驱逐循环遇到 undefined firstListener 必须跳过而不是抛错
       expect(() => manager.add(jest.fn())).not.toThrow()
 
       warnSpy.mockRestore()
@@ -254,5 +243,58 @@ describe('createSubscribeFunction', () => {
     unsubscribe() // 再次调用不应报错
 
     expect(manager.size).toBe(0)
+  })
+})
+
+// ==================== #14 引用计数语义回归 ====================
+describe('SubscriptionManager 引用计数语义', () => {
+  const createManager = (maxSubscribers = 50) =>
+    new SubscriptionManager({
+      storeName: 'test-store',
+      maxSubscribers,
+    })
+
+  it('同一监听器注册 N 次按次数通知，部分退订只减一', () => {
+    const manager = createManager()
+    const listener = jest.fn()
+
+    manager.add(listener)
+    manager.add(listener)
+    manager.add(listener)
+    expect(manager.size).toBe(3)
+
+    manager.notify({} as State)
+    expect(listener).toHaveBeenCalledTimes(3)
+
+    // 任一份退订只减少一份注册
+    expect(manager.delete(listener)).toBe(true)
+    expect(manager.size).toBe(2)
+
+    manager.notify({} as State)
+    expect(listener).toHaveBeenCalledTimes(5)
+
+    // 未注册的监听器退订返回 false
+    expect(manager.delete(jest.fn())).toBe(false)
+  })
+
+  it('引用计数不影响上限驱逐语义：新监听器仍按最旧驱逐', () => {
+    const manager = createManager(2)
+    const listenerA = jest.fn()
+    const listenerB = jest.fn()
+    const listenerC = jest.fn()
+
+    manager.add(listenerA)
+    manager.add(listenerB)
+    // 重复注册已有监听器：仅递增计数，不参与上限判定与驱逐
+    manager.add(listenerB)
+    expect(manager.size).toBe(3)
+
+    // 新监听器达到上限：驱逐最早的 A
+    manager.add(listenerC)
+    manager.notify({} as State)
+
+    expect(listenerA).not.toHaveBeenCalled()
+    expect(listenerB).toHaveBeenCalledTimes(2)
+    expect(listenerC).toHaveBeenCalledTimes(1)
   })
 })

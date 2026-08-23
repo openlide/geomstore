@@ -571,3 +571,39 @@ describe('ErrorHandlerImpl', () => {
     })
   })
 })
+
+// ==================== #36 回归：defaultErrorHandler 级别别名映射 ====================
+describe('defaultErrorHandler 级别映射（#36）', () => {
+  test('critical 级别走 error 通道（console.error + stack）', () => {
+    const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation()
+    const consoleWarnSpy = jest.spyOn(console, 'warn').mockImplementation()
+    const error = new Error('Critical failure')
+    error.stack = 'Critical stack'
+    const context = createErrorContext('user-store', 'action-execution', error, 'critical')
+
+    defaultErrorHandler(context)
+
+    // critical 映射到 error 通道（console.error + stack），前缀保留 CRITICAL 标签
+    expect(consoleErrorSpy).toHaveBeenCalled()
+    expect(consoleWarnSpy).not.toHaveBeenCalled()
+    expect(consoleErrorSpy).toHaveBeenCalledWith(expect.stringContaining('[GeomStore][CRITICAL][user-store]'), 'Stack:', 'Critical stack')
+
+    consoleErrorSpy.mockRestore()
+    consoleWarnSpy.mockRestore()
+  })
+
+  test('warn 别名走 warning 通道（console.warn）', () => {
+    const consoleWarnSpy = jest.spyOn(console, 'warn').mockImplementation()
+    const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation()
+    const error = new Error('Warn alias')
+    const context = createErrorContext('user-store', 'action-execution', error, 'warn')
+
+    defaultErrorHandler(context)
+
+    expect(consoleWarnSpy).toHaveBeenCalled()
+    expect(consoleErrorSpy).not.toHaveBeenCalled()
+
+    consoleWarnSpy.mockRestore()
+    consoleErrorSpy.mockRestore()
+  })
+})

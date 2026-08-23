@@ -124,11 +124,25 @@ const storage = {
       return null
     }
   },
-  set: (key: string, value: unknown): void => {
-    wx.setStorageSync(key, typeof value === 'string' ? value : JSON.stringify(value))
+  // set/remove 尽力而为（配额满等存储异常仅记日志不外抛）：
+  // 队列落盘、标记写入、登出清理等调用点众多，逐点兜底易遗漏，
+  // 统一在工具层收敛。需要感知失败的关键路径（热更新备份）
+  // 用返回值判断，保持「备份失败不写标记」的既有契约
+  set: (key: string, value: unknown): boolean => {
+    try {
+      wx.setStorageSync(key, typeof value === 'string' ? value : JSON.stringify(value))
+      return true
+    } catch (error) {
+      logger.error('Storage', `写入 storage 失败: ${key}`, error)
+      return false
+    }
   },
   remove: (key: string): void => {
-    wx.removeStorageSync(key)
+    try {
+      wx.removeStorageSync(key)
+    } catch (error) {
+      logger.error('Storage', `删除 storage 失败: ${key}`, error)
+    }
   },
 }
 
@@ -371,7 +385,11 @@ function backupState<S extends State = State>(store: Store<S>, backupKey: string
     state: store.$snapshot(),
     version: CURRENT_VERSION,
   }
-  storage.set(backupKey, backupData)
+  // 写入失败（配额满等）必须抛错：调用方据此跳过标记写入与 applyUpdate，
+  // 避免重启后凭空执行一次无源恢复
+  if (!storage.set(backupKey, backupData)) {
+    throw new Error(`[HotUpdate] 备份写入 storage 失败: ${backupKey}`)
+  }
 }
 
 /**
@@ -407,34 +425,43 @@ export function initHotUpdate<S extends State = State>(config: HotUpdateConfig<S
       logger.warn('HotUpdate', `store "${registration.store.name}" 已销毁，跳过备份`)
       return
     }
-    try {
-      backupState(registration.store, registration.backupKey)
-      registration.onBeforeUpdate?.()
-    } catch (error) {
-      logger.error('HotUpdate', '备份状态失败:', error)
-    }
 
     wx.showModal({
       title: '更新提示',
       content: '新版本已准备好，是否重启应用？',
       success: (res) => {
-        if (res.confirm) {
-          // 先写待更新重启标记再 applyUpdate：重启后凭标记区分「更新后首启」与
-          // 「拒绝更新后的普通重启」，避免普通重启把备份点之后的持久化变更回滚。
-          // 标记写入失败（存储配额满）不阻断更新：损失的只是恢复语义
-          try {
-            storage.set(pendingLaunchKey(registration.backupKey), true)
-          } catch (markerError) {
-            logger.error('HotUpdate', '写入待更新重启标记失败:', markerError)
-          }
-          updateManager.applyUpdate()
+        if (!res.confirm) return
+        // 备份必须在用户确认时进行而非 onUpdateReady 时：弹窗期间业务仍在运行
+        // （in-flight 请求回调照常 $patch 并经持久化插件落盘），若备份取自弹窗前，
+        // 重启后恢复会把「备份点之前弹窗期间已持久化的变更」整体回滚。
+        // 确认时刻的内存状态 ≥ 此刻任何已持久化数据；残余窗口仅剩
+        // 「确认到进程终止之间」最后一段（受防抖落盘时机影响，无法完全消除）
+        try {
+          backupState(registration.store, registration.backupKey)
+          registration.onBeforeUpdate?.()
+        } catch (error) {
+          logger.error('HotUpdate', '备份状态失败:', error)
+          // 备份失败不阻断更新，但标记不能写：否则重启后会凭空执行一次无源恢复
+          return
         }
+        // 先写待更新重启标记再 applyUpdate：重启后凭标记区分「更新后首启」与
+        // 「拒绝更新后的普通重启」，避免普通重启把备份点之后的持久化变更回滚。
+        // 标记写入失败（storage.set 已尽力而为，仅配额满等异常）不阻断更新：
+        // 损失的只是恢复语义
+        storage.set(pendingLaunchKey(registration.backupKey), true)
+        updateManager.applyUpdate()
       },
     })
   })
 
   updateManager.onUpdateFailed(() => {
     logger.error('HotUpdate', '更新失败')
+    // 更新未生效时必须清理标记与备份：残留标记会让之后的普通冷启动被误判为
+    // 「更新后首启」，把用户继续使用期间的持久化变更回滚到旧备份点
+    if (hotUpdateRegistration) {
+      storage.remove(pendingLaunchKey(hotUpdateRegistration.backupKey))
+      storage.remove(hotUpdateRegistration.backupKey)
+    }
     wx.showToast({ title: '更新失败，请重试', icon: 'none' })
   })
 }
@@ -515,6 +542,13 @@ export class OfflineManager<S extends State = State> {
   private isOnline = true
   /** 同步互斥标志：防止网络恢复回调与手动 syncQueue 并发重复执行队列 */
   private syncing = false
+  /** 同步进行中的队列中间状态：saveQueue 落盘时据此拼接完整联合视图。
+   *  同步期间 enqueue 会触发 saveQueue，若只写 this.actionQueue，
+   *  磁盘会被「仅剩新项」的队列覆写——进程恰在此窗口被杀时，
+   *  未处理的旧操作永久丢失（at-least-once 被破坏）。syncQueue 结束后归空。 */
+  private syncPending: OfflineAction[] = []
+  private syncFailed: OfflineAction[] = []
+  private syncNextIndex = 0
   private disposed = false
   /** 网络监听回调引用，dispose 时用于精确移除。参数类型同时兼容 wx.on/offNetworkStatusChange 两种签名 */
   private networkHandler: ((res: { isConnected?: boolean; errMsg?: string }) => void) | null = null
@@ -568,16 +602,16 @@ export class OfflineManager<S extends State = State> {
 
     this.syncing = true
     const failedActions: OfflineAction[] = []
-    let pendingActions: OfflineAction[] = []
-    let nextIndex = 0
-    try {
-      // 快照-清空模式：先取走当前队列，同步期间新入队的操作保留在 this.actionQueue，
-      // 结束后整体赋值会丢弃同步期间入队的操作，需在失败项回填时合并保留
-      pendingActions = this.actionQueue
-      this.actionQueue = []
+    // 快照-清空模式：先取走当前队列，同步期间新入队的操作保留在 this.actionQueue，
+    // 结束后合并回填。三份中间状态同步到实例字段，供 saveQueue 拼接联合视图落盘
+    this.syncPending = this.actionQueue
+    this.actionQueue = []
+    this.syncFailed = failedActions
+    this.syncNextIndex = 0
 
-      for (; nextIndex < pendingActions.length; nextIndex++) {
-        const action = pendingActions[nextIndex]
+    try {
+      for (; this.syncNextIndex < this.syncPending.length; this.syncNextIndex++) {
+        const action = this.syncPending[this.syncNextIndex]
         const success = await this.tryExecuteAction(action)
         if (!success) {
           action.retryCount++
@@ -601,12 +635,12 @@ export class OfflineManager<S extends State = State> {
       // onDrop 用户回调抛错）时，剩余项既不在 failedActions 也不在已清空的
       // this.actionQueue——遗漏会让残缺队列落盘覆盖磁盘完整旧队列，丢失成为永久。
       // 含当前项（at-least-once：异常中的操作重新入队重试，可能重复进死信，可接受）
-      this.actionQueue = [...failedActions, ...pendingActions.slice(nextIndex), ...this.actionQueue]
-      try {
-        this.saveQueue()
-      } catch (error) {
-        logger.error('OfflineManager', '同步后保存队列失败:', error)
-      }
+      this.actionQueue = [...failedActions, ...this.syncPending.slice(this.syncNextIndex), ...this.actionQueue]
+      // saveQueue 内部已尽力而为（storage.set 不外抛），此处无需再兜底
+      this.saveQueue()
+      this.syncPending = []
+      this.syncFailed = []
+      this.syncNextIndex = 0
       this.syncing = false
     }
   }
@@ -695,7 +729,11 @@ export class OfflineManager<S extends State = State> {
 
       if (wasOffline && this.isOnline) {
         logger.log('OfflineManager', '网络已恢复，开始同步')
-        this.syncQueue()
+        // 浮动 promise：onDrop 回调抛错等异常会沿 syncQueue 传播，
+        // 网络回调内无人接住会成为 unhandled rejection
+        this.syncQueue().catch((error) => {
+          logger.error('OfflineManager', '网络恢复自动同步失败:', error)
+        })
       }
     }
     wx.onNetworkStatusChange(this.networkHandler)
@@ -711,9 +749,16 @@ export class OfflineManager<S extends State = State> {
 
   /**
    * 保存队列到存储
+   *
+   * 同步进行中时队列被拆为「已失败待重试 + 未处理剩余（含当前执行项）+ 新入队」三段，
+   * 必须落盘完整联合视图：否则磁盘被仅含新项的队列覆写，
+   * 进程在同步窗口内被杀会让未处理旧操作永久丢失（at-least-once）
    */
   private saveQueue(): void {
-    storage.set(this.queueKey, this.actionQueue)
+    const view = this.syncing
+      ? [...this.syncFailed, ...this.syncPending.slice(this.syncNextIndex), ...this.actionQueue]
+      : this.actionQueue
+    storage.set(this.queueKey, view)
   }
 
   /**
@@ -976,7 +1021,12 @@ export function createEnterpriseApp(config: EnterpriseAppConfig = {}) {
     onShow() {
       if (offlineManager && offlineManager.getQueueLength() > 0) {
         wx.showLoading({ title: '同步中...' })
-        offlineManager.syncQueue().finally(() => wx.hideLoading())
+        // syncQueue 可 reject（onDrop 回调抛错等），finally 前必须接住，
+        // 避免 unhandled rejection；hideLoading 在成功与失败时都要执行
+        offlineManager
+          .syncQueue()
+          .catch((error) => logger.error('App', '离线队列同步失败:', error))
+          .finally(() => wx.hideLoading())
       }
     },
 

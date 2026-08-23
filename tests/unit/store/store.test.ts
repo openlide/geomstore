@@ -574,17 +574,28 @@ describe('Store - 核心功能', () => {
       expect(listener2).toHaveBeenCalled()
     })
 
-    it('STORE-046: 同一个订阅者多次注册会被去重', () => {
+    it('STORE-046: 同一个订阅者多次注册按注册次数通知，退订只减一（#14 引用计数语义）', () => {
       const store = createStore({ state: { count: 0 } })
       const listener = jest.fn()
 
-      store.subscribe(listener)
-      store.subscribe(listener)
-      store.subscribe(listener)
+      const unsub1 = store.subscribe(listener)
+      const unsub2 = store.subscribe(listener)
+      const unsub3 = store.subscribe(listener)
       store.setState('count', 5)
 
-      // Store使用Set存储订阅者，不会存储重复值
-      expect(listener).toHaveBeenCalledTimes(1)
+      // 与 Redux/Vuex 一致：同一函数注册 N 次收到 N 次回调
+      expect(listener).toHaveBeenCalledTimes(3)
+
+      // 任一份退订只减少一份注册（剩两份，各收到一次回调）
+      unsub1()
+      store.setState('count', 6)
+      expect(listener).toHaveBeenCalledTimes(5)
+
+      // 剩余两份全部退订后才不再收到通知
+      unsub2()
+      unsub3()
+      store.setState('count', 7)
+      expect(listener).toHaveBeenCalledTimes(5)
     })
   })
 
@@ -1975,7 +1986,7 @@ describe('Store - 核心功能', () => {
 
   // ==================== BUG 回归：订阅判重 ====================
   describe('BUG 回归：重复订阅不应驱逐无辜监听器', () => {
-    it('已达上限时重复订阅已有监听器应直接忽略', () => {
+    it('已达上限时重复订阅已有监听器不驱逐无辜监听器（#14 引用计数语义）', () => {
       const store = createStore({
         name: 'dedupe-store',
         state: { v: 0 },
@@ -1986,12 +1997,13 @@ describe('Store - 核心功能', () => {
       store.subscribe(listenerA)
       store.subscribe(listenerB)
 
-      // 重复订阅 B：修复前会先驱逐 A（最旧）再对 B 做 no-op add，A 静默丢失
+      // 修复前会先驱逐 A（最旧）再对 B 做 no-op add，A 静默丢失；
+      // 现在重复订阅 B 仅递增计数，A 不受影响，B 按两份注册收到两次回调
       store.subscribe(listenerB)
       store.setState('v', 1)
 
       expect(listenerA).toHaveBeenCalledTimes(1)
-      expect(listenerB).toHaveBeenCalledTimes(1)
+      expect(listenerB).toHaveBeenCalledTimes(2)
     })
 
     it('onlyOnChange 模式下无变更的 batch 结束不应通知', async () => {
@@ -2096,3 +2108,142 @@ describe('Store - 核心功能', () => {
       expect(listener).toHaveBeenCalledTimes(1)
     })
   })
+
+  // ==================== P0 回归：脏跟踪代理内建对象豁免 ====================
+  describe('BUG 回归：onlyOnChange 脏跟踪代理不包装内建对象', () => {
+    it('action 内读取 Date/Map/Set 状态不应崩溃', () => {
+      const store = createStore({
+        name: 'dirty-builtin-store',
+        state: {
+          when: new Date(1000) as unknown as object,
+          tags: new Map([['a', 1]]) as unknown as object,
+        },
+        notify: { onlyOnChange: true },
+        actions: {
+          readBuiltins(this: { state: { when: Date; tags: Map<string, number> } }) {
+            // 修复前：Date/Map 被脏代理包装，getTime/get 以 Proxy 为 receiver
+            // 抛 "this is not a Date/Map object"
+            return this.state.when.getTime() + (this.state.tags.get('a') ?? 0)
+          },
+        },
+      })
+
+      expect(store.dispatch('readBuiltins')).toBe(1001)
+      store.destroy()
+    })
+
+    it('内建对象豁免不影响普通嵌套对象的变更计数通知', () => {
+      const store = createStore({
+        name: 'dirty-builtin-mixed',
+        state: {
+          nested: { v: 0 },
+          when: new Date(0) as unknown as object,
+        },
+        notify: { onlyOnChange: true },
+        actions: {
+          bump(this: { state: { nested: { v: number } } }) {
+            this.state.nested.v++
+          },
+        },
+      })
+      const listener = jest.fn()
+      store.subscribe(listener)
+
+      store.dispatch('bump')
+
+      expect(listener).toHaveBeenCalledTimes(1)
+      store.destroy()
+    })
+  })
+
+    it('异步 action 失败也应触发 onError 钩子（P1 回归）', async () => {
+      const store = createStore({
+        name: 'async-onerror-store',
+        state: { v: 0 },
+        actions: {
+          async fail() {
+            await Promise.resolve()
+            throw new Error('network down')
+          },
+        },
+      })
+      const onError = jest.fn()
+      store.hooks.on('onError', onError)
+
+      // reject 是 action 最常见的失败形态，监控插件对其不可失明
+      await expect(store.dispatch('fail')).rejects.toThrow('network down')
+      expect(onError).toHaveBeenCalledTimes(1)
+      expect((onError.mock.calls[0][0] as Error).message).toBe('network down')
+      store.destroy()
+    })
+
+// ==================== P2 store 批修复回归（#11/#12/#16） ====================
+describe('P2 修复回归：batch/dispatch 守卫与插件回滚', () => {
+  it('STORE-055 (#11): action 体内使用 batch 不应提前通知中间态', () => {
+    // 自引用：action 体内需访问尚未创建完成的 store；batch 不在 action 上下文
+    // （contextBase）上，必须经外层持有器引用 store 实例（声明与赋值分离，let 为必需）
+    // eslint-disable-next-line prefer-const
+    let storeRef!: { batch: (fn: () => void) => void; setState: (key: 'v', value: number) => void }
+    const store = createStore({
+      name: 'batch-in-dispatch-store',
+      state: { v: 0 },
+      actions: {
+        step() {
+          // dispatch 进行中开启批：批收尾必须被守卫跳过，由 dispatch 收尾统一通知
+          storeRef.batch(() => {
+            storeRef.setState('v', 1)
+          })
+          storeRef.setState('v', 2)
+        },
+      },
+    })
+    storeRef = store
+    const listener = jest.fn()
+    store.subscribe(listener)
+
+    store.dispatch('step')
+
+    expect(store.state.v).toBe(2)
+    // 修复前：批收尾在 dispatch 进行中就通知 v=1，dispatch 收尾再通知 v=2 → 两次回调且泄漏中间态
+    expect(listener).toHaveBeenCalledTimes(1)
+    expect((listener.mock.calls[0][0] as { v: number }).v).toBe(2)
+    store.destroy()
+  })
+
+  it('STORE-056 (#12): batch 收到异步回调时开发模式应告警', async () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {})
+    const store = createStore({ name: 'async-batch-warn-store', state: { v: 0 } })
+
+    const result = store.batch(async () => {
+      await Promise.resolve()
+      return 'done'
+    })
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('batch() 收到异步回调：批保护仅覆盖同步段'),
+    )
+    expect(await result).toBe('done')
+
+    warnSpy.mockRestore()
+    store.destroy()
+  })
+
+  it('STORE-057 (#16): 插件安装失败应回滚入列并上抛错误', () => {
+    const store = createStore({ name: 'plugin-rollback-store', state: { v: 1 } })
+    const badPlugin = {
+      name: 'bad-plugin',
+      install: () => {
+        throw new Error('install boom')
+      },
+    }
+
+    expect(() => store.use(badPlugin)).toThrow('install boom')
+    // 半安装插件不得常驻列表，否则重试 use() 会累积重复条目
+    expect((store as unknown as { _plugins: unknown[] })._plugins).toHaveLength(0)
+
+    const goodPlugin = { name: 'good-plugin', install: jest.fn() }
+    store.use(goodPlugin)
+    expect((store as unknown as { _plugins: unknown[] })._plugins).toEqual([goodPlugin])
+    store.destroy()
+  })
+})

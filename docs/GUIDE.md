@@ -41,13 +41,13 @@
 
 ```javascript
 // 方式一：CommonJS
-const { createStore } = require('./utils/geomstore/dist/index.js')
+const { createStore } = require('./utils/geomstore/dist/cjs/index.js')
 
 // 方式二：解构导入（如果支持）
-const { createStore, withPageStore } = require('./utils/geomstore/dist/index.js')
+const { createStore, withPageStore } = require('./utils/geomstore/dist/cjs/index.js')
 ```
 
-> 💡 复制安装时，本文示例中的 `@openlide/geomstore`（含 `/integrations`、`/plugins` 等子路径）需替换为 `./utils/geomstore/dist/index.js` 全路径；采用 NPM 安装则无需修改。
+> 💡 复制安装时，本文示例中的 `@openlide/geomstore`（含 `/integrations`、`/plugins` 等子路径）需替换为 `./utils/geomstore/dist/cjs/index.js` 全路径；采用 NPM 安装则无需修改。
 
 ### 方式二：NPM 安装
 
@@ -516,7 +516,7 @@ Page(withPageStore(store, {
     'isLoggedIn': 'loggedIn'
   },
 
-  // 页面显示时更新注入
+  // 页面显示时重新注入（需同时开启 autoInject，否则此配置不生效）
   autoUpdateOnShow: true  // 默认 false
 })({
   onLoad() {
@@ -559,7 +559,8 @@ class DataService {
     this.searchResults = await res.json()
   }
   
-  // 节流更新 - 每 100ms 最多执行一次
+  // 节流更新 - 每 100ms 一个窗口：窗口首调立即执行，窗口内被抑制的调用
+  // 以最新参数在窗口末尾补发（leading/trailing 默认双开启）
   @withThrottle(100)
   updateScroll(position: number) {
     this.scrollPosition = position
@@ -573,7 +574,7 @@ class DataService {
     return this.userData
   }
   
-  // 网络请求重试 - 最多 3 次，间隔 1000ms
+  // 网络请求重试 - 最多重试 3 次（共至多 4 次执行），指数退避：1s → 2s → 4s
   @withRetry({ retries: 3, delay: 1000 })
   async fetchWithRetry(url: string) {
     const res = await fetch(url)
@@ -799,7 +800,8 @@ const user = rootStore.stores['user']
 ### 定义类型安全的 Store
 
 ```typescript
-import { createStore, State, Actions, Getters } from '@openlide/geomstore'
+import { createStore } from '@openlide/geomstore'
+import type { State, Actions, Getters } from '@openlide/geomstore'
 
 // 定义状态类型
 interface UserState {
@@ -882,7 +884,7 @@ const name = userStore.getter('displayName')  // string
 
 ### state 工厂函数形式（推荐）
 
-除了上面示例中的字面量对象形式，`createStore` 还支持 **state 工厂函数**形式（Pinia 同款）：
+`createStore` 同时支持对象字面量与 **state 工厂函数**两种形式（Pinia 同款；上文示例已采用工厂形式）：
 
 ```typescript
 import { createStore } from '@openlide/geomstore'

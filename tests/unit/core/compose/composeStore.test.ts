@@ -2152,3 +2152,145 @@ describe('getters 合并', () => {
     expect(getters['user/display']({ name: 'Bob' })).toBe('Bob')
   })
 })
+
+describe('P1 回归：同一微任务内多次变更只广播一次', () => {
+  it('composed 同一微任务内的两次子 store 变更不应重复通知相同状态', async () => {
+    const s1 = createStore({ name: 'p1-notify-a', state: { v: 0 } })
+    const s2 = createStore({ name: 'p1-notify-b', state: { w: 0 } })
+    const composed = composeStore([s1, s2])
+    const listener = jest.fn()
+    composed.subscribe(listener)
+
+    // 同一同步块内连续两次变更：第二次到达时已有待处理通知，
+    // 微任务的广播读取实时合并状态必然已覆盖它——补发是纯冗余双触发
+    s1.setState('v', 1)
+    s2.setState('w', 2)
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(listener).toHaveBeenCalledTimes(1)
+
+    composed.destroy()
+  })
+
+  it('通知回调期间的新变化应重新调度而非丢失', async () => {
+    const s1 = createStore({ name: 'p1-notify-c', state: { v: 0 } })
+    const composed = composeStore([s1])
+    const notifications: Array<Record<string, unknown>> = []
+    let reentrant = false
+    composed.subscribe((state) => {
+      notifications.push(state as Record<string, unknown>)
+      if (!reentrant) {
+        reentrant = true
+        s1.setState('v', 99) // 在监听器回调内再次变更
+      }
+    })
+
+    s1.setState('v', 1)
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(notifications.length).toBeGreaterThanOrEqual(2)
+    expect(composed.getState().v).toBe(99)
+
+    composed.destroy()
+  })
+})
+
+// ==================== #30/#31/#33 修复回归 ====================
+describe('P2 compose 批修复回归', () => {
+  describe('#30 hooks 桥接', () => {
+    it('子 store 的生命周期钩子事件应在组合层同步重发', () => {
+      const child = createStore({ name: 'bridge-child', state: { v: 0 } })
+      const composed = composeStore([child])
+
+      const beforeSetState = jest.fn()
+      const afterSetState = jest.fn()
+      composed.hooks.on('beforeSetState', beforeSetState)
+      composed.hooks.on('afterSetState', afterSetState)
+
+      child.setState('v', 1)
+
+      expect(beforeSetState).toHaveBeenCalled()
+      expect(afterSetState).toHaveBeenCalled()
+    })
+
+    it('action 生命周期钩子事件同样透传', () => {
+      const child = createStore({
+        name: 'bridge-action-child',
+        state: { v: 0 },
+        actions: {
+          inc() {
+            this.setState('v', 1)
+          },
+        },
+      })
+      const composed = composeStore([child])
+
+      const beforeDispatch = jest.fn()
+      const afterDispatch = jest.fn()
+      composed.hooks.on('beforeDispatch', beforeDispatch)
+      composed.hooks.on('afterDispatch', afterDispatch)
+
+      composed.dispatch('inc')
+
+      expect(beforeDispatch).toHaveBeenCalled()
+      expect(afterDispatch).toHaveBeenCalled()
+    })
+
+    it('destroy 后桥接退订：子 store 再触发事件不再转发', () => {
+      const child = createStore({ name: 'bridge-destroyed-child', state: { v: 0 } })
+      const composed = composeStore([child])
+      // 桥接安装后，子 store 的钩子上挂有 composed 的转发器
+      expect(child.hooks.listenerCount('afterSetState')).toBeGreaterThan(0)
+      composed.hooks.on('afterSetState', jest.fn())
+
+      // 保留子 store（运行时支持 destroyStores=false；公共 Store 接口未暴露该参数）
+      ;(composed as unknown as { destroy: (destroyStores?: boolean) => void }).destroy(false)
+
+      // 桥接已退订：子 store 钩子上不再有转发器（否则闭包残留且事件仍会派发到已销毁组合层）
+      expect(child.hooks.listenerCount('afterSetState')).toBe(0)
+    })
+  })
+
+  describe('#31 销毁守卫补全', () => {
+    it('$snapshot/$restore/缓存方法在销毁后应抛错', () => {
+      const child = createStore({ name: 'guard-child', state: { v: 0 } })
+      const composed = composeStore([child])
+      composed.destroy()
+
+      expect(() => composed.$snapshot()).toThrow('[GeomStore] Cannot call $snapshot on a destroyed ComposedStore')
+      expect(() => composed.$restore({} as never)).toThrow('[GeomStore] Cannot call $restore on a destroyed ComposedStore')
+      expect(() => composed.enableCache()).toThrow('[GeomStore] Cannot call enableCache on a destroyed ComposedStore')
+      expect(() => composed.disableCache()).toThrow('[GeomStore] Cannot call disableCache on a destroyed ComposedStore')
+      expect(() => composed.invalidateCache()).toThrow('[GeomStore] Cannot call invalidateCache on a destroyed ComposedStore')
+      expect(() => composed.getCacheStats()).toThrow('[GeomStore] Cannot call getCacheStats on a destroyed ComposedStore')
+    })
+  })
+
+  describe('#33 use 安装失败回滚', () => {
+    it('某个子 store 安装失败时回滚已完成安装的插件', () => {
+      const okChild = createStore({ name: 'rollback-ok', state: { v: 0 } })
+      const badChild = createStore({
+        name: 'rollback-bad',
+        state: { v: 0 },
+      })
+      const plugin = {
+        name: 'boom-plugin',
+        install(store: { name: string }) {
+          if (store.name === 'rollback-bad') {
+            throw new Error('install boom')
+          }
+        },
+      }
+
+      const composed = composeStore([okChild, badChild])
+      expect(() => composed.use(plugin)).toThrow('install boom')
+
+      // okChild 上已回滚：再次手动安装不应出现重复条目
+      const uninstall = okChild.use(plugin)
+      uninstall()
+      expect((okChild as unknown as { _plugins: unknown[] })._plugins).toHaveLength(0)
+    })
+  })
+})

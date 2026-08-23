@@ -54,11 +54,11 @@
 小程序项目/
 └── utils/
     └── geomstore/
-        └── dist/
+        └── dist/        # 构建产物（CJS 单产物，入口为 dist/cjs/index.js）
 ```
 
 ```javascript
-const { createStore } = require('./utils/geomstore/dist/index.js')
+const { createStore } = require('./utils/geomstore/dist/cjs/index.js')
 ```
 
 ### 方式二：NPM 安装
@@ -100,6 +100,7 @@ const userStore = createStore({
 
   actions: {
     // 登录（action 通过 this.state 读写状态，参数为调用时传入）
+    // 示例中的 wx.request 为伪代码：实际项目请自行 promisify 或使用封装请求库
     async login(credentials) {
       const res = await wx.request({
         url: '/api/login',
@@ -339,7 +340,7 @@ if (process.env.NODE_ENV === 'development') {
 
 | 平台               | 支持版本       |
 | ------------------ | -------------- |
-| 微信小程序         | 基础库 3.10.0+ |
+| 微信小程序         | 基础库 ≥2.10.0（建议 3.10.0+） |
 | 微信小程序 Skyline | 完全支持       |
 
 ---
@@ -348,12 +349,13 @@ if (process.env.NODE_ENV === 'development') {
 
 ```
 GeomStore/
-├── dist/                    # 编译产物
-│   ├── index.js             # 入口文件
-│   ├── index.d.ts           # 类型声明
-│   ├── core/                # 核心模块
-│   ├── plugins/             # 插件
-│   └── integrations/        # 集成模块
+├── dist/                    # 编译产物（CJS 单产物）
+│   └── cjs/
+│       ├── index.js         # 入口文件
+│       ├── index.d.ts       # 类型声明
+│       ├── core/            # 核心模块
+│       ├── plugins/         # 插件
+│       └── integrations/    # 集成模块
 ├── src/                     # 源代码
 │   ├── core/                # 核心实现
 │   │   ├── store/           # Store 类
@@ -402,7 +404,7 @@ pnpm run lint
 
 ## 贡献
 
-欢迎提交 Issue 和 Pull Request！
+欢迎提交 Issue 和 Pull Request！贡献流程与规范见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 ---
 

@@ -1122,3 +1122,61 @@ describe('StateProxyManager 补充覆盖', () => {
     })
   })
 })
+
+// ==================== #13 数组子值包装回归 ====================
+describe('数组 symbol 键与自定义属性的对象包装', () => {
+  const protection = { enabled: true, deep: true, productionHandler: 'warn' } as InternalStateProtectionConfig
+  const createArrayProxyManager = () => {
+    const proxyCache = createProxyCache()
+    let isInternal = false
+    return {
+      manager: new StateProxyManager({
+        protection,
+        proxyCache,
+        isInternalAccess: () => isInternal,
+      }),
+      setInternal: (v: boolean) => {
+        isInternal = v
+      },
+    }
+  }
+
+  it('PROTECT-040: 数组 symbol 键上的对象应返回保护代理', () => {
+    const { manager } = createArrayProxyManager()
+    const sym = Symbol('extra')
+    const state = { items: [1, 2, 3] }
+    ;(state.items as unknown as Record<symbol, unknown>)[sym] = { nested: 1 }
+    const proxy = manager.createStateProxy(state, '') as { items: unknown }
+
+    const child = (proxy.items as Record<symbol, unknown>)[sym] as { nested: number }
+    expect(child.nested).toBe(1)
+    // 裸返回会绕过全部写保护
+    expect(() => {
+      child.nested = 999
+    }).toThrow()
+    expect((state.items as unknown as Record<symbol, { nested: number }>)[sym].nested).toBe(1)
+  })
+
+  it('PROTECT-041: 数组自定义属性上的对象应返回保护代理', () => {
+    const { manager } = createArrayProxyManager()
+    const state = { items: [1, 2, 3] }
+    ;(state.items as unknown as Record<string, unknown>).meta = { nested: 1 }
+    const proxy = manager.createStateProxy(state, '') as { items: unknown }
+
+    const meta = (proxy.items as Record<string, unknown>).meta as { nested: number }
+    expect(meta.nested).toBe(1)
+    expect(() => {
+      meta.nested = 999
+    }).toThrow()
+    expect((state.items as unknown as Record<string, { nested: number }>).meta.nested).toBe(1)
+  })
+
+  it('PROTECT-042: 数组自定义属性为原始值时原样返回', () => {
+    const { manager } = createArrayProxyManager()
+    const state = { items: [1, 2, 3] }
+    ;(state.items as unknown as Record<string, unknown>).tag = 'plain'
+    const proxy = manager.createStateProxy(state, '') as { items: unknown }
+
+    expect((proxy.items as Record<string, unknown>).tag).toBe('plain')
+  })
+})
