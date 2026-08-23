@@ -321,12 +321,18 @@ export const timeTravelPlugin = <S extends State = State>(options: TimeTravelOpt
       return () => {
         unsubscribe()
 
-        // 清理实例挂载的 API 引用，避免卸载后残留失效接口
-        delete (store as TimeTravelStore).__timeTravel__
+        // 身份守卫：同 store 后装的第二实例会覆盖这些引用，卸载只清理仍属于
+        // 本实例的条目，避免误删后续插件的接口（与 analyzer 插件的守卫模式对齐）
+        if ((store as TimeTravelStore).__timeTravel__ === api) {
+          delete (store as TimeTravelStore).__timeTravel__
+        }
 
-        // 清理全局引用
+        // 清理全局引用（同样仅限仍是本实例注册的条目）
         if (typeof globalThis !== 'undefined') {
-          delete (globalThis as TimeTravelGlobal).__GEOMSTORE_TIME_TRAVEL__?.[store.name]
+          const g = globalThis as TimeTravelGlobal
+          if (g.__GEOMSTORE_TIME_TRAVEL__?.[store.name] === api) {
+            delete g.__GEOMSTORE_TIME_TRAVEL__[store.name]
+          }
         }
 
         snapshots.length = 0

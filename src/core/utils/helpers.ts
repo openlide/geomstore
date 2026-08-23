@@ -66,6 +66,23 @@ export function shallowEqual(a: unknown, b: unknown): boolean {
     return false
   }
 
+  // 内建对象（Date/RegExp/Map/Set）的自有可枚举键恒为空，只比 Object.keys
+  // 会把内容不同的实例误判为相等（如 new Date(1) vs new Date(2)），
+  // 且该函数是 createSelector 的默认比较器——误判相等会向用户返回陈旧值。
+  // 按内容比较：Date/RegExp 直接比对，Map/Set 无「浅层」语义，复用 deepEqual
+  if (
+    a instanceof Date ||
+    b instanceof Date ||
+    a instanceof RegExp ||
+    b instanceof RegExp ||
+    a instanceof Map ||
+    b instanceof Map ||
+    a instanceof Set ||
+    b instanceof Set
+  ) {
+    return deepEqual(a, b)
+  }
+
   const keysA = Object.keys(a as Record<string, unknown>)
   const keysB = Object.keys(b as Record<string, unknown>)
 
@@ -271,39 +288,57 @@ function defineOwnProperty(target: Record<string, unknown>, key: string, value: 
  * 会进行深拷贝以防止 source 和 target 之间共享引用。
  */
 export function deepMerge<T extends Record<string, unknown>>(target: T, ...sources: Partial<T>[]): T {
+  // 循环引用防护：同一对 (source, target) 只递归合并一次。source 自引用
+  // （a.nested = a）或互相引用时，无守卫会无限递归栈溢出；
+  // 以「源对象 → 目标对象集合」记录，菱形共享的源对象合并进不同目标不受影响
+  const seenPairs = new WeakMap<object, Set<object>>()
+
+  const mergeInto = (dst: Record<string, unknown>, src: Record<string, unknown>): void => {
+    let dsts = seenPairs.get(src)
+    if (!dsts) {
+      dsts = new Set()
+      seenPairs.set(src, dsts)
+    } else if (dsts.has(dst)) {
+      return
+    }
+    dsts.add(dst)
+
+    for (const key of Object.keys(src)) {
+      const sourceVal = src[key]
+
+      if (PROTO_SENSITIVE_KEYS.has(key)) {
+        // 原型链敏感键：深拷贝后作为普通自有属性覆盖，绝不递归合并
+        defineOwnProperty(dst, key, clone(sourceVal))
+        continue
+      }
+
+      const existing = dst[key]
+      if (isObject(sourceVal)) {
+        if (isObject(existing)) {
+          // 纯对象 → 纯对象：递归合并
+          mergeInto(existing as Record<string, unknown>, sourceVal as Record<string, unknown>)
+        } else {
+          // 目标位置为非纯对象（原语/null/数组/Map/Set）：类型冲突时整体替换为深拷贝，
+          // 避免递归合并被静默跳过导致 source 数据丢失
+          defineOwnProperty(dst, key, clone(sourceVal))
+        }
+      } else if (Array.isArray(sourceVal)) {
+        // 数组：深拷贝防止共享引用
+        defineOwnProperty(dst, key, clone(sourceVal))
+      } else if (sourceVal instanceof Map || sourceVal instanceof Set) {
+        // Map/Set：深拷贝为独立实例，避免误合并成空普通对象或共享引用
+        defineOwnProperty(dst, key, clone(sourceVal))
+      } else {
+        defineOwnProperty(dst, key, sourceVal)
+      }
+    }
+  }
+
   for (const source of sources) {
     if (!source) continue
     if (isObject(target) && isObject(source)) {
       // Object.keys 仅取自有可枚举键，天然排除原型链属性
-      for (const key of Object.keys(source)) {
-        const sourceVal = source[key]
-
-        if (PROTO_SENSITIVE_KEYS.has(key)) {
-          // 原型链敏感键：深拷贝后作为普通自有属性覆盖，绝不递归合并
-          defineOwnProperty(target, key, clone(sourceVal))
-          continue
-        }
-
-        const existing = target[key]
-        if (isObject(sourceVal)) {
-          if (isObject(existing)) {
-            // 纯对象 → 纯对象：递归合并
-            deepMerge(existing as Record<string, unknown>, sourceVal as Record<string, unknown>)
-          } else {
-            // 目标位置为非纯对象（原语/null/数组/Map/Set）：类型冲突时整体替换为深拷贝，
-            // 避免递归合并被静默跳过导致 source 数据丢失
-            defineOwnProperty(target, key, clone(sourceVal))
-          }
-        } else if (Array.isArray(sourceVal)) {
-          // 数组：深拷贝防止共享引用
-          defineOwnProperty(target, key, clone(sourceVal))
-        } else if (sourceVal instanceof Map || sourceVal instanceof Set) {
-          // Map/Set：深拷贝为独立实例，避免误合并成空普通对象或共享引用
-          defineOwnProperty(target, key, clone(sourceVal))
-        } else {
-          defineOwnProperty(target, key, sourceVal)
-        }
-      }
+      mergeInto(target as Record<string, unknown>, source as Record<string, unknown>)
     }
   }
 

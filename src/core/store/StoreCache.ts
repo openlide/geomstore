@@ -238,6 +238,9 @@ export class StoreCacheManager<S extends State = State> {
   clearOldState(stateKeys: Array<keyof S>): void {
     stateKeys.forEach((key) => {
       this._cache.delete(key)
+      // TTL 时间戳一并清理：残留条目不影响 get 未命中路径，
+      // 但会让内部 Map 滞留到 disable()/invalidate() 才释放
+      this._timestamps.delete(key)
     })
   }
 

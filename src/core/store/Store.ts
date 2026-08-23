@@ -40,13 +40,13 @@ import { deepMerge } from '../utils/helpers'
 import { LRUCache } from '../cache/LRUCache'
 
 // 子模块导入
-import { StateProxyManager, createProxyCache } from './StateProxy'
+import { StateProxyManager, createProxyCache, isBuiltinObject } from './StateProxy'
 import { SubscriptionManager, createSubscribeFunction } from './SubscriptionManager'
 import { StoreCacheManager } from './StoreCache'
 import { ActionManager, GetterManager } from './ActionManager'
 import { BatchManager } from './BatchManager'
 import type { ProxyCache, InternalStateProtectionConfig } from './types'
-import { deepCloneState, deepFreezeState } from './utils'
+import { deepCloneState, deepFreezeState, isProduction } from './utils'
 
 // Plugin类型别名
 type Plugin = PluginType
@@ -491,8 +491,18 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
     }
     this._plugins.push(plugin)
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const uninstall = this._withInternalAccess(() => plugin.install?.(this as any))
+    let uninstall: unknown
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      uninstall = this._withInternalAccess(() => plugin.install?.(this as any))
+    } catch (error) {
+      // 安装失败回滚入列：否则半安装插件常驻列表，捕获后重试 use() 会累积重复条目
+      const index = this._plugins.indexOf(plugin)
+      if (index !== -1) {
+        this._plugins.splice(index, 1)
+      }
+      throw error
+    }
 
     this._pluginUninstallFns.set(plugin, uninstall as (() => void) | undefined)
 
@@ -708,7 +718,16 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
     // 「无变更 batch 不通知」判定用上陈旧基线而失效
     this.startBatch()
     try {
-      return fn()
+      const result = fn()
+      // 异步回调的批语义无法维持：endBatch 在返回 Promise 时立即执行，
+      // await 之后的写入脱离批保护逐条通知。开发期显式告警，避免静默误解
+      if (!isProduction() && result instanceof Promise) {
+        console.warn(
+          `[GeomStore][${this.name}] batch() 收到异步回调：批保护仅覆盖同步段，` +
+            'await 之后的变更将逐条通知。请在异步完成后再调用 endBatch()，或把异步段移出 batch',
+        )
+      }
+      return result
     } finally {
       this.endBatch()
     }
@@ -796,6 +815,12 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
         if (typeof value !== 'object' || value === null) {
           return value
         }
+        // 内建对象（Date/Map/Set 等）不包装：其方法以内部槽位为 receiver，
+        // 经 Proxy 调用会抛 "this is not a Date/Map object"（与 StateProxy 同契约：
+        // 内建对象内部的变异不计入 mutationCount）
+        if (isBuiltinObject(value)) {
+          return value
+        }
         return self._createDirtyTrackingProxy(value)
       },
       set(obj: object, key: string | symbol, value: unknown): boolean {
@@ -823,6 +848,12 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
 
   /** 批量结束通知：onlyOnChange 模式下批量期间无任何变更则跳过（与 dispatch 收尾语义一致） */
   private _onBatchEnd(): void {
+    // dispatch 进行中（action 体内使用 store.batch）：批收尾不提前通知——
+    // 否则中间态在 action 未完成时外泄，且与 dispatch 收尾补发重复。
+    // 完成后的统一通知已覆盖：默认模式无条件补发，onlyOnChange 按计数差值补发
+    if (this._actionManager.dispatchDepth > 0) {
+      return
+    }
     if (this._notifyOnlyOnChange && this._mutationCount <= this._batchMutationBaseline) {
       return
     }

@@ -367,8 +367,12 @@ export class SelectorComposer {
 
     return (state: S): R => {
       let lastError: Error | undefined
+      // 实际执行的尝试次数：shouldRetry 中途拒绝会提前退出，
+      // error.attempts 必须记录真实次数而非上限 retries + 1
+      let attemptCount = 0
 
       for (let attempt = 0; attempt <= retries; attempt++) {
+        attemptCount = attempt + 1
         try {
           return selector(state)
         } catch (error) {
@@ -383,7 +387,7 @@ export class SelectorComposer {
 
       // retries >= 0 时循环内必然赋过值；兜底仅防御未来逻辑变更
       if (lastError) {
-        throw annotateAttempts(lastError, retries + 1)
+        throw annotateAttempts(lastError, attemptCount)
       }
       /* istanbul ignore next -- 防御性死代码：retries >= 0 时 lastError 必然已赋值 */
       throw new Error('[SelectorComposer] Retry selector failed without error')
@@ -424,8 +428,12 @@ export class SelectorComposer {
 
     return async (state: S): Promise<R> => {
       let lastError: Error | undefined
+      // 实际执行的尝试次数：shouldRetry 中途拒绝会提前退出，
+      // error.attempts 必须记录真实次数而非上限 retries + 1
+      let attemptCount = 0
 
       for (let attempt = 0; ; attempt++) {
+        attemptCount = attempt + 1
         try {
           return selector(state)
         } catch (error) {
@@ -442,7 +450,7 @@ export class SelectorComposer {
       }
 
       if (lastError) {
-        throw annotateAttempts(lastError, retries + 1)
+        throw annotateAttempts(lastError, attemptCount)
       }
       /* istanbul ignore next -- 防御性死代码：retries >= 0 时 lastError 必然已赋值 */
       throw new Error('[SelectorComposer] Retry selector failed without error')
@@ -564,8 +572,13 @@ export class SelectorComposer {
       const now = Date.now()
 
       if (lastCall === 0 || now - lastCall >= interval) {
+        // 取值成功后才提交节流状态：若 selector 抛错，lastCall 保持旧值，
+        // 窗口内的重试仍会走到重算分支——否则首次抛错会把 lastCall 推进到
+        // 当前时刻，窗口内后续调用全部静默返回 undefined（比抛错难排查得多）
+        const value = selector(state)
         lastCall = now
-        lastValue = selector(state)
+        lastValue = value
+        return value
       }
 
       return lastValue

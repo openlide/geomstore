@@ -55,6 +55,11 @@ export class ActionManager<S extends State = State, A extends Actions = Actions>
   private _boundActions: Record<string, (...args: unknown[]) => unknown> = {}
   /** dispatch 嵌套深度计数：嵌套 dispatch 内层结束不得提前复位 dispatching 状态 */
   private _dispatchDepth = 0
+
+  /** 当前 dispatch 嵌套深度（Store 批收尾守卫使用：action 体内 batch 不提前通知） */
+  get dispatchDepth(): number {
+    return this._dispatchDepth
+  }
   private readonly _notifyOnlyOnChange: boolean
   private readonly _getMutationCount: () => number
   private readonly _refreshCache?: () => void
@@ -171,7 +176,13 @@ export class ActionManager<S extends State = State, A extends Actions = Actions>
         }
       }
       if (result instanceof Promise) {
-        result.then(onSettled, onSettled)
+        // 异步失败同样触发 onError 钩子：reject 是 action 最常见的失败形态
+        // （网络请求等），监控/上报插件对其不可失明——与同步 catch 路径对称。
+        // 拒绝值保持原始错误不包装，不改变调用方捕获到的异常类型
+        result.then(onSettled, (error) => {
+          this._hooks.emit('onError', error)
+          onSettled()
+        })
         return result
       }
       // 同步 action：仅最外层 dispatch 且不在 batch 中时通知——

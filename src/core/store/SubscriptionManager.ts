@@ -33,7 +33,8 @@ export interface SubscriptionManagerOptions {
  * 负责管理状态监听器的生命周期
  */
 export class SubscriptionManager<S extends State = State> implements SubscriptionManagerInterface<S> {
-  private readonly _listeners: Set<StateListener<S>> = new Set()
+  /** 监听器 → 注册次数：同一函数注册 N 次通知 N 次，任一份退订只减一（Redux/Vuex 同语义） */
+  private readonly _listeners: Map<StateListener<S>, number> = new Map()
   private readonly _maxSubscribers: number
   private readonly _storeName: string
   private readonly _cloneOnNotify: boolean
@@ -47,26 +48,31 @@ export class SubscriptionManager<S extends State = State> implements Subscriptio
   }
 
   /**
-   * 获取监听器数量
+   * 获取监听器数量（按注册次数计）
    */
   get size(): number {
-    return this._listeners.size
+    let total = 0
+    this._listeners.forEach((count) => {
+      total += count
+    })
+    return total
   }
 
   /**
    * 添加监听器
    *
-   * 达到上限时按 onLimit 策略处理：
+   * 已有监听器的重复订阅仅递增计数，不参与上限判定与驱逐——否则达到上限时
+   * 重复订阅会先驱逐一个无辜的最旧监听器。新监听器达到上限时按 onLimit 策略处理：
    * - evict-oldest：警告并驱逐最早的订阅者（默认）
    * - throw：抛出错误，避免订阅者无声丢失状态更新
    */
   add(listener: StateListener<S>): void {
-    // 判重：已达上限时重复订阅已有监听器会先驱逐一个无辜的最旧监听器，
-    // 再对本就存在的 listener 执行 no-op add——净效果是静默丢一个订阅
-    if (this._listeners.has(listener)) {
+    const existingCount = this._listeners.get(listener)
+    if (existingCount !== undefined) {
+      this._listeners.set(listener, existingCount + 1)
       return
     }
-    if (this._listeners.size >= this._maxSubscribers) {
+    if (this.size >= this._maxSubscribers) {
       if (this._onLimit === 'throw') {
         throw new Error(
           `[GeomStore][${this._storeName}] Subscriber limit reached (${this._maxSubscribers}). Unsubscribe unused listeners or increase maxSubscribers.`,
@@ -75,20 +81,29 @@ export class SubscriptionManager<S extends State = State> implements Subscriptio
       if (!isProduction()) {
         console.warn(`[GeomStore][${this._storeName}] 订阅者数量已达到上限(${this._maxSubscribers})`)
       }
-      const firstListener = this._listeners.values().next().value
-      if (firstListener) {
+      const firstListener = this._listeners.keys().next().value
+      if (firstListener !== undefined) {
         this._listeners.delete(firstListener)
       }
     }
 
-    this._listeners.add(listener)
+    this._listeners.set(listener, 1)
   }
 
   /**
-   * 移除监听器
+   * 移除监听器：存在多份注册时只减一，最后一次调用才真正移除
    */
   delete(listener: StateListener<S>): boolean {
-    return this._listeners.delete(listener)
+    const count = this._listeners.get(listener)
+    if (count === undefined) {
+      return false
+    }
+    if (count <= 1) {
+      this._listeners.delete(listener)
+    } else {
+      this._listeners.set(listener, count - 1)
+    }
+    return true
   }
 
   /**
@@ -102,7 +117,7 @@ export class SubscriptionManager<S extends State = State> implements Subscriptio
    * 通知所有监听器
    *
    * 优化：
-   * - 使用数组遍历比 Set.forEach 更快
+   * - 使用数组遍历比 Map.forEach 更快
    * - cloneOnNotify=true（默认）：创建状态深拷贝避免引用共享问题
    * - cloneOnNotify=false：零拷贝模式，调用方（Store）负责传入只读保护后的状态
    */
@@ -110,7 +125,13 @@ export class SubscriptionManager<S extends State = State> implements Subscriptio
     // 仅在循环前克隆一次，避免对每个监听器重复深拷贝整棵状态树
     // （cloneOnNotify=true 默认开启，单次克隆已能保证监听器间的引用隔离）
     const payload = this._cloneOnNotify ? deepCloneState(state) : state
-    const listeners = [...this._listeners]
+    // 按注册次数展开：重复注册的监听器每次通知收到多次回调
+    const listeners: Array<(state: S) => void> = []
+    this._listeners.forEach((count, listener) => {
+      for (let i = 0; i < count; i++) {
+        listeners.push(listener)
+      }
+    })
 
     for (let i = 0; i < listeners.length; i++) {
       try {

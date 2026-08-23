@@ -24,6 +24,9 @@ export interface CacheDecoratorOptions {
 /** 单宿主缓存条目上限，防止参数空间大的方法导致 Map 无限增长 */
 const MAX_CACHE_ENTRIES = 1000
 
+/** symbolIds 表上限：动态创建的 Symbol 参数（请求令牌等）不可 GC，强引用表会无限增长 */
+const MAX_SYMBOL_IDS = 1000
+
 /** Symbol 实例 → 唯一序号：同 description 的不同 Symbol 序列化后相同（symbol:Symbol(a)），
  *  不加区分会让依赖 Symbol 身份的方法串用缓存 */
 // Map 而非 WeakMap：TS 的 WeakMap 键约束为 object（Symbol 键的 ES2023 扩展未反映到 lib）
@@ -57,6 +60,11 @@ function sortKeysDeep(value: unknown): unknown {
   if (typeof value === 'symbol') {
     let id = symbolIds.get(value)
     if (id === undefined) {
+      // 整表清空而非逐条淘汰：nextSymbolId 保持单调递增，被清空 Symbol 的
+      // 旧缓存键（含旧 id）只会自然失配为 miss（损失命中率），不会与新 id 撞键串用
+      if (symbolIds.size >= MAX_SYMBOL_IDS) {
+        symbolIds.clear()
+      }
       id = ++nextSymbolId
       symbolIds.set(value, id)
     }
