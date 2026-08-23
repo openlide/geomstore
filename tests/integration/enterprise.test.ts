@@ -476,6 +476,36 @@ describe('企业级方案 - 离线状态管理', () => {
       expect((manager as any).actionQueue[0].payload).toBe('concurrent-item')
     })
 
+    it('REGR-OFF-003: 同步进行中入队触发的落盘必须包含未处理旧项（进程被杀不丢队列）', async () => {
+      // 第一个操作执行期间：新操作入队会触发 saveQueue。若落盘只写 this.actionQueue，
+      // 磁盘会被「仅剩新项」的队列覆写——进程恰在此窗口被杀时未处理旧项永久丢失
+      let savedDuringSync: unknown
+      class CrashWindowOfflineManager extends OfflineManager {
+        protected async executeAction(action: OfflineAction): Promise<void> {
+          await super.executeAction(action)
+          if (savedDuringSync === undefined) {
+            // 模拟同步期间用户触发的离线操作：enqueue → saveQueue 落盘
+            void (this as any).enqueue('addItem', 'mid-sync-item')
+            savedDuringSync = mockStorage['crash_window_queue']
+          }
+        }
+      }
+
+      mockStorage['crash_window_queue'] = JSON.stringify([
+        { id: '1', type: 'syncToServer', payload: null, timestamp: Date.now(), retryCount: 0 },
+        { id: '2', type: 'syncToServer', payload: null, timestamp: Date.now(), retryCount: 0 },
+      ])
+      const manager = new CrashWindowOfflineManager(testStore, 'crash_window_queue')
+
+      await manager.syncQueue()
+
+      expect(savedDuringSync).toBeDefined()
+      const persisted = JSON.parse(savedDuringSync as string) as Array<{ id: string; type: string }>
+      // 处理完 id=1 后，磁盘上必须仍有 id=2（未处理旧项）与同步期间新增的操作
+      expect(persisted.some((a) => a.id === '2')).toBe(true)
+      expect(persisted.some((a) => a.type === 'addItem')).toBe(true)
+    })
+
     it('ENTERPRISE-067: dispose 幂等且只移除一次网络监听', () => {
       (mockWx as any).offNetworkStatusChange = jest.fn()
       offlineManager = new OfflineManager(testStore)
@@ -875,21 +905,42 @@ describe('企业级方案 - 热更新初始化', () => {
     expect(mockUpdateListeners.onFailed).toBeDefined()
   })
 
-  it('ENTERPRISE-038: 更新就绪时应该备份状态并弹出确认框', () => {
+  it('ENTERPRISE-038: 更新就绪时弹出确认框，用户确认时才备份状态', () => {
     testStore.$patch({ counter: 42 })
     const onBeforeUpdate = jest.fn()
     initHotUpdate({ store: testStore, onBeforeUpdate })
 
     mockUpdateListeners.onReady!()
 
-    // 备份应该写入存储
-    expect(mockStorage['store_backup_before_update_hot-update-init-test-store']).toBeDefined()
+    // 备份必须在用户确认时进行而非 onUpdateReady 时：弹窗期间业务仍在运行
+    // 并持续持久化，若备份取自弹窗前，重启恢复会把弹窗期间的持久化变更回滚
+    expect(mockWx.showModal).toHaveBeenCalled()
+    expect(mockStorage['store_backup_before_update_hot-update-init-test-store']).toBeUndefined()
+    expect(onBeforeUpdate).not.toHaveBeenCalled()
+
+    const modalOptions = (mockWx.showModal as jest.Mock).mock.calls[0][0]
+    modalOptions.success({ confirm: true })
+
+    // 确认后：备份 + 待更新重启标记 + applyUpdate
     const backup = JSON.parse(mockStorage['store_backup_before_update_hot-update-init-test-store'])
     expect(backup.state).toEqual({ counter: 42 })
     expect(backup.version).toBe('1.0.0')
-
+    expect(mockStorage['store_backup_before_update_hot-update-init-test-store__pending_update_launch']).toBe('true')
     expect(onBeforeUpdate).toHaveBeenCalled()
-    expect(mockWx.showModal).toHaveBeenCalled()
+  })
+
+  it('ENTERPRISE-038b: 用户取消更新时不备份、不写标记、不 applyUpdate', () => {
+    testStore.$patch({ counter: 7 })
+    initHotUpdate({ store: testStore })
+
+    mockUpdateListeners.onReady!()
+    const modalOptions = (mockWx.showModal as jest.Mock).mock.calls[0][0]
+    modalOptions.success({ confirm: false })
+
+    expect(mockStorage['store_backup_before_update_hot-update-init-test-store']).toBeUndefined()
+    expect(mockStorage['store_backup_before_update_hot-update-init-test-store__pending_update_launch']).toBeUndefined()
+    const updateManager = (mockWx.getUpdateManager as jest.Mock).mock.results[0].value
+    expect(updateManager.applyUpdate).not.toHaveBeenCalled()
   })
 
   it('ENTERPRISE-039: 用户确认后应该调用 applyUpdate', () => {
@@ -922,6 +973,24 @@ describe('企业级方案 - 热更新初始化', () => {
     mockUpdateListeners.onFailed!()
 
     expect(mockWx.showToast).toHaveBeenCalledWith({ title: '更新失败，请重试', icon: 'none' })
+  })
+
+  it('ENTERPRISE-041b: 更新失败时应清理标记与备份（防残留标记回滚普通重启）', () => {
+    testStore.$patch({ counter: 9 })
+    initHotUpdate({ store: testStore })
+
+    // 走到确认更新：备份与标记已写入
+    mockUpdateListeners.onReady!()
+    const modalOptions = (mockWx.showModal as jest.Mock).mock.calls[0][0]
+    modalOptions.success({ confirm: true })
+    expect(mockStorage['store_backup_before_update_hot-update-init-test-store']).toBeDefined()
+
+    // 基础库应用更新失败：不清清理会让之后的普通冷启动被误判为「更新后首启」，
+    // 把用户继续使用期间的持久化变更回滚到旧备份点
+    mockUpdateListeners.onFailed!()
+
+    expect(mockStorage['store_backup_before_update_hot-update-init-test-store']).toBeUndefined()
+    expect(mockStorage['store_backup_before_update_hot-update-init-test-store__pending_update_launch']).toBeUndefined()
   })
 })
 
@@ -1274,8 +1343,15 @@ it('ENTERPRISE-061 (BUG 回归): initHotUpdate 幂等安装不累积监听', () 
     }),
     applyUpdate: jest.fn(),
   }
-  const originalGetter = mockWx.getUpdateManager
+  // 保存实现而非 mock 函数本身：mockImplementation(mock 自身) 会形成
+  // 「调用自身实现」的无限递归，污染同文件后续所有 getUpdateManager 调用
+  const originalGetUpdateManagerImpl = (mockWx.getUpdateManager as jest.Mock).getMockImplementation()
+  const originalShowModal = mockWx.showModal
+  let confirmCallback: ((res: { confirm: boolean }) => void) | null = null
   ;(mockWx.getUpdateManager as jest.Mock).mockImplementation(() => sharedManager)
+  ;(mockWx as any).showModal = jest.fn((options: { success: (res: { confirm: boolean }) => void }) => {
+    confirmCallback = options.success
+  })
 
   const localStore = createStore({ name: 'hot-idempotent-store', state: { v: 1 } })
   try {
@@ -1287,12 +1363,119 @@ it('ENTERPRISE-061 (BUG 回归): initHotUpdate 幂等安装不累积监听', () 
     expect(sharedManager.onUpdateReady).toHaveBeenCalledTimes(1)
     expect(sharedManager.onUpdateFailed).toHaveBeenCalledTimes(1)
 
-    // 切换保护目标后再触发：备份来自最新注册的 store
+    // 切换保护目标后再触发：备份来自最新注册的 store（确认更新时写入）
     const otherStore = createStore({ name: 'hot-update-switch-store', state: { v: 7 } })
     initHotUpdate({ store: otherStore })
     mockUpdateListeners.onReady!()
+    confirmCallback!({ confirm: true })
     expect(mockStorage['store_backup_before_update_hot-update-switch-store']).toBeDefined()
   } finally {
-    (mockWx.getUpdateManager as jest.Mock).mockImplementation(originalGetter)
+    const getUpdateManagerMock = mockWx.getUpdateManager as jest.Mock
+    getUpdateManagerMock.mockImplementation(originalGetUpdateManagerImpl!)
+    ;(mockWx as any).showModal = originalShowModal
   }
+})
+
+// ==================== #42 回归：storage 写入异常容错与备份失败契约 ====================
+describe('#42 回归：storage 写入异常容错', () => {
+  beforeEach(() => {
+    Object.keys(mockStorage).forEach((key) => delete mockStorage[key])
+    mockUpdateListeners.onReady = undefined
+  })
+
+  afterEach(() => {
+    // 恢复默认实现，避免影响同文件后续用例（当前为末尾，防御性恢复）
+    const setStorageMock = mockWx.setStorageSync as jest.Mock
+    setStorageMock.mockReset()
+    setStorageMock.mockImplementation((key: string, value: unknown) => {
+      mockStorage[key] = value
+    })
+  })
+
+  it('REGR-ENT-042a: setStorageSync 抛错时离线入队不受影响（saveQueue 尽力而为）', async () => {
+    const setStorageMock = mockWx.setStorageSync as jest.Mock
+    setStorageMock.mockImplementation(() => {
+      throw new Error('quota exceeded')
+    })
+    const store = createStore({ name: 'quota-store', state: { counter: 1 } })
+    const offlineManager = new OfflineManager(store)
+    // 模拟离线
+    ;(offlineManager as unknown as { isOnline: boolean }).isOnline = false
+
+    // 落盘失败不再打断入队路径：操作照常缓存
+    await expect(offlineManager.execute('addItem', () => Promise.resolve(null), 'item-1')).resolves.toBeNull()
+    expect(offlineManager.getQueueLength()).toBe(1)
+
+    offlineManager.dispose()
+  })
+
+  it('REGR-ENT-042b: 热更新备份写入失败时不写标记、不 applyUpdate', () => {
+    const backupKey = 'store_backup_before_update_backup-fail-store'
+    const testStore = createStore({ name: 'backup-fail-store', state: { counter: 1 } })
+    initHotUpdate({ store: testStore })
+
+    // 仅备份键写入失败：验证「先备份成功、后写标记」的顺序契约
+    ;(mockWx.setStorageSync as jest.Mock).mockImplementation((key: string, value: unknown) => {
+      if (key === backupKey) {
+        throw new Error('quota exceeded')
+      }
+      mockStorage[key] = value
+    })
+
+    mockUpdateListeners.onReady!()
+    const showModalCalls = (mockWx.showModal as jest.Mock).mock.calls
+    const modalOptions = showModalCalls[showModalCalls.length - 1][0]
+    modalOptions.success({ confirm: true })
+
+    const getResults = (mockWx.getUpdateManager as jest.Mock).mock.results
+    const updateManager = getResults[getResults.length - 1].value
+    // 备份失败必须阻断更新流程：否则重启后会凭空执行一次无源恢复
+    expect(updateManager.applyUpdate).not.toHaveBeenCalled()
+    expect(mockStorage[`${backupKey}__pending_update_launch`]).toBeUndefined()
+  })
+})
+
+// ==================== 覆盖率缺口补充：热更新守卫路径 ====================
+describe('覆盖率补充：热更新守卫与恢复失败路径', () => {
+  beforeEach(() => {
+    Object.keys(mockStorage).forEach((key) => delete mockStorage[key])
+    mockUpdateListeners.onReady = undefined
+  })
+
+  it('REGR-ENT-COV1: onUpdateReady 时 store 已销毁应跳过备份（不弹确认框）', () => {
+    const store = createStore({ name: 'destroyed-backup-store', state: { counter: 1 } })
+    initHotUpdate({ store })
+    const modalCallsBefore = (mockWx.showModal as jest.Mock).mock.calls.length
+
+    store.destroy()
+    mockUpdateListeners.onReady!()
+
+    // 已销毁 store：$snapshot 会抛错且无人捕获，必须先跳过
+    expect((mockWx.showModal as jest.Mock).mock.calls.length).toBe(modalCallsBefore)
+  })
+
+  it('REGR-ENT-COV2: restoreFromHotUpdate 恢复抛错时应返回 false 且保留备份', () => {
+    const backupKey = 'store_backup_before_update_restore-fail-store'
+    mockStorage[backupKey] = JSON.stringify({
+      timestamp: Date.now(),
+      state: { counter: 42 },
+      version: '1.0.0',
+    })
+    mockStorage[`${backupKey}__pending_update_launch`] = 'true'
+
+    const store = createStore({ name: 'restore-fail-store', state: { counter: 1 } })
+    const spy = jest.spyOn(store, '$restore').mockImplementation(() => {
+      throw new Error('restore boom')
+    })
+
+    const result = restoreFromHotUpdate(store)
+
+    expect(result).toBe(false)
+    expect(store.state.counter).toBe(1)
+    // 恢复失败不清理备份/标记：避免吞掉可重试的恢复机会
+    expect(mockStorage[backupKey]).toBeDefined()
+    expect(mockStorage[`${backupKey}__pending_update_launch`]).toBe('true')
+
+    spy.mockRestore()
+  })
 })

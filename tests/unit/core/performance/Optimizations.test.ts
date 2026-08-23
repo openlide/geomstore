@@ -1295,3 +1295,84 @@ describe('throttle 工具函数 leading=false 分支', () => {
     jest.useRealTimers()
   })
 })
+
+describe('StateFingerprint hashNumber 位级混合（P1 回归）', () => {
+  const fingerprint = new StateFingerprint()
+
+  it('时间戳量级下小幅增量不应产生相同指纹', () => {
+    const base = 1700000000000
+    // 修复前：乘法混合在 1.7e12 量级溢出 int32，+4181/+6765 均与原值碰撞
+    expect(fingerprint.generate({ t: base })).not.toBe(fingerprint.generate({ t: base + 4181 }))
+    expect(fingerprint.generate({ t: base })).not.toBe(fingerprint.generate({ t: base + 6765 }))
+    expect(fingerprint.generate({ t: base })).not.toBe(fingerprint.generate({ t: base + 1 }))
+  })
+
+  it('微小浮点数不应全部塌缩为同一哈希', () => {
+    expect(fingerprint.generate({ v: 0 })).not.toBe(fingerprint.generate({ v: 1e-15 }))
+    expect(fingerprint.generate({ v: 0 })).not.toBe(fingerprint.generate({ v: -1e-12 }))
+    expect(fingerprint.generate({ v: 0 })).not.toBe(fingerprint.generate({ v: -0.5 }))
+  })
+
+  it('相差 2^32 的整数与大有限数不再周期性/溢出碰撞', () => {
+    expect(fingerprint.generate({ n: 0 })).not.toBe(fingerprint.generate({ n: 4294967296 }))
+    expect(fingerprint.generate({ x: 1e301 })).not.toBe(fingerprint.generate({ x: 2e301 }))
+  })
+
+  it('NaN 与 ±Infinity 区分语义保持不变', () => {
+    const hashes = new Set([
+      fingerprint.generate({ a: NaN }),
+      fingerprint.generate({ a: Infinity }),
+      fingerprint.generate({ a: -Infinity }),
+    ])
+    expect(hashes.size).toBe(3)
+  })
+})
+
+// ==================== #34 尾随抛错防护回归 ====================
+describe('debounce/throttle 定时器回调同步抛错防护', () => {
+  it('#34: debounce 尾随执行抛错时记录而非 uncaught exception', (done) => {
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {})
+    const debounced = debounce(() => {
+      throw new Error('debounced boom')
+    }, 10)
+
+    expect(() => debounced()).not.toThrow()
+
+    setTimeout(() => {
+      expect(errorSpy).toHaveBeenCalledWith('[GeomStore] debounced function threw:', expect.any(Error))
+      errorSpy.mockRestore()
+      done()
+    }, 50)
+  })
+
+  it('#34: throttle 尾随补发抛错时记录且节流器保持可用', (done) => {
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {})
+    let shouldThrow = true
+    const calls = jest.fn()
+    const throttled = throttle(
+      () => {
+        calls()
+        if (shouldThrow) {
+          throw new Error('trailing boom')
+        }
+      },
+      20,
+      { leading: false, trailing: true },
+    )
+
+    // 窗口内的调用被抑制为尾随补发，补发时抛错
+    throttled()
+    setTimeout(() => {
+      expect(errorSpy).toHaveBeenCalledWith('[GeomStore] throttled function threw:', expect.objectContaining({ message: 'trailing boom' }))
+
+      // 抛错后节流器仍可用：关闭抛错开关，再次触发应正常执行
+      shouldThrow = false
+      throttled()
+      setTimeout(() => {
+        expect(calls).toHaveBeenCalledTimes(2)
+        errorSpy.mockRestore()
+        done()
+      }, 60)
+    }, 60)
+  })
+})

@@ -979,3 +979,71 @@ describe('Helpers - BUG-5: get 不应命中原型链属性', () => {
     expect(get({ a: { b: 2 } }, 'a.b', 'dft')).toBe(2)
   })
 })
+
+describe('shallowEqual 内建对象内容比较（P1 回归）', () => {
+  it('内容不同的 Date 应判不相等（修复前恒判相等）', () => {
+    expect(shallowEqual(new Date(1), new Date(2))).toBe(false)
+    expect(shallowEqual(new Date(1000), new Date(1000))).toBe(true)
+  })
+
+  it('内容不同的 Map/Set 应判不相等', () => {
+    expect(shallowEqual(new Map([['a', 1]]), new Map())).toBe(false)
+    expect(shallowEqual(new Map([['a', 1]]), new Map([['a', 1]]))).toBe(true)
+    expect(shallowEqual(new Set([1]), new Set([2]))).toBe(false)
+    expect(shallowEqual(new Set([1, 2]), new Set([2, 1]))).toBe(true)
+  })
+
+  it('内容不同的 RegExp 应判不相等', () => {
+    expect(shallowEqual(/ab/g, /ab/i)).toBe(false)
+    expect(shallowEqual(/ab/g, /ab/g)).toBe(true)
+  })
+})
+
+// ==================== #18 deepMerge 循环引用防护回归 ====================
+describe('deepMerge 循环引用防护', () => {
+  it('source 自引用时合并终止且数据完整', () => {
+    const source: Record<string, unknown> = { a: { x: 1 } }
+    ;(source.a as Record<string, unknown>).self = source.a
+
+    const target: Record<string, unknown> = {}
+    expect(() => deepMerge(target, source as never)).not.toThrow()
+    expect((target.a as Record<string, unknown>).x).toBe(1)
+  })
+
+  it('source 与 target 相互嵌套引用时不无限递归', () => {
+    const target: Record<string, unknown> = { name: 't' }
+    const source: Record<string, unknown> = { name: 's' }
+    ;(target as Record<string, unknown>).link = source
+    ;(source as Record<string, unknown>).back = target
+
+    expect(() => deepMerge(target, source as never)).not.toThrow()
+    expect(target.name).toBe('s')
+  })
+
+  it('菱形共享的源对象合并进不同目标不受防护影响', () => {
+    const shared = { x: 1 }
+    const source = { a: shared, b: shared }
+    const target: Record<string, unknown> = {}
+
+    deepMerge(target, source as never)
+    expect((target.a as Record<string, unknown>).x).toBe(1)
+    expect((target.b as Record<string, unknown>).x).toBe(1)
+  })
+})
+
+// ==================== #18 回归补充：循环引用守卫短路分支 ====================
+describe('deepMerge 循环引用守卫（#18 补充）', () => {
+  it('HELPERS-CYCLE-001: source/target 互引时二次递归应被短路而非栈溢出', () => {
+    const target: Record<string, unknown> = {}
+    const source: Record<string, unknown> = { label: 'root' }
+    // 构造「同一对 (source, target) 被再次递归合并」的最短路径：
+    // 双方在同名键上互指自身，根层合并进行到 loop 键时会以相同对重入
+    target.loop = target
+    source.loop = source
+
+    const merged = deepMerge(target, source as typeof target)
+    expect(merged.label).toBe('root')
+    // 引用保持：loop 槽位仍是目标自身（未触发无限递归/未拷贝出环）
+    expect(merged.loop).toBe(merged)
+  })
+})
