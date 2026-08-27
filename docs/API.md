@@ -1,4 +1,4 @@
-# GeomStore v0.2.0 API 参考文档
+# GeomStore v0.2.1 API 参考文档
 
 核心公开接口的 API 参考文档，包含类型定义与使用示例（企业版集成、ActionLoader、StoreRegistry 细节等见对应子路径文档或源码 TSDoc）。
 
@@ -6,7 +6,7 @@
 
 ## 目录
 
-- [GeomStore v0.2.0 API 参考文档](#geomstore-v020-api-参考文档)
+- [GeomStore v0.2.1 API 参考文档](#geomstore-v021-api-参考文档)
   - [目录](#目录)
   - [核心 API](#核心-api)
     - [createStore](#createstore)
@@ -2364,7 +2364,7 @@ type MappedGetters<S, G, M extends (keyof G)[]> = {
 
 ## 版本历史
 
-- **未发布** - 全量审查第三轮修复与回归修复
+- **v0.2.1** - 全量审查第三轮修复与回归修复
   - 数据/视图一致性：$patch 仅对纯对象递归合并（Date/RegExp/类实例等非纯对象整体替换为深拷贝，不再静默丢值）；selector 默认比较器改 deepEqual 且缓存状态快照；bindMappings 对象值免引用脏检查并过滤 undefined
   - 错误子系统：HttpReporter 失败上抛并校验 response.ok；批量 flush 三态判定（超时不算成功、批次重入队）；ErrorBoundary fallback 函数自身抛错时重抛原错误；ErrorRecovery 重试额度按时间窗判定故障周期（修复「新实例重置额度导致 max-retries 失效」回归）
   - 类型层：ActionExecutor/ActionUtils 泛型放宽为 Actions 并返回 Awaited；compose 基例 Record<never, never>；ExtractMapped* 推断修复；withPageStore 入参同态映射提供 C 推断位点

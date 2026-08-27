@@ -2134,7 +2134,7 @@ console.log('After:', snapshot2)
 | 0.1.2 | 2026-08-20 | 文档全面审阅对齐源码、导入统一 NPM 包路径、CJS 单产物 / 14 子路径导出 |
 | 0.1.3 | 2026-08-22 | 契约变更（StorageBackend 同步收窄、ErrorFallback 泛型反转、clone mode 重构等）+ 全量审查修复约 50 项 |
 | 0.2.0 | 2026-08-22 | 全量审查第二轮修复：订阅引用计数、快照数组 diff 与克隆契约、错误系统映射、企业版存储尽力而为语义等约 25 项 |
-| 未发布 | -         | 全量审查第三轮修复与回归修复：deepMerge 纯对象语义、selector 默认 deepEqual + 快照缓存、bindMappings 免脏检查/过滤 undefined、HttpReporter 失败上抛 + flush 三态、ErrorRecovery 时间窗额度、类型层修正、新增导出（详见 CHANGELOG） |
+| 0.2.1 | 2026-08-28 | 全量审查第三轮修复与回归修复：deepMerge 纯对象语义、selector 默认 deepEqual + 快照缓存、bindMappings 免脏检查/过滤 undefined、HttpReporter 失败上抛 + flush 三态、ErrorRecovery 时间窗额度、类型层修正、新增导出（详见 CHANGELOG） |
 
 ### C. 参与贡献
 
@@ -2145,6 +2145,6 @@ console.log('After:', snapshot2)
 
 ---
 
-**GeomStore v0.2.0** - 轻量级微信小程序状态管理库
+**GeomStore v0.2.1** - 轻量级微信小程序状态管理库
 
 Copyright (c) 2026 GeomStore Team. Licensed under MIT.

@@ -1,6 +1,6 @@
 {
   "name": "@openlide/geomstore",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "轻量级微信小程序状态管理库 - 简洁、高效、易用",
   "main": "dist/cjs/index.js",
   "types": "dist/cjs/index.d.ts",
