@@ -1360,11 +1360,20 @@ describe('ErrorRecovery 模块', () => {
 // ==================== BUG 回归：重试额度按故障周期计量 ====================
 describe('RETRY 额度按故障周期计量（BUG 回归）', () => {
   let recovery: ErrorRecovery
+  let dateNowSpy: jest.SpiedFunction<typeof Date.now>
+  let now: number
+
   beforeEach(() => {
     recovery = new ErrorRecovery()
+    now = 1_000_000
+    dateNowSpy = jest.spyOn(Date, 'now').mockImplementation(() => now)
   })
 
-  it('REGR-RECOVERY-001: 调用方重试成功后，新故障周期应获得完整额度', async () => {
+  afterEach(() => {
+    dateNowSpy.mockRestore()
+  })
+
+  it('REGR-RECOVERY-001: 窗口外出现的新故障周期应获得完整额度', async () => {
     recovery.configure({
       TEST_CYCLE: {
         strategy: RecoveryStrategy.RETRY,
@@ -1378,7 +1387,10 @@ describe('RETRY 额度按故障周期计量（BUG 回归）', () => {
     const errorA = new GeomStoreError('周期一错误', 'TEST_CYCLE')
     await expect(recovery.recover(errorA)).rejects.toThrow(errorA)
 
-    // 周期 2：新错误实例出现，额度应从 0 重新计（修复前本周期只剩 1 次重试，
+    // 时间跳过周期窗（retryDelay 0 时窗口为 60s 下限）：视为上一周期已结束
+    now += 61_000
+
+    // 周期 2：额度应从 0 重新计（若沿用残留计数，本周期只剩 1 次重试，
     // 连续间歇性故障最终出现「零重试」周期）
     const errorB = new GeomStoreError('周期二错误', 'TEST_CYCLE')
     await expect(recovery.recover(errorB)).rejects.toThrow(errorB)
@@ -1407,5 +1419,27 @@ describe('RETRY 额度按故障周期计量（BUG 回归）', () => {
 
     // storeB 的额度仍在：第二次调用应达到上限而非获得新额度
     await expect(recovery.recover(errB)).rejects.toThrow('Max retries (1) exceeded')
+  })
+
+  it('REGR-RECOVERY-003: 窗口内连续新实例触发 recover 应累计额度，max-retries 保护不失效', async () => {
+    recovery.configure({
+      TEST_STORM: {
+        strategy: RecoveryStrategy.RETRY,
+        maxRetries: 2,
+        retryDelay: 0,
+        exponentialBackoff: false,
+      },
+    })
+
+    // 文档化用法（BEST_PRACTICES.md）：调用方每次失败都 createError 出新实例再 recover，
+    // 且重试间隔（retryDelay 0 + 调用方自身重试耗时）远小于 60s 窗口。
+    // 修复前按「新错误实例 = 新故障周期」重置额度，每次调用都拿到全新额度，
+    // 永远达不到 max-retries——防重试风暴保护完全失效
+    for (let i = 1; i <= 2; i++) {
+      const error = new GeomStoreError(`失败${i}`, 'TEST_STORM')
+      await expect(recovery.recover(error)).rejects.toThrow(error)
+    }
+    const third = new GeomStoreError('失败3', 'TEST_STORM')
+    await expect(recovery.recover(third)).rejects.toThrow('Max retries (2) exceeded')
   })
 })
