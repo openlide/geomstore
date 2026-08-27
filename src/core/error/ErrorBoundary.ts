@@ -193,7 +193,18 @@ export class ErrorBoundary<S = unknown, F = undefined> {
     if (this.fallback !== undefined) {
       // 输出完整错误对象（含堆栈）而非仅 message：吞错路径的现场信息是排障唯一线索
       console.warn('[ErrorBoundary] Returning fallback state due to error:', error)
-      return typeof this.fallback === 'function' ? (this.fallback as (error: Error, currentState: S | undefined) => F)(error, currentState) : this.fallback
+      if (typeof this.fallback === 'function') {
+        // fallback 函数自身就是容错路径，出错概率不低：不加保护会以 fallback
+        // 的异常顶替原错误逃逸（原错误现场丢失）。失败时重抛原错误，
+        // 与上方 onError 回调的防护口径一致
+        try {
+          return (this.fallback as (error: Error, currentState: S | undefined) => F)(error, currentState)
+        } catch (fallbackError) {
+          console.error('[ErrorBoundary] Error in fallback function:', fallbackError)
+          throw error
+        }
+      }
+      return this.fallback
     }
 
     return undefined

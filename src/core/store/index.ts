@@ -19,6 +19,7 @@ export type { SubscriptionManagerOptions } from './SubscriptionManager'
 
 export { StoreCacheManager } from './StoreCache'
 export type { StoreCacheOptions } from './StoreCache'
+export type { CacheStats } from '../../types/store'
 
 export { ActionManager, GetterManager } from './ActionManager'
 export type { ActionManagerOptions } from './ActionManager'

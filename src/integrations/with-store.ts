@@ -122,12 +122,11 @@ export function withPageStore<S extends State, A extends Actions, G extends Gett
   const injectMapping = options.injectMapping || {}
 
   return function <C extends PageOptions>(
-    // 入参使用具体类型（不依赖 C），使字面量方法内的 this 被统一注入为 PageThis：
-    // - WithPageThis 显式重写已知生命周期方法的 this 参数
-    // - ThisType<PageThis<...>> 标记让自定义方法（仅能命中 PageOptions 索引签名的 onInput 等）
-    //   在 noImplicitThis 开启时也获得精确 this，避免退化为 unknown / object
-    // C 仅用于返回类型，保留自定义方法 / data 的精确类型
-    PageConfig: WithPageThis<Omit<PageOptions, 'data'>, PageThis<S, A, G, O>> & { data: object } & ThisType<PageThis<S, A, G, O>>,
+    // WithPageThis 是同态映射类型，作为入参类型为 C 提供推断位点：
+    // 传入的配置字面量（含自定义方法 / data）反向推断出 C，返回类型据此保留精确成员；
+    // 修复前入参为具体类型（不含 C），C 只能回退到约束 PageOptions，
+    // 自定义方法在返回值上退化为 unknown（编译期即报错）
+    PageConfig: WithPageThis<C, PageThis<S, A, G, O>> & { data: object } & ThisType<PageThis<S, A, G, O>>,
   ): PageThis<S, A, G, O, PageOwnMethods<C>> & Omit<C, 'data'> & { data: (C extends { data: infer D } ? D : object) & ExtractPageData<S, O, G> } {
     const enhancedConfig = { ...PageConfig } as PageOptions
 

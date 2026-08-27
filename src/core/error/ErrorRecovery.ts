@@ -139,6 +139,8 @@ export interface RecoveryContext {
 export class ErrorRecovery {
   private strategies: RecoveryStrategyMap = {}
   private retryCount = new Map<string, number>()
+  // 重试键 → 最近一次出现该键错误的实例：用于识别「新故障周期」并重置计数
+  private lastRetryInstance = new Map<string, GeomStoreError>()
 
   /**
    * 配置错误恢复策略
@@ -313,12 +315,23 @@ export class ErrorRecovery {
 
     // 获取重试计数
     const retryKey = this.getRetryKey(error)
+
+    // 新错误实例首次出现：上一故障周期已结束（调用方重试成功后不再调用 recover，
+    // 残留计数无清除路径，跨周期累计会让后续周期提前耗尽额度甚至出现「零重试」周期），
+    // 重置该键计数，使重试额度按故障周期而非按错误码终身累计
+    if (this.lastRetryInstance.get(retryKey) !== error) {
+      this.lastRetryInstance.set(retryKey, error)
+      this.retryCount.delete(retryKey)
+    }
+
     const currentAttempt = this.getRetryCount(retryKey)
 
     // 检查是否超过最大重试次数
     if (currentAttempt >= maxRetries) {
-      // 达到上限：清除计数，避免调用方后续重试成功后额度被残留计数永久消耗
-      this.clearRetryCount(error.code)
+      // 达到上限：仅清除当前键的计数（下一故障周期从 0 重新开始）。
+      // 不按 code 级联全清——同码其他 store/operation 的进行中额度会被误重置，
+      // 防重试风暴的上限保护对它们失效
+      this.retryCount.delete(retryKey)
       throw new Error(`[ErrorRecovery] Max retries (${maxRetries}) exceeded for error: ${error.message}`)
     }
 
