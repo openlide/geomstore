@@ -1,4 +1,4 @@
-# GeomStore v0.2.0 API 参考文档
+# GeomStore v0.2.1 API 参考文档
 
 核心公开接口的 API 参考文档，包含类型定义与使用示例（企业版集成、ActionLoader、StoreRegistry 细节等见对应子路径文档或源码 TSDoc）。
 
@@ -6,7 +6,7 @@
 
 ## 目录
 
-- [GeomStore v0.2.0 API 参考文档](#geomstore-v020-api-参考文档)
+- [GeomStore v0.2.1 API 参考文档](#geomstore-v021-api-参考文档)
   - [目录](#目录)
   - [核心 API](#核心-api)
     - [createStore](#createstore)
@@ -21,6 +21,7 @@
   - [Action 系统](#action-系统)
     - [dispatch](#dispatch)
     - [Action 上下文](#action-上下文)
+    - [ActionExecutor / ActionUtils](#actionexecutor--actionutils)
   - [Getter 系统](#getter-系统)
     - [getter](#getter)
   - [订阅系统](#订阅系统)
@@ -51,6 +52,7 @@
     - [withPageStore](#withpagestore)
     - [withComponentStore](#withcomponentstore)
     - [withAppStore](#withappstore)
+    - [bindMappings](#bindmappings)
   - [Store 组合](#store-组合)
     - [composeStore](#composestore)
     - [StoreRegistry](#storeregistry)
@@ -546,6 +548,43 @@ actions: {
 
 ---
 
+### ActionExecutor / ActionUtils
+
+独立 Action 执行器（从主入口导出），提供执行历史与性能统计，适用于在 Store 体系之外执行动作集合。
+
+**签名：**
+
+```typescript
+class ActionExecutor<A extends Actions = AsyncActions> {
+  execute<K extends keyof A>(actions: A, actionName: K, ...args: Parameters<A[K]>): Promise<Awaited<ReturnType<A[K]>>>
+  executeParallel<K extends keyof A>(actions: A, tasks: Array<{ action: K; args: Parameters<A[K]> }>): Promise<Array<Awaited<ReturnType<A[K]>> | Error>>
+  executeSequential<K extends keyof A>(actions: A, tasks: Array<{ action: K; args: Parameters<A[K]> }>): Promise<Array<Awaited<ReturnType<A[K]>> | Error>>
+  executeWithRetry<K extends keyof A>(actions: A, actionName: K, args: Parameters<A[K]>, options?): Promise<Awaited<ReturnType<A[K]>>>
+  executeWithTimeout<K extends keyof A>(actions: A, actionName: K, args: Parameters<A[K]>, timeout: number): Promise<Awaited<ReturnType<A[K]>>>
+}
+
+class ActionUtils<A extends Actions = AsyncActions> {
+  execute<K extends keyof A>(actions: A, actionName: K, ...args: Parameters<A[K]>): Promise<Awaited<ReturnType<A[K]>>>
+}
+```
+
+> ℹ️ 泛型约束为 `Actions`（同步 / 异步 action 均可），`AsyncActions` 仅是默认值；返回类型为 `Promise<Awaited<ReturnType<A[K]>>>`，异步 action 拿到的是 resolve 后的值，不会出现 `Promise<Promise<T>>`。
+
+**示例：**
+
+```javascript
+const { ActionExecutor } = require('@openlide/geomstore')
+
+const executor = new ActionExecutor()
+const result = await executor.execute(actions, 'fetchData', 'user-123')
+const results = await executor.executeParallel(actions, [
+  { action: 'fetchUser', args: ['u1'] },
+  { action: 'fetchPosts', args: ['u1'] }
+]) // 失败的成员对应位置为 Error 实例
+```
+
+---
+
 ## Getter 系统
 
 ### getter
@@ -960,9 +999,20 @@ store.use(loggerPlugin)
 
 持久化插件，将状态保存到存储。
 
-```javascript
-const { persistencePlugin } = require('@openlide/geomstore')
+微信小程序环境可直接使用内置的 `WxStorageBackend`（主入口导出，基于 `wx.getStorageSync` / `wx.setStorageSync` / `wx.removeStorageSync`，经 `globalThis` 读取 `wx` 并对存储异常做尽力而为兜底）：
 
+```javascript
+const { persistencePlugin, WxStorageBackend } = require('@openlide/geomstore')
+
+store.use(persistencePlugin({
+  key: 'app-state',
+  storage: new WxStorageBackend(),
+  filter: (state) => ({ userInfo: state.userInfo }),
+  restore: true,
+  debounce: 500
+}))
+
+// 自定义存储后端（StorageBackend 仅支持同步实现）
 store.use(persistencePlugin({
   key: 'app-state',
   storage: {
@@ -970,9 +1020,7 @@ store.use(persistencePlugin({
     setItem: (key, value) => wx.setStorageSync(key, value),
     removeItem: (key) => wx.removeStorageSync(key)
   },
-  filter: (state) => ({ userInfo: state.userInfo }),
-  restore: true,
-  debounce: 500
+  restore: true
 }))
 ```
 
@@ -1054,7 +1102,7 @@ timeTravel.goTo(5)
 
 将 Store 连接到页面。
 
-`S` / `A` / `G` 均从 store 参数自动推断，`O` 保留 options 字面量类型用于精确推导：`mapState` / `mapGetters` / `mapActions` 的键与值拼错时会在编译期报错；装饰器返回类型重写所有方法的 `this` 为 `PageThis`，使方法内 `this.data` / `this.xxx` 自动获得精确类型推导（含 data、actions、自定义方法）。
+`S` / `A` / `G` 均从 store 参数自动推断，`O` 保留 options 字面量类型用于精确推导：`mapState` / `mapGetters` / `mapActions` 的键与值拼错时会在编译期报错。入参类型 `WithPageThis<C, PageThis<S, A, G, O>>` 是同态映射类型：它既为配置字面量提供 `C` 的推断位点（自定义方法 / data 的精确类型在返回值上得以保留），又为已知生命周期方法重写 `this`；配合 `ThisType<PageThis<...>>` 标记，所有方法内的 `this.data` / `this.xxx` 自动获得精确类型推导（含 data、actions、自定义方法）。
 
 > ℹ️ `ExtractPageData` 为有意宽松的契约（交叉完整 `S`）：未在 mapState/mapGetters 中映射的状态键在类型上可见，但运行时不一定存在于 data（访问得 undefined）；需要严格的「仅映射键」类型请使用 `ExtractMappedState`。
 
@@ -1064,7 +1112,9 @@ timeTravel.goTo(5)
 function withPageStore<S, A, G, O extends ConnectOptions<S, A, G>>(
   store: Store<S, A, G>,
   options?: O
-): <C extends PageOptions>(pageOptions: C) => PageThis<S, A, G, O, PageOwnMethods<C>> & Omit<C, 'data'> & { data: C.data & ExtractPageData<S, O, G> }
+): <C extends PageOptions>(
+  pageOptions: WithPageThis<C, PageThis<S, A, G, O>> & { data: object } & ThisType<PageThis<S, A, G, O>>
+) => PageThis<S, A, G, O, PageOwnMethods<C>> & Omit<C, 'data'> & { data: (C extends { data: infer D } ? D : object) & ExtractPageData<S, O, G> }
 ```
 
 **参数：**
@@ -1129,7 +1179,7 @@ Page(withPageStore(app.userStore, {
 
 将 Store 连接到组件。
 
-类型推断与 `withPageStore` 一致（S/A/G/O 从 store 与 options 自动推断，映射键拼错编译报错，装饰器重写方法 this 为 `ComponentThis`）。Component 的自定义方法与 actions 均在 `methods` 命名空间内（与微信官方 Component API 一致）。
+类型推断与 `withPageStore` 一致（S/A/G/O 从 store 与 options 自动推断，映射键拼错编译报错；自定义方法经 `ComponentOwnMethods<C>` 保留精确类型并额外获得 `ComponentThis` 成员）。Component 的自定义方法与 actions 均在 `methods` 命名空间内（与微信官方 Component API 一致）。
 
 **签名：**
 
@@ -1137,7 +1187,7 @@ Page(withPageStore(app.userStore, {
 function withComponentStore<S, A, G, O extends ConnectOptions<S, A, G>>(
   store: Store<S, A, G>,
   options?: O
-): <C extends ComponentOptions>(componentOptions: C) => ComponentThis<S, A, G, O, ComponentOwnMethods<C>> & Omit<C, 'data' | 'methods'> & { data: C.data & ExtractPageData<S, O, G> }
+): <C extends ComponentOptions>(componentOptions: C) => ComponentThis<S, A, G, O, ComponentOwnMethods<C>> & Omit<C, 'data' | 'methods'> & { data: (C extends { data: infer D } ? D : object) & ExtractPageData<S, O, G> }
 ```
 
 **示例：**
@@ -1207,6 +1257,32 @@ App(withAppStore(globalStore, {})({
 
 ---
 
+### bindMappings
+
+底层绑定工具（从 `@openlide/geomstore/integrations` 子路径导入），将 Store 状态键映射到宿主 `setData`，`withPageStore` / `withComponentStore` 内部亦基于它实现。
+
+**行为约定：**
+
+- **对象值不做引用脏检查、始终纳入 setData 更新**：`$patch` 对嵌套对象是原地深合并（引用不变），引用比较无法感知内部变化，按宁多勿漏原则对象值每次都写入。
+- **`undefined` 被过滤**：更新值与初始值中的 `undefined` 字段都不会写入 setData（微信 `setData` 不接受 `undefined`，会报错且字段不生效）；需要清除字段请映射为 `null`。
+- 原始值仍走引用 / NaN 比较，仅变化时写入。
+
+```javascript
+const { bindMappings } = require('@openlide/geomstore/integrations')
+
+// 签名：bindMappings(target, mappings, getValue, setter, subscribeStore)
+// mappings 为「本地键 → Store 键」；返回各绑定的解绑函数数组
+const unbinds = bindMappings(
+  pageInstance,
+  { userDisplay: 'userInfo.name', count: 'count' },
+  (storeKey) => store.state[storeKey],
+  (updates) => pageInstance.setData(updates), // 全部映射合并为一次 setData
+  (callback) => store.subscribe(callback)
+)
+```
+
+---
+
 ## Store 组合
 
 ### composeStore
@@ -1267,6 +1343,8 @@ rootStore.dispatch('cart/addItem', product)
 
 > ⚠️ 非命名空间模式下 `$replaceState` 保留整体替换语义：未包含某子 store 键时，该子 store 对应状态将被替换丢失。开发模式下会输出 `console.warn` 提示缺失的键；如需保留未提供的状态，请改用 `$patch`。命名空间模式下按子 store 整体替换，无此告警。
 
+> ℹ️ `ComposedStore` 类本身也作为值导出（`import { ComposedStore }`），可用于 `instanceof` 判断或扩展；`composed.destroy(destroyStores?)` 的 `destroyStores` 参数默认为 `true`（级联销毁子 Store），传 `false` 仅销毁组合层、保留子 Store 可继续使用。
+
 ---
 
 ### StoreRegistry
@@ -1324,6 +1402,17 @@ function createSelector<S, R>(
 ): Selector<S, R>
 ```
 
+**SelectorOptions：**
+
+| 字段       | 类型     | 默认值     | 说明                                                             |
+| ---------- | -------- | ---------- | ---------------------------------------------------------------- |
+| cache      | boolean  | `true`     | 是否启用缓存                                                     |
+| cacheSize  | number   | `10`       | 缓存条目上限（LRU 淘汰）                                         |
+| cacheTTL   | number   | `5000`     | 缓存存活时间（毫秒）                                             |
+| equalityFn | Function | `deepEqual`| 状态比较函数；显式传入 falsy 值视同未提供，回退默认               |
+
+> ⚠️ 默认比较器是 `deepEqual` 而非 `shallowEqual`：Store 状态为就地变异（`getState` 返回活动引用、`$patch` 原地深合并），引用/浅比较会在状态已变化时误判相等，TTL 内返回陈旧值。缓存对状态的比较基于写入时的**快照**（深拷贝）而非活动引用，保证就地变异能被感知。
+
 **示例：**
 
 ```javascript
@@ -1356,7 +1445,7 @@ function createMemoizedSelector<S, R>(
 
 | 参数       | 类型     | 说明                                                          |
 | ---------- | -------- | ------------------------------------------------------------- |
-| equalityFn | Function | 可选，比较函数（默认 `shallowEqual`），决定是否命中记忆化缓存 |
+| equalityFn | Function | 可选，比较函数（默认 `deepEqual`），决定是否命中记忆化缓存 |
 
 **示例：**
 
@@ -1514,13 +1603,12 @@ try {
 
 **方法：**
 
-| 方法                    | 说明                                                                                                                    |
-| ----------------------- | ----------------------------------------------------------------------------------------------------------------------- |
-| configure(strategies)   | 配置恢复策略                                                                                                            |
-| getConfig(code)         | 获取策略配置                                                                                                            |
-| recover(error, context) | 尝试恢复                                                                                                                |
-| clearRetryCount(code)   | 清除指定错误码的重试计数（**精确匹配**错误码，不会误清同前缀的其他错误码，如清除 `AUTH` 不会影响 `AUTH_FAILED` 的计数） |
-| clearAllRetryCounts()   | 清除重试计数                                                                                                            |
+| 方法                    | 说明                                                        |
+| ----------------------- | ----------------------------------------------------------- |
+| configure(strategies)   | 配置恢复策略                                                |
+| getConfig(code)         | 获取策略配置                                                |
+| recover(error, context) | 尝试恢复（**仅接受 `GeomStoreError` 实例**，其他 Error 会抛出异常；普通 Error 需先用 `createError` 包装） |
+| clearAllRetryCounts()   | 清除全部重试计数与周期窗                                    |
 
 **恢复策略：**
 
@@ -1534,7 +1622,12 @@ try {
 
 **语义说明：**
 
-- `RETRY`：延迟 `retryDelay` 后**重抛原错误**，由调用方捕获后自行重试原操作（库内不持有原操作引用，无法自动重试）；达到 `maxRetries` 上限时自动清除该错误码的重试计数，避免后续重试成功后额度被残留计数永久占用。
+- `RETRY`：延迟 `retryDelay` 后**重抛原错误**，由调用方捕获后自行重试原操作（库内不持有原操作引用，无法自动重试）。重试额度（`maxRetries`）按**故障周期**计量，周期以时间窗判定：
+  - 窗口 = `max(60s, 本周期全部退避总时长 × 2)`（指数退避总时长 = `retryDelay × (2^maxRetries − 1)`，线性 = `retryDelay × maxRetries`）。
+  - 窗口内无论错误实例是否为新建（「每次失败 `createError` 新实例再 `recover`」的常见用法），额度都持续累计，`maxRetries` 防重试风暴保护始终生效。
+  - 超过窗口未再出现同类错误，视为上一故障周期已结束，额度重置（解决「调用方重试成功后残留计数无清除路径」问题）。
+  - 达到上限时仅清除当前键（`code:storeName:operation`）的计数与窗口，**不按错误码级联全清**——同码其他 store/operation 的进行中额度不受影响。
+  - 重试键取错误 `context` 中的 `storeName` / `operation`（未提供时为 `unknown`），同码不同 store 的额度相互隔离。
 - `FALLBACK`：显式配置 `fallback` 字段（即使值为 `undefined`）时返回该回退值；未配置 `fallback` 字段时走失败分支（不会与「显式配置 `undefined` 回退值」混淆）。
 
 **示例：**
@@ -1571,6 +1664,12 @@ const result = await recovery.recover(error, { storeName: 'user' })
 全局默认实例通过 `getDefaultMonitoring()` 惰性单例获取（首次访问才创建，仅 import 不会产生实例与定时器）；`defaultMonitoring` 为其兼容代理（已废弃，建议改用 `getDefaultMonitoring()`）。
 
 内置 `ConsoleReporter` 在不支持 `console.group` / `console.groupEnd` 的环境（如微信真机基础库）会自动降级为 `console.error` 平铺输出，信息内容不变，不会因分组 API 缺失而静默失效。
+
+**上报失败语义：**
+
+- `HttpReporter.report` / `reportBatch` 失败时**向上抛出**（不再内部吞错）：内部批量管线会对 rejection 兜底（全部 reporter 失败的批次按序重入队，等待下次 flush 重试）；直接调用这两个方法的使用方需自行 `catch`。
+- 默认 fetch 实现会校验 `response.ok`：4xx/5xx 抛出 `HTTP <status>`，服务端拒绝不再被当作上报成功。
+- 批量 flush 对每个 reporter 做 `ok / fail / timeout` 三态判定：只有任务真正 resolve 才算成功；超时（`reportTimeout`）不算成功，告警后该批次与其他失败批次一样重入队重试。
 
 **方法：**
 
@@ -1772,11 +1871,12 @@ isFunction(() => {}) // true
 isArray([]) // true
 isPromise(Promise.resolve()) // true
 
-// 比较
+// 比较（均只比较自有可枚举属性，不沿原型链取值）
 shallowEqual({ a: 1 }, { a: 1 }) // true
 deepEqual({ a: { b: 1 } }, { a: { b: 1 } }) // true
+shallowEqual(Object.create({ a: 1 }), { a: 1 }) // false：b 侧同名键在原型上不算自有属性
 
-// 合并
+// 合并（原地修改 target，返回 target）
 deepMerge({ a: 1 }, { b: 2 }) // { a: 1, b: 2 }
 
 // 路径访问
@@ -1792,6 +1892,13 @@ const cloned = clone({ a: { b: 1 } })
 // 'json'：JSON 往返副本（有损：Date 变字符串、Map/Set 变 {}、丢 undefined/函数）
 const lossless = clone(obj, { mode: 'safe' })
 ```
+
+**`deepMerge` 合并规则：**
+
+- 纯对象 → 纯对象（`isPlainObject`：原型为 `Object.prototype` 或 `null`）递归合并。
+- 源值为数组 / `Map` / `Set` / `Date` / `RegExp` / 类实例等**非纯对象**时，目标位置**整体替换为深拷贝**（Date/RegExp 的自有可枚举键恒为空，递归合并会静默丢弃补丁值；类实例也不与纯对象散合并）。
+- 目标位置为非纯对象（原语 / null / 数组等）而源值为纯对象时，同样整体替换为深拷贝。
+- 循环引用有防护（WeakMap 配对跟踪），自引用 / 互引用结构不会栈溢出。
 
 ### 其他工具
 
@@ -1885,17 +1992,17 @@ class SearchService {
 ```typescript
 function withThrottle(
   interval?: number,
-  options?: { leading?: boolean; trailing?: boolean }
+  options?: ThrottleDecoratorOptions
 ): MethodDecorator
 ```
 
-**参数：**
+**ThrottleDecoratorOptions：**
 
 | 参数 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
 | interval | number | 300 | 节流间隔（毫秒） |
-| options.leading | boolean | true | 新窗口首次调用是否立即执行 |
-| options.trailing | boolean | true | 窗口结束时是否以最新参数补发被抑制的调用（fire-and-forget） |
+| leading | boolean | true | 新窗口首次调用是否立即执行 |
+| trailing | boolean | true | 窗口结束时是否以最新参数补发被抑制的调用（fire-and-forget） |
 
 > ℹ️ 支持同步与异步方法：装饰异步方法时，被节流跳过的调用返回 `Promise<undefined>`（保持调用方 `await` 语义）。异步判定基于函数原型比较，构建压缩（混淆函数名）后依然可靠。
 
@@ -2078,20 +2185,20 @@ class DataService {
 **签名：**
 
 ```typescript
-class ErrorBoundary<S = unknown> {
-  constructor(options?: ErrorBoundaryOptions<S>)
+class ErrorBoundary<S = unknown, F = undefined> {
+  constructor(options?: ErrorBoundaryOptions<S, F>)
 
-  // 同步执行函数，捕获错误
-  execute<T>(fn: () => T, currentState?: S): T | undefined
+  // 同步执行函数，捕获错误（配置了 fallback 返回 F，否则 undefined）
+  execute<T>(fn: () => T, currentState?: S): T | F
 
   // 异步执行函数，捕获错误
-  executeAsync<T>(fn: () => Promise<T>, currentState?: S): Promise<T | undefined>
+  executeAsync<T>(fn: () => Promise<T>, currentState?: S): Promise<T | F>
 
   // 获取回退状态（fallback 为计算函数时返回 undefined）
-  getFallbackState(): S | undefined
+  getFallbackState(): F | undefined
 
   // 设置回退状态
-  setFallbackState(state: S): void
+  setFallbackState(state: F): void
 
   // 获取错误历史（副本）
   getErrorHistory(): Error[]
@@ -2131,12 +2238,14 @@ const boundary = new ErrorBoundary({
   },
 })
 
-// 执行并捕获错误（可恢复时返回 undefined，不可恢复时重新抛出）
+// 执行并捕获错误（配置了 fallback 返回回退值，否则重抛）
 const result = boundary.execute(() => riskyOperation(), currentState)
 
 // 异步执行
 const asyncResult = await boundary.executeAsync(() => riskyAsyncOperation())
 ```
+
+> ⚠️ `fallback` 为计算函数且**自身抛错**时：错误会被记录（`console.error`），随后**重抛原始错误**（而不是让 fallback 的异常顶替原错误逃逸，丢失原错误现场）。
 
 ---
 
@@ -2255,6 +2364,11 @@ type MappedGetters<S, G, M extends (keyof G)[]> = {
 
 ## 版本历史
 
+- **v0.2.1** - 全量审查第三轮修复与回归修复
+  - 数据/视图一致性：$patch 仅对纯对象递归合并（Date/RegExp/类实例等非纯对象整体替换为深拷贝，不再静默丢值）；selector 默认比较器改 deepEqual 且缓存状态快照；bindMappings 对象值免引用脏检查并过滤 undefined
+  - 错误子系统：HttpReporter 失败上抛并校验 response.ok；批量 flush 三态判定（超时不算成功、批次重入队）；ErrorBoundary fallback 函数自身抛错时重抛原错误；ErrorRecovery 重试额度按时间窗判定故障周期（修复「新实例重置额度导致 max-retries 失效」回归）
+  - 类型层：ActionExecutor/ActionUtils 泛型放宽为 Actions 并返回 Awaited；compose 基例 Record<never, never>；ExtractMapped* 推断修复；withPageStore 入参同态映射提供 C 推断位点
+  - 新增导出：WxStorageBackend、ComposedStore（值）；ErrorFallback、CacheStats、ThrottleDecoratorOptions（类型）
 - **v0.2.0** - 全量审查第二轮修复
   - 订阅引用计数、dispatch 内 batch 守卫、快照数组逐元素 diff 与克隆契约收紧、错误级别映射补齐、企业版存储尽力而为语义等（详见 CHANGELOG）
 - **v0.1.3** - 契约变更与全量审查修复

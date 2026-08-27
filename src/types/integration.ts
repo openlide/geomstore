@@ -40,13 +40,17 @@ export type ExtractMappedState<
   S extends State = State,
   M extends { mapState?: readonly (keyof S)[] | Record<string, keyof S> } = { mapState?: readonly (keyof S)[] | Record<string, keyof S> },
 > =
-  Extract<M['mapState'], readonly unknown[]> extends readonly (infer K)[]
-    ? { [P in K & keyof S]: S[P] }
-    : Extract<M['mapState'], Record<string, keyof S>> extends infer R
-      ? [R] extends [never]
-        ? object
-        : { [P in keyof R & string]: S[R[P] & keyof S] }
-      : object
+  Extract<M['mapState'], readonly unknown[]> extends infer Arr
+    ? [Arr] extends [never]
+      ? Extract<M['mapState'], Record<string, keyof S>> extends infer R
+        ? [R] extends [never]
+          ? object
+          : { [P in keyof R & string]: S[R[P] & keyof S] }
+        : object
+      : Arr extends readonly unknown[]
+        ? { [P in Arr[number] & keyof S]: S[P] }
+        : object
+    : object
 
 /**
  * 从映射数组提取计算属性类型
@@ -58,13 +62,17 @@ export type ExtractMappedGetters<
   M extends { mapGetters?: readonly PropertyKey[] | Record<string, PropertyKey> } = { mapGetters?: readonly PropertyKey[] | Record<string, PropertyKey> },
   G extends { [K: string]: (state: never) => unknown } = { [K: string]: (state: never) => unknown },
 > =
-  Extract<M['mapGetters'], readonly PropertyKey[]> extends readonly (infer K)[]
-    ? { [P in K & keyof G]: ReturnType<G[P]> }
-    : Extract<M['mapGetters'], Record<PropertyKey, PropertyKey>> extends infer R
-      ? [R] extends [never]
-        ? object
-        : { [P in keyof R & string]: ReturnType<G[Extract<R[P], keyof G>]> }
-      : object
+  Extract<M['mapGetters'], readonly PropertyKey[]> extends infer Arr
+    ? [Arr] extends [never]
+      ? Extract<M['mapGetters'], Record<PropertyKey, PropertyKey>> extends infer R
+        ? [R] extends [never]
+          ? object
+          : { [P in keyof R & string]: ReturnType<G[Extract<R[P], keyof G>]> }
+        : object
+      : Arr extends readonly unknown[]
+        ? { [P in Arr[number] & keyof G]: ReturnType<G[P]> }
+        : object
+    : object
 
 /**
  * 从映射配置提取 actions 类型（精确签名）
@@ -76,15 +84,19 @@ export type ExtractMappedActions<
   A extends Actions = Actions,
   M extends { mapActions?: readonly (keyof A)[] | Record<string, keyof A> } = { mapActions?: readonly (keyof A)[] | Record<string, keyof A> },
 > =
-  Extract<M['mapActions'], readonly unknown[]> extends readonly (infer K)[]
-    ? { [P in K & keyof A]: (...args: InferActionArgs<A, P>) => InferActionReturn<A, P> }
-    : Extract<M['mapActions'], Record<string, keyof A>> extends infer R
-      ? [R] extends [never]
-        ? object
-        : {
-            [P in keyof R & string]: (...args: InferActionArgs<A, R[P] & keyof A>) => InferActionReturn<A, R[P] & keyof A>
-          }
-      : object
+  Extract<M['mapActions'], readonly unknown[]> extends infer Arr
+    ? [Arr] extends [never]
+      ? Extract<M['mapActions'], Record<string, keyof A>> extends infer R
+        ? [R] extends [never]
+          ? object
+          : {
+              [P in keyof R & string]: (...args: InferActionArgs<A, R[P] & keyof A>) => InferActionReturn<A, R[P] & keyof A>
+            }
+        : object
+      : Arr extends readonly unknown[]
+        ? { [P in Arr[number] & keyof A]: (...args: InferActionArgs<A, P>) => InferActionReturn<A, P> }
+        : object
+    : object
 
 /**
  * 从 ConnectOptions 提取完整的页面 data 类型

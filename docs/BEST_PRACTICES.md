@@ -888,6 +888,8 @@ const monitoring = new ErrorMonitoring({
   reporters: [
     new ConsoleReporter(),
     // 生产环境添加 HTTP Reporter
+    // 注意：HttpReporter.report/reportBatch 失败会向上抛出（并校验 response.ok），
+    // 内部批量管线已对失败兜底（批次重入队重试）；绕过管线直接调用需自行 catch
     // new HttpReporter('https://api.example.com/errors')
   ],
   batchInterval: 5000
@@ -991,6 +993,14 @@ actions: {
   }
 }
 ```
+
+**重试额度按故障周期计量（时间窗判定）：**
+
+- 周期窗口 = `max(60s, 本周期全部退避总时长 × 2)`（指数退避总时长 = `retryDelay × (2^maxRetries − 1)`，线性 = `retryDelay × maxRetries`）。
+- 窗口内即使每次失败都像上例一样 `createError` 出**新错误实例**再 `recover`，额度也持续累计——`maxRetries` 防重试风暴保护不会因为换实例而失效。
+- 超过窗口未再出现同类错误，视为上一周期已结束（调用方重试成功后不再调用 `recover`），额度重置。
+- 重试键取错误 `context` 的 `storeName` / `operation`（缺省为 `unknown`）：上例的 `geomError` 未带 context，同码错误共享同一个 `code:unknown:unknown` 额度；不同 store/操作希望额度隔离时，用 `createError(code, message, { storeName, operation })` 附加上下文。
+- 达到上限只清除当前键的计数与窗口，同码其他 store/操作进行中的额度不受影响。
 
 ---
 

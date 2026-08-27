@@ -1354,22 +1354,24 @@ interface ComposeOptions {
 }
 
 // 从 Store 数组推断组合状态类型
+// 基例使用 Record<never, never>（无索引签名的空对象类型）而非 Record<string, never>：
+// 后者会向交叉类型注入 [x: string]: never 索引签名，污染组合 Store 的状态属性类型
 type ExtractStates<Stores extends readonly StoreLike[]> = 
   Stores extends readonly [infer First extends StoreLike, ...infer Rest extends StoreLike[]]
     ? First['state'] & ExtractStates<Rest>
-    : Record<string, never>
+    : Record<never, never>
 
 // 从 Store 数组推断组合 Actions 类型
 type ExtractActions<Stores extends readonly StoreLike[]> = 
   Stores extends readonly [infer First extends StoreLike, ...infer Rest extends StoreLike[]]
     ? First['actions'] & ExtractActions<Rest>
-    : Record<string, never>
+    : Record<never, never>
 
 // 从 Store 数组推断组合 Getters 类型
 type ExtractGetters<Stores extends readonly StoreLike[]> = 
   Stores extends readonly [infer First extends StoreLike, ...infer Rest extends StoreLike[]]
     ? First['getters'] & ExtractGetters<Rest>
-    : Record<string, never>
+    : Record<never, never>
 ```
 
 ### 4.3 插件接口
@@ -1435,7 +1437,7 @@ interface ConnectOptions<
 }
 ```
 
-> 类型推断：`withPageStore` / `withComponentStore` / `withAppStore` 的 `S` / `A` / `G` 均从 store 参数自动推断（依赖 `store.getters` 提供的 G 属性级推断位点），`O` 保留 options 字面量类型用于精确推导；三组映射的键与值拼错时编译期报错；装饰器返回类型重写所有方法的 `this` 为 `PageThis` / `ComponentThis`，使方法内 `this.data` / `this.xxx` 自动获得精确类型推导（含 data、actions、自定义方法），无需手动声明泛型参数。
+> 类型推断：`withPageStore` / `withComponentStore` / `withAppStore` 的 `S` / `A` / `G` 均从 store 参数自动推断（依赖 `store.getters` 提供的 G 属性级推断位点），`O` 保留 options 字面量类型用于精确推导；三组映射的键与值拼错时编译期报错。`withPageStore` 的入参类型 `WithPageThis<C, PageThis<...>>` 是同态映射类型：既为配置字面量提供 `C` 的推断位点（自定义方法 / data 的精确类型在返回值上得以保留），又为已知生命周期方法重写 `this`，配合 `ThisType<PageThis<...>>` 标记使方法内 `this.data` / `this.xxx` 自动获得精确类型推导（含 data、actions、自定义方法），无需手动声明泛型参数。
 
 ---
 
@@ -2099,24 +2101,29 @@ console.log('After:', snapshot2)
 
 ## 附录
 
-### A. 完整 API 列表
+### A. 常用 API 列表
 
 | API                                       | 描述             |
 | ----------------------------------------- | ---------------- |
 | `createStore(options)`                    | 创建 Store 实例  |
-| `composeStore(stores, options)`           | 组合多个 Store   |
-| `createSelector(fn)`                      | 创建基础选择器   |
+| `composeStore(stores, options)`           | 组合多个 Store（`ComposedStore` 类同样作为值导出，`destroy(destroyStores?)` 默认级联销毁子 Store） |
+| `createSelector(fn)`                      | 创建基础选择器（默认比较器 `deepEqual`，缓存状态快照） |
 | `createMemoizedSelector(fn, equalityFn?)` | 创建记忆化选择器 |
 | `createParametricSelector(fn)`            | 创建参数化选择器 |
 | `LRUCache`                                | LRU 缓存类       |
 | `withPageStore(store, options)`           | Page 集成        |
 | `withComponentStore(store, options)`      | Component 集成   |
 | `withAppStore(store, options)`            | App 集成         |
+| `bindMappings(target, mappings, ...)`     | 底层绑定工具（`@openlide/geomstore/integrations` 子路径；对象值免脏检查、过滤 undefined） |
+| `ActionExecutor` / `ActionUtils`          | 独立 Action 执行器（泛型 `Actions`，返回 `Awaited` 结果） |
+| `ErrorRecovery` / `RecoveryStrategy`      | 错误恢复（RETRY 额度按时间窗判定故障周期） |
+| `ErrorMonitoring` / `HttpReporter`        | 错误上报（reporter 失败上抛、flush 三态判定） |
 | `loggerPlugin`                            | 日志插件         |
 | `persistencePlugin`                       | 持久化插件       |
 | `devtoolsPlugin`                          | DevTools 插件    |
 | `timeTravelPlugin`                        | 时间旅行插件     |
 | `analyzerPlugin`                          | 性能分析插件     |
+| `WxStorageBackend`                        | 内置微信同步存储后端 |
 
 ### B. 版本历史
 
@@ -2127,6 +2134,7 @@ console.log('After:', snapshot2)
 | 0.1.2 | 2026-08-20 | 文档全面审阅对齐源码、导入统一 NPM 包路径、CJS 单产物 / 14 子路径导出 |
 | 0.1.3 | 2026-08-22 | 契约变更（StorageBackend 同步收窄、ErrorFallback 泛型反转、clone mode 重构等）+ 全量审查修复约 50 项 |
 | 0.2.0 | 2026-08-22 | 全量审查第二轮修复：订阅引用计数、快照数组 diff 与克隆契约、错误系统映射、企业版存储尽力而为语义等约 25 项 |
+| 0.2.1 | 2026-08-28 | 全量审查第三轮修复与回归修复：deepMerge 纯对象语义、selector 默认 deepEqual + 快照缓存、bindMappings 免脏检查/过滤 undefined、HttpReporter 失败上抛 + flush 三态、ErrorRecovery 时间窗额度、类型层修正、新增导出（详见 CHANGELOG） |
 
 ### C. 参与贡献
 
@@ -2137,6 +2145,6 @@ console.log('After:', snapshot2)
 
 ---
 
-**GeomStore v0.2.0** - 轻量级微信小程序状态管理库
+**GeomStore v0.2.1** - 轻量级微信小程序状态管理库
 
 Copyright (c) 2026 GeomStore Team. Licensed under MIT.

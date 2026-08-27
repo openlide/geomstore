@@ -1047,3 +1047,66 @@ describe('deepMerge 循环引用守卫（#18 补充）', () => {
     expect(merged.loop).toBe(merged)
   })
 })
+
+// ==================== BUG 回归：非纯对象源值与原型链判等 ====================
+describe('deepMerge 非纯对象源值替换语义（BUG 回归）', () => {
+  it('REGR-HELPER-011: Date 源值应整体替换而非静默保留旧值', () => {
+    const target: Record<string, unknown> = { ts: new Date(1000) }
+    const source = { ts: new Date(2000) }
+    const result = deepMerge(target, source as never)
+    expect((result.ts as Date).getTime()).toBe(2000)
+    // 深拷贝为独立实例，不与 source 共享引用
+    expect(result.ts).not.toBe(source.ts)
+  })
+
+  it('REGR-HELPER-012: RegExp 源值应整体替换', () => {
+    const target: Record<string, unknown> = { pattern: /a/g }
+    deepMerge(target, { pattern: /b/i } as never)
+    expect((target.pattern as RegExp).source).toBe('b')
+    expect((target.pattern as RegExp).flags).toBe('i')
+  })
+
+  it('REGR-HELPER-013: Date 与普通对象双向覆盖均应整体替换', () => {
+    const target1: Record<string, unknown> = { a: { x: 1 } }
+    deepMerge(target1, { a: new Date(3000) } as never)
+    expect(target1.a).toBeInstanceOf(Date)
+    expect((target1.a as Date).getTime()).toBe(3000)
+
+    const target2: Record<string, unknown> = { a: new Date(1000) }
+    deepMerge(target2, { a: { x: 1 } } as never)
+    expect(target2.a).toEqual({ x: 1 })
+  })
+
+  it('REGR-HELPER-014: 类实例源值不应把数据合并进旧对象（应替换）', () => {
+    class Point {
+      constructor(
+        public x: number,
+        public y: number,
+      ) {}
+    }
+    const target: Record<string, unknown> = { p: { stale: true } }
+    deepMerge(target, { p: new Point(1, 2) } as never)
+    expect(target.p).toBeInstanceOf(Point)
+    expect((target.p as unknown as Point).x).toBe(1)
+    expect((target.p as unknown as Record<string, unknown>).stale).toBeUndefined()
+  })
+})
+
+describe('shallowEqual/deepEqual 原型链键（BUG 回归）', () => {
+  it('REGR-HELPER-015: b 侧同名键在原型上时 shallowEqual 不应误判相等', () => {
+    const a = { z: 1 }
+    const b = Object.assign(Object.create({ z: 1 }), { w: 2 })
+    expect(shallowEqual(a, b)).toBe(false)
+  })
+
+  it('REGR-HELPER-016: deepEqual 不应通过 b 侧原型链取值', () => {
+    const a = { a: 1 }
+    const b = Object.assign(Object.create({ a: 1 }), { z: 5 })
+    expect(deepEqual(a, b)).toBe(false)
+  })
+
+  it('自有键相同时仍应正常判相等', () => {
+    expect(shallowEqual({ a: 1, b: 2 }, { b: 2, a: 1 })).toBe(true)
+    expect(deepEqual({ a: { x: 1 } }, { a: { x: 1 } })).toBe(true)
+  })
+})

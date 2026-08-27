@@ -13,6 +13,7 @@
  */
 
 import type { AsyncActions, ActionResult } from '../../types/action'
+import type { Actions } from '../../types/store'
 
 /**
  * Action执行器类
@@ -20,7 +21,7 @@ import type { AsyncActions, ActionResult } from '../../types/action'
  * 负责管理异步Action的执行、重试、超时和性能监控
  *
  * @class ActionExecutor
- * @template A - 异步Actions类型
+ * @template A - Actions 类型（异步/同步均可；AsyncActions 仅作为默认值）
  * @since 1.0.0
  *
  * @example
@@ -67,7 +68,7 @@ import type { AsyncActions, ActionResult } from '../../types/action'
  * console.log(`Success rate: ${stats.successRate}%`)
  * ```
  */
-export class ActionExecutor<A extends AsyncActions = AsyncActions> {
+export class ActionExecutor<A extends Actions = AsyncActions> {
   /**
    * Action执行历史记录
    * @private
@@ -91,7 +92,7 @@ export class ActionExecutor<A extends AsyncActions = AsyncActions> {
    * @param {A} actions - Actions对象
    * @param {K} actionName - 要执行的Action名称
    * @param {Parameters<A[K]>} args - Action参数
-   * @returns {Promise<ReturnType<A[K]>>} Action执行结果
+   * @returns {Promise<Awaited<ReturnType<A[K]>>>} Action执行结果（异步 action 返回其 resolve 值，不会出现 Promise<Promise<T>>）
    * @throws {Error} 如果Action执行失败
    *
    * @example
@@ -104,7 +105,7 @@ export class ActionExecutor<A extends AsyncActions = AsyncActions> {
    * }
    * ```
    */
-  async execute<K extends keyof A>(actions: A, actionName: K, ...args: Parameters<A[K]>): Promise<ReturnType<A[K]>> {
+  async execute<K extends keyof A>(actions: A, actionName: K, ...args: Parameters<A[K]>): Promise<Awaited<ReturnType<A[K]>>> {
     const startTime = Date.now()
 
     try {
@@ -123,7 +124,8 @@ export class ActionExecutor<A extends AsyncActions = AsyncActions> {
         String(actionName),
       )
 
-      return result as ReturnType<A[keyof A]>
+      // await 已解开 Promise，result 即 Awaited<ReturnType<A[K]>>，无需断言
+      return result
     } catch (error) {
       const endTime = Date.now()
 
@@ -151,7 +153,7 @@ export class ActionExecutor<A extends AsyncActions = AsyncActions> {
    * @template K - Action名称类型
    * @param {A} actions - Actions对象
    * @param {Array<{action: K, args: Parameters<A[K]>}>} tasks - 任务列表
-   * @returns {Promise<Array<ReturnType<A[K]> | Error>>} 执行结果数组（成功返回结果，失败返回Error）
+   * @returns {Promise<Array<Awaited<ReturnType<A[K]>> | Error>>} 执行结果数组（成功返回结果，失败返回Error）
    *
    * @example
    * ```typescript
@@ -170,7 +172,7 @@ export class ActionExecutor<A extends AsyncActions = AsyncActions> {
    * })
    * ```
    */
-  async executeParallel<K extends keyof A>(actions: A, tasks: Array<{ action: K; args: Parameters<A[K]> }>): Promise<Array<ReturnType<A[K]> | Error>> {
+  async executeParallel<K extends keyof A>(actions: A, tasks: Array<{ action: K; args: Parameters<A[K]> }>): Promise<Array<Awaited<ReturnType<A[K]>> | Error>> {
     return Promise.all(tasks.map((task) => this.execute(actions, task.action, ...task.args).catch((error) => error)))
   }
 
@@ -182,7 +184,7 @@ export class ActionExecutor<A extends AsyncActions = AsyncActions> {
    * @template K - Action名称类型
    * @param {A} actions - Actions对象
    * @param {Array<{action: K, args: Parameters<A[K]>}>} tasks - 任务列表
-   * @returns {Promise<Array<ReturnType<A[K]> | Error>>} 执行结果数组
+   * @returns {Promise<Array<Awaited<ReturnType<A[K]>> | Error>>} 执行结果数组
    *
    * @example
    * ```typescript
@@ -201,8 +203,8 @@ export class ActionExecutor<A extends AsyncActions = AsyncActions> {
    * }
    * ```
    */
-  async executeSequential<K extends keyof A>(actions: A, tasks: Array<{ action: K; args: Parameters<A[K]> }>): Promise<Array<ReturnType<A[K]> | Error>> {
-    const results: Array<ReturnType<A[K]> | Error> = []
+  async executeSequential<K extends keyof A>(actions: A, tasks: Array<{ action: K; args: Parameters<A[K]> }>): Promise<Array<Awaited<ReturnType<A[K]>> | Error>> {
+    const results: Array<Awaited<ReturnType<A[K]>> | Error> = []
 
     for (const task of tasks) {
       try {
@@ -229,7 +231,7 @@ export class ActionExecutor<A extends AsyncActions = AsyncActions> {
    * @param {number} [options.retries=3] - 最大重试次数
    * @param {number} [options.delay=100] - 基础重试延迟（毫秒）
    * @param {(error: Error, attempt: number) => void} [options.onRetry] - 重试回调
-   * @returns {Promise<ReturnType<A[K]>>} Action执行结果
+   * @returns {Promise<Awaited<ReturnType<A[K]>>>} Action执行结果
    * @throws {Error} 如果所有重试都失败
    *
    * @example
@@ -261,7 +263,7 @@ export class ActionExecutor<A extends AsyncActions = AsyncActions> {
       delay?: number
       onRetry?: (error: Error, attempt: number) => void
     } = {},
-  ): Promise<ReturnType<A[K]>> {
+  ): Promise<Awaited<ReturnType<A[K]>>> {
     const { retries = 3, delay = 100, onRetry } = options
     let lastError: Error | undefined
 
@@ -298,7 +300,7 @@ export class ActionExecutor<A extends AsyncActions = AsyncActions> {
    * @param {K} actionName - Action名称
    * @param {Parameters<A[K]>} args - Action参数
    * @param {number} timeout - 超时时间（毫秒）
-   * @returns {Promise<ReturnType<A[K]>>} Action执行结果
+   * @returns {Promise<Awaited<ReturnType<A[K]>>>} Action执行结果
    * @throws {Error} 如果超时或Action执行失败
    *
    * @example
@@ -321,7 +323,7 @@ export class ActionExecutor<A extends AsyncActions = AsyncActions> {
    * }
    * ```
    */
-  async executeWithTimeout<K extends keyof A>(actions: A, actionName: K, args: Parameters<A[K]>, timeout: number): Promise<ReturnType<A[K]>> {
+  async executeWithTimeout<K extends keyof A>(actions: A, actionName: K, args: Parameters<A[K]>, timeout: number): Promise<Awaited<ReturnType<A[K]>>> {
     // execute 为 async 方法不会同步抛出，且 Promise 构造器同步执行，
     // 因此 finally 到达时 timer 必已赋值（确定赋值断言，避免死分支）
     let timer!: ReturnType<typeof setTimeout>

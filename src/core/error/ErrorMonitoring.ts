@@ -120,8 +120,12 @@ function createDefaultRequest(options: RequestInit): HttpRequestImpl {
   }
 
   return async (url, body, method, headers) => {
-    // 透传全部 RequestInit 配置；method/headers/body 以归一化后的上报参数为准
-    await fetch(url, { ...options, method, headers, body })
+    // 透传全部 RequestInit 配置；method/headers/body 以归一化后的上报参数为准。
+    // 必须校验 ok：fetch 对 4xx/5xx 不 reject，不校验会把服务端拒绝当作上报成功
+    const response = await fetch(url, { ...options, method, headers, body })
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`)
+    }
   }
 }
 
@@ -156,53 +160,50 @@ export class HttpReporter implements ErrorReporter {
   }
 
   async report(context: ErrorContext): Promise<void> {
-    try {
-      await this.requestImpl(
-        this.endpoint,
-        JSON.stringify({
-          error: {
-            message: context.error.message || '',
-            stack: context.error.stack || '',
-            name: context.error.name || '',
-          },
-          storeName: context.storeName,
-          operation: context.operation,
-          level: context.level,
-          payload: context.payload,
-          timestamp: context.timestamp,
-        }),
-        this.options.method ?? 'POST',
-        this.normalizeHeaders(),
-      )
-    } catch (error) {
-      console.error('[HttpReporter] Failed to report error:', error)
-    }
+    // 失败必须向上抛出：ErrorMonitoring 的「全部报告器失败则重新入队重试」
+    // 依赖 reportBatch reject 判定失败，此处吞错会让重试机制成为死代码，
+    // 网络抖动/服务端 5xx 时上报数据被静默丢弃。直接使用本类的调用方
+    // 需自行 catch；内部批量管线（doFlushReports）已对 rejection 兜底
+    await this.requestImpl(
+      this.endpoint,
+      JSON.stringify({
+        error: {
+          message: context.error.message || '',
+          stack: context.error.stack || '',
+          name: context.error.name || '',
+        },
+        storeName: context.storeName,
+        operation: context.operation,
+        level: context.level,
+        payload: context.payload,
+        timestamp: context.timestamp,
+      }),
+      this.options.method ?? 'POST',
+      this.normalizeHeaders(),
+    )
   }
 
   async reportBatch(contexts: ErrorContext[]): Promise<void> {
-    try {
-      await this.requestImpl(
-        this.endpoint,
-        JSON.stringify({
-          errors: contexts.map((ctx) => ({
-            error: {
-              message: ctx.error.message || '',
-              stack: ctx.error.stack || '',
-              name: ctx.error.name || '',
-            },
-            storeName: ctx.storeName,
-            operation: ctx.operation,
-            level: ctx.level,
-            payload: ctx.payload,
-            timestamp: ctx.timestamp,
-          })),
-        }),
-        this.options.method ?? 'POST',
-        this.normalizeHeaders(),
-      )
-    } catch (error) {
-      console.error('[HttpReporter] Failed to report batch:', error)
-    }
+    // 同 report：失败向上抛出以驱动重试机制
+    await this.requestImpl(
+      this.endpoint,
+      JSON.stringify({
+        errors: contexts.map((ctx) => ({
+          error: {
+            message: ctx.error.message || '',
+            stack: ctx.error.stack || '',
+            name: ctx.error.name || '',
+          },
+          storeName: ctx.storeName,
+          operation: ctx.operation,
+          level: ctx.level,
+          payload: ctx.payload,
+          timestamp: ctx.timestamp,
+        })),
+      }),
+      this.options.method ?? 'POST',
+      this.normalizeHeaders(),
+    )
   }
 
   /**
@@ -533,19 +534,28 @@ export class ErrorMonitoring {
     try {
       // 上报到所有报告器。reportBatch 仅类型约束返回 Promise，同步抛错完全合法：
       // 经 Promise.resolve().then 包装消除同步抛点，避免异常绕过 try/finally 使
-      // isFlushing 永久为 true，之后所有 flush（周期/阈值/shutdown）静默失效
+      // isFlushing 永久为 true，之后所有 flush（周期/阈值/shutdown）静默失效。
+      // 三态判定：只有任务真正 resolve 才算成功；超时不是成功——否则弱网/服务端
+      // 黑洞（最需要重试的场景）下批次既不算失败也不确认送达，被直接丢弃
       let anyReporterSucceeded = false
-      const promises = this.reporters.map((reporter) =>
-        Promise.race([Promise.resolve().then(() => reporter.reportBatch(batch)), this.delay(this.reportTimeout)])
+      const promises = this.reporters.map((reporter) => {
+        const task = Promise.resolve()
+          .then(() => reporter.reportBatch(batch))
           .then(
-            () => {
-              anyReporterSucceeded = true
-            },
+            () => 'ok' as const,
             (error) => {
               console.error('[ErrorMonitoring] Error in reportBatch:', error)
+              return 'fail' as const
             },
-          ),
-      )
+          )
+        return Promise.race([task, this.delay(this.reportTimeout).then(() => 'timeout' as const)]).then((outcome) => {
+          if (outcome === 'ok') {
+            anyReporterSucceeded = true
+          } else if (outcome === 'timeout') {
+            console.warn(`[ErrorMonitoring] Reporter "${reporter.getName()}" timed out after ${this.reportTimeout}ms`)
+          }
+        })
+      })
       await Promise.allSettled(promises)
 
       // 关闭中不重试：shutdown 会用最终 flushReports 排空队列，

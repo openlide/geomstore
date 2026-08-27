@@ -662,18 +662,14 @@ store.use(loggerPlugin)
 #### 持久化插件
 
 ```javascript
-const { persistencePlugin } = require('@openlide/geomstore/plugins')
+const { persistencePlugin, WxStorageBackend } = require('@openlide/geomstore')
 
 store.use(persistencePlugin({
   // 存储键名
   key: 'app-state',
 
-  // 存储后端（默认使用微信存储）
-  storage: {
-    getItem: (key) => wx.getStorageSync(key),
-    setItem: (key, value) => wx.setStorageSync(key, value),
-    removeItem: (key) => wx.removeStorageSync(key)
-  },
+  // 存储后端：可省略（自动检测微信环境），或显式传入内置 WxStorageBackend / 自定义同步实现
+  storage: new WxStorageBackend(),
 
   // 状态过滤器（只持久化部分状态）
   filter: (state) => ({
@@ -697,6 +693,7 @@ store.use(persistencePlugin({
 **说明：**
 
 - `storage` 可省略：插件会自动检测微信环境并使用 `wx.getStorageSync` / `wx.setStorageSync`；两者都不可用时降级为进程内内存存储（开发模式输出告警），不影响运行。
+- 也可显式传入内置 `WxStorageBackend`（主入口导出）或自定义同步 `StorageBackend`（仅支持同步实现）。
 - 启动恢复采用**合并语义**（`$patch`）：未持久化的键（如被 `filter` 过滤的键）保留初始值，不会被覆盖为 `undefined`。
 
 #### DevTools 插件

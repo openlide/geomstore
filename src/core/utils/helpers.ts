@@ -89,6 +89,11 @@ export function shallowEqual(a: unknown, b: unknown): boolean {
   if (keysA.length !== keysB.length) return false
 
   for (const key of keysA) {
+    // hasOwnProperty 校验 b 侧键自有性：仅靠键数相等 + 原型链取值，
+    // b 的同名键在原型上时会把两份键集不同的对象误判为浅相等
+    if (!Object.prototype.hasOwnProperty.call(b, key)) {
+      return false
+    }
     if (!Object.is((a as Record<string, unknown>)[key], (b as Record<string, unknown>)[key])) {
       return false
     }
@@ -205,9 +210,9 @@ export function deepEqual(a: unknown, b: unknown, maxDepth: number = 1000): bool
 
     if (keysA.length !== keysB.length) return false
 
-    // 检查所有键
+    // 检查所有键（hasOwnProperty 限定自有属性，`in` 会沿原型链命中导致假相等）
     for (const key of keysA) {
-      if (!(key in recB)) return false
+      if (!Object.prototype.hasOwnProperty.call(recB, key)) return false
 
       stack.push({
         a: recA[key],
@@ -313,20 +318,24 @@ export function deepMerge<T extends Record<string, unknown>>(target: T, ...sourc
       }
 
       const existing = dst[key]
-      if (isObject(sourceVal)) {
-        if (isObject(existing)) {
+      if (isPlainObject(sourceVal)) {
+        if (isPlainObject(existing)) {
           // 纯对象 → 纯对象：递归合并
           mergeInto(existing as Record<string, unknown>, sourceVal as Record<string, unknown>)
         } else {
-          // 目标位置为非纯对象（原语/null/数组/Map/Set）：类型冲突时整体替换为深拷贝，
+          // 目标位置为非纯对象（原语/null/数组/Map/Set/Date 等）：类型冲突时整体替换为深拷贝，
           // 避免递归合并被静默跳过导致 source 数据丢失
           defineOwnProperty(dst, key, clone(sourceVal))
         }
-      } else if (Array.isArray(sourceVal)) {
+      } else if (Array.isArray(sourceVal) || sourceVal instanceof Map || sourceVal instanceof Set) {
         // 数组：深拷贝防止共享引用
-        defineOwnProperty(dst, key, clone(sourceVal))
-      } else if (sourceVal instanceof Map || sourceVal instanceof Set) {
         // Map/Set：深拷贝为独立实例，避免误合并成空普通对象或共享引用
+        defineOwnProperty(dst, key, clone(sourceVal))
+      } else if (typeof sourceVal === 'object' && sourceVal !== null) {
+        // 其余非纯对象源值（Date/RegExp/类实例等）不可递归合并：
+        // Date/RegExp 的自有可枚举键恒为空，mergeInto 零次循环会把补丁静默丢弃；
+        // 类实例与纯对象合并语义不同，会把数据散落成旧实例上的杂散属性。
+        // 整体替换为深拷贝（Date/RegExp 由 clone 正确克隆，不可克隆类型保留原引用）
         defineOwnProperty(dst, key, clone(sourceVal))
       } else {
         defineOwnProperty(dst, key, sourceVal)

@@ -285,8 +285,9 @@ describe('createSelector', () => {
       expect(result2.fromCache).toBe(true)
     })
 
-    it('equalityFn 为 falsy 时 withCacheResult 应该使用 === 比较', () => {
-      // 使用 false 作为 equalityFn，?? 运算符不替换 false，所以 equalityFn 为 false（falsy）
+    it('equalityFn 为 falsy 时 withCacheResult 应该回退默认 deepEqual 比较', () => {
+      // 缓存状态存的是快照（防止就地变异自比较误命中），falsy equalityFn
+      // 无法与快照做 === 比较，统一回退默认 deepEqual
       const selector = createSelector((s: TestState) => s.value * 2, {
         cache: true,
         equalityFn: false as any,
@@ -297,16 +298,16 @@ describe('createSelector', () => {
       const result1 = cacheSelector(state)
       expect(result1.fromCache).toBe(false)
 
-      // 相同引用的 state，=== 为 true，应使用缓存
+      // 相同引用的 state，deepEqual 为 true，应使用缓存
       const result2 = cacheSelector(state)
       expect(result2.fromCache).toBe(true)
 
-      // 不同引用的对象（即使内容相同），=== 为 false，fromCache 为 false
+      // 内容相同的对象，deepEqual 为 true，同样命中缓存
       const result3 = cacheSelector({ ...state })
-      expect(result3.fromCache).toBe(false)
+      expect(result3.fromCache).toBe(true)
     })
 
-    it('equalityFn 为 falsy 时 execute 应该使用 === 比较', () => {
+    it('equalityFn 为 falsy 时 execute 应该回退默认 deepEqual 比较', () => {
       let callCount = 0
       const selector = createSelector(
         (s: TestState) => {
@@ -319,14 +320,14 @@ describe('createSelector', () => {
         },
       )
 
-      // 相同引用，=== 为 true，使用缓存
+      // 相同引用，deepEqual 为 true，使用缓存
       selector(state)
       selector(state)
       expect(callCount).toBe(1)
 
-      // 不同引用（即使内容相同），=== 为 false，重新计算
+      // 内容相同的对象，deepEqual 为 true，同样使用缓存
       selector({ ...state })
-      expect(callCount).toBe(2)
+      expect(callCount).toBe(1)
     })
 
     it('withCacheResult 在状态不相等时 fromCache 应该为 false', () => {
@@ -679,5 +680,39 @@ describe('createStructuredSelector', () => {
     expect(result).toEqual({
       value: 42,
     })
+  })
+})
+
+// ==================== BUG 回归：就地变异状态的缓存正确性 ====================
+describe('就地变异状态的缓存正确性（BUG 回归）', () => {
+  it('REGR-SEL-001: 状态就地变异后不应返回缓存陈旧值', () => {
+    // 模拟 Store 的状态模型：getState 返回同一活动引用，$patch 原地深合并
+    const live: { items: Array<{ price: number }> } = { items: [{ price: 100 }] }
+    let callCount = 0
+    const selector = createSelector((s: { items: Array<{ price: number }> }) => {
+      callCount++
+      return s.items.reduce((acc, item) => acc + item.price, 0)
+    })
+
+    expect(selector(live)).toBe(100)
+
+    // 同一引用、内容就地变化
+    live.items[0].price = 250
+
+    expect(selector(live)).toBe(250)
+    expect(callCount).toBe(2)
+  })
+
+  it('REGR-SEL-002: 内容相同的快照输入仍应命中缓存', () => {
+    let callCount = 0
+    const selector = createSelector((s: { value: number }) => {
+      callCount++
+      return s.value * 2
+    })
+
+    const live = { value: 42 }
+    selector(live)
+    selector({ ...live })
+    expect(callCount).toBe(1)
   })
 })

@@ -139,6 +139,8 @@ export interface RecoveryContext {
 export class ErrorRecovery {
   private strategies: RecoveryStrategyMap = {}
   private retryCount = new Map<string, number>()
+  // 重试键 → 当前故障周期起始时间：以时间窗识别「新故障周期」并重置计数
+  private retryWindowStart = new Map<string, number>()
 
   /**
    * 配置错误恢复策略
@@ -313,12 +315,33 @@ export class ErrorRecovery {
 
     // 获取重试计数
     const retryKey = this.getRetryKey(error)
+
+    // 以时间窗识别「新故障周期」：窗口覆盖本周期 maxRetries 次重试的全部退避时长
+    // （2 倍余量，下限 60s）。窗口内即使每次失败都以新错误实例触发 recover（调用方
+    // 每轮重试 createError 后再 recover 的文档化用法），额度也持续累计，max-retries
+    // 防重试风暴保护不会失效；超过窗口未再出现视为上一周期已结束（调用方重试成功后
+    // 不再调用 recover，残留计数无清除路径），重置计数使额度按周期而非按错误码终身累计。
+    // 周期判定是启发式：调用方自身重试耗时若使间隔超出窗口，会被视为新周期重新计额
+    const now = Date.now()
+    const cycleSpan = useExponentialBackoff
+      ? baseDelay * (Math.pow(2, maxRetries) - 1)
+      : baseDelay * maxRetries
+    const cycleWindow = Math.max(60_000, cycleSpan * 2)
+    const windowStart = this.retryWindowStart.get(retryKey)
+    if (windowStart === undefined || now - windowStart > cycleWindow) {
+      this.retryWindowStart.set(retryKey, now)
+      this.retryCount.delete(retryKey)
+    }
+
     const currentAttempt = this.getRetryCount(retryKey)
 
     // 检查是否超过最大重试次数
     if (currentAttempt >= maxRetries) {
-      // 达到上限：清除计数，避免调用方后续重试成功后额度被残留计数永久消耗
-      this.clearRetryCount(error.code)
+      // 达到上限：仅清除当前键的计数与周期窗（下一故障周期从 0 重新开始）。
+      // 不按 code 级联全清——同码其他 store/operation 的进行中额度会被误重置，
+      // 防重试风暴的上限保护对它们失效
+      this.retryCount.delete(retryKey)
+      this.retryWindowStart.delete(retryKey)
       throw new Error(`[ErrorRecovery] Max retries (${maxRetries}) exceeded for error: ${error.message}`)
     }
 
@@ -423,7 +446,7 @@ export class ErrorRecovery {
   }
 
   /**
-   * 清除重试计数
+   * 清除重试计数与对应周期窗
    *
    * @private
    * @param {string} errorCode - 错误代码
@@ -436,6 +459,7 @@ export class ErrorRecovery {
       // （如 'ACTION' 与 'ACTION_TIMEOUT'）时会误清后者的计数
       if (key.split(':')[0] === errorCode) {
         this.retryCount.delete(key)
+        this.retryWindowStart.delete(key)
       }
     })
   }

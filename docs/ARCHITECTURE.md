@@ -520,10 +520,14 @@ function withPageStore<S extends State, A extends Actions, G extends Getters, O 
   store: Store<S, A, G>,
   options: O
 ) {
-  return function<C extends PageOptions>(PageConfig: C): PageThis<S, A, G, O, PageOwnMethods<C>> & Omit<C, 'data'> & { data: C.data & ExtractPageData<S, O, G> } {
+  return function<C extends PageOptions>(
+    // WithPageThis 是同态映射类型，作为入参类型为 C 提供推断位点：
+    // 配置字面量（含自定义方法 / data）反向推断出 C，返回类型据此保留精确成员
+    PageConfig: WithPageThis<C, PageThis<S, A, G, O>> & { data: object } & ThisType<PageThis<S, A, G, O>>
+  ): PageThis<S, A, G, O, PageOwnMethods<C>> & Omit<C, 'data'> & { data: (C extends { data: infer D } ? D : object) & ExtractPageData<S, O, G> } {
     const enhancedConfig = { ...PageConfig }
 
-    // 扩展 onLoad：绑定映射、订阅状态变化
+    // 扩展 onLoad：bindMappings 绑定映射（对象值免脏检查、过滤 undefined）并订阅状态变化
     enhancedConfig.onLoad = function(this: any, ...args) {
       // 订阅状态变化
       store.subscribe((state) => {
@@ -540,7 +544,7 @@ function withPageStore<S extends State, A extends Actions, G extends Getters, O 
       enhancedConfig[localName] = (...args) => store.dispatch(actionName, ...args)
     }
 
-    // 返回类型重写所有方法的 this 为 PageThis（编译期）
+    // 方法 this 由同态映射 + ThisType 在编译期注入为 PageThis（自定义方法保留自身精确 this）
     return enhancedConfig as any
   }
 }
@@ -554,24 +558,44 @@ function withComponentStore<S extends State, A extends Actions, G extends Getter
   store: Store<S, A, G>,
   options: O
 ) {
-  return function<C extends ComponentOptions>(ComponentConfig: C): ComponentThis<S, A, G, O, ComponentOwnMethods<C>> & Omit<C, 'data' | 'methods'> & { data: C.data & ExtractPageData<S, O, G> } {
+  return function<C extends ComponentOptions>(ComponentConfig: C): ComponentThis<S, A, G, O, ComponentOwnMethods<C>> & Omit<C, 'data' | 'methods'> & { data: (C extends { data: infer D } ? D : object) & ExtractPageData<S, O, G> } {
     const enhancedConfig = { ...ComponentConfig }
     const boundMethods = createMappedActions(store, options.mapActions)
 
-    // 扩展 lifetimes.attached：绑定映射、合并 methods
+    // 配置级 methods 合并映射的 actions
+    enhancedConfig.methods = { ...ComponentConfig.methods, ...boundMethods }
+
+    // 扩展 lifetimes.attached：绑定映射、实例级合并 methods
     enhancedConfig.lifetimes = {
       ...ComponentConfig.lifetimes,
       attached() {
-        Object.assign(this.methods || {}, boundMethods)
+        // 订阅清理列表挂在组件实例上（同一配置可能存在多个实例，如列表项组件）
+        this.__geomUnbinds = []
+
+        // 实例级浅拷贝后再合并：this.methods 可能引用配置级共享对象，
+        // 直接写入会污染所有实例共用的 methods 定义
+        if (this.methods) {
+          this.methods = { ...this.methods, ...boundMethods }
+        }
+
+        // bindMappings 绑定 state / getters（对象值免脏检查、过滤 undefined）
+        this.__geomUnbinds.push(...bindStateAndGetters(this, store, options))
+
         ComponentConfig.lifetimes?.attached?.call(this)
       },
       detached() {
-        // 清理订阅
+        // 清理当前实例的订阅
+        cleanupBindings(this.__geomUnbinds || [])
+        // 实例级拷贝后再删除绑定的 action 方法，避免误删共享 methods 上其他实例仍在用的成员
+        if (this.methods) {
+          this.methods = { ...this.methods }
+          Object.keys(actionsMapping).forEach((localName) => delete this.methods[localName])
+        }
         ComponentConfig.lifetimes?.detached?.call(this)
       }
     }
 
-    // 返回类型重写所有方法的 this 为 ComponentThis（编译期）
+    // 方法 this 由 ComponentThis 在编译期注入
     return enhancedConfig as any
   }
 }
@@ -633,6 +657,13 @@ enum RecoveryStrategy {
   RECOVER = 'recover'    // 恢复
 }
 ```
+
+**关键行为语义：**
+
+- `RETRY` 的重试额度按**故障周期**计量，周期以时间窗判定（窗口 = `max(60s, 本周期全部退避总时长 × 2)`）：窗口内额度持续累计（与错误实例身份无关，`maxRetries` 防重试风暴保护始终生效），超窗视为新周期重置额度；达到上限仅清除当前键（`code:storeName:operation`），不按错误码级联全清。`recover` 仅接受 `GeomStoreError` 实例。
+- `HttpReporter.report / reportBatch` 失败时**向上抛出**（内部批量管线兜底重入队）；默认请求实现校验 `response.ok`，4xx/5xx 视为上报失败。
+- 批量 flush 按 `ok / fail / timeout` 三态判定，仅 resolve 算成功；超时不算成功，批次重入队等待下次 flush。
+- `ErrorBoundary` 的 `fallback` 计算函数自身抛错时，记录后**重抛原始错误**（避免 fallback 异常顶替原错误丢失现场）。
 
 ### 错误处理流程
 

@@ -22,6 +22,7 @@ export { withLog, withDebounce, withThrottle, withCache, withRetry, withTimeout,
 export type { CacheDecoratorOptions } from './decorators/cache'
 export type { DecoratorOptions } from './decorators/common'
 export type { RetryDecoratorOptions } from './decorators/retry'
+export type { ThrottleDecoratorOptions } from './decorators/throttle'
 
 // ==================== 类型导出（集中管理） ====================
 export type { AsyncActions, ActionResult, ActionLoaderOptions, ActionDecorator, ActionExecutionContext } from '../../types/action'

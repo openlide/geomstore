@@ -25,6 +25,7 @@ export type {
   GetterNames,
   MappedActions,
   MappedGetters,
+  CacheStats,
 } from './types/store'
 
 // ==================== 错误处理 ====================
@@ -64,6 +65,7 @@ export type {
   ErrorLevel,
   OperationType,
   ErrorBoundaryOptions,
+  ErrorFallback,
   ErrorReporter,
   ErrorGroup,
   ErrorReport,
@@ -100,6 +102,7 @@ export { HookSystem, usePlugin } from './core/hooks/index'
 export type { Plugin, HookName, HookHandler, IHookSystem, PluginHook } from './core/hooks/index'
 export { loggerPlugin, persistencePlugin, devtoolsPlugin, builtinPlugins } from './plugins/builtin'
 export type { PersistenceOptions, StorageBackend } from './types/persistence'
+export { WxStorageBackend } from './types/persistence'
 
 // ==================== 性能插件 ====================
 export { analyzerPlugin, createAnalyzerPlugin } from './plugins/performance/index'
@@ -122,7 +125,7 @@ export type {
 } from './types/integration'
 
 // ==================== Store组合 ====================
-export { composeStore, createStoreTree, StoreRegistry, globalRegistry } from './core/compose/index'
+export { composeStore, createStoreTree, StoreRegistry, globalRegistry, ComposedStore } from './core/compose/index'
 export type { ComposeOptions, StoreTreeNode, NamespaceConfig } from './types/compose'
 
 // ==================== 性能监控 ====================
@@ -151,7 +154,7 @@ export { ActionExecutor, ActionLoader, withLoading, ActionUtils } from './core/a
 export type { ActionUtilsOptions } from './core/action/index'
 // 装饰器导出
 export { withLog, withDebounce, withThrottle, withCache, withRetry, withTimeout, createDecorator } from './core/action/index'
-export type { DecoratorOptions, CacheDecoratorOptions, RetryDecoratorOptions } from './core/action/index'
+export type { DecoratorOptions, CacheDecoratorOptions, RetryDecoratorOptions, ThrottleDecoratorOptions } from './core/action/index'
 // 类型导出
 export type { AsyncActions, ActionResult, ActionLoaderOptions, ActionDecorator, ActionExecutionContext } from './types/action'
 

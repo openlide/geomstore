@@ -607,3 +607,45 @@ describe('integrations/utils', () => {
     })
   })
 })
+
+// ==================== BUG 回归：就地变异脏检查与 undefined 过滤 ====================
+describe('bindMappings 就地变异与 undefined（BUG 回归）', () => {
+  it('REGR-INT-001: $patch 原地深合并嵌套对象后应触发 setData', () => {
+    const store = createStore({ state: { profile: { name: 'a' } } })
+    const setData: Record<string, unknown> = {}
+    const unbinds = bindMappings(
+      {},
+      { profile: 'profile' },
+      (storeKey) => store.getState()[storeKey as keyof ReturnType<typeof store.getState>],
+      (updates) => {
+        Object.assign(setData, updates)
+      },
+      (callback) => store.subscribe(callback),
+    )
+
+    // $patch 深合并：profile 引用不变、内容变化，脏检查必须放行
+    store.$patch({ profile: { name: 'b' } })
+    expect(setData.profile).toEqual({ name: 'b' })
+    unbinds.forEach((u) => u())
+  })
+
+  it('REGR-INT-002: 初始值与更新值中的 undefined 不应进入 setData', () => {
+    const store = createStore({ state: { token: undefined as string | undefined } })
+    const setData: Record<string, unknown> = {}
+    const unbinds = bindMappings(
+      {},
+      { token: 'token' },
+      (storeKey) => store.getState()[storeKey as keyof ReturnType<typeof store.getState>],
+      (updates) => {
+        Object.assign(setData, updates)
+      },
+      (callback) => store.subscribe(callback),
+    )
+
+    // 微信 setData 不接受 undefined：初始 undefined 不应写入
+    expect('token' in setData).toBe(false)
+    store.setState('token', 'abc')
+    expect(setData.token).toBe('abc')
+    unbinds.forEach((u) => u())
+  })
+})

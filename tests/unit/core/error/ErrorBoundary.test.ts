@@ -512,3 +512,36 @@ describe('BUG 回归：事后 setFallbackState 应生效', () => {
     expect(() => boundary.execute(() => { throw new Error('boom') })).toThrow('boom')
   })
 })
+
+// ==================== BUG 回归：fallback 函数抛错不应顶替原错误 ====================
+describe('fallback 函数自身抛错（BUG 回归）', () => {
+  it('REGR-BOUNDARY-001: fallback 抛错时应重抛原错误而非 fallback 的异常', () => {
+    const original = new Error('original error')
+    const boundary = new ErrorBoundary<Record<string, unknown>, Record<string, unknown>>({
+      recoverable: true,
+      fallback: () => {
+        throw new Error('fallback boom')
+      },
+    })
+    const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation()
+
+    expect(() =>
+      boundary.execute(() => {
+        throw original
+      }),
+    ).toThrow(original)
+
+    consoleErrorSpy.mockRestore()
+  })
+
+  it('REGR-BOUNDARY-002: fallback 正常返回时行为不变', async () => {
+    const fallback = { safe: true }
+    const boundary = new ErrorBoundary<Record<string, unknown>, Record<string, unknown>>({
+      recoverable: true,
+      fallback: () => fallback,
+    })
+
+    const result = await boundary.executeAsync(() => Promise.reject(new Error('boom')))
+    expect(result).toEqual(fallback)
+  })
+})

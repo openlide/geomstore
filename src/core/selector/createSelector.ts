@@ -7,7 +7,7 @@
  */
 
 import type { Selector, SelectorOptions, SelectorCacheItem, SelectorResult } from '../../types/selector'
-import { shallowEqual } from '../utils/helpers'
+import { deepEqual, clone } from '../utils/helpers'
 
 /**
  * 选择器工厂类
@@ -27,7 +27,7 @@ import { shallowEqual } from '../utils/helpers'
  *     cache: true,
  *     cacheSize: 10,
  *     cacheTTL: 5000,
- *     equalityFn: shallowEqual
+ *     equalityFn: deepEqual
  *   }
  * )
  *
@@ -89,7 +89,11 @@ export class SelectorFactory<S extends Record<string, unknown> = Record<string, 
       cache: options.cache ?? true,
       cacheSize: options.cacheSize ?? 10,
       cacheTTL: options.cacheTTL ?? 5000,
-      equalityFn: options.equalityFn ?? shallowEqual,
+      // 默认 deepEqual 而非引用/浅比较：Store 状态是就地变异的同一对象
+      // （getState 返回活动引用、setState/$patch 原地写入），引用比较或浅比较
+      // 会在状态已变化时误判相等，TTL 内返回陈旧值。
+      // 显式传入 falsy（false/0/''）视同未提供，统一回退默认
+      equalityFn: options.equalityFn || deepEqual,
     }
   }
 
@@ -175,10 +179,13 @@ export class SelectorFactory<S extends Record<string, unknown> = Record<string, 
    * @param {R} value - 计算结果
    */
   private updateCache(state: S, value: R): void {
+    // 缓存状态快照而非活动引用：若缓存持有原引用，等值比较会变成
+    // 「同一对象自比较」（永远相等），就地变异（如 $patch 深合并）后
+    // 的再次执行将误命中并返回陈旧值；快照才能让等值比较感知变异
     const cacheItem: SelectorCacheItem<R> = {
       value,
       timestamp: Date.now(),
-      state,
+      state: clone(state),
     }
 
     // 更新当前缓存

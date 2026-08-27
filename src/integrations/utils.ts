@@ -93,10 +93,18 @@ export function bindMappings(
     let changed = false
     for (const [localKey, storeKey] of entries) {
       const next = getValue(storeKey)
-      if (!safeEqual(next, prevValues[localKey])) {
+      // 对象值不参与引用脏检查：$patch 对嵌套对象是原地深合并（引用不变），
+      // 缓存的旧引用与下次读取是同一对象，任何比较都是自比较，无法感知内部变化；
+      // 按宁多勿漏原则对象值始终纳入更新（原始值仍走引用/NaN 比较）
+      const isObjectValue = next !== null && typeof next === 'object'
+      if (isObjectValue || !safeEqual(next, prevValues[localKey])) {
         prevValues[localKey] = next
-        updates[localKey] = next
-        changed = true
+        // 过滤 undefined：微信 setData 不接受 undefined 值（报错且字段不生效），
+        // 清除字段应使用 null
+        if (next !== undefined) {
+          updates[localKey] = next
+          changed = true
+        }
       }
     }
     if (changed) {
@@ -104,8 +112,14 @@ export function bindMappings(
     }
   }
 
-  // 立即设置初始值
-  setter(prevValues)
+  // 立即设置初始值（过滤 undefined，理由同 updateAll）
+  const initialValues: Record<string, unknown> = {}
+  for (const [localKey] of entries) {
+    if (prevValues[localKey] !== undefined) {
+      initialValues[localKey] = prevValues[localKey]
+    }
+  }
+  setter(initialValues)
 
   // 订阅 Store 变化（单个订阅覆盖全部映射，进一步减少回调数）
   const unsubscribe = subscribeStore(() => updateAll())
@@ -115,9 +129,10 @@ export function bindMappings(
 }
 
 /**
- * 浅比较：处理 NaN 与引用相等，足以判断映射值是否发生变化。
+ * 原始值比较：处理 NaN 与引用相等。
  *
- * 不深比较对象，避免大对象 diff 开销；引用变化即视为变化（符合 store 不可变更新语义）。
+ * 仅用于原始值的脏检查；对象值在 updateAll 中不做比较、始终纳入更新
+ * （$patch 原地深合并后引用不变，引用比较无法感知内部变化）。
  *
  * @param a - 旧值
  * @param b - 新值

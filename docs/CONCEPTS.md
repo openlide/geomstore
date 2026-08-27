@@ -563,6 +563,11 @@ function shallowEqual(objA, objB) {
   if (keysA.length !== keysB.length) return false
 
   for (const key of keysA) {
+    // 仅靠键数相等不足以保证键集一致：b 侧同名键可能在原型上
+    // （沿原型链取值会造成假相等），必须校验自有性
+    if (!Object.prototype.hasOwnProperty.call(objB, key)) {
+      return false
+    }
     if (!Object.is(objA[key], objB[key])) {
       return false
     }
@@ -583,7 +588,7 @@ function deepEqual(objA, objB) {
 
 ### 1. LRU 缓存
 
-用于缓存 getter 计算结果：
+用于 Store 级缓存（`getCached` / `getCacheStats`）。注意 getter 本身**无缓存**（每次读取即时计算，仅惰性求值），计算密集型派生请用选择器 API（自带缓存）：
 
 ```javascript
 class LRUCache {

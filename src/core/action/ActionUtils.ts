@@ -11,12 +11,13 @@
  */
 
 import type { AsyncActions } from '../../types/action'
+import type { Actions } from '../../types/store'
 import { ActionExecutor } from './AsyncActionSupport'
 
 /**
  * ActionUtils 配置选项
  */
-export interface ActionUtilsOptions<A extends AsyncActions = AsyncActions> {
+export interface ActionUtilsOptions<A extends Actions = AsyncActions> {
   /** 自定义执行器实例 */
   executor?: ActionExecutor<A>
 }
@@ -38,7 +39,7 @@ export interface ActionUtilsOptions<A extends AsyncActions = AsyncActions> {
  * const result = await utils.execute(actions, 'fetchData', 'user-123')
  * ```
  */
-export class ActionUtils<A extends AsyncActions = AsyncActions> {
+export class ActionUtils<A extends Actions = AsyncActions> {
   /**
    * Action执行器
    * @private
@@ -64,14 +65,14 @@ export class ActionUtils<A extends AsyncActions = AsyncActions> {
    * @param {A} actions - Actions对象
    * @param {K} actionName - Action名称
    * @param {Parameters<A[K]>} args - Action参数
-   * @returns {Promise<ReturnType<A[K]>>} Action执行结果
+   * @returns {Promise<Awaited<ReturnType<A[K]>>>} Action执行结果
    *
    * @example
    * ```typescript
    * const result = await utils.execute(actions, 'fetchData', 'user-123')
    * ```
    */
-  async execute<K extends keyof A>(actions: A, actionName: K, ...args: Parameters<A[K]>): Promise<ReturnType<A[K]>> {
+  async execute<K extends keyof A>(actions: A, actionName: K, ...args: Parameters<A[K]>): Promise<Awaited<ReturnType<A[K]>>> {
     return this.executor.execute(actions, actionName, ...args)
   }
 }

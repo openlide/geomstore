@@ -62,21 +62,25 @@ export interface StoreLike {
 
 /**
  * 从 Store 元组提取联合状态类型
+ *
+ * 基例使用 Record<never, never>（无索引签名的空对象类型）而非 Record<string, never>：
+ * 后者会向交叉类型注入 [x: string]: never 索引签名，污染组合 Store 的状态属性类型；
+ * 同时不用 unknown，因其不满足 Store 泛型的 object 约束
  */
 export type ExtractStates<Stores extends readonly StoreLike[]> = Stores extends readonly [infer First extends StoreLike, ...infer Rest extends StoreLike[]]
   ? First['state'] & ExtractStates<Rest>
-  : Record<string, never>
+  : Record<never, never>
 
 /**
  * 从 Store 元组提取联合 Actions 类型
  */
 export type ExtractActions<Stores extends readonly StoreLike[]> = Stores extends readonly [infer First extends StoreLike, ...infer Rest extends StoreLike[]]
   ? First['actions'] & ExtractActions<Rest>
-  : Record<string, never>
+  : Record<never, never>
 
 /**
  * 从 Store 元组提取联合 Getters 类型
  */
 export type ExtractGetters<Stores extends readonly StoreLike[]> = Stores extends readonly [infer First extends StoreLike, ...infer Rest extends StoreLike[]]
   ? First['getters'] & ExtractGetters<Rest>
-  : Record<string, never>
+  : Record<never, never>
