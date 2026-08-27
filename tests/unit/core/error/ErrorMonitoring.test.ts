@@ -411,9 +411,7 @@ describe('HttpReporter', () => {
       expect(callArgs[1].headers).toHaveProperty('Authorization', 'Bearer test-token')
     })
 
-    it('MONITOR-042: 请求失败时应该捕获错误并输出到控制台', async () => {
-      const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation()
-
+    it('MONITOR-042: 请求失败时应向上抛出错误（驱动重试机制）', async () => {
       mockFetch.mockRejectedValue(new Error('Network error'))
 
       const reporter = new HttpReporter('https://api.example.com/errors')
@@ -426,15 +424,12 @@ describe('HttpReporter', () => {
         timestamp: Date.now(),
       }
 
-      // 不应该抛出错误
-      await expect(reporter.report(context)).resolves.toBeUndefined()
-
-      expect(consoleErrorSpy).toHaveBeenCalledWith('[HttpReporter] Failed to report error:', expect.any(Error))
+      // 修复前：吞错仅 console.error，ErrorMonitoring 的失败重试机制成为死代码；
+      // 修复后：失败向上抛出，由调用方/批量管线决定重试
+      await expect(reporter.report(context)).rejects.toThrow('Network error')
     })
 
-    it('MONITOR-043: 批量上报失败时应该捕获错误', async () => {
-      const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation()
-
+    it('MONITOR-043: 批量上报失败时应向上抛出错误', async () => {
       mockFetch.mockRejectedValue(new Error('Network timeout'))
 
       const reporter = new HttpReporter('https://api.example.com/errors')
@@ -449,9 +444,7 @@ describe('HttpReporter', () => {
         },
       ]
 
-      await expect(reporter.reportBatch(contexts)).resolves.toBeUndefined()
-
-      expect(consoleErrorSpy).toHaveBeenCalledWith('[HttpReporter] Failed to report batch:', expect.any(Error))
+      await expect(reporter.reportBatch(contexts)).rejects.toThrow('Network timeout')
     })
 
     it('MONITOR-046: 支持 Headers 实例形式的请求头', async () => {
@@ -611,9 +604,7 @@ describe('HttpReporter', () => {
       )
     })
 
-    it('MONITOR-045: wx.request 失败时应捕获错误并输出到控制台', async () => {
-      const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation()
-
+    it('MONITOR-045: wx.request 失败时应向上抛出错误', async () => {
       wxRequestMock.mockImplementationOnce((options: { fail?: (err: unknown) => void }) => {
         options.fail?.(new Error('wx request failed'))
       })
@@ -628,13 +619,10 @@ describe('HttpReporter', () => {
         timestamp: Date.now(),
       }
 
-      await expect(reporter.report(context)).resolves.toBeUndefined()
-      expect(consoleErrorSpy).toHaveBeenCalledWith('[HttpReporter] Failed to report error:', expect.any(Error))
+      await expect(reporter.report(context)).rejects.toThrow('wx request failed')
     })
 
-    it('MONITOR-045b: wx.request 非 2xx 状态码应视为上报失败并记录', async () => {
-      const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation()
-
+    it('MONITOR-045b: wx.request 非 2xx 状态码应视为上报失败并向上抛出', async () => {
       wxRequestMock.mockImplementationOnce((options: { success?: (res: { statusCode: number }) => void }) => {
         options.success?.({ statusCode: 500 })
       })
@@ -649,12 +637,8 @@ describe('HttpReporter', () => {
         timestamp: Date.now(),
       }
 
-      // 修复前：success 回调在任何 HTTP 状态都触发，4xx/5xx 被当作成功静默丢失
-      await reporter.report(context)
-      expect(consoleErrorSpy).toHaveBeenCalledWith(
-        '[HttpReporter] Failed to report error:',
-        expect.objectContaining({ message: 'wx.request failed with HTTP 500' }),
-      )
+      // wx.request 的 success 在任何 HTTP 状态都触发，非 2xx 必须判定为失败并抛出
+      await expect(reporter.report(context)).rejects.toThrow('wx.request failed with HTTP 500')
     })
   })
 })
@@ -2060,5 +2044,32 @@ describe('#37 回归：flush 全部报告器失败', () => {
     await expect(monitoring.shutdown()).resolves.toBeUndefined()
     expect(failingReporter.reportBatch).toHaveBeenCalledTimes(1)
     expect((monitoring as unknown as { errorQueue: unknown[] }).errorQueue).toHaveLength(0)
+  })
+})
+
+// ==================== BUG 回归：超时不计为上报成功 ====================
+describe('超时不计为上报成功（BUG 回归）', () => {
+  test('reporter 超时后批次应重新入队等待重试', async () => {
+    const hangingReporter: ErrorReporter = {
+      getName: () => 'hanging',
+      report: jest.fn(),
+      reportBatch: jest.fn().mockReturnValue(new Promise<never>(() => {})),
+    }
+    const monitoring = new ErrorMonitoring({
+      reporters: [hangingReporter],
+      batchInterval: 60000,
+      batchThreshold: 100,
+      reportTimeout: 10,
+    })
+
+    await monitoring.report({ storeName: 's', operation: 'dispatch', error: new Error('x'), level: 'error' })
+    await monitoring.flushReports()
+
+    // 超时不计为成功：批次应重新入队（修复前超时 resolve(undefined) 落入成功分支，
+    // 弱网/服务端黑洞场景下批次被静默丢弃）
+    expect(hangingReporter.reportBatch).toHaveBeenCalledTimes(1)
+    expect((monitoring as unknown as { errorQueue: unknown[] }).errorQueue).toHaveLength(1)
+
+    await monitoring.shutdown()
   })
 })

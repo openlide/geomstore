@@ -1356,3 +1356,56 @@ describe('ErrorRecovery 模块', () => {
     })
   })
 })
+
+// ==================== BUG 回归：重试额度按故障周期计量 ====================
+describe('RETRY 额度按故障周期计量（BUG 回归）', () => {
+  let recovery: ErrorRecovery
+  beforeEach(() => {
+    recovery = new ErrorRecovery()
+  })
+
+  it('REGR-RECOVERY-001: 调用方重试成功后，新故障周期应获得完整额度', async () => {
+    recovery.configure({
+      TEST_CYCLE: {
+        strategy: RecoveryStrategy.RETRY,
+        maxRetries: 2,
+        retryDelay: 0,
+        exponentialBackoff: false,
+      },
+    })
+
+    // 周期 1：重试 1 次后调用方重试成功（不再调用 recover），修复前残留计数 1 无清除路径
+    const errorA = new GeomStoreError('周期一错误', 'TEST_CYCLE')
+    await expect(recovery.recover(errorA)).rejects.toThrow(errorA)
+
+    // 周期 2：新错误实例出现，额度应从 0 重新计（修复前本周期只剩 1 次重试，
+    // 连续间歇性故障最终出现「零重试」周期）
+    const errorB = new GeomStoreError('周期二错误', 'TEST_CYCLE')
+    await expect(recovery.recover(errorB)).rejects.toThrow(errorB)
+    await expect(recovery.recover(errorB)).rejects.toThrow(errorB)
+    // 本周期额度耗尽
+    await expect(recovery.recover(errorB)).rejects.toThrow('Max retries (2) exceeded')
+  })
+
+  it('REGR-RECOVERY-002: 达到上限时不应误清同码其他 store 的进行中额度', async () => {
+    recovery.configure({
+      TEST_CODE_SHARED: {
+        strategy: RecoveryStrategy.RETRY,
+        maxRetries: 1,
+        retryDelay: 0,
+        exponentialBackoff: false,
+      },
+    })
+
+    const errB = new GeomStoreError('超时', 'TEST_CODE_SHARED', { storeName: 'storeB', operation: 'op' })
+    await expect(recovery.recover(errB)).rejects.toThrow(errB) // storeB 额度 1/1
+
+    const errA = new GeomStoreError('超时', 'TEST_CODE_SHARED', { storeName: 'storeA', operation: 'op' })
+    await expect(recovery.recover(errA)).rejects.toThrow(errA) // storeA 1/1
+    // storeA 达到上限：只清自己的键（修复前按 code 全清，storeB 的防重试风暴保护失效）
+    await expect(recovery.recover(errA)).rejects.toThrow('Max retries (1) exceeded')
+
+    // storeB 的额度仍在：第二次调用应达到上限而非获得新额度
+    await expect(recovery.recover(errB)).rejects.toThrow('Max retries (1) exceeded')
+  })
+})

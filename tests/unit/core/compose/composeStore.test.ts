@@ -2,7 +2,7 @@
  * GeomStore v1.0 - composeStore 测试
  */
 
-import { createStore } from '@/index'
+import { createStore, type Store } from '@/index'
 import type { State } from '@/types/store'
 import { composeStore, createStoreTree } from '@/core/compose/composeStore'
 import * as storeUtils from '@/core/store/utils'
@@ -1851,7 +1851,7 @@ describe('composeStore', () => {
   // ==================== BUG 修复回归测试 ====================
   describe('BUG 修复回归', () => {
     test('BUG-6: 命名空间模式下三段式路径应正确解析为 store + 成员名', () => {
-      const nsStore = createStore({
+      const nsStore: Store<{ value: number }> = createStore({
         name: 'ns',
         state: { value: 0 },
         actions: {
@@ -1873,7 +1873,7 @@ describe('composeStore', () => {
     })
 
     test('BUG-7: 非命名空间模式同名 action 冲突应该警告并调用第一个 store', () => {
-      const s1 = createStore({
+      const s1: Store<{ v: string }> = createStore({
         name: 'conflict-a',
         state: { v: '' },
         actions: {
@@ -1882,7 +1882,7 @@ describe('composeStore', () => {
           },
         },
       } as any)
-      const s2 = createStore({
+      const s2: Store<{ v: string }> = createStore({
         name: 'conflict-b',
         state: { v: '' },
         actions: {
@@ -2090,7 +2090,8 @@ describe('BUG 回归：订阅回滚与 batch 收尾', () => {
     const composed = composeStore([sub])
 
     const result = composed.batch(() => {
-      composed.destroy(false)
+      // destroy(false) 走 ComposedStore 内部实现签名（不级联销毁子 store），Store 类型上未暴露
+      (composed as any).destroy(false)
       return 'fn-value'
     })
 
@@ -2109,7 +2110,8 @@ describe('BUG 回归：订阅回滚与 batch 收尾', () => {
 
     expect(() =>
       composed.batch(() => {
-        composed.destroy(false)
+        // 同上：不级联销毁子 store 的内部实现签名
+        (composed as any).destroy(false)
         throw new Error('original')
       }),
     ).toThrow('original')

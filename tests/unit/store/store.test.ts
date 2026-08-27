@@ -36,7 +36,7 @@ describe('Store - 核心功能', () => {
     })
 
     it('STORE-004: 应该支持空状态', () => {
-      const store = createStore({})
+      const store = createStore({ state: {} })
       expect(store.getState()).toEqual({})
     })
 
@@ -169,6 +169,18 @@ describe('Store - 核心功能', () => {
       store.$patch({})
 
       expect(store.getState()).toEqual(initialState)
+    })
+
+    it('REGR-STORE-001: $patch 更新 Date 字段应替换生效而非静默保留旧值', () => {
+      const store = createStore({ state: { ts: new Date(1000) } as never })
+      store.$patch({ ts: new Date(2000) } as never)
+      expect((store.getState() as { ts: Date }).ts.getTime()).toBe(2000)
+    })
+
+    it('REGR-STORE-002: $patch 用普通对象覆盖 Date 字段应整体替换', () => {
+      const store = createStore({ state: { a: new Date(1000) } as never })
+      store.$patch({ a: { x: 1 } } as never)
+      expect((store.getState() as { a: { x: number } }).a).toEqual({ x: 1 })
     })
   })
 

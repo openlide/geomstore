@@ -13,7 +13,7 @@
  * - 类型守卫
  */
 
-import { TypeValidator, TypeSchema, CommonSchemas, TypeGuards, createTypeValidator, defaultTypeValidator } from '@/core/utils'
+import { TypeValidator, TypeSchema, CommonSchemas, TypeGuards, createTypeValidator, defaultTypeValidator, type TypeDescriptor } from '@/core/utils'
 
 describe('TypeValidator', () => {
   let validator: TypeValidator
@@ -1150,7 +1150,7 @@ describe('BUG 回归：schema.type 自引用', () => {
     const selfRef: Record<string, unknown> = { type: 'object' }
     selfRef.type = selfRef // type 指向自身
 
-    const result = validator.validate({ a: 1 }, selfRef as unknown as Record<string, unknown>)
+    const result = validator.validate({ a: 1 }, selfRef as unknown as TypeDescriptor)
     expect(result.valid).toBe(false)
     expect(result.errors?.some((e) => e.message.includes('nesting too deep'))).toBe(true)
   })
