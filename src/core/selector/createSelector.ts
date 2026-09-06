@@ -169,6 +169,13 @@ export class SelectorFactory<S extends Record<string, unknown> = Record<string, 
       return this.cache
     }
 
+    // 版本化场景：版本号单调递增，历史条目的版本号必然小于当前值，回溯不可能命中
+    // （当前 cache 未命中说明版本已变或已过期），直接判定 miss。
+    // 此处仍保留向 cacheHistory 写入，使 getCacheStatus().cacheSize 语义不变。
+    if (stateVersion !== undefined && this.cache?.version !== undefined) {
+      return null
+    }
+
     for (let i = this.cacheHistory.length - 1; i >= 0; i--) {
       if (this.isCacheHit(this.cacheHistory[i], state, now, stateVersion)) {
         const hit = this.cacheHistory[i]
