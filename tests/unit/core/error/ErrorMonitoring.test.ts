@@ -21,7 +21,7 @@ import {
   GeomStoreError,
   ErrorCode,
   createError,
-} from '@/core/error'
+} from '@/extras/error'
 import type { ErrorContext } from '@/types/error'
 
 describe('ConsoleReporter', () => {

@@ -29,7 +29,7 @@ const subpathEntries = {
   'plugins/performance': 'plugins/performance',
   integrations: 'integrations',
   'integrations/enterprise': 'integrations/enterprise',
-  error: 'core/error',
+  error: 'extras/error',
   compose: 'core/compose',
   selectors: 'core/selector',
   snapshot: 'core/snapshot',

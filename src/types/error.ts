@@ -98,7 +98,7 @@ export function createErrorContext(storeName: string, operation: OperationType, 
   }
 }
 
-// ==================== 错误监控类型（契约层定义，core/error 实现依赖此处） ====================
+// ==================== 错误监控类型（契约层定义，extras/error 实现依赖此处） ====================
 
 /**
  * 错误报告器接口
@@ -199,5 +199,5 @@ export interface ErrorReport {
 }
 
 // 注：RecoveryConfig / RecoveryContext / RecoveryStrategyMap 依赖 RecoveryStrategy 枚举与
-// GeomStoreError 类（均为运行时值），继续由 core/error/ErrorRecovery.ts 定义并经
-// core/error/index.ts 导出，避免 types 层反向依赖实现。
+// GeomStoreError 类（均为运行时值），现由 extras/error/ErrorRecovery.ts 定义并经
+// extras/error/index.ts 导出，避免 types 层反向依赖实现。

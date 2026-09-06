@@ -2,7 +2,7 @@
  * ErrorBoundary 测试
  */
 
-import { ErrorBoundary, withErrorBoundary } from '@/core/error'
+import { ErrorBoundary, withErrorBoundary } from '@/extras/error'
 
 describe('ErrorBoundary', () => {
   let errorBoundary: ErrorBoundary<{ count: number }, { count: number }>

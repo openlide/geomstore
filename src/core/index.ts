@@ -23,50 +23,6 @@ export type {
   CacheStats,
 } from '../types/store'
 
-// ==================== 错误处理 ====================
-export { ErrorHandlerImpl, defaultErrorHandler, createErrorContext } from './error/ErrorHandler'
-export { ErrorBoundary, withErrorBoundary } from './error/ErrorBoundary'
-export {
-  ErrorRecovery,
-  RecoveryStrategy,
-  createDefaultErrorRecovery,
-  defaultErrorRecovery,
-  GeomStoreError,
-  createError,
-  ErrorMonitoring,
-  ErrorAggregator,
-  ConsoleReporter,
-  HttpReporter,
-  createDefaultMonitoring,
-  getDefaultMonitoring,
-  ErrorCode,
-  isGeomStoreError,
-  isActionError,
-  isStateError,
-  isSelectorError,
-  isPluginError,
-  isValidationError,
-  ActionError,
-  StateError,
-  SelectorError,
-  PluginError,
-  ComposeError,
-  ValidationError,
-} from './error/index'
-export type {
-  ErrorContext,
-  ErrorHandler,
-  ErrorLevel,
-  OperationType,
-  ErrorBoundaryOptions,
-  ErrorFallback,
-  ErrorReporter,
-  ErrorGroup,
-  ErrorReport,
-  MonitoringConfig,
-} from '../types/error'
-export type { RecoveryConfig, RecoveryContext, RecoveryStrategyMap } from './error/index'
-
 // ==================== 工厂函数 ====================
 export { createStore } from './store/factory'
 

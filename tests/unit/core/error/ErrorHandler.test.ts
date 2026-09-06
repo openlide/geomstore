@@ -2,7 +2,7 @@
  * GeomStore v1.0 - ErrorHandler 测试
  */
 
-import { ErrorHandlerImpl, createErrorContext, defaultErrorHandler } from '@/core/error/ErrorHandler'
+import { ErrorHandlerImpl, createErrorContext, defaultErrorHandler } from '@/extras/error/ErrorHandler'
 import type { ErrorContext, ErrorLevel, OperationType } from '@/types/error'
 
 describe('ErrorHandlerImpl', () => {

@@ -18,6 +18,7 @@
     "./extras/action": "./src/extras/action.ts",
     "./extras/enterprise": "./src/extras/enterprise.ts",
     "./extras/plugins": "./src/extras/plugins.ts",
+    "./extras/error": "./src/extras/error/index.ts",
     "./package.json": "./package.json"
   },
   "files": [
@@ -27,7 +28,6 @@
     "hooks",
     "plugins",
     "integrations",
-    "error",
     "compose",
     "selectors",
     "snapshot",

@@ -10,7 +10,7 @@
  */
 
 import { type State, type Actions, type InferActionArgs, type InferActionReturn, type ActionContextBase } from '../../types/store'
-import { createError, ErrorCode } from '../error/GeomStoreError'
+import { createError, ErrorCode } from '../../extras/error/GeomStoreError'
 import type { IHookSystem } from '../../types/plugin'
 
 /**

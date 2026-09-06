@@ -25,7 +25,7 @@ import {
   isPluginError,
   isValidationError,
   createError
-} from '@/index'
+} from '@/extras/error'
 
 describe('GeomStoreError', () => {
   describe('错误类创建', () => {
