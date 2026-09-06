@@ -3,12 +3,12 @@
  */
 
 export { PerformanceMonitor } from './PerformanceMonitor'
+export { LRUCache } from '../cache/LRUCache'
 export { MetricsCollector, PerformanceAnalyzer } from './metrics'
 export type { PerformanceMetrics, PerformanceOptions, PerformanceStats, MetricType } from '../../types/performance'
 
 // 性能优化工具
 export {
-  LRUCache,
   AsyncBatchNotifier,
   StateFingerprint,
   scheduleIdle,

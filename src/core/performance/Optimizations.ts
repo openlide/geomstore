@@ -10,9 +10,8 @@
  * 注意：LRU缓存实现已移至 core/cache/LRUCache.ts
  */
 
-// 从核心缓存模块导入并重新导出 LRUCache
+// LRUCache 实现见 core/cache/LRUCache.ts，统一经 cache/index → core/index 导出，此处不再重复转发
 import { LRUCache } from '../cache/LRUCache'
-export { LRUCache }
 
 /** hashNumber 的位视图缓冲（模块级复用避免每次调用分配；同步使用无重入问题） */
 const FINGERPRINT_F64 = new Float64Array(1)
