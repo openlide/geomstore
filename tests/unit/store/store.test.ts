@@ -4,11 +4,12 @@
  */
 
 import { createStore, isGeomStore } from '@/index'
+import { createTestStore } from '../../utils/createTestStore'
 
 describe('Store - 核心功能', () => {
   describe('创建和初始化', () => {
     it('STORE-001: 应该创建一个基本的Store实例', () => {
-      const store = createStore({
+      const store = createTestStore({
         state: { count: 0, name: 'test' },
       })
 
@@ -18,7 +19,7 @@ describe('Store - 核心功能', () => {
     })
 
     it('STORE-002: 应该支持自定义Store名称', () => {
-      const store = createStore({
+      const store = createTestStore({
         name: 'my-store',
         state: { count: 0 },
       })
@@ -27,8 +28,8 @@ describe('Store - 核心功能', () => {
     })
 
     it('STORE-003: 应该为未指定名称的Store生成默认名称', () => {
-      const store1 = createStore({ state: { count: 0 } })
-      const store2 = createStore({ state: { count: 0 } })
+      const store1 = createTestStore({ state: { count: 0 } })
+      const store2 = createTestStore({ state: { count: 0 } })
 
       expect(store1.name).toBeDefined()
       expect(store2.name).toBeDefined()
@@ -36,7 +37,7 @@ describe('Store - 核心功能', () => {
     })
 
     it('STORE-004: 应该支持空状态', () => {
-      const store = createStore({ state: {} })
+      const store = createTestStore({ state: {} })
       expect(store.getState()).toEqual({})
     })
 
@@ -57,20 +58,20 @@ describe('Store - 核心功能', () => {
         },
       }
 
-      const store = createStore({ state: complexState })
+      const store = createTestStore({ state: complexState })
       expect(store.getState()).toEqual(complexState)
     })
   })
 
   describe('状态管理 - getState', () => {
     it('STORE-006: getState应该返回当前状态', () => {
-      const store = createStore({ state: { count: 0 } })
+      const store = createTestStore({ state: { count: 0 } })
       expect(store.getState()).toEqual({ count: 0 })
     })
 
     it('STORE-007: getState应该返回状态的引用（不是克隆）', () => {
       const state = { count: 0 }
-      const store = createStore({ state })
+      const store = createTestStore({ state })
 
       const state1 = store.getState()
       const state2 = store.getState()
@@ -81,7 +82,7 @@ describe('Store - 核心功能', () => {
 
   describe('状态管理 - setState', () => {
     it('STORE-008: setState应该更新单个状态', () => {
-      const store = createStore({ state: { count: 0, name: 'test' } })
+      const store = createTestStore({ state: { count: 0, name: 'test' } })
       store.setState('count', 5)
 
       expect(store.getState().count).toBe(5)
@@ -89,21 +90,21 @@ describe('Store - 核心功能', () => {
     })
 
     it('STORE-009: setState应该支持字符串类型', () => {
-      const store = createStore({ state: { name: 'John' } })
+      const store = createTestStore({ state: { name: 'John' } })
       store.setState('name', 'Jane')
 
       expect(store.getState().name).toBe('Jane')
     })
 
     it('STORE-010: setState应该支持布尔类型', () => {
-      const store = createStore({ state: { active: false } })
+      const store = createTestStore({ state: { active: false } })
       store.setState('active', true)
 
       expect(store.getState().active).toBe(true)
     })
 
     it('STORE-011: setState应该支持对象类型', () => {
-      const store = createStore({ state: { user: { name: 'John' } } })
+      const store = createTestStore({ state: { user: { name: 'John' } } })
       const newUser = { name: 'Jane', age: 25 }
       store.setState('user', newUser as any)
 
@@ -111,7 +112,7 @@ describe('Store - 核心功能', () => {
     })
 
     it('STORE-012: setState应该支持数组类型', () => {
-      const store = createStore({ state: { items: [1, 2, 3] } })
+      const store = createTestStore({ state: { items: [1, 2, 3] } })
       const newItems = [4, 5, 6]
       store.setState('items', newItems as any)
 
@@ -119,14 +120,14 @@ describe('Store - 核心功能', () => {
     })
 
     it('STORE-013: setState应该支持null值', () => {
-      const store = createStore({ state: { data: 'some-data' } })
+      const store = createTestStore({ state: { data: 'some-data' } })
       store.setState('data', null as any)
 
       expect(store.getState().data).toBeNull()
     })
 
     it('STORE-014: setState应该支持undefined值', () => {
-      const store = createStore({ state: { data: 'some-data' } })
+      const store = createTestStore({ state: { data: 'some-data' } })
       store.setState('data', undefined as any)
 
       expect(store.getState().data).toBeUndefined()
@@ -135,21 +136,21 @@ describe('Store - 核心功能', () => {
 
   describe('状态管理 - $patch', () => {
     it('STORE-015: $patch应该批量更新状态', () => {
-      const store = createStore({ state: { count: 0, name: 'test', active: false } })
+      const store = createTestStore({ state: { count: 0, name: 'test', active: false } })
       store.$patch({ count: 10, name: 'updated' })
 
       expect(store.getState()).toEqual({ count: 10, name: 'updated', active: false })
     })
 
     it('STORE-016: $patch应该支持部分更新', () => {
-      const store = createStore({ state: { count: 0, name: 'test', age: 20 } })
+      const store = createTestStore({ state: { count: 0, name: 'test', age: 20 } })
       store.$patch({ count: 5 })
 
       expect(store.getState()).toEqual({ count: 5, name: 'test', age: 20 })
     })
 
     it('STORE-017: $patch应该支持嵌套对象', () => {
-      const store = createStore({
+      const store = createTestStore({
         state: {
           user: { name: 'John', age: 30 },
           items: [1, 2, 3],
@@ -163,7 +164,7 @@ describe('Store - 核心功能', () => {
     })
 
     it('STORE-018: $patch应该支持空对象', () => {
-      const store = createStore({ state: { count: 0 } })
+      const store = createTestStore({ state: { count: 0 } })
       const initialState = store.getState()
 
       store.$patch({})
@@ -172,13 +173,13 @@ describe('Store - 核心功能', () => {
     })
 
     it('REGR-STORE-001: $patch 更新 Date 字段应替换生效而非静默保留旧值', () => {
-      const store = createStore({ state: { ts: new Date(1000) } as never })
+      const store = createTestStore({ state: { ts: new Date(1000) } as never })
       store.$patch({ ts: new Date(2000) } as never)
       expect((store.getState() as { ts: Date }).ts.getTime()).toBe(2000)
     })
 
     it('REGR-STORE-002: $patch 用普通对象覆盖 Date 字段应整体替换', () => {
-      const store = createStore({ state: { a: new Date(1000) } as never })
+      const store = createTestStore({ state: { a: new Date(1000) } as never })
       store.$patch({ a: { x: 1 } } as never)
       expect((store.getState() as { a: { x: number } }).a).toEqual({ x: 1 })
     })
@@ -186,14 +187,14 @@ describe('Store - 核心功能', () => {
 
   describe('状态管理 - $replaceState', () => {
     it('STORE-019: $replaceState应该替换整个状态', () => {
-      const store = createStore({ state: { count: 0, name: 'test' } })
+      const store = createTestStore({ state: { count: 0, name: 'test' } })
       store.$replaceState({ newCount: 10, newName: 'new' } as any)
 
       expect(store.getState()).toEqual({ newCount: 10, newName: 'new' })
     })
 
     it('STORE-020: $replaceState应该删除旧的状态键', () => {
-      const store = createStore({ state: { count: 0, name: 'test', age: 20 } })
+      const store = createTestStore({ state: { count: 0, name: 'test', age: 20 } })
       store.$replaceState({ newCount: 10 } as any)
 
       expect(store.getState()).toEqual({ newCount: 10 })
@@ -201,7 +202,7 @@ describe('Store - 核心功能', () => {
     })
 
     it('STORE-021: $replaceState应该支持完全不同的状态结构', () => {
-      const store = createStore({ state: { a: 1, b: 2 } })
+      const store = createTestStore({ state: { a: 1, b: 2 } })
       store.$replaceState({
         x: 'string',
         y: { nested: true },
@@ -216,14 +217,14 @@ describe('Store - 核心功能', () => {
     })
 
     it('STORE-022: $replaceState应该支持空状态', () => {
-      const store = createStore({ state: { count: 0, name: 'test' } })
+      const store = createTestStore({ state: { count: 0, name: 'test' } })
       store.$replaceState({} as any)
 
       expect(store.getState()).toEqual({})
     })
 
     it('STORE-022B: batch 中调用 $replaceState 应只在 batch 结束时通知一次', () => {
-      const store = createStore({ state: { count: 0 } })
+      const store = createTestStore({ state: { count: 0 } })
       const listener = jest.fn()
       store.subscribe(listener)
 
@@ -236,7 +237,7 @@ describe('Store - 核心功能', () => {
     })
 
     it('STORE-022C: action 中调用 $replaceState 应由 dispatch 收尾统一通知', () => {
-      const store = createStore({
+      const store = createTestStore({
         state: { count: 0 },
         actions: {
           replaceInAction(this: any) {
@@ -256,7 +257,7 @@ describe('Store - 核心功能', () => {
 
   describe('Actions', () => {
     it('STORE-023: 应该支持定义actions', () => {
-      const store = createStore({
+      const store = createTestStore({
         state: { count: 0 },
         actions: {
           increment(..._args: unknown[]) {
@@ -270,7 +271,7 @@ describe('Store - 核心功能', () => {
     })
 
     it('STORE-024: dispatch应该执行指定的action', () => {
-      const store = createStore({
+      const store = createTestStore({
         state: { count: 0 },
         actions: {
           increment(..._args: unknown[]) {
@@ -284,7 +285,7 @@ describe('Store - 核心功能', () => {
     })
 
     it('STORE-025: action应该接收参数', () => {
-      const store = createStore({
+      const store = createTestStore({
         state: { count: 0 },
         actions: {
           add(...args: unknown[]) {
@@ -299,7 +300,7 @@ describe('Store - 核心功能', () => {
     })
 
     it('STORE-026: action应该支持多个参数', () => {
-      const store = createStore({
+      const store = createTestStore({
         state: { message: '' },
         actions: {
           greet(...args: unknown[]) {
@@ -314,7 +315,7 @@ describe('Store - 核心功能', () => {
     })
 
     it('STORE-027: action应该返回值', () => {
-      const store = createStore({
+      const store = createTestStore({
         state: { count: 0 },
         actions: {
           double(..._args: unknown[]) {
@@ -328,7 +329,7 @@ describe('Store - 核心功能', () => {
     })
 
     it('STORE-028: dispatch应该抛出未找到action的错误', () => {
-      const store = createStore({ state: { count: 0 } })
+      const store = createTestStore({ state: { count: 0 } })
 
       expect(() => {
         store.dispatch('nonexistent')
@@ -336,7 +337,7 @@ describe('Store - 核心功能', () => {
     })
 
     it('STORE-029: action中this应该绑定到store实例', () => {
-      const store = createStore({
+      const store = createTestStore({
         state: { count: 0, name: 'test' },
         actions: {
           updateState(...args: unknown[]) {
@@ -353,7 +354,7 @@ describe('Store - 核心功能', () => {
     })
 
     it('STORE-030: 应该支持多个actions', () => {
-      const store = createStore({
+      const store = createTestStore({
         state: { count: 0, name: 'test' },
         actions: {
           increment(..._args: unknown[]) {
@@ -378,7 +379,7 @@ describe('Store - 核心功能', () => {
     })
 
     it('STORE-031: 应该支持空的actions', () => {
-      const store = createStore({
+      const store = createTestStore({
         state: { count: 0 },
         actions: {},
       })
@@ -389,7 +390,7 @@ describe('Store - 核心功能', () => {
 
   describe('Getters', () => {
     it('STORE-032: 应该支持定义getters', () => {
-      const store = createStore({
+      const store = createTestStore({
         state: { count: 0 },
         getters: {
           double(state) {
@@ -402,7 +403,7 @@ describe('Store - 核心功能', () => {
     })
 
     it('STORE-033: getter应该基于最新state计算', () => {
-      const store = createStore({
+      const store = createTestStore({
         state: { count: 0 },
         getters: {
           double(state) {
@@ -416,7 +417,7 @@ describe('Store - 核心功能', () => {
     })
 
     it('STORE-034: getter应该支持复杂计算', () => {
-      const store = createStore({
+      const store = createTestStore({
         state: { items: [1, 2, 3, 4, 5] },
         getters: {
           sum(state) {
@@ -433,7 +434,7 @@ describe('Store - 核心功能', () => {
     })
 
     it('STORE-035: getter应该支持嵌套状态', () => {
-      const store = createStore({
+      const store = createTestStore({
         state: {
           user: { name: 'John', age: 30 },
         },
@@ -448,7 +449,7 @@ describe('Store - 核心功能', () => {
     })
 
     it('STORE-036: getter应该抛出未找到getter的错误', () => {
-      const store = createStore({ state: { count: 0 } })
+      const store = createTestStore({ state: { count: 0 } })
 
       expect(() => {
         store.getter('nonexistent')
@@ -456,7 +457,7 @@ describe('Store - 核心功能', () => {
     })
 
     it('STORE-037: 应该支持多个getters', () => {
-      const store = createStore({
+      const store = createTestStore({
         state: { count: 0, name: 'test' },
         getters: {
           double(state) {
@@ -479,7 +480,7 @@ describe('Store - 核心功能', () => {
 
   describe('订阅机制', () => {
     it('STORE-038: subscribe应该订阅状态变化', () => {
-      const store = createStore({ state: { count: 0 } })
+      const store = createTestStore({ state: { count: 0 } })
       const listener = jest.fn()
 
       store.subscribe(listener)
@@ -490,7 +491,7 @@ describe('Store - 核心功能', () => {
     })
 
     it('STORE-039: subscribe应该返回取消订阅函数', () => {
-      const store = createStore({ state: { count: 0 } })
+      const store = createTestStore({ state: { count: 0 } })
       const listener = jest.fn()
 
       const unsubscribe = store.subscribe(listener)
@@ -501,7 +502,7 @@ describe('Store - 核心功能', () => {
     })
 
     it('STORE-040: 应该支持多个订阅者', () => {
-      const store = createStore({ state: { count: 0 } })
+      const store = createTestStore({ state: { count: 0 } })
       const listener1 = jest.fn()
       const listener2 = jest.fn()
       const listener3 = jest.fn()
@@ -517,7 +518,7 @@ describe('Store - 核心功能', () => {
     })
 
     it('STORE-041: 订阅者应该在$patch后触发', () => {
-      const store = createStore({ state: { count: 0, name: 'test' } })
+      const store = createTestStore({ state: { count: 0, name: 'test' } })
       const listener = jest.fn()
 
       store.subscribe(listener)
@@ -527,7 +528,7 @@ describe('Store - 核心功能', () => {
     })
 
     it('STORE-042: 订阅者应该在$replaceState后触发', () => {
-      const store = createStore({ state: { count: 0 } })
+      const store = createTestStore({ state: { count: 0 } })
       const listener = jest.fn()
 
       store.subscribe(listener)
@@ -537,7 +538,7 @@ describe('Store - 核心功能', () => {
     })
 
     it('STORE-043: 订阅者应该接收最新的state', () => {
-      const store = createStore({ state: { count: 0 } })
+      const store = createTestStore({ state: { count: 0 } })
       const listener = jest.fn()
 
       store.subscribe(listener)
@@ -554,7 +555,7 @@ describe('Store - 核心功能', () => {
     })
 
     it('STORE-044: 取消订阅应该不影响其他订阅者', () => {
-      const store = createStore({ state: { count: 0 } })
+      const store = createTestStore({ state: { count: 0 } })
       const listener1 = jest.fn()
       const listener2 = jest.fn()
       const listener3 = jest.fn()
@@ -572,7 +573,7 @@ describe('Store - 核心功能', () => {
     })
 
     it('STORE-045: 订阅者错误不应该影响其他订阅者', () => {
-      const store = createStore({ state: { count: 0 } })
+      const store = createTestStore({ state: { count: 0 } })
       const listener1 = jest.fn(() => {
         throw new Error('Test error')
       })
@@ -587,7 +588,7 @@ describe('Store - 核心功能', () => {
     })
 
     it('STORE-046: 同一个订阅者多次注册按注册次数通知，退订只减一（#14 引用计数语义）', () => {
-      const store = createStore({ state: { count: 0 } })
+      const store = createTestStore({ state: { count: 0 } })
       const listener = jest.fn()
 
       const unsub1 = store.subscribe(listener)
@@ -613,7 +614,7 @@ describe('Store - 核心功能', () => {
 
   describe('生命周期管理', () => {
     it('STORE-047: destroy后调用setState应该抛出错误', () => {
-      const store = createStore({ state: { count: 0 } })
+      const store = createTestStore({ state: { count: 0 } })
       const listener = jest.fn()
 
       store.subscribe(listener)
@@ -625,14 +626,14 @@ describe('Store - 核心功能', () => {
     })
 
     it('STORE-048: destroy后state仍然可访问', () => {
-      const store = createStore({ state: { count: 0 } })
+      const store = createTestStore({ state: { count: 0 } })
       store.destroy()
 
       expect(store.getState()).toEqual({ count: 0 })
     })
 
     it('STORE-049: destroy可以多次调用', () => {
-      const store = createStore({ state: { count: 0 } })
+      const store = createTestStore({ state: { count: 0 } })
 
       expect(() => {
         store.destroy()
@@ -644,7 +645,7 @@ describe('Store - 核心功能', () => {
 
   describe('插件管理', () => {
     it('STORE-050: use应该安装插件', () => {
-      const store = createStore({ state: { count: 0 } })
+      const store = createTestStore({ state: { count: 0 } })
       const install = jest.fn()
 
       const plugin = {
@@ -657,7 +658,7 @@ describe('Store - 核心功能', () => {
     })
 
     it('STORE-051: 插件install可以返回卸载函数', () => {
-      const store = createStore({ state: { count: 0 } })
+      const store = createTestStore({ state: { count: 0 } })
       const uninstall = jest.fn()
 
       const plugin = {
@@ -672,7 +673,7 @@ describe('Store - 核心功能', () => {
     })
 
     it('STORE-052: 插件install不是函数应该不报错', () => {
-      const store = createStore({ state: { count: 0 } })
+      const store = createTestStore({ state: { count: 0 } })
 
       const plugin = {
         name: 'test-plugin',
@@ -685,7 +686,7 @@ describe('Store - 核心功能', () => {
 
     it('REGR-STORE-005: 同一插件实例重复 use 应只安装一次并告警', () => {
       const warnSpy = jest.spyOn(console, 'warn').mockImplementation()
-      const store = createStore({ name: 'dup-plugin-store', state: { count: 0 } })
+      const store = createTestStore({ name: 'dup-plugin-store', state: { count: 0 } })
       const install = jest.fn()
       const plugin = { name: 'dup-plugin', install }
 
@@ -702,7 +703,7 @@ describe('Store - 核心功能', () => {
 
     it('REGR-STORE-006: 重复 use 后卸载不得留下无法卸载的残留注册', () => {
       const warnSpy = jest.spyOn(console, 'warn').mockImplementation()
-      const store = createStore({ name: 'dup-plugin-store-2', state: { count: 0 } })
+      const store = createTestStore({ name: 'dup-plugin-store-2', state: { count: 0 } })
       const uninstallFn = jest.fn()
       const plugin = {
         name: 'dup-plugin-2',
@@ -731,7 +732,7 @@ describe('Store - 核心功能', () => {
 
     it('REGR-STORE-007: 不同插件实例（工厂产物）应各自安装', () => {
       const warnSpy = jest.spyOn(console, 'warn').mockImplementation()
-      const store = createStore({ name: 'factory-plugin-store', state: { count: 0 } })
+      const store = createTestStore({ name: 'factory-plugin-store', state: { count: 0 } })
       const installs: string[] = []
       const makePlugin = (tag: string) => ({
         name: 'factory-plugin',
@@ -754,37 +755,37 @@ describe('Store - 核心功能', () => {
 
   describe('边界条件', () => {
     it('STORE-053: state值为null', () => {
-      const store = createStore({ state: { data: null } })
+      const store = createTestStore({ state: { data: null } })
       expect(store.getState().data).toBeNull()
     })
 
     it('STORE-054: state值为undefined', () => {
-      const store = createStore({ state: { data: undefined } })
+      const store = createTestStore({ state: { data: undefined } })
       expect(store.getState().data).toBeUndefined()
     })
 
     it('STORE-055: state值为0', () => {
-      const store = createStore({ state: { count: 0 } })
+      const store = createTestStore({ state: { count: 0 } })
       expect(store.getState().count).toBe(0)
     })
 
     it('STORE-056: state值为空字符串', () => {
-      const store = createStore({ state: { name: '' } })
+      const store = createTestStore({ state: { name: '' } })
       expect(store.getState().name).toBe('')
     })
 
     it('STORE-057: state值为false', () => {
-      const store = createStore({ state: { active: false } })
+      const store = createTestStore({ state: { active: false } })
       expect(store.getState().active).toBe(false)
     })
 
     it('STORE-058: state值为空数组', () => {
-      const store = createStore({ state: { items: [] } })
+      const store = createTestStore({ state: { items: [] } })
       expect(store.getState().items).toEqual([])
     })
 
     it('STORE-059: $patch传入undefined应该抛出错误', () => {
-      const store = createStore({ state: { count: 0 } })
+      const store = createTestStore({ state: { count: 0 } })
 
       // P2-5 行为变更：null/undefined 参数不再静默忽略，而是抛出 TypeError
       expect(() => {
@@ -793,7 +794,7 @@ describe('Store - 核心功能', () => {
     })
 
     it('STORE-060: $replaceState传入undefined应该抛出错误', () => {
-      const store = createStore({ state: { count: 0 } })
+      const store = createTestStore({ state: { count: 0 } })
 
       expect(() => {
         store.$replaceState(undefined as any)
@@ -801,7 +802,7 @@ describe('Store - 核心功能', () => {
     })
 
     it('STORE-061: dispatch未定义的action', () => {
-      const store = createStore({ state: { count: 0 } })
+      const store = createTestStore({ state: { count: 0 } })
 
       expect(() => {
         store.dispatch('undefinedAction')
@@ -809,7 +810,7 @@ describe('Store - 核心功能', () => {
     })
 
     it('STORE-062: getter未定义的getter', () => {
-      const store = createStore({ state: { count: 0 } })
+      const store = createTestStore({ state: { count: 0 } })
 
       expect(() => {
         store.getter('undefinedGetter')
@@ -819,7 +820,7 @@ describe('Store - 核心功能', () => {
 
   describe('类型检查', () => {
     it('STORE-063: isGeomStore应该正确识别Store实例', () => {
-      const store = createStore({ state: { count: 0 } })
+      const store = createTestStore({ state: { count: 0 } })
       const notStore = { count: 0 }
 
       expect(isGeomStore(store)).toBe(true)
@@ -832,7 +833,7 @@ describe('Store - 核心功能', () => {
 
   describe('操作队列串行化', () => {
     it('STORE-064: 异步操作应该串行化执行', async () => {
-      const store = createStore({
+      const store = createTestStore({
         state: { count: 0 },
         actions: {
           async increment() {
@@ -850,7 +851,7 @@ describe('Store - 核心功能', () => {
     })
 
     it('STORE-065: 异步操作错误应该被捕获', async () => {
-      const store = createStore({
+      const store = createTestStore({
         state: { count: 0 },
         actions: {
           async errorAction() {
@@ -870,7 +871,7 @@ describe('Store - 核心功能', () => {
 
   describe('快照功能', () => {
     it('STORE-066: $snapshot应该创建不可变的快照', () => {
-      const store = createStore({
+      const store = createTestStore({
         state: { count: 0, user: { name: 'Alice' } },
       })
 
@@ -881,7 +882,7 @@ describe('Store - 核心功能', () => {
     })
 
     it('STORE-072 (BUG-F11): $snapshot应该递归深冻结嵌套对象和数组', () => {
-      const store = createStore({
+      const store = createTestStore({
         state: {
           user: { name: 'Alice', profile: { city: 'Beijing' } },
           items: [{ id: 1 }, { id: 2 }],
@@ -901,7 +902,7 @@ describe('Store - 核心功能', () => {
     })
 
     it('STORE-073 (BUG-F11): 快照深冻结不影响原state的可变性', () => {
-      const store = createStore({
+      const store = createTestStore({
         state: { user: { name: 'Alice' }, items: [] as number[] },
       })
 
@@ -920,7 +921,7 @@ describe('Store - 核心功能', () => {
       class User {
         profile: { name: string } = { name: 'Alice' }
       }
-      const store = createStore({ state: { user: new User() } })
+      const store = createTestStore({ state: { user: new User() } })
       const liveProfile = store.getState().user.profile
 
       store.$snapshot()
@@ -934,7 +935,7 @@ describe('Store - 核心功能', () => {
       class User {
         profile: { name: string } = { name: 'Alice' }
       }
-      const store = createStore({
+      const store = createTestStore({
         state: { user: new User() },
         actions: {
           rename(this: { state: { user: User } }) {
@@ -954,7 +955,7 @@ describe('Store - 核心功能', () => {
     })
 
     it('STORE-067: $restore应该从快照恢复状态', () => {
-      const store = createStore({
+      const store = createTestStore({
         state: { count: 0, user: { name: 'Alice' } },
       })
 
@@ -970,7 +971,7 @@ describe('Store - 核心功能', () => {
     })
 
     it('STORE-068: 恢复后应该触发订阅', () => {
-      const store = createStore({ state: { count: 0 } })
+      const store = createTestStore({ state: { count: 0 } })
       const listener = jest.fn()
 
       store.subscribe(listener)
@@ -987,7 +988,7 @@ describe('Store - 核心功能', () => {
 
   describe('错误处理边界', () => {
     it('STORE-069: dispatch执行action时抛出错误应该正确处理', () => {
-      const store = createStore({
+      const store = createTestStore({
         state: { count: 0 },
         actions: {
           errorAction() {
@@ -1002,7 +1003,7 @@ describe('Store - 核心功能', () => {
     })
 
     it('STORE-070: getter执行时抛出错误应该正确处理', () => {
-      const store = createStore({
+      const store = createTestStore({
         state: { count: 0 },
         getters: {
           errorGetter: () => {
@@ -1019,7 +1020,7 @@ describe('Store - 核心功能', () => {
 
   describe('订阅者数量限制', () => {
     it('STORE-071: 订阅者超过50个应该自动移除最早的', () => {
-      const store = createStore({ state: { count: 0 } })
+      const store = createTestStore({ state: { count: 0 } })
       const consoleSpy = jest.spyOn(console, 'warn').mockImplementation()
       const listeners: Array<() => void> = []
 
@@ -1034,7 +1035,7 @@ describe('Store - 核心功能', () => {
     })
 
     it('STORE-072: 移除最早订阅者后新订阅者应该正常工作', () => {
-      const store = createStore({ state: { count: 0 } })
+      const store = createTestStore({ state: { count: 0 } })
       const newListener = jest.fn()
 
       // 创建51个订阅者
@@ -1062,7 +1063,7 @@ describe('Store - 核心功能', () => {
         },
       }
 
-      const store = createStore({ state: { count: 0 } })
+      const store = createTestStore({ state: { count: 0 } })
       const consoleSpy = jest.spyOn(console, 'error').mockImplementation()
 
       store.use(errorPlugin)
@@ -1076,7 +1077,7 @@ describe('Store - 核心功能', () => {
 
   describe('批量更新', () => {
     it('STORE-074: startBatch/endBatch 应该阻止中间状态通知', () => {
-      const store = createStore({ state: { count: 0, name: 'test' } })
+      const store = createTestStore({ state: { count: 0, name: 'test' } })
       const listener = jest.fn()
       store.subscribe(listener)
 
@@ -1100,7 +1101,7 @@ describe('Store - 核心功能', () => {
     })
 
     it('STORE-075: batch 方法应该自动管理批量更新上下文', () => {
-      const store = createStore({ state: { count: 0, name: 'test' } })
+      const store = createTestStore({ state: { count: 0, name: 'test' } })
       const listener = jest.fn()
       store.subscribe(listener)
 
@@ -1120,7 +1121,7 @@ describe('Store - 核心功能', () => {
     })
 
     it('STORE-076: 嵌套批量更新应该正确处理', () => {
-      const store = createStore({ state: { count: 0 } })
+      const store = createTestStore({ state: { count: 0 } })
       const listener = jest.fn()
       store.subscribe(listener)
 
@@ -1140,7 +1141,7 @@ describe('Store - 核心功能', () => {
     })
 
     it('STORE-077: 多次 endBatch 不应该产生副作用', () => {
-      const store = createStore({ state: { count: 0 } })
+      const store = createTestStore({ state: { count: 0 } })
       const listener = jest.fn()
       store.subscribe(listener)
 
@@ -1158,7 +1159,7 @@ describe('Store - 核心功能', () => {
     })
 
     it('STORE-078: batch 方法应该正确处理异常', () => {
-      const store = createStore({ state: { count: 0 } })
+      const store = createTestStore({ state: { count: 0 } })
       const listener = jest.fn()
       store.subscribe(listener)
 
@@ -1197,13 +1198,13 @@ describe('Store - 核心功能', () => {
     })
 
     it('STORE-080: constructor 应该使用提供的 options.name', () => {
-      const store = createStore({ state: { count: 0 }, name: 'custom-store' })
+      const store = createTestStore({ state: { count: 0 }, name: 'custom-store' })
 
       expect(store.name).toBe('custom-store')
     })
 
     it('STORE-081: _cacheKeySet 应该提供 O(1) 查找性能', () => {
-      const store = createStore({
+      const store = createTestStore({
         state: { a: 1, b: 2, c: 3, d: 4, e: 5 },
         enableCache: true,
         cacheKeys: ['a', 'b', 'c'],
@@ -1221,7 +1222,7 @@ describe('Store - 核心功能', () => {
     })
 
     it('STORE-082: $patch 应该跳过 undefined 值的缓存更新', () => {
-      const store = createStore({
+      const store = createTestStore({
         state: { count: 0, name: 'test' },
         enableCache: true,
         cacheKeys: ['count', 'name'],
@@ -1246,7 +1247,7 @@ describe('Store - 核心功能', () => {
     })
 
     it('REGR-STORE-001: $patch 嵌套合并后缓存应写入合并后的值', () => {
-      const store = createStore({
+      const store = createTestStore({
         state: { user: { name: 'a', age: 1 } },
         enableCache: true,
         cacheKeys: ['user'],
@@ -1261,7 +1262,7 @@ describe('Store - 核心功能', () => {
     })
 
     it('REGR-STORE-002: getter 拿到的状态应为只读保护代理', () => {
-      const store = createStore({
+      const store = createTestStore({
         state: { count: 0 },
         getters: {
           tryMutate(state: any) {
@@ -1280,7 +1281,7 @@ describe('Store - 核心功能', () => {
     })
 
     it('STORE-083: $patch 在 dispatch 中不应该立即通知监听器', () => {
-      const store = createStore({
+      const store = createTestStore({
         state: { count: 0 },
         actions: {
           testAction() {
@@ -1301,7 +1302,7 @@ describe('Store - 核心功能', () => {
     })
 
     it('STORE-084: dispatch 应该处理非 Error 类型的错误', () => {
-      const store = createStore({
+      const store = createTestStore({
         state: { count: 0 },
         actions: {
           throwString() {
@@ -1347,7 +1348,7 @@ describe('Store - 核心功能', () => {
     })
 
     it('STORE-085: getter 应该处理非 Error 类型的错误', () => {
-      const store = createStore({
+      const store = createTestStore({
         state: { count: 0 },
         getters: {
           throwString() {
@@ -1393,7 +1394,7 @@ describe('Store - 核心功能', () => {
     })
 
     it('STORE-086: subscribe 应该在 listeners 为空时正确处理', () => {
-      const store = createStore({ state: { count: 0 } })
+      const store = createTestStore({ state: { count: 0 } })
 
       // 添加第一个监听器
       const listener1 = jest.fn()
@@ -1411,7 +1412,7 @@ describe('Store - 核心功能', () => {
     })
 
     it('STORE-087: destroy 应该处理插件卸载函数的多种类型', () => {
-      const store = createStore({ state: { count: 0 } })
+      const store = createTestStore({ state: { count: 0 } })
       const consoleSpy = jest.spyOn(console, 'error').mockImplementation()
 
       // 创建不同类型的卸载函数
@@ -1461,7 +1462,7 @@ describe('Store - 核心功能', () => {
     })
 
     it('STORE-089: use 返回的卸载函数应该处理插件不在列表中的情况', () => {
-      const store = createStore({ state: { count: 0 } })
+      const store = createTestStore({ state: { count: 0 } })
 
       const plugin = {
         name: 'test-plugin',
@@ -1484,7 +1485,7 @@ describe('Store - 核心功能', () => {
     })
 
     it('STORE-090: use 返回的卸载函数应该处理非函数类型的卸载函数', () => {
-      const store = createStore({ state: { count: 0 } })
+      const store = createTestStore({ state: { count: 0 } })
 
       // 创建返回 null 卸载函数的插件
       const plugin = {
@@ -1504,7 +1505,7 @@ describe('Store - 核心功能', () => {
     })
 
     it('STORE-091: use 返回的卸载函数应该正确清理映射', () => {
-      const store = createStore({ state: { count: 0 } })
+      const store = createTestStore({ state: { count: 0 } })
       const storeAny = store as any
 
       const plugin = {
@@ -1527,7 +1528,7 @@ describe('Store - 核心功能', () => {
 
     it('STORE-092: subscribe 应该在超过最大订阅者时打印警告', () => {
       // 创建一个最大订阅者为 2 的 store
-      const store = createStore({ state: { count: 0 } }) as any
+      const store = createTestStore({ state: { count: 0 } }) as any
       // 通过内部管理器设置最大订阅者
       store._subscriptionManager = new (require('@/core/store/SubscriptionManager').SubscriptionManager)({
         storeName: store.name,
@@ -1553,7 +1554,7 @@ describe('Store - 核心功能', () => {
     })
 
     it('STORE-093: plugin.install 可能返回 undefined', () => {
-      const store = createStore({ state: { count: 0 } })
+      const store = createTestStore({ state: { count: 0 } })
       const storeAny = store as any
 
       // 创建不返回任何值的插件
@@ -1578,7 +1579,7 @@ describe('Store - 核心功能', () => {
     })
 
     it('STORE-094: subscribe 应该正确处理订阅者数量达到上限的情况', () => {
-      const store = createStore({ state: { count: 0 } }) as any
+      const store = createTestStore({ state: { count: 0 } }) as any
       // 通过内部管理器设置最大订阅者
       store._subscriptionManager = new (require('@/core/store/SubscriptionManager').SubscriptionManager)({
         storeName: store.name,
@@ -1623,43 +1624,43 @@ describe('Store - 核心功能', () => {
 
   describe('覆盖率补全 - destroy 后方法调用', () => {
     it('STORE-COV-001: destroy后调用$patch应该抛出错误', () => {
-      const store = createStore({ state: { count: 0 } })
+      const store = createTestStore({ state: { count: 0 } })
       store.destroy()
       expect(() => store.$patch({ count: 1 })).toThrow('[GeomStore] Cannot call $patch on a destroyed Store')
     })
 
     it('STORE-COV-002: destroy后调用$replaceState应该抛出错误', () => {
-      const store = createStore({ state: { count: 0 } })
+      const store = createTestStore({ state: { count: 0 } })
       store.destroy()
       expect(() => store.$replaceState({ count: 1 } as any)).toThrow('[GeomStore] Cannot call $replaceState on a destroyed Store')
     })
 
     it('STORE-COV-003: destroy后调用$snapshot应该抛出错误', () => {
-      const store = createStore({ state: { count: 0 } })
+      const store = createTestStore({ state: { count: 0 } })
       store.destroy()
       expect(() => store.$snapshot()).toThrow('[GeomStore] Cannot call $snapshot on a destroyed Store')
     })
 
     it('STORE-COV-004: destroy后调用$restore应该抛出错误', () => {
-      const store = createStore({ state: { count: 0 } })
+      const store = createTestStore({ state: { count: 0 } })
       store.destroy()
       expect(() => store.$restore({} as any)).toThrow('[GeomStore] Cannot call $restore on a destroyed Store')
     })
 
     it('STORE-COV-005: destroy后调用dispatch应该抛出错误', () => {
-      const store = createStore({ state: { count: 0 }, actions: { foo() {} } })
+      const store = createTestStore({ state: { count: 0 }, actions: { foo() {} } })
       store.destroy()
       expect(() => store.dispatch('foo')).toThrow('[GeomStore] Cannot call dispatch on a destroyed Store')
     })
 
     it('STORE-COV-006: destroy后调用getter应该抛出错误', () => {
-      const store = createStore({ state: { count: 0 }, getters: { foo: () => 1 } })
+      const store = createTestStore({ state: { count: 0 }, getters: { foo: () => 1 } })
       store.destroy()
       expect(() => store.getter('foo')).toThrow('[GeomStore] Cannot call getter on a destroyed Store')
     })
 
     it('STORE-COV-007: destroy后调用getGetterNames应该返回空数组', () => {
-      const store = createStore({
+      const store = createTestStore({
         state: { count: 0 },
         getters: { double: (s: any) => s.count * 2 },
       })
@@ -1669,68 +1670,68 @@ describe('Store - 核心功能', () => {
     })
 
     it('STORE-COV-008: destroy后调用subscribe应该抛出错误', () => {
-      const store = createStore({ state: { count: 0 } })
+      const store = createTestStore({ state: { count: 0 } })
       store.destroy()
       expect(() => store.subscribe(() => {})).toThrow('[GeomStore] Cannot call subscribe on a destroyed Store')
     })
 
     it('STORE-COV-009: destroy后调用use应该抛出错误', () => {
-      const store = createStore({ state: { count: 0 } })
+      const store = createTestStore({ state: { count: 0 } })
       store.destroy()
       expect(() => store.use({ name: 'p', install: () => {} } as any)).toThrow('[GeomStore] Cannot call use on a destroyed Store')
     })
 
     it('STORE-COV-010: destroy后调用getCached应该抛出错误', () => {
-      const store = createStore({ state: { count: 0 }, enableCache: true })
+      const store = createTestStore({ state: { count: 0 }, enableCache: true })
       store.destroy()
       expect(() => store.getCached('count')).toThrow('[GeomStore] Cannot call getCached on a destroyed Store')
     })
 
     it('STORE-COV-011: destroy后调用enableCache应该抛出错误', () => {
-      const store = createStore({ state: { count: 0 } })
+      const store = createTestStore({ state: { count: 0 } })
       store.destroy()
       expect(() => store.enableCache()).toThrow('[GeomStore] Cannot call enableCache on a destroyed Store')
     })
 
     it('STORE-COV-012: destroy后调用disableCache应该抛出错误', () => {
-      const store = createStore({ state: { count: 0 }, enableCache: true })
+      const store = createTestStore({ state: { count: 0 }, enableCache: true })
       store.destroy()
       expect(() => store.disableCache()).toThrow('[GeomStore] Cannot call disableCache on a destroyed Store')
     })
 
     it('STORE-COV-013: destroy后调用invalidateCache应该抛出错误', () => {
-      const store = createStore({ state: { count: 0 }, enableCache: true })
+      const store = createTestStore({ state: { count: 0 }, enableCache: true })
       store.destroy()
       expect(() => store.invalidateCache('count')).toThrow('[GeomStore] Cannot call invalidateCache on a destroyed Store')
     })
 
     it('STORE-COV-014: destroy后调用startBatch应该抛出错误', () => {
-      const store = createStore({ state: { count: 0 } })
+      const store = createTestStore({ state: { count: 0 } })
       store.destroy()
       expect(() => store.startBatch()).toThrow('[GeomStore] Cannot call startBatch on a destroyed Store')
     })
 
     it('STORE-COV-015: destroy后调用endBatch应该抛出错误', () => {
-      const store = createStore({ state: { count: 0 } })
+      const store = createTestStore({ state: { count: 0 } })
       store.destroy()
       expect(() => store.endBatch()).toThrow('[GeomStore] Cannot call endBatch on a destroyed Store')
     })
 
     it('STORE-COV-016: destroy后调用batch应该抛出错误', () => {
-      const store = createStore({ state: { count: 0 } })
+      const store = createTestStore({ state: { count: 0 } })
       store.destroy()
       expect(() => store.batch(() => {})).toThrow('[GeomStore] Cannot call batch on a destroyed Store')
     })
 
     it('STORE-COV-017: destroyed getter应该返回正确值', () => {
-      const store = createStore({ state: { count: 0 } })
+      const store = createTestStore({ state: { count: 0 } })
       expect(store.destroyed).toBe(false)
       store.destroy()
       expect(store.destroyed).toBe(true)
     })
 
     it('STORE-COV-018: getCacheStats在destroy后仍然可用', () => {
-      const store = createStore({ state: { count: 0 }, enableCache: true })
+      const store = createTestStore({ state: { count: 0 }, enableCache: true })
       store.destroy()
       expect(() => store.getCacheStats()).not.toThrow()
     })
@@ -1738,13 +1739,13 @@ describe('Store - 核心功能', () => {
 
   describe('覆盖率补全 - setState key 校验', () => {
     it('STORE-COV-019: setState传入null key应该抛出TypeError', () => {
-      const store = createStore({ state: { count: 0 } })
+      const store = createTestStore({ state: { count: 0 } })
       expect(() => store.setState(null as any, 1)).toThrow(TypeError)
       expect(() => store.setState(null as any, 1)).toThrow('key must not be null or undefined')
     })
 
     it('STORE-COV-020: setState传入undefined key应该抛出TypeError', () => {
-      const store = createStore({ state: { count: 0 } })
+      const store = createTestStore({ state: { count: 0 } })
       expect(() => store.setState(undefined as any, 1)).toThrow(TypeError)
       expect(() => store.setState(undefined as any, 1)).toThrow('key must not be null or undefined')
     })
@@ -1752,18 +1753,18 @@ describe('Store - 核心功能', () => {
 
   describe('覆盖率补全 - $replaceState 类型检查', () => {
     it('STORE-COV-021: $replaceState传入数组应该抛出TypeError', () => {
-      const store = createStore({ state: { count: 0 } })
+      const store = createTestStore({ state: { count: 0 } })
       expect(() => store.$replaceState([1, 2, 3] as any)).toThrow(TypeError)
       expect(() => store.$replaceState([1, 2, 3] as any)).toThrow('must be a plain object')
     })
 
     it('STORE-COV-022: $replaceState传入null应该抛出TypeError', () => {
-      const store = createStore({ state: { count: 0 } })
+      const store = createTestStore({ state: { count: 0 } })
       expect(() => store.$replaceState(null as any)).toThrow(TypeError)
     })
 
     it('STORE-COV-023: $replaceState在缓存启用时正确清理和重建缓存', () => {
-      const store = createStore({
+      const store = createTestStore({
         state: { count: 0, name: 'test' },
         enableCache: true,
         cacheKeys: ['count', 'name'],
@@ -1780,7 +1781,7 @@ describe('Store - 核心功能', () => {
 
   describe('覆盖率补全 - destroy 异常处理', () => {
     it('STORE-COV-024: destroy过程中抛出异常应该被捕获且仍标记为已销毁', () => {
-      const store = createStore({ state: { count: 0 } })
+      const store = createTestStore({ state: { count: 0 } })
       const storeAny = store as any
 
       // 让 _subscriptionManager.clear 抛出异常
@@ -1802,7 +1803,7 @@ describe('Store - 核心功能', () => {
 
   describe('覆盖率补全 - setStateProtection 禁用分支', () => {
     it('STORE-COV-025: setStateProtection(false)应该重建proxy管理器', () => {
-      const store = createStore({ state: { count: 0 } })
+      const store = createTestStore({ state: { count: 0 } })
       // 默认启用
       expect(store.isStateProtectionEnabled()).toBe(true)
 
@@ -1820,7 +1821,7 @@ describe('Store - 核心功能', () => {
     })
 
     it('STORE-COV-026: getStateProtectionConfig应该返回配置副本', () => {
-      const store = createStore({
+      const store = createTestStore({
         state: { count: 0 },
         stateProtection: { enabled: true, deep: false, productionHandler: 'error' },
       })
@@ -1833,7 +1834,7 @@ describe('Store - 核心功能', () => {
 
   describe('覆盖率补全 - action中调用dispatch', () => {
     it('STORE-COV-027: action内部调用dispatch另一个action', () => {
-      const store = createStore({
+      const store = createTestStore({
         state: { count: 0, total: 0 },
         actions: {
           increment(..._args: unknown[]) {
@@ -1854,12 +1855,12 @@ describe('Store - 核心功能', () => {
 
   describe('覆盖率补全 - $patch 类型校验', () => {
     it('STORE-COV-028: $patch传入null应该抛出TypeError', () => {
-      const store = createStore({ state: { count: 0 } })
+      const store = createTestStore({ state: { count: 0 } })
       expect(() => store.$patch(null as any)).toThrow(TypeError)
     })
 
     it('STORE-COV-029: $patch传入原始类型应该抛出TypeError', () => {
-      const store = createStore({ state: { count: 0 } })
+      const store = createTestStore({ state: { count: 0 } })
       expect(() => store.$patch('string' as any)).toThrow(TypeError)
       expect(() => store.$patch(123 as any)).toThrow(TypeError)
     })
@@ -1867,7 +1868,7 @@ describe('Store - 核心功能', () => {
 
   describe('覆盖率补全 - $replaceState 后访问 state 触发 proxy', () => {
     it('STORE-COV-030: $replaceState后访问store.state应该触发新proxy管理器的isInternalAccess', () => {
-      const store = createStore({
+      const store = createTestStore({
         state: { count: 0, name: 'test' },
         stateProtection: { enabled: true, deep: true },
       })
@@ -1892,7 +1893,7 @@ describe('Store - 核心功能', () => {
 
   describe('覆盖率补全 - setStateProtection 重新启用后访问 state', () => {
     it('STORE-COV-031: 禁用后重新启用状态保护应该触发新proxy管理器的isInternalAccess', () => {
-      const store = createStore({
+      const store = createTestStore({
         state: { count: 0 },
         stateProtection: { enabled: true, deep: true },
       })
@@ -1927,7 +1928,7 @@ describe('Store - 核心功能', () => {
   // ==================== BUG 修复回归测试 ====================
   describe('BUG 回归：异步 action 通知与嵌套 dispatch', () => {
     it('BUG: 异步 action 在 await 后直接变异状态应触发通知（默认模式）', async () => {
-      const store = createStore({
+      const store = createTestStore({
         state: { count: 0 },
         actions: {
           async load(this: any) {
@@ -1950,7 +1951,7 @@ describe('Store - 核心功能', () => {
     })
 
     it('BUG: onlyOnChange 模式下异步 action 应按变更计数精确补发通知', async () => {
-      const store = createStore({
+      const store = createTestStore({
         state: { count: 0 },
         notify: { onlyOnChange: true },
         actions: {
@@ -1978,7 +1979,7 @@ describe('Store - 核心功能', () => {
 
     it('BUG: 嵌套 dispatch 内层结束不应提前通知中间状态', () => {
       const received: number[] = []
-      const store = createStore({
+      const store = createTestStore({
         state: { count: 0 },
         actions: {
           inner(this: any) {
@@ -2002,7 +2003,7 @@ describe('Store - 核心功能', () => {
 
   describe('BUG 回归：原型链属性', () => {
     it('BUG: action 上下文的原型方法应可用', () => {
-      const store = createStore({
+      const store = createTestStore({
         state: { count: 0 },
         actions: {
           probe(this: unknown) {
@@ -2016,7 +2017,7 @@ describe('Store - 核心功能', () => {
     })
 
     it('BUG: dispatch 原型链属性名应报 ACTION_NOT_FOUND 而非 TypeError', () => {
-      const store = createStore({
+      const store = createTestStore({
         state: { count: 0 },
         actions: { increment: () => undefined },
       })
@@ -2025,7 +2026,7 @@ describe('Store - 核心功能', () => {
     })
 
     it('BUG: getter 原型链属性名应报 SELECTOR_NOT_FOUND 而非静默返回继承方法结果', () => {
-      const store = createStore({
+      const store = createTestStore({
         state: { count: 1 },
         getters: {
           double: (state: { count: number }) => state.count * 2,
@@ -2041,7 +2042,7 @@ describe('Store - 核心功能', () => {
   // ==================== BUG 回归：失败路径的状态变更通知 ====================
   describe('BUG 回归：action 失败路径的状态变更通知', () => {
     it('同步 action 抛错前已写入的状态应通知监听器', () => {
-      const store = createStore({
+      const store = createTestStore({
         state: { loading: false },
         actions: {
           fail(this: { setState: (k: 'loading', v: boolean) => void }) {
@@ -2061,7 +2062,7 @@ describe('Store - 核心功能', () => {
     })
 
     it('异步 action 拒绝前已写入的状态应通知监听器', async () => {
-      const store = createStore({
+      const store = createTestStore({
         state: { loading: false },
         actions: {
           async fail(this: { setState: (k: 'loading', v: boolean) => void }) {
@@ -2081,7 +2082,7 @@ describe('Store - 核心功能', () => {
     })
 
     it('onlyOnChange 模式下 action 内 defineProperty 变更也应触发通知', () => {
-      const store = createStore({
+      const store = createTestStore({
         state: { count: 0 },
         notify: { onlyOnChange: true },
         actions: {
@@ -2104,7 +2105,7 @@ describe('Store - 核心功能', () => {
   // ==================== BUG 回归：订阅判重 ====================
   describe('BUG 回归：重复订阅不应驱逐无辜监听器', () => {
     it('已达上限时重复订阅已有监听器不驱逐无辜监听器（#14 引用计数语义）', () => {
-      const store = createStore({
+      const store = createTestStore({
         name: 'dedupe-store',
         state: { v: 0 },
         subscription: { maxSubscribers: 2 },
@@ -2124,7 +2125,7 @@ describe('Store - 核心功能', () => {
     })
 
     it('onlyOnChange 模式下无变更的 batch 结束不应通知', async () => {
-      const store = createStore({
+      const store = createTestStore({
         name: 'batch-silent-store',
         state: { v: 0 },
         notify: { onlyOnChange: true },
@@ -2144,7 +2145,7 @@ describe('Store - 核心功能', () => {
   // ==================== 本轮修复回归：通知去重与 batch 语义 ====================
   describe('BUG 回归：通知去重与 batch 语义', () => {
     it('onlyOnChange 模式下异步续段 setState 不再重复通知', async () => {
-      const store = createStore({
+      const store = createTestStore({
         state: { v: 0 },
         notify: { onlyOnChange: true },
         actions: {
@@ -2164,7 +2165,7 @@ describe('Store - 核心功能', () => {
     })
 
     it('batch() 记录基线：此前有历史变更时空 batch 也不通知（onlyOnChange）', () => {
-      const store = createStore({
+      const store = createTestStore({
         state: { v: 0 },
         notify: { onlyOnChange: true },
       })
@@ -2181,7 +2182,7 @@ describe('Store - 核心功能', () => {
     })
 
     it('同步 dispatch 在 batch 中不中途通知，由 batch 收尾统一通知', () => {
-      const store = createStore({
+      const store = createTestStore({
         state: { v: 0 },
         actions: {
           set(this: { setState: (k: 'v', val: number) => void }) {
@@ -2202,7 +2203,7 @@ describe('Store - 核心功能', () => {
     })
 
     it('batch 中的 action 抛错不在中途泄漏通知', () => {
-      const store = createStore({
+      const store = createTestStore({
         state: { v: 0 },
         actions: {
           fail(this: { setState: (k: 'v', val: number) => void }) {
@@ -2229,7 +2230,7 @@ describe('Store - 核心功能', () => {
   // ==================== P0 回归：脏跟踪代理内建对象豁免 ====================
   describe('BUG 回归：onlyOnChange 脏跟踪代理不包装内建对象', () => {
     it('action 内读取 Date/Map/Set 状态不应崩溃', () => {
-      const store = createStore({
+      const store = createTestStore({
         name: 'dirty-builtin-store',
         state: {
           when: new Date(1000) as unknown as object,
@@ -2250,7 +2251,7 @@ describe('Store - 核心功能', () => {
     })
 
     it('内建对象豁免不影响普通嵌套对象的变更计数通知', () => {
-      const store = createStore({
+      const store = createTestStore({
         name: 'dirty-builtin-mixed',
         state: {
           nested: { v: 0 },
@@ -2274,7 +2275,7 @@ describe('Store - 核心功能', () => {
   })
 
     it('异步 action 失败也应触发 onError 钩子（P1 回归）', async () => {
-      const store = createStore({
+      const store = createTestStore({
         name: 'async-onerror-store',
         state: { v: 0 },
         actions: {
@@ -2301,7 +2302,7 @@ describe('P2 修复回归：batch/dispatch 守卫与插件回滚', () => {
     // （contextBase）上，必须经外层持有器引用 store 实例（声明与赋值分离，let 为必需）
     // eslint-disable-next-line prefer-const
     let storeRef!: { batch: (fn: () => void) => void; setState: (key: 'v', value: number) => void }
-    const store = createStore({
+    const store = createTestStore({
       name: 'batch-in-dispatch-store',
       state: { v: 0 },
       actions: {
@@ -2329,7 +2330,7 @@ describe('P2 修复回归：batch/dispatch 守卫与插件回滚', () => {
 
   it('STORE-056 (#12): batch 收到异步回调时开发模式应告警', async () => {
     const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {})
-    const store = createStore({ name: 'async-batch-warn-store', state: { v: 0 } })
+    const store = createTestStore({ name: 'async-batch-warn-store', state: { v: 0 } })
 
     const result = store.batch(async () => {
       await Promise.resolve()
@@ -2346,7 +2347,7 @@ describe('P2 修复回归：batch/dispatch 守卫与插件回滚', () => {
   })
 
   it('STORE-057 (#16): 插件安装失败应回滚入列并上抛错误', () => {
-    const store = createStore({ name: 'plugin-rollback-store', state: { v: 1 } })
+    const store = createTestStore({ name: 'plugin-rollback-store', state: { v: 1 } })
     const badPlugin = {
       name: 'bad-plugin',
       install: () => {
