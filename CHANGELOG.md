@@ -5,6 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-09-06
+
+### Added
+
+- 新增 `tests/utils/createTestStore` 测试辅助工厂：为未显式命名的测试 Store 补充确定性唯一名称，使测试更稳定可复现。
+
+### Changed
+
+- **性能**：`createSelector` 缓存比较由每次 `execute` 的全树 `deepEqual` 改为状态版本号 O(1) 整数比较，复杂选择器（如 2000 键状态树）性能由 ~8s 降至亚毫秒级。
+- **性能**：组合 Store 子 Store 订阅在无非只读订阅者时采用零拷贝，避免通知路径上的整树深拷贝。
+- **性能**：`ComposedStore.isStateKeyDirty` 在命名空间模式下精确追踪脏子 Store（此前恒返回 `true`），恢复 `withPageStore`/`withComponentStore`/`withAppStore` 集成层对未变化映射键的 `setData` 跳过优化。
+- LRUCache 转发层收口：移除 `core/performance/Optimizations` 对缓存类的非必要重导出，LRUCache 出口收敛为 `cache/index`（定义）→ `core/index`（主入口）与 `core/performance/index`（子路径聚合），`createLRUCache` 保持单一定义。
+
+### Fixed
+
+- 修复 `ErrorRecovery` 在动态 operation id 场景（如 `fetchUser:${id}`）下 `retryWindowStart` / `retryCount` 无界增长的问题：新增容量守卫（`MAX_RETRY_KEYS = 1000`），超过阈值时清理过期窗口并淘汰最旧键，避免长期运行内存泄漏。
+
+### Breaking（行为变更，需同步调整调用方）
+
+- **错误子系统从核心入口下沉至 `extras/error`**：`@openlide/geomstore` 主入口不再导出错误类（`GeomStoreError`、`createError`、`ErrorCode`、`isGeomStoreError` 及子类、`ErrorRecovery`、`ErrorMonitoring`、`ErrorBoundary`、`ErrorHandler` 等）。请改为从子路径引入：
+  ```ts
+  import { createError, ErrorCode, ErrorRecovery } from '@openlide/geomstore/extras/error'
+  ```
+- **代码库瘦核心（thin-core）收口**：移除 `TypeValidator` 模块、`core/index` 中已废弃的零碎 barrel 与工厂函数等死代码。
+
+### Removed
+
+- 合并双份 `ErrorRecovery` 单元测试（保留更全的 1478 行 / 83 用例版本，删除旧 544 行副本）。
+
 ## [0.3.0] - 2026-09-06
 
 ### Added
