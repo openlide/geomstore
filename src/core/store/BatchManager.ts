@@ -78,17 +78,4 @@ export class BatchManager implements BatchManagerInterface {
   }
 }
 
-/**
- * 创建批量执行函数
- * 在批量更新上下文中执行操作
- */
-export function createBatchFunction(manager: BatchManager): <T>(fn: () => T) => T {
-  return <T>(fn: () => T): T => {
-    manager.start()
-    try {
-      return fn()
-    } finally {
-      manager.end()
-    }
-  }
-}
+

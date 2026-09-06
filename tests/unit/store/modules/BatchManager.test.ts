@@ -3,7 +3,7 @@
  * 目标覆盖率: 95%+
  */
 
-import { BatchManager, createBatchFunction } from '@/core/store/BatchManager'
+import { BatchManager } from '@/core/store/BatchManager'
 
 describe('BatchManager', () => {
   describe('基本功能', () => {
@@ -89,57 +89,7 @@ describe('BatchManager', () => {
   })
 })
 
-describe('createBatchFunction', () => {
-  it('应该自动管理批量更新', () => {
-    const onEnd = jest.fn()
-    const manager = new BatchManager(onEnd)
-    const batch = createBatchFunction(manager)
-
-    const result = batch(() => {
-      expect(manager.isInBatch).toBe(true)
-      return 'test-result'
-    })
-
-    expect(result).toBe('test-result')
-    expect(manager.isInBatch).toBe(false)
-    expect(onEnd).toHaveBeenCalledTimes(1)
-  })
-
-  it('应该在出错时正确结束批量更新', () => {
-    const onEnd = jest.fn()
-    const manager = new BatchManager(onEnd)
-    const batch = createBatchFunction(manager)
-
-    expect(() => {
-      batch(() => {
-        throw new Error('test error')
-      })
-    }).toThrow('test error')
-
-    expect(manager.isInBatch).toBe(false)
-    expect(onEnd).toHaveBeenCalledTimes(1)
-  })
-
-  it('应该正确处理嵌套批量更新', () => {
-    const onEnd = jest.fn()
-    const manager = new BatchManager(onEnd)
-    const batch = createBatchFunction(manager)
-
-    batch(() => {
-      expect(manager.depth).toBe(1)
-
-      batch(() => {
-        expect(manager.depth).toBe(2)
-      })
-
-      expect(manager.depth).toBe(1)
-    })
-
-    expect(manager.depth).toBe(0)
-    // 嵌套批量更新：只有最外层结束时才调用 onEnd
-    expect(onEnd).toHaveBeenCalledTimes(1)
-  })
-
+describe('批量更新嵌套行为', () => {
   it('应该正确处理手动嵌套批量更新', () => {
     const onEnd = jest.fn()
     const manager = new BatchManager(onEnd)

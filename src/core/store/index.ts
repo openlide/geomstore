@@ -24,7 +24,7 @@ export type { CacheStats } from '../../types/store'
 export { ActionManager, GetterManager } from './ActionManager'
 export type { ActionManagerOptions } from './ActionManager'
 
-export { BatchManager, createBatchFunction } from './BatchManager'
+export { BatchManager } from './BatchManager'
 
 // 内部类型导出
 export type {
