@@ -1,9 +1,8 @@
 /**
- * GeomStore v1.0 - 选择器创建
+ * GeomStore - 选择器创建
  *
  * 提供创建记忆化选择器的功能，支持缓存和性能优化
  *
- * @since 1.0.0
  */
 
 import type { Selector, SelectorOptions, SelectorCacheItem, SelectorResult } from '../../types/selector'
@@ -17,7 +16,6 @@ import { deepEqual, clone } from '../utils/helpers'
  * @class SelectorFactory
  * @template S - 状态类型
  * @template R - 返回值类型
- * @since 1.0.0
  *
  * @example
  * ```typescript
@@ -179,13 +177,16 @@ export class SelectorFactory<S extends Record<string, unknown> = Record<string, 
    * @param {R} value - 计算结果
    */
   private updateCache(state: S, value: R): void {
-    // 缓存状态快照而非活动引用：若缓存持有原引用，等值比较会变成
-    // 「同一对象自比较」（永远相等），就地变异（如 $patch 深合并）后
-    // 的再次执行将误命中并返回陈旧值；快照才能让等值比较感知变异
+    // 仅深比较（默认 equalityFn = deepEqual）时缓存状态快照，其余情况缓存活动引用：
+    // - deepEqual 需快照才能在状态就地变异时感知变化——否则 deepEqual(同引用, 同引用) 永远相等，
+    //   无法检测变异，TTL 内返回陈旧值；
+    // - 引用相等 (a === b) 场景下若仍 clone，则「克隆体」与当前「活引用」永不等 → 永远 miss，
+    //   故直接缓存活引用，使同一引用命中、不同引用（含变异后的新对象）正确 miss。
+    const stateForCache = this.options.equalityFn === deepEqual ? clone(state) : state
     const cacheItem: SelectorCacheItem<R> = {
       value,
       timestamp: Date.now(),
-      state: clone(state),
+      state: stateForCache,
     }
 
     // 更新当前缓存
@@ -285,12 +286,17 @@ export class SelectorFactory<S extends Record<string, unknown> = Record<string, 
  *
  * 创建一个可缓存的选择器，用于从状态中派生数据
  *
+ * 限制：缓存对状态的比较基于 `clone(state)` 快照，而 clone（即 deepCloneState）对
+ * 不可克隆对象（类实例、Promise、WeakMap/WeakSet 等）保留原引用而非拷贝。因此若
+ * state 里放了类实例并就地修改其字段，快照与活状态共享同一实例，比较会因引用相等
+ * 判定「未变化」，TTL 内返回陈旧值。规避：用 setState/$patch 整体替换该字段，
+ * 让状态树产生新的纯对象。纯对象/数组/Date/RegExp/Map/Set 会被正确深拷贝，不受影响。
+ *
  * @template S - 状态类型
  * @template R - 返回值类型
  * @param {Selector<S, R>} selectorFn - 选择器函数
  * @param {SelectorOptions} [options] - 缓存选项
  * @returns {Selector<S, R>} 选择器函数
- * @since 1.0.0
  *
  * @example
  * ```typescript
@@ -333,7 +339,6 @@ export function createSelector<S extends Record<string, unknown>, R>(selectorFn:
  * @param {Selector<S, R>} selectorFn - 选择器函数
  * @param {(a: unknown, b: unknown) => boolean} [equalityFn] - 自定义相等性函数
  * @returns {Selector<S, R>} 记忆化选择器
- * @since 1.0.0
  *
  * @example
  * ```typescript
@@ -367,10 +372,16 @@ export function createMemoizedSelector<S extends Record<string, unknown>, R>(
  * @template R - 返回值类型
  * @param {(state: S, params: P) => R} selectorFn - 接受参数的选择器函数
  * @param {object} [options] - 缓存配置选项
- * @param {number} [options.ttl=5000] - 缓存生存时间（毫秒）
+ * @param {number} [options.ttl=5000] - 缓存生存时间（毫秒）。除 TTL 外，每次调用还会用
+ *   deepEqual 校验 state 内容快照：Store 状态就地变异（引用不变）时立即作废该 state 下的
+ *   全部参数缓存，不会在 TTL 内返回陈旧值
  * @param {number} [options.maxEntries=1000] - 单个 state 下原始类型参数的缓存条目上限
  * @returns {(state: S) => (params: P) => R} 参数化选择器工厂
- * @since 1.0.0
+ *
+ * 限制：与 createSelector 相同——校验所用的 state 快照由 clone（deepCloneState）生成，
+ * 它对不可克隆对象（类实例、Promise、WeakMap/WeakSet 等）保留原引用，因此这类对象被
+ * 就地变异时校验会因引用相等判定「未变化」，TTL 内返回陈旧值。规避：用 setState/$patch
+ * 整体替换该字段。
  *
  * @example
  * ```typescript
@@ -397,9 +408,15 @@ export function createParametricSelector<S extends Record<string, unknown>, P, R
   // 使用 WeakMap 缓存，避免内存泄漏
   // 外层 WeakMap: state object -> 内层缓存
   // 对于对象参数使用 WeakMap，原始类型使用 Map
+  //
+  // snapshot 字段：Store 状态是就地变异的同一对象（getState 返回活动引用、
+  // setState/$patch 原地写入），WeakMap 键引用恒定，仅靠 TTL 失效会在状态已变化时
+  // 误命中并返回陈旧值（与 SelectorFactory.updateCache 缓存 clone 快照同理）。
+  // 命中前用 deepEqual 校验快照，不等则整体作废内层缓存并刷新快照
   const stateCache = new WeakMap<
     object,
     {
+      snapshot: S
       objectParamsCache: WeakMap<object, { value: R; timestamp: number }>
       primitiveParamsCache: Map<string | number | boolean | symbol | null | undefined, { value: R; timestamp: number }>
     }
@@ -434,10 +451,17 @@ export function createParametricSelector<S extends Record<string, unknown>, P, R
       let cache = stateCache.get(state as object)
       if (!cache) {
         cache = {
+          snapshot: clone(state),
           objectParamsCache: new WeakMap(),
           primitiveParamsCache: new Map(),
         }
         stateCache.set(state as object, cache)
+      } else if (!deepEqual(cache.snapshot, state)) {
+        // 状态已就地变异（WeakMap 键引用不变）：按参数分桶的两份缓存全部作废，
+        // 否则 TTL 内会命中变异前的陈旧结果
+        cache.objectParamsCache = new WeakMap()
+        cache.primitiveParamsCache = new Map()
+        cache.snapshot = clone(state)
       }
 
       // 根据参数类型选择不同的缓存策略
@@ -487,7 +511,6 @@ export function createParametricSelector<S extends Record<string, unknown>, P, R
  * @template R - 返回结构类型（默认从选择器映射推断）
  * @param {[K in keyof R]?: Selector<S, R[K]>} selectors - 选择器映射
  * @returns {Selector<S, R>} 组合选择器
- * @since 1.0.0
  *
  * @example
  * ```typescript
@@ -510,7 +533,15 @@ export function createStructuredSelector<S extends Record<string, unknown>, R ex
 
     for (const [key, selector] of Object.entries(selectors)) {
       if (typeof selector === 'function') {
-        result[key] = selector(state)
+        // 以 DefineOwnProperty 语义写入：选择器映射用计算属性写法（{['__proto__']: fn}）
+        // 可产生自有 __proto__ 键，result[key] = … 走 [[Set]] 会触发 Object.prototype 的
+        // __proto__ setter——该项被静默丢弃且 result 原型被换掉
+        Object.defineProperty(result, key, {
+          value: selector(state),
+          writable: true,
+          enumerable: true,
+          configurable: true,
+        })
       }
     }
 

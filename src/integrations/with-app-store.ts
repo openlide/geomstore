@@ -1,5 +1,5 @@
 /**
- * GeomStore v1.0.0 - App 集成
+ * GeomStore - App 集成
  *
  * 提供 Store 与微信小程序 App 的集成方案，包括：
  * - withAppStore: App 集成
@@ -8,7 +8,6 @@
  * - 调试 API 暴露
  * - 自动清理订阅
  *
- * @since 1.0.0
  */
 
 import type { Store, State, Actions, Getters } from '../types/store'
@@ -19,7 +18,7 @@ export type { ConnectOptions } from '../types/integration'
 
 // ==================== 类型定义 ====================
 
-interface AppOptions {
+export interface AppOptions {
   globalData?: Record<string, unknown>
   onLaunch?(this: AppOptions, ...args: unknown[]): void
   onShow?(...args: unknown[]): void
@@ -139,7 +138,7 @@ export function withAppStore<S extends State = State, A extends Actions = Action
       }
 
       // 辅助函数：订阅 store 变化
-      const subscribeStore = (callback: () => void) => store.subscribe(callback)
+      const subscribeStore = (callback: () => void, subscribeOptions?: { readOnly?: boolean }) => store.subscribe(callback, subscribeOptions)
 
       // 绑定 state 到 globalData
       if (options.mapState) {
@@ -151,6 +150,7 @@ export function withAppStore<S extends State = State, A extends Actions = Action
             Object.assign(this.globalData as Record<string, unknown>, updates)
           },
           subscribeStore,
+          (storeKey) => store.isStateKeyDirty(storeKey),
         )
         unbindFunctions.push(...unbindState)
       }
@@ -201,31 +201,3 @@ export function withAppStore<S extends State = State, A extends Actions = Action
   }
 }
 
-/**
- * 创建 App 实例工厂
- *
- * 语义化别名，等同于 withAppStore，用于更直观的 API 调用
- *
- * 类型推断与 withAppStore 一致：`S` / `A` / `G` 从 store 参数自动推断，
- * 映射键拼错编译期报错；装饰器保持传入配置的原始类型
- *
- * @template S - 状态类型
- * @template A - Actions 类型
- * @template G - Getters 类型
- * @param {Store<S, A, G>} store - Store 实例
- * @param {ConnectOptions<S, A, G>} [options={}] - 连接选项
- * @returns {(AppConfig: C) => C} App 装饰器（保持配置类型）
- *
- * @example
- * ```typescript
- * // 两种方式等价，选择更符合语义的即可
- * App(withAppStore(store, options))  // 明确表示"集成 Store"
- * App(createApp(store, options))     // 明确表示"创建 App"
- * ```
- */
-export function createApp<S extends State = State, A extends Actions = Actions, G extends Getters<S> = Getters<S>>(
-  store: Store<S, A, G>,
-  options: ConnectOptions<S, A, G> = {},
-) {
-  return withAppStore(store, options)
-}

@@ -1,16 +1,15 @@
 /**
- * GeomStore v1.0.0 - 微信小程序集成模块
+ * GeomStore - 微信小程序集成模块
  *
  * 提供 Store 与微信小程序的集成方案
  *
  * @module integrations
- * @since 1.0.0
  */
 
 // ==================== 核心集成函数 ====================
 
 export { withPageStore, withComponentStore } from './with-store'
-export { withAppStore, createApp } from './with-app-store'
+export { withAppStore } from './with-app-store'
 
 // ==================== 企业级方案 ====================
 

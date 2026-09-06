@@ -204,7 +204,7 @@ docs: 重写生产可行性评审报告
 1. 确认 `CHANGELOG.md` 已记录本次变更。
 2. 确认全部质量门禁通过（见 [§5](#5-开发工作流)）。
 3. 更新 `package.json` 版本号。
-4. 运行 `pnpm build`，确认 `dist/cjs` 产物及 14 个子路径导出完整。
+4. 运行 `pnpm build`，确认 `dist/` 产物完整（子路径转发 stub 由 `prepack` 在发布打包时自动生成，本地构建不产出）。
 5. 打 tag 并发布：`git tag vX.Y.Z && git push --tags`。
 
 ---
@@ -212,5 +212,3 @@ docs: 重写生产可行性评审报告
 ## 相关文档
 
 - [迁移指南](./docs/MIGRATION.md)
-- [生产可行性评审报告](./docs/PRODUCTION_READINESS_REPORT.md)
-- [全量源码评审报告](./docs/CODE_REVIEW_FINAL.md)

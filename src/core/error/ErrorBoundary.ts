@@ -1,9 +1,8 @@
 /**
- * GeomStore v1.0 - 错误边界
+ * GeomStore - 错误边界
  *
  * 提供函数执行时的错误捕获和恢复机制
  *
- * @since 1.0.0
  */
 
 import type { ErrorBoundaryOptions, ErrorFallback } from '../../types/error'
@@ -15,7 +14,6 @@ import type { ErrorBoundaryOptions, ErrorFallback } from '../../types/error'
  *
  * @class ErrorBoundary
  * @template S - 状态类型
- * @since 1.0.0
  *
  * @example
  * ```typescript
@@ -322,7 +320,6 @@ export class ErrorBoundary<S = unknown, F = undefined> {
  *
  * @param {ErrorBoundaryOptions} [options] - 配置选项
  * @returns {MethodDecorator} 方法装饰器
- * @since 1.0.0
  *
  * @example
  * ```typescript

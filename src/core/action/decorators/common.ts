@@ -1,7 +1,6 @@
 /**
- * GeomStore v1.0 - 装饰器公共函数
+ * GeomStore - 装饰器公共函数
  *
- * @since 1.0.0
  */
 
 /**

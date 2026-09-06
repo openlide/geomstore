@@ -1,5 +1,5 @@
 /**
- * GeomStore v1.0 - 组合类型定义
+ * GeomStore - 组合类型定义
  */
 
 /**

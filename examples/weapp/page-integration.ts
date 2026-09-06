@@ -17,19 +17,14 @@ const appStore = createStore({
   }),
   actions: {
     login(userInfo: { name: string; avatar: string }) {
-      // @ts-ignore
       this.setState('userInfo', userInfo)
-      // @ts-ignore
       this.setState('isLoggedIn', true)
     },
     logout() {
-      // @ts-ignore
       this.setState('userInfo', null)
-      // @ts-ignore
       this.setState('isLoggedIn', false)
     },
     setTheme(theme: string) {
-      // @ts-ignore
       this.setState('theme', theme)
     },
   },
@@ -46,12 +41,12 @@ Page(
     data: {
       localData: 'page local data',
     },
-    onLoad() {
+    onLoad(this: any) {
       console.log('Page loaded')
       console.log('User info:', this.data.userInfo)
       console.log('Is logged in:', this.data.isLoggedIn)
 
-      // 调用 action
+      // 调用 action（mapActions 注入的方法在真机运行时可用）
       if (!this.data.isLoggedIn) {
         this.login({ name: 'Test User', avatar: 'avatar.png' })
       }
@@ -82,7 +77,7 @@ Page(
     data: {
       pageTitle: 'User Profile',
     },
-    onLoad() {
+    onLoad(this: any) {
       // 通过别名访问
       console.log('Current user:', this.data.currentUser)
       console.log('Logged in:', this.data.loggedIn)

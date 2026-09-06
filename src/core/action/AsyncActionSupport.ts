@@ -1,5 +1,5 @@
 /**
- * GeomStore v1.0 - 异步Action支持
+ * GeomStore - 异步Action支持
  *
  * 提供高性能的Action执行和管理功能，包括：
  * - 异步Action执行
@@ -9,7 +9,16 @@
  * - 执行历史记录
  * - 性能统计
  *
- * @since 1.0.0
+ * 与 action 装饰器的边界（avoid 重复/漂移）：
+ * - 本类面向「程序化/编排式」执行：并行 executeParallel、串行 executeSequential、
+ *   跨多次调用统一收口 executeWithRetry / executeWithTimeout 与聚合统计 getStats，
+ *   适合在 action 定义之外编排多个异步任务并做性能观测。
+ * - 单方法维度的重试/超时/防抖/节流等横切关注点，优先使用 action 装饰器
+ *   （withRetry / withTimeout / withDebounce / withThrottle / withCache）：
+ *   它们直接作用于 Store action 定义、按宿主实例隔离、与 dispatch 生命周期一致。
+ * - 二者在 retry/timeout 上能力重叠。以装饰器作为单方法场景的主导方案；
+ *   仅在需要并行/串行编排或聚合统计时再用本执行器，避免同一逻辑两套实现长期漂移。
+ *
  */
 
 import type { AsyncActions, ActionResult } from '../../types/action'
@@ -22,7 +31,6 @@ import type { Actions } from '../../types/store'
  *
  * @class ActionExecutor
  * @template A - Actions 类型（异步/同步均可；AsyncActions 仅作为默认值）
- * @since 1.0.0
  *
  * @example
  * ```typescript

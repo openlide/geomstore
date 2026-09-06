@@ -1,10 +1,9 @@
 /**
- * GeomStore v1.0 - 性能插件导出
+ * GeomStore - 性能插件导出
  *
  * 提供性能监控和分析相关的插件
  *
  * @module @geomstore/plugins/performance
- * @since 1.0.0
  *
  * @example
  * ```typescript

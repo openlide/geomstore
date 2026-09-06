@@ -2,6 +2,8 @@
  * Store 内部工具函数
  */
 
+import { deepCloneState } from '../utils/clone'
+
 /** 缓存的生产环境检测结果 */
 let cachedProductionState: boolean | undefined
 
@@ -56,6 +58,10 @@ export function isProduction(): boolean {
  * 仅冻结纯对象与数组（Date/RegExp/Map/Set 等内建对象的 mutator 方法
  * 不走 [[Set]] 陷阱，Object.freeze 无法阻止，冻结无意义故跳过）；
  * 循环引用用 WeakSet 守卫避免重复冻结枝；冻结失败（如 sealed 对象）不拖垮快照。
+ *
+ * 不变量：冻结范围必须 ⊆ deepCloneState 的隔离范围。
+ * 非纯对象（class 实例/Promise/WeakMap 等）在 deepCloneState 中走「保留原引用」
+ * 降级路径，副本与源共享同一实例，故整体跳过——详见下方分支注释。
  */
 export function deepFreezeState<T>(value: T, seen?: WeakSet<object>): T {
   if (value === null || typeof value !== 'object') {
@@ -80,19 +86,25 @@ export function deepFreezeState<T>(value: T, seen?: WeakSet<object>): T {
     return value
   }
 
-  // 非纯对象（class 实例等）不冻结，仅递归其可枚举属性
   const proto = Object.getPrototypeOf(value as object)
   const isPlain = proto === Object.prototype || proto === null
+  // 非纯对象整体跳过：deepCloneState 对它们保留原引用（不可安全克隆的降级路径），
+  // 副本与活状态共享同一实例。此前虽不冻结自身、却仍递归冻结其可枚举成员，
+  // 等于经共享引用冻结了活状态——$snapshot() 之后 action 内写入这些成员会抛
+  // TypeError（生产 warn/silent 下静默丢写）。Date/RegExp/Map/Set 的自有可枚举键
+  // 恒为空，跳过与原先「递归零次 + 不冻结」等价，行为不变
+  if (!isPlain) {
+    return value
+  }
+
   const record = value as Record<string, unknown>
   for (const key of Object.keys(record)) {
     deepFreezeState(record[key], visited)
   }
-  if (isPlain) {
-    try {
-      Object.freeze(value)
-    } catch {
-      // 同上：冻结失败时保留可变引用，不拖垮快照
-    }
+  try {
+    Object.freeze(value)
+  } catch {
+    // 同上：冻结失败时保留可变引用，不拖垮快照
   }
   return value
 }
@@ -123,80 +135,7 @@ export function createMutationErrorMessage(path: string, value: unknown, operati
 /**
  * 深拷贝状态
  *
- * 统一使用递归克隆实现（不依赖 structuredClone），原因：
- * - structuredClone 对函数/Symbol/WeakMap/Promise 等值会抛 DataCloneError，
- *   而 State 类型允许此类值，崩溃会把故障面扩大到所有 createStore 调用；
- * - structuredClone 会剔除值为 undefined 的属性（结构化克隆算法语义），
- *   与旧基础库（无 structuredClone）的降级路径行为分叉，难以排查；
- *
- * 递归实现相比 JSON 往返：
- * - 支持循环引用（WeakMap 守卫，不会栈溢出）
- * - 保留 undefined 属性与 Date/RegExp/Map/Set 实例
- * - 不可克隆对象（WeakMap/Promise/Blob 等）保留原引用，避免崩溃
+ * 实现已迁移至 `core/utils/clone.ts`（消除 utils → store 层级倒置）。
+ * 此处保留转发导出，兼容 `core/store` 内部既有导入路径（如 SubscriptionManager）。
  */
-export function deepCloneState<T>(state: T): T {
-  return fallbackClone(state)
-}
-
-/** 带循环引用守卫的递归克隆 */
-function fallbackClone<T>(value: T, seen?: WeakMap<object, unknown>): T {
-  if (value === null || typeof value !== 'object') {
-    // 函数等不可克隆值保留原引用（函数无内部状态，共享无副作用）
-    return value
-  }
-
-  const visited = seen ?? new WeakMap<object, unknown>()
-  const cached = visited.get(value as object)
-  if (cached !== undefined) {
-    return cached as T
-  }
-
-  if (value instanceof Date) {
-    return new Date(value.getTime()) as T
-  }
-
-  if (value instanceof RegExp) {
-    return new RegExp(value.source, value.flags) as T
-  }
-
-  if (value instanceof Map) {
-    const map = new Map()
-    visited.set(value as object, map)
-    value.forEach((mapValue, mapKey) => {
-      map.set(fallbackClone(mapKey, visited), fallbackClone(mapValue, visited))
-    })
-    return map as unknown as T
-  }
-
-  if (value instanceof Set) {
-    const set = new Set()
-    visited.set(value as object, set)
-    value.forEach((setValue) => {
-      set.add(fallbackClone(setValue, visited))
-    })
-    return set as unknown as T
-  }
-
-  if (Array.isArray(value)) {
-    const arr: unknown[] = []
-    visited.set(value as object, arr)
-    for (let i = 0; i < value.length; i++) {
-      arr.push(fallbackClone(value[i], visited))
-    }
-    return arr as unknown as T
-  }
-
-  // 非纯对象（WeakMap/Promise/Blob/class 实例等）无法安全克隆，保留原引用
-  const proto = Object.getPrototypeOf(value as object)
-  if (proto !== Object.prototype && proto !== null) {
-    return value
-  }
-
-  const obj: Record<string, unknown> = {}
-  visited.set(value as object, obj)
-  const keys = Object.keys(value as object)
-  for (let i = 0; i < keys.length; i++) {
-    obj[keys[i]] = fallbackClone((value as Record<string, unknown>)[keys[i]], visited)
-  }
-  return obj as T
-}
+export { deepCloneState }

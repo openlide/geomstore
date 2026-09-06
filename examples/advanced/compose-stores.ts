@@ -18,7 +18,6 @@ const userStore = createStore({
   }),
   actions: {
     updateName(name: string) {
-      // @ts-ignore
       this.setState('name', name)
     },
   },
@@ -32,7 +31,6 @@ const cartStore = createStore({
   }),
   actions: {
     addItem(item: { id: number; name: string; price: number }) {
-      // @ts-ignore
       this.setState('items', [...this.state.items, item])
     },
   },
@@ -50,7 +48,6 @@ const settingsStore = createStore({
   }),
   actions: {
     setTheme(theme: string) {
-      // @ts-ignore
       this.setState('theme', theme)
     },
   },
@@ -60,31 +57,38 @@ const settingsStore = createStore({
 
 console.log('=== Store 组合示例 ===\n')
 
-// 方式 1: 使用 composeStore 创建组合（数组形式 + 命名空间）
+// 使用 composeStore 创建组合（数组形式 + 命名空间）
 const rootStore = composeStore([userStore, cartStore, settingsStore], {
   namespace: true, // 启用命名空间，支持 'storeName/actionName' 斜杠路径
   strict: true,
 })
 
-console.log('Combined state:', rootStore.getState())
+// composeStore 在 namespace 模式下运行时将各子 store 按 name 嵌套为
+// { user, cart, settings }，但当前类型将其推断为状态扁平交叉类型，
+// 这里用一次断言对齐运行时结构。
+type RootState = {
+  user: { id: number; name: string; email: string }
+  cart: { items: Array<{ id: number; name: string; price: number }> }
+  settings: { theme: string; language: string }
+}
+const rootState = () => rootStore.getState() as unknown as RootState
+
+console.log('Combined state:', rootState())
 
 // 访问子 Store 状态
-console.log('\nUser name:', rootStore.getState().user.name)
-console.log('Cart items:', rootStore.getState().cart.items)
-console.log('Theme:', rootStore.getState().settings.theme)
+console.log('\nUser name:', rootState().user.name)
+console.log('Cart items:', rootState().cart.items)
+console.log('Theme:', rootState().settings.theme)
 
-// 方式 2: 使用命名空间访问
+// 命名空间 dispatch
 rootStore.dispatch('user/updateName', 'Bob')
-console.log('\nAfter updateName:', rootStore.getState().user.name)
+console.log('\nAfter updateName:', rootState().user.name)
 
 rootStore.dispatch('cart/addItem', { id: 1, name: 'Product A', price: 100 })
-console.log('After addItem:', rootStore.getState().cart.items)
+console.log('After addItem:', rootState().cart.items)
 
 // 使用 getter
-console.log(
-  'Cart total:',
-  rootStore.getState().cart.items.reduce((sum, item) => sum + item.price, 0),
-)
+console.log('Cart total:', rootState().cart.items.reduce((sum, item) => sum + item.price, 0))
 
 // 订阅组合状态变化
 const unsubscribe = rootStore.subscribe((state) => {

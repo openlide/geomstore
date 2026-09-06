@@ -140,6 +140,11 @@ export class StoreCacheManager<S extends State = State> {
   enable(keys: Array<keyof S> | undefined, getState: (key: keyof S) => S[keyof S], stateKeys?: Array<keyof S>): void {
     this._enabled = true
     this._cacheKeys = keys ? new Set(keys) : undefined
+    // 重新配置即重建：先清掉上一轮键集的残留条目。否则收窄 cacheKeys 后旧条目仍
+    // 留在 LRU 里占用容量（导致新键集内的有效键被提前淘汰）并被 getStats() 报告，
+    // 而 get() 已因 _cacheKeys 过滤永远读不到它们。清空后条目立即从状态源回填，无数据丢失
+    this._cache.clear()
+    this._timestamps.clear()
     const now = Date.now()
 
     if (keys) {

@@ -1,5 +1,5 @@
 /**
- * GeomStore v1.0.0 - 微信小程序集成
+ * GeomStore - 微信小程序集成
  *
  * 提供 Store 与微信小程序的集成方案，包括：
  * - withPageStore: Page 集成
@@ -8,7 +8,6 @@
  * - Action 绑定
  * - 自动清理订阅
  *
- * @since 1.0.0
  */
 
 import type { Store, State, Actions, Getters } from '../types/store'
@@ -23,9 +22,9 @@ export type { Actions } from '../types/store'
 interface PageOptions {
   data?: Record<string, unknown>
   setData?: (data: Record<string, unknown>, callback?: () => void) => void
-  onLoad?(this: PageInstance, ...args: unknown[]): void
+  onLoad?(...args: unknown[]): void
   onUnload?(): void
-  onShow?(this: PageInstance, ...args: unknown[]): void
+  onShow?(...args: unknown[]): void
   /** 实例级订阅清理列表（由 withPageStore 维护，避免多页面实例共享） */
   __geomUnbinds?: Array<() => void>
   [key: string]: unknown
@@ -52,7 +51,7 @@ interface ComponentOptions {
     [key: string]: unknown
   }
   setData?: (data: Record<string, unknown>, callback?: () => void) => void
-  onShow?(this: ComponentInstance, ...args: unknown[]): void
+  onShow?(...args: unknown[]): void
   /** 实例级订阅清理列表（由 withComponentStore 维护，避免多组件实例共享） */
   __geomUnbinds?: Array<() => void>
   [key: string]: unknown
@@ -141,7 +140,7 @@ export function withPageStore<S extends State, A extends Actions, G extends Gett
       const unbindFunctions = this.__geomUnbinds
 
       // 辅助函数：订阅 store 变化
-      const subscribeStore = (callback: () => void) => store.subscribe(callback)
+      const subscribeStore = (callback: () => void, subscribeOptions?: { readOnly?: boolean }) => store.subscribe(callback, subscribeOptions)
 
       // 绑定 state
       if (options.mapState) {
@@ -151,6 +150,7 @@ export function withPageStore<S extends State, A extends Actions, G extends Gett
           (key) => store.state[key as keyof S],
           (updates) => this.setData(updates),
           subscribeStore,
+          (storeKey) => store.isStateKeyDirty(storeKey),
         )
         unbindFunctions.push(...unbindState)
       }
@@ -285,7 +285,11 @@ export function withComponentStore<S extends State, A extends Actions, G extends
     const enhancedConfig: ComponentOptions = { ...ComponentConfig }
 
     // 扩展 lifetimes
+    // 仅从 lifetimes 捕获原始 attached/detached：基础库 3.15.0+ 仅支持 lifetimes 写法，
+    // 已移除对微信旧式顶层 attached/detached 的兼容
     const originalLifetimes = enhancedConfig.lifetimes || {}
+    const originalAttached = originalLifetimes.attached
+    const originalDetached = originalLifetimes.detached
     enhancedConfig.lifetimes = {
       ...originalLifetimes,
       attached: function (this: ComponentInstance) {
@@ -304,7 +308,7 @@ export function withComponentStore<S extends State, A extends Actions, G extends
         }
 
         // 辅助函数：订阅 store 变化
-        const subscribeStore = (callback: () => void) => store.subscribe(callback)
+        const subscribeStore = (callback: () => void, subscribeOptions?: { readOnly?: boolean }) => store.subscribe(callback, subscribeOptions)
 
         // 绑定 state
         if (options.mapState) {
@@ -314,6 +318,7 @@ export function withComponentStore<S extends State, A extends Actions, G extends
             (key) => store.state[key as keyof S],
             (updates) => this.setData(updates),
             subscribeStore,
+            (storeKey) => store.isStateKeyDirty(storeKey),
           )
           unbindFunctions.push(...unbindState)
         }
@@ -335,8 +340,8 @@ export function withComponentStore<S extends State, A extends Actions, G extends
           performAutoInject(this, injectMapping, store, (updates: Record<string, unknown>) => this.setData(updates))
         }
 
-        // 调用原始 attached
-        originalLifetimes.attached?.call(this)
+        // 调用原始 attached（来自 lifetimes）
+        originalAttached?.call(this)
       },
 
       detached: function (this: ComponentInstance) {
@@ -345,12 +350,13 @@ export function withComponentStore<S extends State, A extends Actions, G extends
         // 移除实例上绑定的 action 方法：同样先做实例级拷贝再删除，
         // 避免 this.methods 仍指向配置级共享对象时误删其他实例仍在使用的方法
         if (this.methods) {
-          this.methods = { ...this.methods }
+          const methods = { ...this.methods }
+          this.methods = methods
           Object.keys(actionsMapping).forEach((localName) => {
-            delete this.methods![localName]
+            delete methods[localName]
           })
         }
-        originalLifetimes.detached?.call(this)
+        originalDetached?.call(this)
       },
     }
 

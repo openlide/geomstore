@@ -1,5 +1,5 @@
 /**
- * GeomStore v1.0.0 - 集成类型定义
+ * GeomStore - 集成类型定义
  */
 
 import type { State, Actions, Getters, InferActionArgs, InferActionReturn } from './store'
@@ -110,7 +110,7 @@ export type ExtractPageData<
   S extends State,
   M extends { mapState?: readonly (keyof S)[] | Record<string, keyof S>; mapGetters?: readonly PropertyKey[] | Record<string, PropertyKey> },
   G extends Getters<S> = Getters<S>,
-> = S & ExtractMappedState<S, M> & ExtractMappedGetters<M, G>
+> = (S & ExtractMappedState<S, M> & ExtractMappedGetters<M, G>) & Record<string, unknown>
 
 /**
  * 方法 this 重写映射类型

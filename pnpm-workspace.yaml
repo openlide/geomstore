@@ -3,3 +3,11 @@
 # allowBuilds：批准依赖的安装脚本（pnpm 10+ 默认禁止构建脚本）
 allowBuilds:
   unrs-resolver: true
+
+# nodeLinker：改用提升（hoisted）布局，node_modules 下全部为真实目录。
+# 默认的 isolated 布局依赖 junction/符号链接；部分 Windows 环境受安全策略限制
+# 无法遍历重解析点（scandir 报 UNKNOWN、PowerShell 报 untrusted mount point），
+# 会导致依赖解析全部失败。hoisted 不产生任何链接，可彻底规避该问题。
+# 代价：依赖被平铺提升，失去 isolated 的严格隔离（可能出现幽灵依赖）。
+# 环境允许遍历链接时，可删除本项回到默认 isolated 布局。
+nodeLinker: hoisted

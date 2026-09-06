@@ -1,7 +1,7 @@
 import type { Plugin, IHookSystem } from './plugin'
 
 /**
- * GeomStore v1.0.0 - Store类型定义
+ * GeomStore - Store类型定义
  * 采用 ThisType 方案消除循环依赖
  */
 
@@ -189,6 +189,12 @@ export interface NotifyOptions {
    * 启用后 action 执行期间通过脏跟踪代理检测写入，未修改状态的 dispatch 不触发通知。
    */
   onlyOnChange?: boolean
+  /**
+   * 是否启用通知的微任务合并（默认 false）。
+   * 启用后，同一 tick 内的多次 setState/$patch/$replaceState 会被合并为一次通知，
+   * 显著减少小程序 setData 次数。脏键跨批次累积，最终通知仍能精确反映全部变更。
+   */
+  async?: boolean
 }
 
 /**
@@ -325,7 +331,10 @@ export interface Store<S extends State = State, A extends Actions = Actions, G e
   getGetterNames(): string[]
 
   /** 订阅状态变化 */
-  subscribe(listener: StateListener<S>): () => void
+  subscribe(listener: StateListener<S>, options?: { readOnly?: boolean }): () => void
+
+  /** 判断指定状态键自上次通知以来是否发生变更（供集成层精确跳过未变化的映射） */
+  isStateKeyDirty(key: string): boolean
 
   /** 开始批量更新 */
   startBatch(): void

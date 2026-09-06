@@ -910,9 +910,10 @@ describe('composeStore', () => {
       const listenerB = jest.fn()
 
       // 绕过 subscribe 的同步初始通知，直接注册会抛错的监听器
-      ;(composed as any)._composedListeners.add(() => {
+      // （_composedListeners 为 Map<listener, 注册次数>，与 SubscriptionManager 同语义）
+      ;(composed as any)._composedListeners.set(() => {
         throw new Error('listener boom')
-      })
+      }, 1)
       composed.subscribe(listenerB)
       listenerB.mockClear()
 
@@ -2074,7 +2075,7 @@ describe('BUG 回归：订阅回滚与 batch 收尾', () => {
     expect(() => composed.subscribe(() => {})).toThrow()
 
     // 回滚：组合层监听器未入册；子 A 的订阅句柄已撤销
-    expect((composed as unknown as { _composedListeners: Set<unknown> })._composedListeners.size).toBe(0)
+    expect((composed as unknown as { _composedListeners: Map<unknown, number> })._composedListeners.size).toBe(0)
     expect((composed as unknown as { _storeUnsubscribers: unknown[] })._storeUnsubscribers.length).toBe(0)
 
     // 释放额度后重新订阅可正常工作
@@ -2294,5 +2295,279 @@ describe('P2 compose 批修复回归', () => {
       uninstall()
       expect((okChild as unknown as { _plugins: unknown[] })._plugins).toHaveLength(0)
     })
+  })
+})
+
+// ==================== 第五轮高危修复回归 ====================
+
+describe('R5 回归：startBatch 容忍已销毁子 store', () => {
+  it('子 store 已销毁时 startBatch 不应使健康子 store 的批量深度悬置', () => {
+    const s1 = createStore({ name: 'r5-batch-a', state: { v: 0 } })
+    const s2 = createStore({ name: 'r5-batch-b', state: { w: 0 } })
+    const composed = composeStore([s1, s2])
+    s2.destroy()
+
+    // 此前裸循环在 s2 抛错中断，s1 批量深度已到 1 且再无 endBatch 到达
+    expect(() => composed.startBatch()).not.toThrow()
+    composed.endBatch()
+
+    // 核心断言：s1 仍健康，其通知不得被悬置的批量深度永久抑制
+    const listener = jest.fn()
+    s1.subscribe(listener)
+    s1.setState('v', 1)
+    s1.setState('v', 2)
+    expect(listener).toHaveBeenCalledTimes(2)
+
+    // destroyStores 标志只在 ComposedStore 实现签名上，Store 接口未暴露
+    ;(composed as unknown as { destroy: (destroyStores?: boolean) => void }).destroy(false)
+  })
+
+  it('batch(fn) 中子 store 已销毁同样不应悬置深度', () => {
+    const s1 = createStore({ name: 'r5-batch-c', state: { v: 0 } })
+    const s2 = createStore({ name: 'r5-batch-d', state: { w: 0 } })
+    const composed = composeStore([s1, s2])
+    s2.destroy()
+
+    composed.batch(() => {
+      s1.setState('v', 5)
+    })
+
+    const listener = jest.fn()
+    s1.subscribe(listener)
+    s1.setState('v', 6)
+    expect(listener).toHaveBeenCalledTimes(1)
+
+    ;(composed as unknown as { destroy: (destroyStores?: boolean) => void }).destroy(false)
+  })
+
+  it('start/end 两侧深度应配对：多次 startBatch 后需等量 endBatch', () => {
+    const s1 = createStore({ name: 'r5-batch-e', state: { v: 0 } })
+    const composed = composeStore([s1])
+
+    composed.startBatch()
+    composed.startBatch()
+    composed.endBatch()
+
+    const listener = jest.fn()
+    s1.subscribe(listener)
+    s1.setState('v', 1)
+    // 深度仍为 1：批量期间的变更被挂起
+    expect(listener).toHaveBeenCalledTimes(0)
+
+    composed.endBatch()
+    // 深度归零：补发批量期间挂起的 v=1 通知
+    expect(listener).toHaveBeenCalledTimes(1)
+
+    s1.setState('v', 2)
+    expect(listener).toHaveBeenCalledTimes(2)
+
+    composed.destroy()
+  })
+})
+
+describe('R5 回归：ComposedStore 订阅计数语义与 Store 对齐', () => {
+  it('同一监听器订阅两次，退订一份后另一份仍应收到通知', async () => {
+    const s1 = createStore({ name: 'r5-sub-a', state: { v: 0 } })
+    const composed = composeStore([s1])
+    const listener = jest.fn()
+
+    const u1 = composed.subscribe(listener)
+    composed.subscribe(listener)
+
+    u1()
+    s1.setState('v', 1)
+    await Promise.resolve()
+    await Promise.resolve()
+
+    // 此前 Set 语义下 u1() 直接删除整个监听器并撤销子 store 订阅，
+    // 用户仍持有的第二份句柄静默失效
+    expect(listener).toHaveBeenCalledTimes(1)
+
+    composed.destroy()
+  })
+
+  it('同一监听器注册两份时每次通知应回调两次', async () => {
+    const s1 = createStore({ name: 'r5-sub-b', state: { v: 0 } })
+    const composed = composeStore([s1])
+    const listener = jest.fn()
+
+    composed.subscribe(listener)
+    composed.subscribe(listener)
+
+    s1.setState('v', 1)
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(listener).toHaveBeenCalledTimes(2)
+
+    composed.destroy()
+  })
+
+  it('全部份数退订后才撤销对子 store 的订阅', async () => {
+    const s1 = createStore({ name: 'r5-sub-c', state: { v: 0 } })
+    const composed = composeStore([s1])
+    const listener = jest.fn()
+
+    const u1 = composed.subscribe(listener)
+    const u2 = composed.subscribe(listener)
+
+    u1()
+    u2()
+    s1.setState('v', 1)
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(listener).toHaveBeenCalledTimes(0)
+    // 组合层已无监听器：子 store 的订阅额度应被释放
+    expect((s1 as unknown as { _subscriptionManager: { size: number } })._subscriptionManager.size).toBe(0)
+
+    composed.destroy()
+  })
+
+  it('对照：普通 Store 的计数语义（注册两次通知两次，退订一次仍通知）', () => {
+    const s = createStore({ name: 'r5-sub-d', state: { v: 0 } })
+    const listener = jest.fn()
+    const u1 = s.subscribe(listener)
+    s.subscribe(listener)
+
+    s.setState('v', 1)
+    expect(listener).toHaveBeenCalledTimes(2)
+
+    u1()
+    s.setState('v', 2)
+    expect(listener).toHaveBeenCalledTimes(3)
+  })
+})
+
+describe('R5 回归：子 store 重名校验', () => {
+  it('命名空间模式下重名子 store 应在构造期抛错', () => {
+    const a = createStore({ name: 'dup', state: { x: 1 } })
+    const b = createStore({ name: 'dup', state: { y: 2 } })
+
+    // 修复前不校验：getState()['dup'] 取后一个 store，而 setState('dup/x', …) 经
+    // find 路由到前一个 store —— 读写分裂且全程无告警
+    expect(() => composeStore([a, b], { namespace: true })).toThrow(/名称不得重复/)
+
+    a.destroy()
+    b.destroy()
+  })
+
+  it('嵌套组合的内层默认名 composed 相撞时应抛错，传 namespace 字符串后可正常组合', () => {
+    const s1 = createStore({ name: 'nest-a', state: { x: 1 } })
+    const s2 = createStore({ name: 'nest-b', state: { y: 2 } })
+    const s3 = createStore({ name: 'nest-c', state: { z: 3 } })
+
+    // 两个内层组合 store 的 name 默认都是 'composed'
+    const inner1 = composeStore([s1])
+    const inner2 = composeStore([s2])
+    expect(inner1.name).toBe('composed')
+    expect(() => composeStore([inner1, inner2, s3], { namespace: true })).toThrow(/composed/)
+
+    // 给内层传 namespace 字符串即可区分
+    const s4 = createStore({ name: 'nest-d', state: { w: 4 } })
+    const inner3 = composeStore([s4], { namespace: 'groupB' })
+    expect(inner3.name).toBe('groupB')
+    expect(() => composeStore([inner1, inner3, s3], { namespace: true })).not.toThrow()
+  })
+
+  it('非命名空间模式下重名只告警不抛错', () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation()
+    const a = createStore({ name: 'dup-flat', state: { x: 1 } })
+    const b = createStore({ name: 'dup-flat', state: { y: 2 } })
+
+    // 非命名空间模式 state 按键平铺合并，重名危害较小，按既有歧义告警口径处理
+    expect(() => composeStore([a, b])).not.toThrow()
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('子 store 名称重复'))
+
+    warnSpy.mockRestore()
+  })
+
+  it('名称唯一时不应产生重名告警', () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation()
+    const a = createStore({ name: 'uniq-a', state: { x: 1 } })
+    const b = createStore({ name: 'uniq-b', state: { y: 2 } })
+
+    composeStore([a, b], { namespace: true })
+
+    expect(warnSpy).not.toHaveBeenCalledWith(expect.stringContaining('子 store 名称重复'))
+    warnSpy.mockRestore()
+  })
+})
+
+describe('R5 回归：dispatchByNamespace 跳过已销毁子 store', () => {
+  it('命名空间模式：某子 store 已销毁时不应抛错，其余 store 全部写入', () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation()
+    const s1 = createStore({ name: 'dns-a', state: { x: 1 } })
+    const s2 = createStore({ name: 'dns-b', state: { y: 1 } })
+    const s3 = createStore({ name: 'dns-c', state: { z: 1 } })
+    const composed = composeStore([s1, s2, s3], { namespace: true })
+    s2.destroy()
+
+    // 修复前：s1 已写入 → s2 抛 "Cannot call $patch on a destroyed Store" 中断循环
+    // → s3 永不写入，交付「半更新 + 抛错」这种调用方无法解释的状态
+    expect(() =>
+      composed.$patch({
+        'dns-a': { x: 10 },
+        'dns-b': { y: 20 },
+        'dns-c': { z: 30 },
+      } as never),
+    ).not.toThrow()
+
+    expect(s1.getState().x).toBe(10)
+    expect(s3.getState().z).toBe(30)
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('已销毁，跳过对它的写入'))
+
+    warnSpy.mockRestore()
+  })
+
+  it('非命名空间模式：某子 store 已销毁时不应抛错，其余 store 全部写入', () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation()
+    const s1 = createStore({ name: 'flat-a', state: { x: 1 } })
+    const s2 = createStore({ name: 'flat-b', state: { y: 1 } })
+    const composed = composeStore([s1, s2])
+    s2.destroy()
+
+    expect(() => composed.$patch({ x: 10, y: 20 } as never)).not.toThrow()
+    expect(s1.getState().x).toBe(10)
+
+    warnSpy.mockRestore()
+  })
+
+  it('strict 模式：已销毁子 store 仍跳过，键找不到对应 store 仍应抛错', () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation()
+    const s1 = createStore({ name: 'strict-a', state: { x: 1 } })
+    const s2 = createStore({ name: 'strict-b', state: { y: 1 } })
+    const composed = composeStore([s1, s2], { namespace: true, strict: true })
+    s2.destroy()
+
+    // 「存在但已销毁」与「不存在」是两种故障：strict 只针对后者
+    expect(() =>
+      composed.$patch({
+        'strict-a': { x: 5 },
+        'strict-b': { y: 5 },
+      } as never),
+    ).not.toThrow()
+    expect(s1.getState().x).toBe(5)
+
+    expect(() => composed.$patch({ 'no-such-store': { q: 1 } } as never)).toThrow(/Cannot find store for key/)
+
+    warnSpy.mockRestore()
+  })
+
+  it('已销毁子 store 不应再收到 $replaceState 的缺失键告警', () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation()
+    const s1 = createStore({ name: 'warn-a', state: { x: 1, keep: 9 } })
+    const s2 = createStore({ name: 'warn-b', state: { y: 1 } })
+    const composed = composeStore([s1, s2])
+    s2.destroy()
+
+    composed.$replaceState({ x: 2 } as never)
+
+    // s1 仍存活：缺失键告警照常给出
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('$replaceState 未包含 store "warn-a"'))
+    // s2 已销毁会被跳过，为它输出该告警是误导性噪音
+    expect(warnSpy).not.toHaveBeenCalledWith(expect.stringContaining('未包含 store "warn-b"'))
+
+    warnSpy.mockRestore()
   })
 })

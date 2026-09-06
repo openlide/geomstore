@@ -1,5 +1,5 @@
 /**
- * GeomStore v1.0 - Store组合模块导出
+ * GeomStore - Store组合模块导出
  */
 
 export { composeStore, createStoreTree, ComposedStore } from './composeStore'

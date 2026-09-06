@@ -9,18 +9,8 @@ build/
 *.log
 *.tsbuildinfo
 
-# postbuild 生成的子路径转发 stub（仅随 npm 包发布，不入库）
-/store/
-/hooks/
-/plugins/
-/integrations/
-/error/
-/compose/
-/selectors/
-/snapshot/
-/performance/
-/actions/
-/cache/
+# 说明：子路径转发 stub（store/ hooks/ plugins/ 等）由 prepack 钩子在打包发布时
+# 生成、postpack 清理，不落盘到仓库，故无需忽略规则。详见 scripts/generate-subpath-stubs.cjs
 
 # Test coverage
 coverage/
@@ -42,8 +32,6 @@ coverage-*.json
 *.tmp
 *.temp
 .cache/
-PRODUCTION_READINESS_REPORT.md
-CODE_REVIEW_FINAL.md
 examples/
 
 # Environment variables

@@ -1,5 +1,5 @@
 /**
- * GeomStore v1.0 - 全局类型扩展
+ * GeomStore - 全局类型扩展
  */
 
 /**

@@ -1,5 +1,5 @@
 /**
- * GeomStore v1.0 - 运行时类型校验工具
+ * GeomStore - 运行时类型校验工具
  *
  * 提供完整的运行时类型验证功能，包括：
  * - 基础类型验证
@@ -10,6 +10,7 @@
  */
 
 import { ValidationError, ErrorCode, createError } from '../error/GeomStoreError'
+import { isArray as _isArray, isPlainObject as _isPlainObject } from './helpers'
 
 /**
  * 类型描述符
@@ -735,12 +736,8 @@ export const TypeGuards = {
   },
 
   /** 检查是否为数组 */
-  isArray: <T = unknown>(value: unknown): value is T[] => {
-    return Array.isArray(value)
-  },
+  isArray: <T = unknown>(value: unknown): value is T[] => _isArray(value),
 
   /** 检查是否为纯对象 */
-  isPlainObject: (value: unknown): value is Record<string, unknown> => {
-    return typeof value === 'object' && value !== null && !Array.isArray(value) && Object.prototype.toString.call(value) === '[object Object]'
-  },
+  isPlainObject: (value: unknown): value is Record<string, unknown> => _isPlainObject(value),
 }

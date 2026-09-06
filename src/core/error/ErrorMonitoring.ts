@@ -1,5 +1,5 @@
 /**
- * GeomStore v1.0 - 错误监控和报警系统
+ * GeomStore - 错误监控和报警系统
  *
  * 提供完整的错误监控功能，包括：
  * - 错误上报
@@ -122,7 +122,7 @@ function createDefaultRequest(options: RequestInit): HttpRequestImpl {
   return async (url, body, method, headers) => {
     // 透传全部 RequestInit 配置；method/headers/body 以归一化后的上报参数为准。
     // 必须校验 ok：fetch 对 4xx/5xx 不 reject，不校验会把服务端拒绝当作上报成功
-    const response = await fetch(url, { ...options, method, headers, body })
+    const response = (await fetch(url, { ...options, method, headers, body })) as unknown as { ok: boolean; status: number }
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}`)
     }
@@ -435,6 +435,10 @@ export class ErrorMonitoring {
   private isShuttingDown = false
   private nonAggregatedErrorCount = 0 // 禁用聚合时记录的错误数
   private readonly maxQueueSize = 1000 // 防止队列无限增长的最大大小
+  /** 连续「全部报告器失败」的 flush 次数：用于给重入队加上限，见 doFlushReports */
+  private consecutiveFlushFailures = 0
+  /** 重入队重试上限：超过后丢弃该批并告警，避免永久失败批次无限空转 */
+  private readonly maxFlushRetries = 3
 
   constructor(config: MonitoringConfig) {
     this.reporters = config.reporters
@@ -561,13 +565,35 @@ export class ErrorMonitoring {
       // 关闭中不重试：shutdown 会用最终 flushReports 排空队列，
       // 若此处重新入队，最终 flush 会再次调用已失败的 reportBatch——
       // 对挂起/已退出的上报端无限等待，shutdown 永不返回
-      if (!this.isShuttingDown && !anyReporterSucceeded && batch.length > 0) {
-        // 全部报告器失败：报文重新入队等待下次 flush 重试，否则网络抖动
-        // 期间产生的错误会被静默丢弃。置于队首保持时序；超过容量上限时
-        // 从队尾丢弃新条目（与 enqueue 的淘汰方向一致，保旧优先）
-        const requeued = [...batch, ...this.errorQueue]
-        this.errorQueue = requeued.length > this.maxQueueSize ? requeued.slice(requeued.length - this.maxQueueSize) : requeued
+      if (this.isShuttingDown || batch.length === 0) {
+        return
       }
+      if (anyReporterSucceeded) {
+        this.consecutiveFlushFailures = 0
+        return
+      }
+
+      // 全部报告器失败：报文重新入队等待下次 flush 重试，否则网络抖动期间产生的
+      // 错误会被静默丢弃。但重试必须有上限——reporters 为空数组（promises 为空，
+      // anyReporterSucceeded 恒 false）、或唯一报告器恒失败（如某条 payload 含循环
+      // 引用使 JSON.stringify 每次抛错）时，无上限的重入队会让该批每个 batchInterval
+      // 空转一次：永不落地也永不丢弃，还会持续把队列顶到上限、连带淘汰掉正常错误
+      this.consecutiveFlushFailures++
+      if (this.consecutiveFlushFailures > this.maxFlushRetries) {
+        console.warn(
+          `[ErrorMonitoring] 连续 ${this.consecutiveFlushFailures} 次上报全部失败` +
+            `（当前报告器数: ${this.reporters.length}），丢弃本批 ${batch.length} 条错误以避免无限重入队`,
+        )
+        this.consecutiveFlushFailures = 0
+        return
+      }
+
+      // 置于队首保持时序：失败批次早于 flush 期间新入队的条目。
+      // 超出容量时保留队尾、丢弃队首（即优先丢弃最旧），与 report() 中「队列满则
+      // shift 丢弃最旧错误」同一口径——溢出已是过载降级状态，全类统一按最旧先淘汰，
+      // 不为此处开「保旧」特例（那会与入队路径的淘汰方向相反，反而更难推理）
+      const requeued = [...batch, ...this.errorQueue]
+      this.errorQueue = requeued.length > this.maxQueueSize ? requeued.slice(requeued.length - this.maxQueueSize) : requeued
     } finally {
       this.isFlushing = false
       this.inFlightFlush = null
@@ -687,8 +713,9 @@ export class ErrorMonitoring {
       })
     }, this.batchInterval)
     // 调用 unref() 让定时器不阻止 Node.js 进程退出（解决测试/小程序环境句柄泄漏）
-    if (timer && typeof (timer as { unref?: () => void }).unref === 'function') {
-      (timer as { unref: () => void }).unref()
+    const timerWithUnref = timer as unknown as { unref?: () => void }
+    if (timer && typeof timerWithUnref.unref === 'function') {
+      timerWithUnref.unref()
     }
     this.batchTimer = timer
   }
@@ -705,8 +732,9 @@ export class ErrorMonitoring {
       const timer = setTimeout(resolve, ms)
       // unref()：退避等待定时器不应阻止 Node.js 进程/测试 worker 退出
       // （与 batchTimer 的 unref 处理一致，小程序/浏览器环境无 unref 时跳过）
-      if (typeof (timer as { unref?: () => void }).unref === 'function') {
-        (timer as { unref: () => void }).unref()
+      const timerWithUnref = timer as unknown as { unref?: () => void }
+      if (typeof timerWithUnref.unref === 'function') {
+        timerWithUnref.unref()
       }
     })
   }
@@ -759,29 +787,3 @@ export function getDefaultMonitoring(): ErrorMonitoring {
   }
   return _defaultMonitoring
 }
-
-/**
- * 全局默认实例（惰性代理）
- *
- * 首次访问任意属性/方法时才创建真实实例，避免仅 import 就产生实例与调度器；
- * 代理目标继承自 ErrorMonitoring.prototype，保证 instanceof 检查通过
- *
- * @deprecated 建议改用 {@link getDefaultMonitoring} 以获得更明确的惰性语义
- */
-export const defaultMonitoring: ErrorMonitoring = new Proxy(Object.create(ErrorMonitoring.prototype) as ErrorMonitoring, {
-  get(_target, prop) {
-    const instance = getDefaultMonitoring()
-    const value = (instance as unknown as Record<PropertyKey, unknown>)[prop]
-    return typeof value === 'function' ? value.bind(instance) : value
-  },
-  // 缺少 set/deleteProperty 陷阱时，属性写入落在哑 target 上被静默丢弃，
-  // 用户配置（如 enableConsoleLog = false）不生效且无任何提示
-  set(_target, prop, value) {
-    (getDefaultMonitoring() as unknown as Record<PropertyKey, unknown>)[prop] = value
-    return true
-  },
-  deleteProperty(_target, prop) {
-    delete (getDefaultMonitoring() as unknown as Record<PropertyKey, unknown>)[prop]
-    return true
-  },
-})

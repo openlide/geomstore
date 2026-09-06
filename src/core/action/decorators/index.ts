@@ -1,5 +1,5 @@
 /**
- * GeomStore v1.0 - Action装饰器导出
+ * GeomStore - Action装饰器导出
  *
  * 提供Action相关的装饰器函数，包括：
  * - 日志装饰器
@@ -9,7 +9,6 @@
  * - 重试装饰器
  * - 超时装饰器
  *
- * @since 1.0.0
  */
 
 export { withLog } from './log'

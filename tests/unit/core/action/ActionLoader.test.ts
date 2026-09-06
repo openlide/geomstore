@@ -124,6 +124,43 @@ describe('ActionLoader', () => {
       expect(errorDataCall![1]).toBe(null)
     })
 
+    it('REGR-LOADER-001: 辅助状态写入抛错不得掩盖 action 的返回值', async () => {
+      const action = jest.fn(async () => 'real-result')
+      let calls = 0
+      // 首次 setState（incrementLoading 置 loading=true）放行，其后一律抛错，
+      // 模拟 action 执行期间 store 被销毁
+      const setState = jest.fn(() => {
+        calls++
+        if (calls > 1) {
+          throw new Error('[GeomStore] Cannot call setState on a destroyed Store')
+        }
+      })
+      const wrapped = loader.wrap(action, 'testAction', setState)
+
+      // 修复前 decrementLoading/clearError 内的 setState 抛错会冒泡，
+      // 把已成功的 action 返回值替换成与真实情况无关的异常
+      await expect(wrapped()).resolves.toBe('real-result')
+    })
+
+    it('REGR-LOADER-002: 辅助状态写入抛错不得替换 action 的原始错误', async () => {
+      const original = new Error('original action failure')
+      const action = jest.fn(async () => {
+        throw original
+      })
+      let calls = 0
+      const setState = jest.fn(() => {
+        calls++
+        if (calls > 1) {
+          throw new Error('[GeomStore] Cannot call setState on a destroyed Store')
+        }
+      })
+      const wrapped = loader.wrap(action, 'testAction', setState)
+
+      // 修复前 catch 路径的 setError 抛错会替换掉 action 的原始错误，
+      // 调用方排障时看到的是 setState 的异常而非真实故障
+      await expect(wrapped()).rejects.toBe(original)
+    })
+
     it('应该支持 autoLoading: false', async () => {
       const noAutoLoader = new ActionLoader({ autoLoading: false })
       const action = jest.fn(async () => 'success')

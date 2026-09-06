@@ -1,5 +1,5 @@
 /**
- * GeomStore v1.0 - 错误恢复和回退策略
+ * GeomStore - 错误恢复和回退策略
  *
  * 提供完整的错误恢复机制，包括：
  * - 错误恢复策略定义
@@ -323,9 +323,7 @@ export class ErrorRecovery {
     // 不再调用 recover，残留计数无清除路径），重置计数使额度按周期而非按错误码终身累计。
     // 周期判定是启发式：调用方自身重试耗时若使间隔超出窗口，会被视为新周期重新计额
     const now = Date.now()
-    const cycleSpan = useExponentialBackoff
-      ? baseDelay * (Math.pow(2, maxRetries) - 1)
-      : baseDelay * maxRetries
+    const cycleSpan = useExponentialBackoff ? baseDelay * (Math.pow(2, maxRetries) - 1) : baseDelay * maxRetries
     const cycleWindow = Math.max(60_000, cycleSpan * 2)
     const windowStart = this.retryWindowStart.get(retryKey)
     if (windowStart === undefined || now - windowStart > cycleWindow) {
@@ -491,6 +489,10 @@ export class ErrorRecovery {
   /**
    * 清除所有重试计数
    *
+   * 与私有 clearRetryCount 同口径：计数与周期窗必须一起清。只清计数会留下陈旧窗口，
+   * 该窗口在中途过期时触发额度重置，使 max-retries 防重试风暴保护被击穿
+   * （原本应被拦截的重试被放行），且残留窗口条目再无释放路径。
+   *
    * @example
    * ```typescript
    * recovery.clearAllRetryCounts()
@@ -498,6 +500,7 @@ export class ErrorRecovery {
    */
   clearAllRetryCounts(): void {
     this.retryCount.clear()
+    this.retryWindowStart.clear()
   }
 }
 

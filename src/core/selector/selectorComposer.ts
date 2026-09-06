@@ -1,9 +1,8 @@
 /**
- * GeomStore v1.0 - 选择器组合
+ * GeomStore - 选择器组合
  *
  * 提供选择器组合、管道操作和高级选择器创建功能
  *
- * @since 1.0.0
  */
 
 import type { Selector, SelectorComposerInput } from '../../types/selector'
@@ -47,7 +46,6 @@ function annotateAttempts(error: Error, attempts: number): Error {
  * 提供静态方法用于组合、管道和创建高级选择器
  *
  * @class SelectorComposer
- * @since 1.0.0
  *
  * @example
  * ```typescript
@@ -73,7 +71,6 @@ export class SelectorComposer {
    * @template R - 返回值类型
    * @param {SelectorComposerInput<S>} input - 选择器和组合器配置
    * @returns {Selector<S, R>} 组合后的选择器
-   * @since 1.0.0
    *
    * @example
    * ```typescript
@@ -117,7 +114,6 @@ export class SelectorComposer {
    * @param {(input: T1) => T2} selector2 - 第二个选择器
    * @param {(input: T2) => T3} selector3 - 第三个选择器（可选）
    * @returns {Selector<S, T4 | T3 | T2 | T1>} 管道选择器
-   * @since 1.0.0
    *
    * @example
    * ```typescript
@@ -166,7 +162,6 @@ export class SelectorComposer {
    * @param {(input: R1) => R2} selector2 - 第二个选择器
    * @param {(input: R2) => R3} selector3 - 第三个选择器（可选）
    * @returns {Selector<S, R3 | R2 | R1>} 派生选择器
-   * @since 1.0.0
    *
    * @example
    * ```typescript
@@ -201,7 +196,6 @@ export class SelectorComposer {
    * @template R - 返回元素类型
    * @param {(item: T) => R} itemSelector - 元素选择器
    * @returns {(array: T[]) => R[]} 数组选择器（输入为数组，不满足 Selector 的对象约束，故用函数类型）
-   * @since 1.0.0
    *
    * @example
    * ```typescript
@@ -229,7 +223,6 @@ export class SelectorComposer {
    * @template R - 值类型
    * @param {(key: K) => Selector<S, R>} keySelector - 键选择器工厂
    * @returns {Selector<S, Record<K, R>>} 对象选择器
-   * @since 1.0.0
    *
    * @example
    * ```typescript
@@ -246,7 +239,16 @@ export class SelectorComposer {
       const result = {} as Record<K, R>
 
       for (const key of Object.keys(state) as K[]) {
-        result[key] = keySelector(key)(state)
+        // 以 DefineOwnProperty 语义写入：state 可合法含自有 __proto__ 键
+        // （helpers.ts 的 deepMerge/set 有意如此写入），result[key] = … 走 [[Set]]
+        // 会触发 Object.prototype 的 __proto__ setter——该键的派生结果被静默丢弃
+        // 且 result 原型被换掉
+        Object.defineProperty(result, key, {
+          value: keySelector(key)(state),
+          writable: true,
+          enumerable: true,
+          configurable: true,
+        })
       }
 
       return result
@@ -264,7 +266,6 @@ export class SelectorComposer {
    * @param {Selector<S, R>} trueSelector - 条件为true时执行的选择器
    * @param {Selector<S, R>} falseSelector - 条件为false时执行的选择器
    * @returns {Selector<S, R>} 条件选择器
-   * @since 1.0.0
    *
    * @example
    * ```typescript
@@ -298,7 +299,6 @@ export class SelectorComposer {
    * @param {Selector<S, R>} selector - 原始选择器
    * @param {R} defaultValue - 默认值
    * @returns {Selector<S, R>} 带默认值的选择器
-   * @since 1.0.0
    *
    * @example
    * ```typescript
@@ -333,9 +333,8 @@ export class SelectorComposer {
    * @template S - 状态类型
    * @template R - 返回值类型
    * @param {Selector<S, R>} selector - 原始选择器
-   * @param {number} [maxRetries=3] - 最大重试次数
+   * @param {RetrySelectorOptions} [options] - 重试选项（默认 { retries: 3 }）
    * @returns {Selector<S, R>} 重试选择器
-   * @since 1.0.0
    *
    * @example
    * ```typescript
@@ -344,23 +343,15 @@ export class SelectorComposer {
    *     if (!s.ready) throw new Error('Not ready')
    *     return s.value
    *   },
-   *   3
+   *   { retries: 3 }
    * )
    *
    * // 会重试最多3次
    * const result = selector(state)
    * ```
    */
-  static createRetrySelector<S extends Record<string, unknown>, R>(selector: Selector<S, R>, options: RetrySelectorOptions | number = {}): Selector<S, R> {
-    // 旧签名的位置参数（maxRetries: number）兼容告警：静默忽略会使其退化为默认 3 次
-    let resolvedOptions: RetrySelectorOptions
-    if (typeof options === 'number') {
-      console.warn('[SelectorComposer] createRetrySelector(sel, number) 已废弃：请使用 { retries } 选项')
-      resolvedOptions = { retries: options }
-    } else {
-      resolvedOptions = options
-    }
-    const { retries = 3, shouldRetry } = resolvedOptions
+  static createRetrySelector<S extends Record<string, unknown>, R>(selector: Selector<S, R>, options: RetrySelectorOptions = {}): Selector<S, R> {
+    const { retries = 3, shouldRetry } = options
     if (!Number.isInteger(retries) || retries < 0) {
       throw new TypeError(`[SelectorComposer] retries 必须是非负整数，收到: ${retries}`)
     }
@@ -467,7 +458,6 @@ export class SelectorComposer {
    * @param {Selector<S, R>} selector - 原始选择器
    * @param {number} [delay=300] - 防抖延迟（毫秒）
    * @returns {Selector<S, Promise<R>>} 防抖选择器（返回Promise）
-   * @since 1.0.0
    *
    * @example
    * ```typescript
@@ -548,7 +538,6 @@ export class SelectorComposer {
    * @param {Selector<S, R>} selector - 原始选择器
    * @param {number} [interval=300] - 节流间隔（毫秒）
    * @returns {Selector<S, R>} 节流选择器
-   * @since 1.0.0
    *
    * @example
    * ```typescript

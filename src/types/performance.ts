@@ -1,5 +1,5 @@
 /**
- * GeomStore v1.0 - 性能类型定义
+ * GeomStore - 性能类型定义
  */
 
 /**

@@ -1,5 +1,5 @@
 /**
- * GeomStore v1.0 - 节流装饰器
+ * GeomStore - 节流装饰器
  *
  * 限制方法在指定时间间隔内只能执行一次，支持 leading / trailing 两种触发沿
  * （默认双开启，与 lodash throttle 语义对齐）：
@@ -7,7 +7,6 @@
  * - trailing：窗口内被抑制的调用在窗口结束时以最新参数补发（fire-and-forget，
  *   返回值不回传——节流场景调用方不应依赖被抑制调用的返回值）
  *
- * @since 1.0.0
  */
 
 /**
@@ -94,7 +93,6 @@ export function withThrottle(interval: number = 300, options: ThrottleDecoratorO
         byMethod.set(methodKey, state)
       }
 
-      const host = this
       const fireTrailing = (): void => {
         state.timer = null
         if (state.pendingArgs !== null) {
@@ -103,7 +101,7 @@ export function withThrottle(interval: number = 300, options: ThrottleDecoratorO
           state.lastCallTime = Date.now()
           // fire-and-forget：返回值不回传；异步方法的 rejection 不能变成
           // unhandled rejection，显式记录
-          const result = originalMethod.apply(host, trailingArgs) as unknown
+          const result = originalMethod.apply(this, trailingArgs) as unknown
           if (result instanceof Promise) {
             observesPromise = true
             result.catch((error) => {

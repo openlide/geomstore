@@ -1,5 +1,5 @@
 /**
- * GeomStore v1.0 - 性能优化工具
+ * GeomStore - 性能优化工具
  *
  * 提供高性能的核心优化组件，包括：
  * - 异步批量通知
@@ -286,13 +286,22 @@ export class StateFingerprint {
     }
 
     if (obj instanceof Map) {
+      // Map 与 Set 同为集合，指纹应与插入顺序无关：仓库自带 deepEqual 比较 Map 时
+      // 按键查找、不依赖迭代序，若此处按迭代序组合哈希，两个 deepEqual 判定相等的
+      // Map 会得到不同指纹 → 误判「状态已变化」，触发无谓的重算与 setData
       visited.add(obj as object)
-      let hash = this.hashString('[map]')
+      const entryHashes: number[] = []
       for (const [key, val] of obj) {
-        hash = this.hashCombine(hash, this.hashValue(key, visited, memo))
-        hash = this.hashCombine(hash, this.hashValue(val, visited, memo))
+        // 键值先合成单个条目哈希再参与排序：分别排序会打散键值配对，
+        // 使 Map{a:1,b:2} 与 Map{a:2,b:1} 得到相同指纹
+        entryHashes.push(this.hashCombine(this.hashValue(key, visited, memo), this.hashValue(val, visited, memo)))
       }
       visited.delete(obj as object)
+      entryHashes.sort((a, b) => a - b)
+      let hash = this.hashString('[map]')
+      for (const entryHash of entryHashes) {
+        hash = this.hashCombine(hash, entryHash)
+      }
       memo?.set(obj as object, hash)
       return hash
     }
@@ -354,103 +363,6 @@ export class StateFingerprint {
    */
   private hashCombine(hash1: number, hash2: number): number {
     return ((hash1 << 5) - hash1 + hash2) & 0xffffffff
-  }
-}
-
-// ==================== 深度比较导出 ====================
-
-// 从工具模块重新导出深度比较函数
-export { deepEqual as iterativeDeepEqual } from '../utils/helpers'
-
-// ==================== 订阅管理优化 ====================
-
-/**
- * 订阅管理器（使用WeakMap优化）
- *
- * @class SubscriptionManager
- * @description
- * 高效的订阅管理实现，使用WeakMap自动清理不再使用的订阅，
- * 减少内存泄漏风险。
- *
- * @template S - 状态类型
- *
- * @example
- * ```typescript
- * const manager = new SubscriptionManager<MyState>()
- *
- * const listener = (state) => console.log(state)
- * const unsubscribe = manager.subscribe(listener)
- *
- * manager.notify(state) // 触发监听器
- *
- * unsubscribe() // 取消订阅
- * ```
- */
-export class SubscriptionManager<S> {
-  // 仅需去重监听器，无需记录顺序序号，使用 Set 更简洁
-  private listeners = new Set<(state: S) => void>()
-
-  /**
-   * 订阅状态变化
-   *
-   * @param {(state: S) => void} listener - 监听函数
-   * @returns {() => void} 取消订阅的函数
-   */
-  subscribe(listener: (state: S) => void): () => void {
-    this.listeners.add(listener)
-
-    return () => this.unsubscribe(listener)
-  }
-
-  /**
-   * 取消订阅
-   *
-   * @param {(state: S) => void} listener - 监听函数
-   * @returns {boolean} 是否成功取消
-   */
-  unsubscribe(listener: (state: S) => void): boolean {
-    return this.listeners.delete(listener)
-  }
-
-  /**
-   * 通知所有监听器
-   *
-   * @param {S} state - 状态
-   */
-  notify(state: S): void {
-    for (const listener of this.listeners) {
-      try {
-        listener(state)
-      } catch (error) {
-        console.error('[SubscriptionManager] Error in listener:', error)
-      }
-    }
-  }
-
-  /**
-   * 清空所有订阅
-   */
-  clear(): void {
-    this.listeners.clear()
-  }
-
-  /**
-   * 获取订阅者数量
-   *
-   * @returns {number} 订阅者数量
-   */
-  size(): number {
-    return this.listeners.size
-  }
-
-  /**
-   * 检查是否已订阅
-   *
-   * @param {(state: S) => void} listener - 监听函数
-   * @returns {boolean} 是否已订阅
-   */
-  has(listener: (state: S) => void): boolean {
-    return this.listeners.has(listener)
   }
 }
 
@@ -560,7 +472,6 @@ export function throttle<T extends (...args: any[]) => unknown>(
 
   return function (this: unknown, ...args: Parameters<T>) {
     const now = Date.now()
-    const host = this
 
     const fireTrailing = () => {
       timer = null
@@ -571,7 +482,7 @@ export function throttle<T extends (...args: any[]) => unknown>(
         // 尾随补发运行在定时器回调中：同步抛错没有调用方栈可传播，
         // 会成为 uncaught exception；记录后保持节流器可用（与防抖同口径）
         try {
-          fn.apply(host, trailingArgs)
+          fn.apply(this, trailingArgs)
         } catch (error) {
           console.error('[GeomStore] throttled function threw:', error)
         }
@@ -633,13 +544,4 @@ export function createAsyncBatchNotifier<S>(): AsyncBatchNotifier<S> {
  */
 export function createStateFingerprint(): StateFingerprint {
   return new StateFingerprint()
-}
-
-/**
- * 创建订阅管理器的便捷函数
- *
- * @returns {SubscriptionManager} 订阅管理器实例
- */
-export function createSubscriptionManager<S>(): SubscriptionManager<S> {
-  return new SubscriptionManager<S>()
 }

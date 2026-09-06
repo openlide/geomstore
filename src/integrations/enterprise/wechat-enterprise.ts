@@ -1,5 +1,5 @@
 /**
- * GeomStore v1.0 - 微信小程序企业级方案
+ * GeomStore - 微信小程序企业级方案
  *
  * 包含：
  * - 多账号隔离（持久化 key 与登出清理 key 统一为 store name）
@@ -12,6 +12,7 @@
 import { createStore } from '../../core/store/index'
 import type { Store, State } from '../../types/store'
 import { persistencePlugin } from '../../plugins/builtin'
+import { isPlainObject } from '../../core/utils/helpers'
 
 // ==================== wx API 模块级类型声明 ====================
 
@@ -261,6 +262,12 @@ export class StoreManager {
 
   /**
    * 获取或创建用户 Store
+   *
+   * 只负责「取/建某账号的 store」，**不改变当前登录身份**。
+   * 此前未命中分支会顺带写 this.currentUserId，而命中分支不会——同一调用的身份
+   * 副作用取决于 LRU 淘汰状态这一调用方不可见的实现细节；只读预览另一账号
+   * （getUserStore('B')）会静默把身份切成 B，随后 logout() 清的是 B 的数据。
+   * 身份切换与冷启动恢复一律走 switchUser 显式表达。
    */
   getUserStore(userId: string): Store<UserState> {
     const existingStore = this.stores.get(userId)
@@ -276,7 +283,6 @@ export class StoreManager {
 
     const store = createUserStore({ userId })
     this.stores.set(userId, store)
-    this.currentUserId = userId
 
     return store
   }
@@ -359,7 +365,6 @@ export const storeManager = new StoreManager()
 export interface BackupData {
   timestamp: number
   state: unknown
-  version: string
 }
 
 export interface HotUpdateConfig<S extends State = State> {
@@ -369,7 +374,6 @@ export interface HotUpdateConfig<S extends State = State> {
 }
 
 const DEFAULT_BACKUP_KEY = 'store_backup_before_update'
-const CURRENT_VERSION = '1.0.0'
 
 /** 待更新重启标记键：确认更新时写入，用于区分「更新后首启」与「普通重启」 */
 function pendingLaunchKey(backupKey: string): string {
@@ -383,7 +387,6 @@ function backupState<S extends State = State>(store: Store<S>, backupKey: string
   const backupData: BackupData = {
     timestamp: Date.now(),
     state: store.$snapshot(),
-    version: CURRENT_VERSION,
   }
   // 写入失败（配额满等）必须抛错：调用方据此跳过标记写入与 applyUpdate，
   // 避免重启后凭空执行一次无源恢复
@@ -498,11 +501,25 @@ export function restoreFromHotUpdate<S extends State = State>(store: Store<S>, b
     return false
   }
 
-  try {
-    store.$restore(backup.state as S)
+  // 结构预校验：$patch 走 deepMerge，而 deepMerge 对数组等非纯对象会静默跳过合并
+  // （isObject 排除数组）却仍算成功——损坏备份会被当成「已恢复」并删除。
+  // 这类备份永久不可用（不同于下方 catch 的瞬态失败），按过期路径同口径清理两个键，
+  // 否则每次冷启动都会重复告警一遍
+  if (!isPlainObject(backup.state)) {
+    logger.warn('HotUpdate', '备份 state 不是纯对象，跳过恢复并清理')
     storage.remove(resolvedBackupKey)
     storage.remove(markerKey)
-    logger.log('HotUpdate', `状态已从备份恢复（版本: ${backup.version}）`)
+    return false
+  }
+
+  try {
+    // 用 $patch 合并语义而非 $restore（= $replaceState 整树替换）：热更新备份取自
+    // 更新前的旧版本，整树替换会把新版本新增的 state 键整体抹掉，新代码读这些键
+    // 即得 undefined。plugins/builtin.ts 的持久化恢复也为此特意选用 $patch
+    store.$patch(backup.state as Partial<S>)
+    storage.remove(resolvedBackupKey)
+    storage.remove(markerKey)
+    logger.log('HotUpdate', '状态已从备份恢复')
     return true
   } catch (error) {
     logger.error('HotUpdate', '恢复状态失败:', error)
@@ -632,10 +649,15 @@ export class OfflineManager<S extends State = State> {
       }
     } finally {
       // 回填必须覆盖循环未迭代到的剩余项：中途异常（死信落盘配额满、
-      // onDrop 用户回调抛错）时，剩余项既不在 failedActions 也不在已清空的
+      // onDrop 用户回调抛错）时，剩余项既不在失败段也不在已清空的
       // this.actionQueue——遗漏会让残缺队列落盘覆盖磁盘完整旧队列，丢失成为永久。
       // 含当前项（at-least-once：异常中的操作重新入队重试，可能重复进死信，可接受）
-      this.actionQueue = [...failedActions, ...this.syncPending.slice(this.syncNextIndex), ...this.actionQueue]
+      //
+      // 读 this.syncFailed 而非局部 failedActions：两者初始为同一数组引用，但
+      // clearQueue 在同步进行中会把字段重绑为新的空数组，若仍读局部变量，
+      // 已被用户清空的操作会在此复活并经 saveQueue 落盘——清空被静默撤销。
+      // 改读字段后与 saveQueue 拼接联合视图的口径也一致
+      this.actionQueue = [...this.syncFailed, ...this.syncPending.slice(this.syncNextIndex), ...this.actionQueue]
       // saveQueue 内部已尽力而为（storage.set 不外抛），此处无需再兜底
       this.saveQueue()
       this.syncPending = []
@@ -647,9 +669,18 @@ export class OfflineManager<S extends State = State> {
 
   /**
    * 清空队列
+   *
+   * 同步进行中调用同样生效：syncQueue 采用快照-清空模式，队列分散在
+   * actionQueue（同步期间新入队）、syncPending（本轮待同步快照）、syncFailed（失败段）
+   * 三段，其 finally 会把三段拼回 actionQueue 并落盘。只清 actionQueue 会让
+   * 已「清空」的操作在同步结束时复活继续同步，故三段一并置空——
+   * syncPending 清空后循环条件立即为假、同步停止；清空之后新入队的操作
+   * 仍进 actionQueue，不受影响
    */
   clearQueue(): void {
     this.actionQueue = []
+    this.syncPending = []
+    this.syncFailed = []
     storage.remove(this.queueKey)
   }
 
@@ -927,6 +958,21 @@ function installAppLifecycleHooks(): void {
 }
 
 /**
+ * 确保全局 App 已被本模块包装（幂等，不触碰处理器注册表）
+ *
+ * 与 initBackgroundSync 的区别：后者在「全局 App 已被外部替换」时会清空
+ * backgroundSyncHandlers 再重装（旧包装已失效，残留处理器无意义）；本函数只负责
+ * 把包装就位，供 createEnterpriseApp 在返回配置前调用——包装通过替换全局 App 来
+ * 拦截 options.onShow/onHide，必须早于 App(options) 执行，否则拦截不到任何回调。
+ */
+function ensureAppLifecycleHooks(): void {
+  const globalObj = globalThis as { App?: unknown }
+  if (typeof globalObj.App !== 'function') return
+  if (globalObj.App === installedAppWrapper) return
+  installAppLifecycleHooks()
+}
+
+/**
  * 注销指定 Store 的后台同步处理器
  *
  * 账号切换/登出时应调用，避免已销毁 Store 的处理器残留在注册表中，
@@ -984,9 +1030,21 @@ export interface EnterpriseAppConfig {
 export function createEnterpriseApp(config: EnterpriseAppConfig = {}) {
   const { maxInactiveTime = 10 * 60 * 1000 } = config
 
+  // 必须在返回配置（即 App(options) 被调用）之前安装全局 App 包装。
+  // 包装靠替换全局 App 拦截 options.onShow/onHide，而 onLaunch/login 里的
+  // initBackgroundSync 执行时框架早已消费完本配置的回调——那时安装拦不到任何东西，
+  // runForegroundChecks/runBackgroundChecks 永不执行，refreshData 与
+  // onForeground/onBackground 全部静默失效（installAppLifecycleHooks 注释已声明此前置要求）。
+  // 无登录用户（store 为 null）时同样要安装：login() 之后注册的处理器依赖包装已就位
+  ensureAppLifecycleHooks()
+
   // 获取当前用户ID
   const currentUserId = storage.get<string>(CURRENT_USER_KEY)
-  const store = currentUserId ? storeManager.getUserStore(currentUserId) : null
+  // 用 switchUser 而非 getUserStore：冷启动时 StoreManager.currentUserId 为 null，
+  // 必须显式恢复身份，否则 StoreManager.logout() 的 `if (!this.currentUserId) return`
+  // 会早退，导致 store.destroy() 与持久化键 user-store-<id> 都不被清理。
+  // 冷启动本就是一次「切换到持久化的用户」，switchUser 语义正确
+  const store = currentUserId ? storeManager.switchUser(currentUserId) : null
 
   // 离线管理器实例（延迟初始化）
   let offlineManager: OfflineManager<UserState> | null = null

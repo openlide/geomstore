@@ -2,6 +2,17 @@
 
 核心公开接口的 API 参考文档，包含类型定义与使用示例（企业版集成、ActionLoader、StoreRegistry 细节等见对应子路径文档或源码 TSDoc）。
 
+> 📦 **模块入口（v0.2.1 起）**：主入口 `@openlide/geomstore`（等价于 `@openlide/geomstore/core`）仅导出**运行必需的核心 API**——`Store`、`createStore`、错误处理、插件核心（`HookSystem`/`usePlugin`/`Plugin`）、小程序集成（`withPageStore`/`withComponentStore`/`withAppStore` + `AppOptions` 类型）、`Store` 组合、LRU 缓存、工具函数。
+>
+> 快照、选择器、性能监控、Action 增强（执行器 / 装饰器）、内置插件、企业微信集成等**可选能力**收敛至 `./extras` 子路径，按需引入以减小主包体积：
+> - `@openlide/geomstore/extras/plugins` —— `loggerPlugin`、`persistencePlugin`、`devtoolsPlugin`、`WxStorageBackend`、`builtinPlugins`、`timeTravelPlugin`、`createAnalyzerPlugin`
+> - `@openlide/geomstore/extras/performance` —— `PerformanceMonitor`、`MetricsCollector`、`PerformanceAnalyzer`、`analyzerPlugin`、性能优化工具（`AsyncBatchNotifier`、`StateFingerprint` 等）
+> - `@openlide/geomstore/extras/snapshot` —— `SnapshotManager`、`createSnapshot`、`createSnapshotAsync`
+> - `@openlide/geomstore/extras/selector` —— `createSelector`、`createMemoizedSelector`、`createParametricSelector`、`createStructuredSelector`
+> - `@openlide/geomstore/extras/action` —— `ActionExecutor`、`ActionLoader`、`ActionUtils`、`withLoading` 及 `withLog` 等装饰器
+> - `@openlide/geomstore/extras/enterprise` —— 企业微信集成
+> - `@openlide/geomstore/extras` —— 一次性引入全部可选能力
+
 ---
 
 ## 目录
@@ -11,70 +22,70 @@
   - [核心 API](#核心-api)
     - [createStore](#createstore)
     - [Store 类](#store-类)
-  - [状态管理](#状态管理)
+  - [状态管理 [核心]](#状态管理-核心)
     - [getState](#getstate)
     - [setState](#setstate)
     - [$patch](#patch)
     - [$replaceState](#replacestate)
     - [$snapshot](#snapshot)
     - [$restore](#restore)
-  - [Action 系统](#action-系统)
+  - [Action 系统 [核心]](#action-系统-核心)
     - [dispatch](#dispatch)
     - [Action 上下文](#action-上下文)
-    - [ActionExecutor / ActionUtils](#actionexecutor--actionutils)
-  - [Getter 系统](#getter-系统)
+    - [ActionExecutor / ActionUtils [Extras]](#actionexecutor--actionutils-extras)
+  - [Getter 系统 [核心]](#getter-系统-核心)
     - [getter](#getter)
-  - [订阅系统](#订阅系统)
+  - [订阅系统 [核心]](#订阅系统-核心)
     - [subscribe](#subscribe)
-  - [钩子系统](#钩子系统)
+  - [钩子系统 [核心]](#钩子系统-核心)
     - [on](#on)
     - [emit](#emit)
     - [size](#size)
     - [listenerCount](#listenercount)
-  - [批量更新](#批量更新)
+  - [批量更新 [核心]](#批量更新-核心)
     - [batch](#batch)
     - [startBatch / endBatch](#startbatch--endbatch)
-  - [缓存系统](#缓存系统)
+  - [缓存系统 [核心]](#缓存系统-核心)
     - [enableCache](#enablecache)
     - [disableCache](#disablecache)
     - [getCached](#getcached)
     - [invalidateCache](#invalidatecache)
     - [getCacheStats](#getcachestats)
-  - [插件系统](#插件系统)
+  - [插件系统 [核心]](#插件系统-核心)
     - [use](#use)
-    - [内置插件](#内置插件)
+    - [内置插件 [Extras]](#内置插件-extras)
       - [loggerPlugin](#loggerplugin)
       - [persistencePlugin](#persistenceplugin)
       - [devtoolsPlugin](#devtoolsplugin)
-      - [analyzerPlugin](#analyzerplugin)
-      - [timeTravelPlugin](#timetravelplugin)
-  - [小程序集成](#小程序集成)
+      - [analyzerPlugin [Extras]](#analyzerplugin-extras)
+      - [timeTravelPlugin [Extras]](#timetravelplugin-extras)
+  - [小程序集成 [核心]](#小程序集成-核心)
     - [withPageStore](#withpagestore)
     - [withComponentStore](#withcomponentstore)
     - [withAppStore](#withappstore)
     - [bindMappings](#bindmappings)
-  - [Store 组合](#store-组合)
+  - [Store 组合 [核心]](#store-组合-核心)
     - [composeStore](#composestore)
     - [StoreRegistry](#storeregistry)
-  - [选择器](#选择器)
+  - [选择器 [Extras]](#选择器-extras)
     - [createSelector](#createselector)
     - [createMemoizedSelector](#creatememoizedselector)
     - [createParametricSelector](#createparametricselector)
     - [createStructuredSelector](#createstructuredselector)
-  - [错误处理](#错误处理)
+  - [错误处理 [核心]](#错误处理-核心)
     - [GeomStoreError](#geomstoreerror)
     - [ErrorRecovery](#errorrecovery)
     - [ErrorMonitoring](#errormonitoring)
-  - [性能监控](#性能监控)
+  - [性能监控 [Extras]](#性能监控-extras)
     - [PerformanceMonitor](#performancemonitor)
-  - [LRU 缓存](#lru-缓存)
+  - [LRU 缓存 [核心]](#lru-缓存-核心)
     - [LRUCache](#lrucache)
-  - [快照系统](#快照系统)
+  - [快照系统 [Extras]](#快照系统-extras)
     - [SnapshotManager](#snapshotmanager)
-  - [工具函数](#工具函数)
+  - [工具函数 [核心]](#工具函数-核心)
     - [对象工具](#对象工具)
     - [其他工具](#其他工具)
-  - [Action 装饰器](#action-装饰器)
+  - [Action 装饰器 [Extras]](#action-装饰器-extras)
     - [withLog](#withlog)
     - [withDebounce](#withdebounce)
     - [withThrottle](#withthrottle)
@@ -82,12 +93,12 @@
     - [withRetry](#withretry)
     - [withTimeout](#withtimeout)
     - [createDecorator](#createdecorator)
-  - [ErrorBoundary](#errorboundary)
-  - [性能优化工具](#性能优化工具)
+  - [ErrorBoundary [核心]](#errorboundary-核心)
+  - [性能优化工具 [核心]](#性能优化工具-核心)
     - [AsyncBatchNotifier](#asyncbatchnotifier)
     - [StateFingerprint](#statefingerprint)
     - [工具函数](#工具函数-1)
-  - [类型定义](#类型定义)
+  - [类型定义 [核心]](#类型定义-核心)
     - [常用类型](#常用类型)
   - [版本历史](#版本历史)
 
@@ -270,7 +281,7 @@ console.log(store.getters) // { double: fn }（未定义 getters 时为空对象
 
 ---
 
-## 状态管理
+## 状态管理 [核心]
 
 ### getState
 
@@ -432,7 +443,7 @@ store.$restore(snapshot) // 恢复到快照状态
 
 ---
 
-## Action 系统
+## Action 系统 [核心]
 
 ### dispatch
 
@@ -548,9 +559,9 @@ actions: {
 
 ---
 
-### ActionExecutor / ActionUtils
+### ActionExecutor / ActionUtils [Extras]
 
-独立 Action 执行器（从主入口导出），提供执行历史与性能统计，适用于在 Store 体系之外执行动作集合。
+独立 Action 执行器（从 `@openlide/geomstore/extras/action` 导入），提供执行历史与性能统计，适用于在 Store 体系之外执行动作集合。
 
 **签名：**
 
@@ -573,7 +584,7 @@ class ActionUtils<A extends Actions = AsyncActions> {
 **示例：**
 
 ```javascript
-const { ActionExecutor } = require('@openlide/geomstore')
+const { ActionExecutor } = require('@openlide/geomstore/extras/action')
 
 const executor = new ActionExecutor()
 const result = await executor.execute(actions, 'fetchData', 'user-123')
@@ -585,7 +596,7 @@ const results = await executor.executeParallel(actions, [
 
 ---
 
-## Getter 系统
+## Getter 系统 [核心]
 
 ### getter
 
@@ -626,7 +637,7 @@ const total = store.getter('totalPrice')
 
 ---
 
-## 订阅系统
+## 订阅系统 [核心]
 
 ### subscribe
 
@@ -682,7 +693,7 @@ Page({
 
 ---
 
-## 钩子系统
+## 钩子系统 [核心]
 
 Store 内部提供生命周期钩子（`onError`、`beforeSetState` 等），插件可借助钩子系统实现自定义扩展。每个 Store 实例独立拥有一个 `HookSystem` 实例，可通过插件的 `install(store)` 回调访问。
 
@@ -753,7 +764,7 @@ hooks.listenerCount('beforeSetState') // 1
 
 ---
 
-## 批量更新
+## 批量更新 [核心]
 
 ### batch
 
@@ -814,7 +825,7 @@ store.endBatch() // 触发更新
 
 ---
 
-## 缓存系统
+## 缓存系统 [核心]
 
 ### enableCache
 
@@ -937,7 +948,7 @@ interface CacheStats {
 
 ---
 
-## 插件系统
+## 插件系统 [核心]
 
 ### use
 
@@ -980,7 +991,7 @@ uninstall()
 
 ---
 
-### 内置插件
+### 内置插件 [Extras]
 
 #### loggerPlugin
 
@@ -989,7 +1000,7 @@ uninstall()
 > ℹ️ 生产环境保护：当 `NODE_ENV === 'production'` 时，插件自动返回空操作，不订阅任何钩子，避免性能损耗和信息泄露。
 
 ```javascript
-const { loggerPlugin } = require('@openlide/geomstore')
+const { loggerPlugin } = require('@openlide/geomstore/extras/plugins')
 
 store.use(loggerPlugin)
 // 每次状态变化输出：[GeomStore] State changed: { ... }
@@ -999,10 +1010,10 @@ store.use(loggerPlugin)
 
 持久化插件，将状态保存到存储。
 
-微信小程序环境可直接使用内置的 `WxStorageBackend`（主入口导出，基于 `wx.getStorageSync` / `wx.setStorageSync` / `wx.removeStorageSync`，经 `globalThis` 读取 `wx` 并对存储异常做尽力而为兜底）：
+微信小程序环境可直接使用内置的 `WxStorageBackend`（从 `@openlide/geomstore/extras/plugins` 导入，基于 `wx.getStorageSync` / `wx.setStorageSync` / `wx.removeStorageSync`，经 `globalThis` 读取 `wx` 并对存储异常做尽力而为兜底）：
 
 ```javascript
-const { persistencePlugin, WxStorageBackend } = require('@openlide/geomstore')
+const { persistencePlugin, WxStorageBackend } = require('@openlide/geomstore/extras/plugins')
 
 store.use(persistencePlugin({
   key: 'app-state',
@@ -1062,7 +1073,7 @@ console.log(globalThis.__GEOMSTORE_DEVTOOLS__)
 性能分析插件。
 
 ```javascript
-const { analyzerPlugin } = require('@openlide/geomstore')
+const { analyzerPlugin } = require('@openlide/geomstore/extras/performance')
 
 store.use(analyzerPlugin)
 
@@ -1075,12 +1086,12 @@ console.log(globalThis.__GEOMSTORE_ANALYZER__)
 - dispatch / setState / getter 执行抛错时，插件会在 `onError` 时结束并清理未完成的计时配对，避免监控器内部残留悬挂条目。
 - 卸载时若发现 `store.getter` 已被后续插件重新包装，会跳过恢复并输出告警，避免破坏其他插件的包装链。
 
-#### timeTravelPlugin
+#### timeTravelPlugin [Extras]
 
 时间旅行插件，支持状态回滚。
 
 ```javascript
-const { timeTravelPlugin } = require('@openlide/geomstore')
+const { timeTravelPlugin } = require('@openlide/geomstore/extras/plugins')
 
 store.use(timeTravelPlugin({
   maxSize: 100,    // 最多保留的快照数（默认 50）
@@ -1096,7 +1107,7 @@ timeTravel.goTo(5)
 
 ---
 
-## 小程序集成
+## 小程序集成 [核心]
 
 ### withPageStore
 
@@ -1231,7 +1242,20 @@ function withAppStore<S, A, G>(
 ): <C extends AppOptions>(appConfig: C) => C
 ```
 
-`createApp(store, options)` 为语义化别名，签名与 `withAppStore` 完全一致。
+**AppOptions 类型（已从主入口导出）：**
+
+`AppOptions` 描述微信小程序 App 配置的结构，装饰器据此保留传入 App 配置的原始类型（不擦除自定义方法 / 生命周期类型）。现可通过主入口 `import { AppOptions } from '@openlide/geomstore'` 导入，便于单独标注 App 配置类型或做类型断言：
+
+```typescript
+interface AppOptions {
+  globalData?: Record<string, unknown>
+  onLaunch?(this: AppOptions, ...args: unknown[]): void
+  onShow?(...args: unknown[]): void
+  onHide?(): void
+  onError?(error: unknown): void
+  [key: string]: unknown
+}
+```
 
 **示例：**
 
@@ -1259,7 +1283,9 @@ App(withAppStore(globalStore, {})({
 
 ### bindMappings
 
-底层绑定工具（从 `@openlide/geomstore/integrations` 子路径导入），将 Store 状态键映射到宿主 `setData`，`withPageStore` / `withComponentStore` 内部亦基于它实现。
+底层绑定工具，将 Store 状态键映射到宿主 `setData`，`withPageStore` / `withComponentStore` 内部亦基于它实现。
+
+> ⚠️ `bindMappings` 当前为**内部工具**，未通过 `package.json` 的 `exports` 公开，请勿在生产代码中直接依赖；需要自定义绑定时请优先使用 `withPageStore` / `withComponentStore`。
 
 **行为约定：**
 
@@ -1268,7 +1294,7 @@ App(withAppStore(globalStore, {})({
 - 原始值仍走引用 / NaN 比较，仅变化时写入。
 
 ```javascript
-const { bindMappings } = require('@openlide/geomstore/integrations')
+const { bindMappings } = require('@openlide/geomstore') // ⚠️ 内部工具，未公开导出
 
 // 签名：bindMappings(target, mappings, getValue, setter, subscribeStore)
 // mappings 为「本地键 → Store 键」；返回各绑定的解绑函数数组
@@ -1283,7 +1309,7 @@ const unbinds = bindMappings(
 
 ---
 
-## Store 组合
+## Store 组合 [核心]
 
 ### composeStore
 
@@ -1387,7 +1413,7 @@ registry.register('user', userStore)
 
 ---
 
-## 选择器
+## 选择器 [Extras]
 
 ### createSelector
 
@@ -1413,10 +1439,19 @@ function createSelector<S, R>(
 
 > ⚠️ 默认比较器是 `deepEqual` 而非 `shallowEqual`：Store 状态为就地变异（`getState` 返回活动引用、`$patch` 原地深合并），引用/浅比较会在状态已变化时误判相等，TTL 内返回陈旧值。缓存对状态的比较基于写入时的**快照**（深拷贝）而非活动引用，保证就地变异能被感知。
 
+> ⚠️ **限制：不可克隆对象的就地变异感知不到。** 快照由 `deepCloneState` 生成，而它对不可克隆对象（类实例、`Promise`、`WeakMap`/`WeakSet` 等）保留原引用而非拷贝（这是有意的降级契约：这类对象无法安全深拷贝，强行拷贝会破坏 `#私有字段` 等内部槽位）。因此若 state 里放了类实例并**就地修改它的字段**，快照与活状态共享同一实例，`deepEqual` 会因引用相等直接判定「未变化」，TTL 内返回陈旧值。
+>
+> 规避方式（任选其一）：
+> - 用 `setState` / `$patch` 整体替换该字段，让状态树产生新的纯对象（推荐，与本库「不要就地变异 state」的核心约定一致）；
+> - 或不要把类实例放进 state，改存纯数据对象；
+> - 或对该选择器显式传 `cache: false` / 自定义 `equalityFn`。
+>
+> 纯对象、数组、`Date`、`RegExp`、`Map`、`Set` 都会被正确深拷贝，不受此限制影响。
+
 **示例：**
 
 ```javascript
-const { createSelector } = require('@openlide/geomstore')
+const { createSelector } = require('@openlide/geomstore/extras/selector')
 
 const selectUser = createSelector(
   (state) => state.user,
@@ -1503,6 +1538,10 @@ const itemAgain = selectItemById(store.state)(123)
 
 > 对象参数使用 WeakMap 缓存（随参数对象被回收自动释放）；原始类型参数（string/number/boolean 等）使用 Map 缓存并按 `ttl` / `maxEntries` 维护。
 
+> ℹ️ **失效语义：** 除 `ttl` 外，每次调用还会用 `deepEqual` 校验 state 内容快照。Store 状态就地变异（引用不变）时会立即作废该 state 下的全部参数缓存并重算，因此不会在 TTL 内返回陈旧值——`ttl` 只是额外的时间上限，不是唯一的失效条件。
+
+> ⚠️ **限制：** 与 [createSelector](#createselector) 相同——state 内容快照由 `deepCloneState` 生成，它对不可克隆对象（类实例、`Promise`、`WeakMap`/`WeakSet` 等）保留原引用，因此这类对象被**就地变异**时校验会因引用相等判定「未变化」，TTL 内返回陈旧值。规避方式见 createSelector 小节的说明（推荐用 `setState` / `$patch` 整体替换该字段）。
+
 ---
 
 ### createStructuredSelector
@@ -1532,7 +1571,7 @@ const summary = selectUserSummary(store.state)
 
 ---
 
-## 错误处理
+## 错误处理 [核心]
 
 ### GeomStoreError
 
@@ -1713,7 +1752,7 @@ console.log(report.summary.totalErrors)
 
 ---
 
-## 性能监控
+## 性能监控 [Extras]
 
 ### PerformanceMonitor
 
@@ -1733,7 +1772,7 @@ console.log(report.summary.totalErrors)
 **示例：**
 
 ```javascript
-const { PerformanceMonitor } = require('@openlide/geomstore')
+const { PerformanceMonitor } = require('@openlide/geomstore/extras/performance')
 
 const monitor = new PerformanceMonitor({
   sampleRate: 1,
@@ -1754,7 +1793,7 @@ console.log('超过阈值次数:', stats.thresholdExceeded)
 
 ---
 
-## LRU 缓存
+## LRU 缓存 [核心]
 
 ### LRUCache
 
@@ -1799,7 +1838,7 @@ console.log(cache.getStats())
 
 ---
 
-## 快照系统
+## 快照系统 [Extras]
 
 ### SnapshotManager
 
@@ -1822,7 +1861,7 @@ console.log(cache.getStats())
 **示例：**
 
 ```javascript
-const { SnapshotManager, createSnapshotAsync } = require('@openlide/geomstore')
+const { SnapshotManager, createSnapshotAsync } = require('@openlide/geomstore/extras/snapshot')
 
 const manager = new SnapshotManager({
   maxDepth: 100,
@@ -1846,7 +1885,7 @@ console.log(diff.changes)
 
 ---
 
-## 工具函数
+## 工具函数 [核心]
 
 ### 对象工具
 
@@ -1917,7 +1956,7 @@ uniqueId('user_') // 'user_1_ab12cd'（格式：前缀 + 序号 + 随机后缀�
 
 ---
 
-## Action 装饰器
+## Action 装饰器 [Extras]
 
 GeomStore 提供了多种装饰器，用于增强方法的行为。
 
@@ -2178,7 +2217,7 @@ class DataService {
 
 ---
 
-## ErrorBoundary
+## ErrorBoundary [核心]
 
 错误边界，用于捕获和处理 Action 执行中的错误。
 
@@ -2249,16 +2288,16 @@ const asyncResult = await boundary.executeAsync(() => riskyAsyncOperation())
 
 ---
 
-## 性能优化工具
+## 性能优化工具 [核心]
 
-除了 PerformanceMonitor（主入口导出），GeomStore 还提供了一系列性能优化工具——**以下工具从 `@openlide/geomstore/performance` 子路径导入**：
+GeomStore 还提供了一系列性能优化工具（与 `PerformanceMonitor` 同属可选能力，均从 `@openlide/geomstore/extras/performance` 子路径导入）：
 
 ### AsyncBatchNotifier
 
 异步批量通知器，合并多次状态更新。
 
 ```javascript
-const { AsyncBatchNotifier } = require('@openlide/geomstore/performance')
+const { AsyncBatchNotifier } = require('@openlide/geomstore/extras/performance')
 
 // 构造函数无参数：同一微任务内的多次 notify 只触发一次订阅回调
 const notifier = new AsyncBatchNotifier()
@@ -2284,7 +2323,7 @@ unsubscribe()
 状态指纹，用于快速检测状态变化。
 
 ```javascript
-const { StateFingerprint } = require('@openlide/geomstore/performance')
+const { StateFingerprint } = require('@openlide/geomstore/extras/performance')
 
 const fingerprint = new StateFingerprint()
 
@@ -2308,7 +2347,7 @@ const {
   createAsyncBatchNotifier, // 创建异步批量通知器
   createStateFingerprint,   // 创建状态指纹
   createSubscriptionManager // 创建订阅管理器
-} = require('@openlide/geomstore/performance')
+} = require('@openlide/geomstore/extras/performance')
 
 // 使用示例
 const isEqual = iterativeDeepEqual(obj1, obj2)
@@ -2323,7 +2362,7 @@ const throttledFn = throttle(fn, 100)
 
 ---
 
-## 类型定义
+## 类型定义 [核心]
 
 完整的 TypeScript 类型定义请参考 `dist/index.d.ts`。
 
@@ -2368,7 +2407,7 @@ type MappedGetters<S, G, M extends (keyof G)[]> = {
   - 数据/视图一致性：$patch 仅对纯对象递归合并（Date/RegExp/类实例等非纯对象整体替换为深拷贝，不再静默丢值）；selector 默认比较器改 deepEqual 且缓存状态快照；bindMappings 对象值免引用脏检查并过滤 undefined
   - 错误子系统：HttpReporter 失败上抛并校验 response.ok；批量 flush 三态判定（超时不算成功、批次重入队）；ErrorBoundary fallback 函数自身抛错时重抛原错误；ErrorRecovery 重试额度按时间窗判定故障周期（修复「新实例重置额度导致 max-retries 失效」回归）
   - 类型层：ActionExecutor/ActionUtils 泛型放宽为 Actions 并返回 Awaited；compose 基例 Record<never, never>；ExtractMapped* 推断修复；withPageStore 入参同态映射提供 C 推断位点
-  - 新增导出：WxStorageBackend、ComposedStore（值）；ErrorFallback、CacheStats、ThrottleDecoratorOptions（类型）
+  - 新增导出：WxStorageBackend、ComposedStore（值）；ErrorFallback、CacheStats、ThrottleDecoratorOptions、AppOptions（类型）
 - **v0.2.0** - 全量审查第二轮修复
   - 订阅引用计数、dispatch 内 batch 守卫、快照数组逐元素 diff 与克隆契约收紧、错误级别映射补齐、企业版存储尽力而为语义等（详见 CHANGELOG）
 - **v0.1.3** - 契约变更与全量审查修复

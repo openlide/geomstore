@@ -1651,3 +1651,47 @@ describe('Builtin Plugins 补充覆盖', () => {
     })
   })
 })
+
+describe('R5 回归：devtoolsPlugin 全局注册表清理需身份守卫', () => {
+  const globalObj = globalThis as unknown as Record<string, Record<string, unknown>>
+
+  afterEach(() => {
+    delete globalObj.__GEOMSTORE_STORES__
+    delete globalObj.__GEOMSTORE_DEVTOOLS__
+    jest.restoreAllMocks()
+  })
+
+  it('卸载先装实例不应误删同名后装实例的条目', () => {
+    jest.spyOn(console, 'log').mockImplementation()
+    const first = createStore({ name: 'dup-devtools', state: { n: 1 } })
+    const second = createStore({ name: 'dup-devtools', state: { n: 2 } })
+
+    const uninstallFirst = first.use(devtoolsPlugin)
+    second.use(devtoolsPlugin)
+
+    // 后装实例覆盖了两个全局条目
+    expect(globalObj.__GEOMSTORE_STORES__['dup-devtools']).toBe(second)
+    const devtoolsEntry = globalObj.__GEOMSTORE_DEVTOOLS__['dup-devtools']
+    expect(devtoolsEntry).toBeDefined()
+
+    // 修复前卸载无条件 delete，第二实例的接口被误删
+    uninstallFirst()
+
+    expect(globalObj.__GEOMSTORE_STORES__['dup-devtools']).toBe(second)
+    expect(globalObj.__GEOMSTORE_DEVTOOLS__['dup-devtools']).toBe(devtoolsEntry)
+  })
+
+  it('卸载唯一实例时仍应正常清理自己的条目', () => {
+    jest.spyOn(console, 'log').mockImplementation()
+    const store = createStore({ name: 'solo-devtools', state: { n: 1 } })
+
+    const uninstall = store.use(devtoolsPlugin)
+    expect(globalObj.__GEOMSTORE_STORES__['solo-devtools']).toBe(store)
+    expect(globalObj.__GEOMSTORE_DEVTOOLS__['solo-devtools']).toBeDefined()
+
+    uninstall()
+
+    expect(globalObj.__GEOMSTORE_STORES__['solo-devtools']).toBeUndefined()
+    expect(globalObj.__GEOMSTORE_DEVTOOLS__['solo-devtools']).toBeUndefined()
+  })
+})

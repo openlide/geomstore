@@ -9,7 +9,6 @@
  * 依赖方向：plugins → core/hooks → types，core 不再反向依赖 plugins。
  *
  * @module HookSystem
- * @since 1.0.0
  */
 
 import type { Store } from '../../types/store'
@@ -89,7 +88,7 @@ export function usePlugin(plugin: Plugin, store: Store): () => void {
   try {
     const uninstall = plugin.install(store)
     if (!isProduction()) {
-      console.log(`[GeomStore] Plugin "${plugin.name}" installed`)
+      console.debug(`[GeomStore] Plugin "${plugin.name}" installed`)
     }
 
     return () => {
@@ -97,7 +96,7 @@ export function usePlugin(plugin: Plugin, store: Store): () => void {
         uninstall()
       }
       if (!isProduction()) {
-        console.log(`[GeomStore] Plugin "${plugin.name}" uninstalled`)
+        console.debug(`[GeomStore] Plugin "${plugin.name}" uninstalled`)
       }
     }
   } catch (error) {

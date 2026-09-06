@@ -128,6 +128,31 @@ describe('PerformanceMonitor', () => {
     expect(metrics.length).toBe(0) // 0% 采样率不应记录任何指标
   })
 
+  it('REGR-PERF-012: sampleRate=0 时仍应清理超时未结束的计时条目', () => {
+    const monitor = new PerformanceMonitor({ sampleRate: 0 })
+    const ops = (monitor as unknown as { currentOperations: Map<string, number> }).currentOperations
+
+    // 模拟调用方漏掉 end()：条目滞留，把起始时间戳人为推到超过 MAX_OPERATION_AGE_MS(10min) 之前
+    monitor.start('leaked')
+    expect(ops.size).toBe(1)
+    const staleKey = [...ops.keys()][0]
+    ops.set(staleKey, (ops.get(staleKey) as number) - 11 * 60 * 1000)
+
+    // 修复前 record() 的采样判断在最前，sampleRate=0 时直接 return，
+    // pruneStaleOperations 永不执行，泄漏条目随调用次数无限累积
+    monitor.record({
+      operation: 'x',
+      type: 'dispatch',
+      duration: 1,
+      timestamp: Date.now(),
+      exceedThreshold: false,
+    })
+
+    expect(ops.size).toBe(0)
+    // 采样本身仍生效：本条指标不被记录
+    expect(monitor.getMetrics().length).toBe(0)
+  })
+
   // 新增测试：阈值超限日志
   it('should call logger when threshold exceeded', () => {
     const logger = jest.fn()
@@ -237,6 +262,33 @@ describe('PerformanceMonitor', () => {
 
     const recent = monitor.getRecentMetrics()
     expect(recent.length).toBe(10) // 默认 10 条
+  })
+
+  it('REGR-PERF-013: getRecentMetrics 对 0/负数/NaN 应返回空数组', () => {
+    const monitor = new PerformanceMonitor()
+
+    for (let i = 0; i < 5; i++) {
+      monitor.record({
+        operation: `op${i}`,
+        type: 'dispatch',
+        duration: i,
+        timestamp: Date.now(),
+        exceedThreshold: false,
+      })
+    }
+    expect(monitor.getMetrics().length).toBe(5)
+
+    // 修复前 slice(-0) === slice(0) 返回全部；负数退化为从头截断（slice(3)），
+    // 与「最近 N 条」语义相反；NaN 同样返回全部
+    expect(monitor.getRecentMetrics(0)).toHaveLength(0)
+    expect(monitor.getRecentMetrics(-3)).toHaveLength(0)
+    expect(monitor.getRecentMetrics(Number.NaN)).toHaveLength(0)
+
+    // 正常路径不受影响
+    const last2 = monitor.getRecentMetrics(2)
+    expect(last2).toHaveLength(2)
+    expect(last2[0].operation).toBe('op3')
+    expect(last2[1].operation).toBe('op4')
   })
 
   // 新增测试：导出 JSON
@@ -515,5 +567,91 @@ describe('PerformanceMonitor', () => {
     expect(dispatchMetrics.length).toBe(1)
     expect(getterMetrics.length).toBe(1)
     expect(stateUpdateMetrics.length).toBe(1)
+  })
+})
+
+// ==================== 待裁决 A 裁定：计时单位口径为毫秒 ====================
+describe('计时单位契约（_getTimestamp 恒返回毫秒）', () => {
+  const originalWx = (globalThis as any).wx
+
+  afterEach(() => {
+    (globalThis as any).wx = originalWx
+  })
+
+  /** 用受控毫秒时钟替换 wx.getPerformance().now() */
+  const installWxClock = (startAt: number) => {
+    let current = startAt
+    ;(globalThis as any).wx = {
+      ...(originalWx || {}),
+      getPerformance: () => ({ now: () => current }),
+    }
+    return {
+      advance(ms: number) {
+        current += ms
+      },
+    }
+  }
+
+  const metric = (operation: string) => ({
+    operation,
+    type: 'dispatch' as const,
+    duration: 1,
+    timestamp: Date.now(),
+    exceedThreshold: false,
+  })
+
+  it('wx 时钟推进 20ms 时 duration 应为 20 且超过 16ms 阈值', () => {
+    const clock = installWxClock(1000)
+    const logger = jest.fn()
+    const monitor = new PerformanceMonitor({ threshold: 16, logger })
+
+    const end = monitor.start('op')
+    clock.advance(20)
+    end()
+
+    const metrics = monitor.getMetrics()
+    expect(metrics).toHaveLength(1)
+    // duration 直接等于时钟推进量，即 wx 时钟被按毫秒解读。
+    // 若日后在 _getTimestamp 内除以 1000（实测某基础库返回微秒）而未同步本契约，
+    // 此断言会失败，提醒改动者一并复核 threshold 与 MAX_OPERATION_AGE_MS
+    expect(metrics[0].duration).toBe(20)
+    expect(metrics[0].exceedThreshold).toBe(true)
+    expect(logger).toHaveBeenCalled()
+  })
+
+  it('wx 时钟推进 10ms 时不应超过 16ms 阈值', () => {
+    const clock = installWxClock(1000)
+    const logger = jest.fn()
+    const monitor = new PerformanceMonitor({ threshold: 16, logger })
+
+    const end = monitor.start('op')
+    clock.advance(10)
+    end()
+
+    const metrics = monitor.getMetrics()
+    expect(metrics).toHaveLength(1)
+    expect(metrics[0].duration).toBe(10)
+    expect(metrics[0].exceedThreshold).toBe(false)
+    expect(logger).not.toHaveBeenCalled()
+  })
+
+  it('超时条目清理按毫秒口径：满 10 分钟才判定为泄漏', () => {
+    const clock = installWxClock(1_000_000)
+    const monitor = new PerformanceMonitor()
+    const ops = (monitor as unknown as { currentOperations: Map<string, number> }).currentOperations
+
+    // 模拟调用方漏掉 end()：条目滞留
+    monitor.start('leaked')
+    expect(ops.size).toBe(1)
+
+    // MAX_OPERATION_AGE_MS = 10 * 60 * 1000；推进 9 分钟不应清理
+    clock.advance(9 * 60 * 1000)
+    monitor.record(metric('x'))
+    expect(ops.size).toBe(1)
+
+    // 累计 11 分钟应清理
+    clock.advance(2 * 60 * 1000)
+    monitor.record(metric('y'))
+    expect(ops.size).toBe(0)
   })
 })

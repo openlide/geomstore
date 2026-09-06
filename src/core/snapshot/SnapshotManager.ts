@@ -1,5 +1,5 @@
 /**
- * GeomStore v1.0 - 增强型快照管理器
+ * GeomStore - 增强型快照管理器
  *
  * 提供高性能的状态快照功能，支持：
  * - 迭代式深度克隆（支持循环引用检测）
@@ -407,7 +407,12 @@ export class SnapshotManager {
       ...this.defaultOptions,
       ...options,
       async: true,
-      batchSize: options.batchSize ?? 100,
+      // batchSize 必须为正数：0 或 NaN 会让 processQueue 里的 `batch.length < batchSize`
+      // 恒为 false，批永远为空 → 立即 break → 无任何克隆且 errors 为空，
+      // 最终 success 判定为 true 而 data 是占位空壳（静默交付半成品）。
+      // 口径与 LRUCache 的容量守卫一致；batchInterval/timeout 的 0 是合法语义
+      // （无延迟 / 立即超时），不可一并抬高下限
+      batchSize: Number.isFinite(options.batchSize) ? Math.max(1, options.batchSize as number) : 100,
       batchInterval: options.batchInterval ?? 0,
       timeout: options.timeout ?? 30000,
     }
@@ -569,14 +574,14 @@ export class SnapshotManager {
                       configurable: t.descriptor.configurable,
                     })
                   } else {
-                    (t.container as Record<string, unknown>)[t.key as string] = result
+                    ;(t.container as Record<string, unknown>)[t.key as string] = result
                   }
                 } else if (t.kind === 'index') {
-                  (t.container as unknown[])[t.key as number] = result
+                  ;(t.container as unknown[])[t.key as number] = result
                 } else if (t.kind === 'mapValue') {
-                  (t.container as Map<unknown, unknown>).set(t.key, result)
+                  ;(t.container as Map<unknown, unknown>).set(t.key, result)
                 } else {
-                  (t.container as Set<unknown>).add(result)
+                  ;(t.container as Set<unknown>).add(result)
                 }
               } catch (error) {
                 // 单个位置填充失败只降级记录错误，不中断队列：
@@ -706,6 +711,12 @@ export class SnapshotManager {
       }
 
       if (obj1 === obj2) return
+
+      // NaN 与自身用 === 比较为 false，会落到下方非对象分支被 push 成一条差异，
+      // 使两个含相同 NaN 字段的快照被误判为「有变化」（仓库自带 deepEqual 用 Object.is
+      // 正确处理了这一点）。此处只补 NaN 短路而不整体改用 Object.is：
+      // Object.is(0, -0) 为 false，那会让 0 与 -0 被判为差异，对数值状态引入新误报
+      if (typeof obj1 === 'number' && typeof obj2 === 'number' && Number.isNaN(obj1) && Number.isNaN(obj2)) return
 
       if (typeof obj1 !== typeof obj2) {
         changes.push({ path, oldValue: obj1, newValue: obj2 })
@@ -1072,10 +1083,7 @@ export class SnapshotManager {
     // 处理普通对象
     // 保留源对象原型：类实例快照后仍是该类实例（方法/继承链可用），
     // 仅复制自有可枚举属性，不触发任何构造器或 getter
-    const cloned: Record<string, unknown> = Object.create(Object.getPrototypeOf(value) as object | null) as Record<
-      string,
-      unknown
-    >
+    const cloned: Record<string, unknown> = Object.create(Object.getPrototypeOf(value) as object | null) as Record<string, unknown>
     context.visited.set(value as object, cloned)
 
     // keys 计算纳入 try：Proxy 的 ownKeys/getOwnPropertyDescriptor 陷阱抛错时
@@ -1173,12 +1181,7 @@ export class SnapshotManager {
             depth: context.depth,
             // 数据属性复用已取到的描述符值；访问器属性的 getter 已证明会抛错，
             // 不经 safeReadProperty 二次触发；描述符都拿不到才尝试兜底读取
-            value:
-              descriptor && 'value' in descriptor
-                ? descriptor.value
-                : descriptor
-                  ? undefined
-                  : safeReadProperty(value as Record<string, unknown>, key),
+            value: descriptor && 'value' in descriptor ? descriptor.value : descriptor ? undefined : safeReadProperty(value as Record<string, unknown>, key),
             recoverable: true,
           },
         )
@@ -1402,10 +1405,7 @@ export class SnapshotManager {
     // 处理普通对象
     // 保留源对象原型：类实例快照后仍是该类实例（方法/继承链可用），
     // 仅复制自有可枚举属性，不触发任何构造器或 getter
-    const cloned: Record<string, unknown> = Object.create(Object.getPrototypeOf(value) as object | null) as Record<
-      string,
-      unknown
-    >
+    const cloned: Record<string, unknown> = Object.create(Object.getPrototypeOf(value) as object | null) as Record<string, unknown>
     context.visited.set(value as object, cloned)
 
     // keys 计算纳入 try（与同步路径同语义：陷阱抛错走 onError 降级）
@@ -1512,12 +1512,7 @@ export class SnapshotManager {
             depth: context.depth,
             // 数据属性复用已取到的描述符值；访问器属性的 getter 已证明会抛错，
             // 不经 safeReadProperty 二次触发；描述符都拿不到才尝试兜底读取
-            value:
-              descriptor && 'value' in descriptor
-                ? descriptor.value
-                : descriptor
-                  ? undefined
-                  : safeReadProperty(value as Record<string, unknown>, key),
+            value: descriptor && 'value' in descriptor ? descriptor.value : descriptor ? undefined : safeReadProperty(value as Record<string, unknown>, key),
             recoverable: true,
           },
         )

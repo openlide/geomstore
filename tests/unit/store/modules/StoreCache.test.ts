@@ -78,6 +78,31 @@ describe('StoreCacheManager', () => {
       manager.get('name', nameGetter)
       expect(nameGetter).toHaveBeenCalled() // 未使用缓存
     })
+
+    it('REGR-CACHE-KEYS-001: 收窄键集后不应残留上一轮条目', () => {
+      // 共享助手把 state 固定为 {count, name}，四键场景需自建同参数管理器
+      const manager = new StoreCacheManager<{ a: number; b: number; c: number; d: number }>({
+        cache: new LRUCache<'a' | 'b' | 'c' | 'd', number>({ capacity: 100, enableStats: true }),
+        ttl: 0,
+      })
+      const state = { a: 1, b: 2, c: 3, d: 4 }
+
+      manager.enable(undefined, (key) => state[key], ['a', 'b', 'c', 'd'])
+      expect(manager.getStats().size).toBe(4)
+
+      // 修复前：收窄到 ['a'] 后 b/c/d 仍留在 LRU 中占用容量（挤掉有效键）
+      // 并被 getStats 报告，而 get() 已因 _cacheKeys 过滤永远读不到它们
+      manager.enable(['a'], (key) => state[key])
+
+      const stats = manager.getStats()
+      expect(stats.size).toBe(1)
+      expect(stats.keys).toEqual(['a'])
+
+      // 新键集内的键仍能命中缓存
+      const getter = jest.fn(() => state.a)
+      manager.get('a', getter)
+      expect(getter).not.toHaveBeenCalled()
+    })
   })
 
   describe('TTL 过期', () => {

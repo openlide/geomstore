@@ -151,6 +151,32 @@ describe('SubscriptionManager', () => {
       expect(listener3).toHaveBeenCalled()
     })
 
+    it('REGR-SUB-001: 驱逐只应减一份，被驱逐监听器的其余注册仍然有效', () => {
+      const manager = createManager(2)
+      const warnSpy = jest.spyOn(console, 'warn').mockImplementation()
+      const listener1 = jest.fn()
+      const listener2 = jest.fn()
+
+      manager.add(listener1)
+      manager.add(listener1) // 同一监听器两份注册，size=2 已达上限
+      manager.add(listener2) // 触发驱逐
+
+      // 修复前整条删除 listener1（两份一起没），用户仍持有的退订句柄全部变成
+      // 静默 no-op，也与本类「注册 N 次通知 N 次、退订只减一」的计数语义不一致
+      manager.notify({} as State)
+      expect(listener1).toHaveBeenCalledTimes(1)
+      expect(listener2).toHaveBeenCalledTimes(1)
+      expect(manager.size).toBe(2)
+
+      // 剩余那一份的退订句柄仍然有效
+      manager.delete(listener1)
+      manager.notify({} as State)
+      expect(listener1).toHaveBeenCalledTimes(1)
+      expect(listener2).toHaveBeenCalledTimes(2)
+
+      warnSpy.mockRestore()
+    })
+
     it('应该处理 firstListener 为 undefined 的情况', () => {
       const manager = createManager(1)
       const warnSpy = jest.spyOn(console, 'warn').mockImplementation()

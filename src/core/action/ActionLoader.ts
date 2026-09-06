@@ -1,9 +1,8 @@
 /**
- * GeomStore v1.0 - Action加载状态管理
+ * GeomStore - Action加载状态管理
  *
  * 提供自动管理Action执行时的loading状态、错误状态和错误数据的功能
  *
- * @since 1.0.0
  */
 
 import type { ActionLoaderOptions } from '../../types/action'
@@ -14,7 +13,6 @@ import type { ActionLoaderOptions } from '../../types/action'
  * 用于包装异步Action，自动管理其执行状态（loading、error、errorData）
  *
  * @class ActionLoader
- * @since 1.0.0
  *
  * @example
  * ```typescript
@@ -157,23 +155,44 @@ export class ActionLoader {
 
         // 清除loading状态（引用计数归零才置 false）
         if (this.options.autoLoading) {
-          this.decrementLoading(actionName, setState)
+          this.safeRunStateEffect(() => this.decrementLoading(actionName, setState))
         }
         // 错误状态管理独立于 loading 开关：即使 autoLoading 关闭也应清除陈旧错误
-        this.clearError(actionName, setState)
+        this.safeRunStateEffect(() => this.clearError(actionName, setState))
 
         return result
       } catch (error) {
         // 清除loading，设置error
         if (this.options.autoLoading) {
-          this.decrementLoading(actionName, setState)
+          this.safeRunStateEffect(() => this.decrementLoading(actionName, setState))
         }
         // 错误状态管理独立于 loading 开关：即使 autoLoading 关闭也应记录错误
-        this.setError(actionName, error as Error, setState)
+        this.safeRunStateEffect(() => this.setError(actionName, error as Error, setState))
 
         throw error
       }
     }) as T
+  }
+
+  /**
+   * 执行辅助状态写入（loading/error/errorData），失败不外泄
+   *
+   * 这些是派生的 UI 状态，写入失败（典型场景：action 执行期间 store 被销毁，
+   * setState 抛 "Cannot call setState on a destroyed Store"）不得掩盖主流程结果：
+   * 成功路径冒泡会用新异常替换掉 action 的返回值，失败路径冒泡会替换掉 action 的
+   * 原始错误，两种情况调用方看到的都是与真实故障无关的异常。
+   *
+   * 注意 incrementLoading 不走此助手：wrap 依赖它抛错来回滚已递增的引用计数。
+   *
+   * @private
+   */
+  private safeRunStateEffect(effect: () => void): void {
+    try {
+      effect()
+    } catch {
+      // 辅助状态写入失败：忽略，保证 action 的返回值/原始错误如实传出。
+      // 后果仅是 loading/error 状态未更新，本就可由调用方观察到
+    }
   }
 
   /**
@@ -428,7 +447,6 @@ export class ActionLoader {
  *
  * @param {ActionLoaderOptions} [options={}] - 配置选项
  * @returns {MethodDecorator} 方法装饰器
- * @since 1.0.0
  *
  * @example
  * ```typescript

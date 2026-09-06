@@ -1,5 +1,5 @@
 /**
- * GeomStore v1.0 - 错误处理模块导出
+ * GeomStore - 错误处理模块导出
  */
 
 export { ErrorHandlerImpl } from './ErrorHandler'
@@ -38,6 +38,5 @@ export {
   HttpReporter,
   createDefaultMonitoring,
   getDefaultMonitoring,
-  defaultMonitoring,
 } from './ErrorMonitoring'
 export type { ErrorReporter, ErrorGroup, ErrorReport, MonitoringConfig } from '../../types/error'

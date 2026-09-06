@@ -1,5 +1,5 @@
 /**
- * GeomStore v1.0 - Store核心实现
+ * GeomStore - Store核心实现
  *
  * 核心特性：
  * - 简洁的状态管理API
@@ -47,6 +47,7 @@ import { ActionManager, GetterManager } from './ActionManager'
 import { BatchManager } from './BatchManager'
 import type { ProxyCache, InternalStateProtectionConfig } from './types'
 import { deepCloneState, deepFreezeState, isProduction } from './utils'
+import { AsyncBatchNotifier } from '../performance/Optimizations'
 
 // Plugin类型别名
 type Plugin = PluginType
@@ -85,8 +86,20 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
   /** 状态保护启用标志（内联缓存） */
   private _stateProtectionEnabled: boolean
 
-  /** 通知前是否深拷贝（默认 true） */
+  /** 通知前是否深拷贝（显式配置；undefined 表示自动：仅当存在可写订阅者时拷贝） */
   private _notifyClone: boolean
+
+  /** 是否显式配置了 notify.clone（用于区分「默认自动」与「用户显式关闭」） */
+  private _notifyCloneExplicit: boolean
+
+  /** 是否启用 notify 异步合并（微任务合并多次通知为一次，减少 setData 次数） */
+  private _notifyAsyncEnabled: boolean
+
+  /** 异步通知合并器（仅启用时创建） */
+  private _asyncNotifier?: AsyncBatchNotifier<S>
+
+  /** 脏键集合：记录自上次通知以来发生变更的状态键，供集成层精确跳过未变化的映射 */
+  private _dirtyKeys: Set<keyof S> = new Set()
 
   /** 是否仅在状态实际变化时通知（默认 false） */
   private _notifyOnlyOnChange: boolean
@@ -168,6 +181,8 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
 
     // 初始化通知行为配置
     this._notifyClone = options.notify?.clone ?? true
+    this._notifyCloneExplicit = options.notify?.clone !== undefined
+    this._notifyAsyncEnabled = options.notify?.async ?? false
     this._notifyOnlyOnChange = options.notify?.onlyOnChange ?? false
 
     // 初始化 Proxy 缓存和管理器
@@ -185,6 +200,13 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
       onLimit: options.subscription?.onLimit,
       cloneOnNotify: this._notifyClone,
     })
+
+    // 初始化异步通知合并器（仅启用时）：将同一 tick 内的多次 notify 合并为一次微任务通知，
+    // 脏键跨批次累积，最终通知仍能精确反映全部变更（与集成层对象值跳过天然兼容）
+    if (this._notifyAsyncEnabled) {
+      this._asyncNotifier = new AsyncBatchNotifier<S>()
+      this._asyncNotifier.subscribe(() => this._notifyListeners())
+    }
 
     // 初始化缓存
     const cacheConfig: CacheConfig = options.cacheConfig || {}
@@ -212,7 +234,7 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
       setDispatching: (value) => {
         this._dispatching = value
       },
-      notifyListeners: () => this._notifyListeners(),
+      notifyListeners: () => this._scheduleNotify(),
       hooks: this._hooks,
       notifyOnlyOnChange: this._notifyOnlyOnChange,
       getMutationCount: () => this._mutationCount,
@@ -291,10 +313,11 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
     })
 
     this._mutationCount++
+    this._dirtyKeys.add(key)
     this._cacheManager.set(key, value)
 
     if (!this._dispatching && !this._batchManager.isInBatch) {
-      this._notifyListeners()
+      this._scheduleNotify()
     }
     this._hooks.emit('afterSetState', key, value)
   }
@@ -324,10 +347,12 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
       // this._state[key] 与 partialState[key] 可能不同（如 {a:{x:1}} patch {a:{y:2}}），
       // 写入 partial 值会导致缓存与状态不一致
       this._cacheManager.set(key as keyof S, this._state[key as keyof S])
+      // 记录脏键：deepMerge 可能就地变异该键下的嵌套对象，故整键标记为已变更
+      this._dirtyKeys.add(key as keyof S)
     })
 
     if (!this._dispatching && !this._batchManager.isInBatch) {
-      this._notifyListeners()
+      this._scheduleNotify()
     }
     this._hooks.emit('afterPatch', partialState)
   }
@@ -374,6 +399,10 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
     // 脏跟踪代理缓存指向旧状态对象树，一并重建
     this._dirtyProxyCache = new WeakMap()
     this._mutationCount++
+    // 整树替换：所有键均视为已变更
+    Object.keys(this._state).forEach((key) => {
+      this._dirtyKeys.add(key as keyof S)
+    })
     this._stateProxyManager = new StateProxyManager<S>({
       protection: this._stateProtection,
       proxyCache: this._proxyCache,
@@ -383,9 +412,22 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
     // 与 setState/$patch 一致：dispatch 或批量更新期间跳过通知，
     // 由 dispatch 收尾 / BatchManager.end 统一触发一次通知，避免破坏批量语义
     if (!this._dispatching && !this._batchManager.isInBatch) {
-      this._notifyListeners()
+      this._scheduleNotify()
     }
     this._hooks.emit('afterReplaceState', resolvedState)
+  }
+
+  /**
+   * 判断指定状态键自上次通知以来是否发生变更
+   *
+   * 供集成层（withPageStore / withComponentStore）在同步通知回调内精确判断某个映射键是否变化，
+   * 从而跳过未变化对象值的冗余 setData。脏键在每次通知结束时清空。
+   *
+   * @param key - 状态键名
+   * @returns 该键自上次通知后是否发生过变更
+   */
+  isStateKeyDirty(key: string): boolean {
+    return this._dirtyKeys.has(key as keyof S)
   }
 
   /**
@@ -467,14 +509,16 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
   /**
    * 订阅状态变化
    * @param listener - 状态变化回调函数
+   * @param options.readOnly 标记为只读订阅（仅读取状态、不修改）。当 Store 仅有只读订阅者时，
+   *   通知路径会跳过整棵状态树的深拷贝，显著降低大状态下的通知开销。
    * @returns 取消订阅的函数
    * @throws 如果 Store 已销毁
    */
-  subscribe(listener: StateListener<S>): () => void {
+  subscribe(listener: StateListener<S>, options?: { readOnly?: boolean }): () => void {
     if (this._destroyed) {
       throw new Error('[GeomStore] Cannot call subscribe on a destroyed Store')
     }
-    return createSubscribeFunction(this._subscriptionManager)(listener)
+    return createSubscribeFunction(this._subscriptionManager)(listener, options)
   }
 
   // ==================== 插件管理 ====================
@@ -489,6 +533,27 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
     if (this._destroyed) {
       throw new Error('[GeomStore] Cannot call use on a destroyed Store')
     }
+
+    // 同一插件实例重复安装：_pluginUninstallFns 以 plugin 对象为键，第二次 use 会覆盖
+    // 首条映射使第一个 uninstall 永久丢失；且返回的 token 用 indexOf 只移除一个数组槽位
+    // 却删除共享映射，_plugins 里残留的那份在 destroy() 时再也拿不到卸载函数——
+    // 第二份安装永不卸载。对本仓库全部内置插件（loggerPlugin/devtoolsPlugin/
+    // analyzerPlugin/persistencePlugin 都是共享单例对象）而言，同 store 二次安装只有害处
+    // （重复订阅、重复 hooks、重复全局注册），无合法用途，故告警并幂等返回既有卸载函数。
+    // 不抛错：与仓库既有「歧义→开发模式告警」口径一致（_mergeStateMaps、
+    // findTargetStoreWithKey、子 store 重名的非命名空间分支）。
+    // 不引入按实例计数：插件不同于监听器（后者「注册 N 次通知 N 次」是正当语义），
+    // 需要多份独立副作用时应使用插件工厂（如 timeTravelPlugin()）产生不同实例
+    if (this._plugins.indexOf(plugin) !== -1) {
+      if (!isProduction()) {
+        console.warn(
+          `[GeomStore][${this.name}] 插件 "${plugin.name}" 已安装，忽略重复的 use() 调用。` +
+            '同一实例重复安装会丢失卸载函数；如需多份独立副作用，请用插件工厂产生不同实例',
+        )
+      }
+      return this._createPluginUninstaller(plugin)
+    }
+
     this._plugins.push(plugin)
 
     let uninstall: unknown
@@ -506,6 +571,19 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
 
     this._pluginUninstallFns.set(plugin, uninstall as (() => void) | undefined)
 
+    return this._createPluginUninstaller(plugin)
+  }
+
+  /**
+   * 创建插件卸载句柄
+   *
+   * 幂等：重复调用只在首次生效（移出 _plugins、调用插件自身的卸载函数、清除映射），
+   * 之后再调为安全 no-op。首次安装与重复安装返回的都是由本工厂生成的等价句柄，
+   * 因此重复 use() 拿到的 token 与首个 token 行为一致。
+   *
+   * @private
+   */
+  private _createPluginUninstaller(plugin: PluginType): () => void {
     return () => {
       const index = this._plugins.indexOf(plugin)
       if (index !== -1) {
@@ -556,6 +634,8 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
 
       // 2. 清理订阅器
       this._subscriptionManager.clear()
+      // 2.1 取消待发的异步通知（避免销毁后微任务仍回调已销毁的 Store）
+      this._asyncNotifier?.clear()
 
       // 3. 禁用缓存
       this._cacheManager.disable()
@@ -824,7 +904,7 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
         return self._createDirtyTrackingProxy(value)
       },
       set(obj: object, key: string | symbol, value: unknown): boolean {
-        (obj as Record<string | symbol, unknown>)[key] = value
+        ;(obj as Record<string | symbol, unknown>)[key] = value
         self._mutationCount++
         return true
       },
@@ -857,17 +937,34 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
     if (this._notifyOnlyOnChange && this._mutationCount <= this._batchMutationBaseline) {
       return
     }
-    this._notifyListeners()
+    this._scheduleNotify()
+  }
+
+  /** 调度一次状态通知（同步或异步合并，取决于 notify.async 配置） */
+  private _scheduleNotify(): void {
+    if (this._notifyAsyncEnabled && this._asyncNotifier) {
+      // 微任务合并：同一 tick 内的多次 setState/$patch/$replaceState 合并为一次通知。
+      // 脏键跨批次累积，最终通知时仍能精确反映全部变更（与集成层对象值跳过天然兼容）
+      this._asyncNotifier.notify(this._state)
+    } else {
+      this._notifyListeners()
+    }
   }
 
   /** 通知状态变化 */
   private _notifyListeners(): void {
+    // 深拷贝隔离仅在有「可写（用户）订阅者」时必要：页面/组件绑定均为只读订阅，
+    // 不会修改载荷，可直接复用只读保护 Proxy（零拷贝），省去整棵状态树的深拷贝开销。
+    // 用户显式 notify.clone=true 时强制拷贝（兼容既有显式配置语义）。
+    const needsClone = (this._notifyCloneExplicit && this._notifyClone) || this._subscriptionManager.hasWritableListeners()
     // 零拷贝模式下传入只读保护 Proxy（状态保护关闭时为原始引用，由用户自行保证不修改）
-    const payload = this._notifyClone || !this._stateProtectionEnabled ? this._state : this._stateProxyManager.createStateProxy(this._state, '')
-    this._subscriptionManager.notify(payload)
+    const payload = needsClone || !this._stateProtectionEnabled ? this._state : this._stateProxyManager.createStateProxy(this._state, '')
+    this._subscriptionManager.notify(payload, !needsClone)
     // 记录本次通知已覆盖到的变更计数：后续 dispatch 补发按此去重，
     // 避免「续段 setState 已自发通知 + 完成补发」的重复通知
     this._lastNotifiedMutationCount = this._mutationCount
+    // 清空脏键：本批次变更已通知完毕
+    this._dirtyKeys.clear()
   }
 }
 

@@ -1,5 +1,5 @@
 /**
- * GeomStore v1.0 - 性能分析插件
+ * GeomStore - 性能分析插件
  *
  * 提供全面的性能监控和分析功能，包括：
  * - 操作性能监控
@@ -7,7 +7,6 @@
  * - 性能统计
  * - 实时分析
  *
- * @since 1.0.0
  */
 
 import type { Store } from '../../types/store'
@@ -23,7 +22,6 @@ import { isProduction } from '../../core/store/utils'
  * 自动监控所有Store操作的性能，并提供分析工具
  *
  * @type {Plugin}
- * @since 1.0.0
  *
  * @example
  * ```typescript
@@ -185,9 +183,12 @@ function installAnalyzer(store: Store, options: PerformanceOptions): (() => void
   }
 
   // 使用钩子系统替代 monkey-patching，避免多插件冲突
+  // 每处 start 都必须显式传 MetricType：start 的第二参默认 'dispatch'，
+  // 漏传会让 setState/patch/replaceState/getter 的指标全部被标成 dispatch，
+  // getMetricsByType('getter') 等恒返回空数组、瓶颈分析失去类型维度
   // 监控 setState
   const unsubBeforeSetState = store.hooks.on('beforeSetState', (key: unknown) => {
-    const end = monitor.start(`setState:${String(key)}`)
+    const end = monitor.start(`setState:${String(key)}`, 'setState')
     // 将 end 函数存入闭包，在 afterSetState 中调用
     pushEnd('setState', end)
   })
@@ -197,7 +198,7 @@ function installAnalyzer(store: Store, options: PerformanceOptions): (() => void
 
   // 监控 $patch
   const unsubBeforePatch = store.hooks.on('beforePatch', () => {
-    const end = monitor.start('patch')
+    const end = monitor.start('patch', 'patch')
     pushEnd('patch', end)
   })
   const unsubAfterPatch = store.hooks.on('afterPatch', () => {
@@ -206,7 +207,7 @@ function installAnalyzer(store: Store, options: PerformanceOptions): (() => void
 
   // 监控 $replaceState
   const unsubBeforeReplace = store.hooks.on('beforeReplaceState', () => {
-    const end = monitor.start('replaceState')
+    const end = monitor.start('replaceState', 'replaceState')
     pushEnd('replaceState', end)
   })
   const unsubAfterReplace = store.hooks.on('afterReplaceState', () => {
@@ -215,7 +216,7 @@ function installAnalyzer(store: Store, options: PerformanceOptions): (() => void
 
   // 监控 dispatch
   const unsubBeforeDispatch = store.hooks.on('beforeDispatch', (actionName: unknown) => {
-    const end = monitor.start(`dispatch:${String(actionName)}`)
+    const end = monitor.start(`dispatch:${String(actionName)}`, 'dispatch')
     pushEnd('dispatch', end)
   })
   const unsubAfterDispatch = store.hooks.on('afterDispatch', () => {
@@ -226,7 +227,7 @@ function installAnalyzer(store: Store, options: PerformanceOptions): (() => void
   const originalGetter = store.getter.bind(store)
   const storeProxy = store as unknown as Record<string, unknown>
   const wrappedGetter = function (...args: unknown[]): unknown {
-    const end = monitor.start(`getter:${String(args[0])}`)
+    const end = monitor.start(`getter:${String(args[0])}`, 'getter')
     try {
       return (originalGetter as (...a: unknown[]) => unknown)(...args)
     } finally {
@@ -239,16 +240,21 @@ function installAnalyzer(store: Store, options: PerformanceOptions): (() => void
   storeProxy.__performanceMonitor__ = monitor
 
   // 设置全局访问（生产环境不暴露，防止内部结构泄露）
+  // 注册条目提升到块外：卸载时按身份守卫清理，避免同 store.name 后装的第二实例
+  // 覆盖该条目后，卸载第一实例把第二实例的接口误删（与下方 __performanceMonitor__
+  // 的守卫同模式，此前全局表漏了）
+  let registeredAnalyzerAPI: unknown
   if (typeof globalThis !== 'undefined' && !isProduction()) {
     const globalObj = globalThis as unknown as Record<string, Record<string, unknown>>
     globalObj.__GEOMSTORE_ANALYZER__ = globalObj.__GEOMSTORE_ANALYZER__ || {}
-    globalObj.__GEOMSTORE_ANALYZER__[store.name] = {
+    registeredAnalyzerAPI = {
       monitor,
       getMetrics: () => monitor.getMetrics(),
       getStats: () => monitor.getStats(),
       analyzeBottlenecks: (threshold?: number) => PerformanceAnalyzer.analyzeBottlenecks(monitor.getMetrics(), threshold),
       clear: () => monitor.clear(),
     }
+    globalObj.__GEOMSTORE_ANALYZER__[store.name] = registeredAnalyzerAPI
 
     console.log(`[GeomStore][analyzer] Performance monitoring enabled for store "${store.name}"`)
     console.log(`[GeomStore][analyzer] Access at: globalThis.__GEOMSTORE_ANALYZER__["${store.name}"]`)
@@ -279,10 +285,12 @@ function installAnalyzer(store: Store, options: PerformanceOptions): (() => void
       console.warn(`[GeomStore][analyzer] store.getter 已被后续插件重新包装，卸载时保留当前包装（不再恢复本插件安装前的原始实现），以免覆盖其他插件`)
     }
 
-    // 清理全局引用
+    // 清理全局引用（身份守卫：仅当条目仍属于本实例时才删除）
     if (typeof globalThis !== 'undefined') {
       const globalObj = globalThis as unknown as Record<string, Record<string, unknown>>
-      delete globalObj.__GEOMSTORE_ANALYZER__?.[store.name]
+      if (registeredAnalyzerAPI !== undefined && globalObj.__GEOMSTORE_ANALYZER__?.[store.name] === registeredAnalyzerAPI) {
+        delete globalObj.__GEOMSTORE_ANALYZER__[store.name]
+      }
     }
 
     monitor.clear()

@@ -1,5 +1,5 @@
 /**
- * GeomStore v1.0 - 性能监控模块导出
+ * GeomStore - 性能监控模块导出
  */
 
 export { PerformanceMonitor } from './PerformanceMonitor'
@@ -11,13 +11,10 @@ export {
   LRUCache,
   AsyncBatchNotifier,
   StateFingerprint,
-  SubscriptionManager,
-  iterativeDeepEqual,
   scheduleIdle,
   debounce,
   throttle,
   createLRUCache,
   createAsyncBatchNotifier,
   createStateFingerprint,
-  createSubscriptionManager,
 } from './Optimizations'

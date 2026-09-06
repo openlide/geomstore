@@ -224,6 +224,46 @@ describe('analyzerPlugin - hook monitoring', () => {
     expect(getterMetrics.length).toBeGreaterThan(0)
   })
 
+  it('REGR-ANALYZER-001: 各类操作应按自身语义记录 MetricType 而非全部记为 dispatch', () => {
+    const store = createStore({
+      name: 'metric-type-store',
+      state: { count: 1 },
+      actions: {
+        increment() {
+          this.setState('count', (this.state as any).count + 1)
+        },
+      },
+      getters: {
+        double: (state: any) => state.count * 2,
+      },
+    })
+
+    store.use(analyzerPlugin)
+    store.setState('count', 2)
+    store.$patch({ count: 3 })
+    store.$replaceState({ count: 4 })
+    store.dispatch('increment')
+    store.getter('double')
+
+    const monitor = (store as any).__performanceMonitor__
+    // 修复前 monitor.start() 五处调用均漏传第二参，PerformanceMonitor 默认 type='dispatch'，
+    // 于是 setState/patch/replaceState/getter 的指标全被标成 dispatch，
+    // 以下前四个 getMetricsByType 恒返回空数组（本插件文档示例即依赖它）
+    expect(monitor.getMetricsByType('setState').length).toBeGreaterThan(0)
+    expect(monitor.getMetricsByType('patch').length).toBeGreaterThan(0)
+    expect(monitor.getMetricsByType('replaceState').length).toBeGreaterThan(0)
+    expect(monitor.getMetricsByType('getter').length).toBeGreaterThan(0)
+    expect(monitor.getMetricsByType('dispatch').length).toBeGreaterThan(0)
+
+    // 逐条校验：type 必须与 operation 前缀一致，不得混标
+    const metrics = monitor.getMetrics()
+    expect(metrics.length).toBeGreaterThan(0)
+    for (const metric of metrics) {
+      const prefix = String(metric.operation).split(':')[0]
+      expect(metric.type).toBe(prefix)
+    }
+  })
+
   it('should restore original getter after uninstall', () => {
     const store = createStore({
       name: 'restore-store',
@@ -831,5 +871,49 @@ describe('analyzerPlugin - BUG-2 嵌套操作计时配对', () => {
     } catch {
       // ignore
     }
+  })
+})
+
+describe('R5 回归：analyzerPlugin 全局注册表清理需身份守卫', () => {
+  const globalObj = globalThis as unknown as Record<string, Record<string, unknown>>
+
+  afterEach(() => {
+    try {
+      delete globalObj.__GEOMSTORE_ANALYZER__
+    } catch {
+      // ignore
+    }
+    jest.restoreAllMocks()
+  })
+
+  it('卸载先装实例不应误删同名后装实例的全局条目', () => {
+    jest.spyOn(console, 'log').mockImplementation()
+    const first = createStore({ name: 'dup-analyzer', state: { n: 1 } })
+    const second = createStore({ name: 'dup-analyzer', state: { n: 2 } })
+
+    const uninstallFirst = first.use(analyzerPlugin)
+    second.use(analyzerPlugin)
+
+    // 后装实例覆盖了全局条目
+    const entry = globalObj.__GEOMSTORE_ANALYZER__['dup-analyzer']
+    expect(entry).toBeDefined()
+
+    // 修复前卸载无条件 delete：第二实例的全局接口被误删
+    // （该插件已对实例上的 __performanceMonitor__ 做 === monitor 守卫，全局表此前漏了）
+    uninstallFirst()
+
+    expect(globalObj.__GEOMSTORE_ANALYZER__['dup-analyzer']).toBe(entry)
+  })
+
+  it('卸载唯一实例时仍应正常清理自己的全局条目', () => {
+    jest.spyOn(console, 'log').mockImplementation()
+    const store = createStore({ name: 'solo-analyzer', state: { n: 1 } })
+
+    const uninstall = store.use(analyzerPlugin)
+    expect(globalObj.__GEOMSTORE_ANALYZER__['solo-analyzer']).toBeDefined()
+
+    uninstall()
+
+    expect(globalObj.__GEOMSTORE_ANALYZER__['solo-analyzer']).toBeUndefined()
   })
 })

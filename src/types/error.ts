@@ -1,5 +1,5 @@
 /**
- * GeomStore v1.0 - 错误类型定义
+ * GeomStore - 错误类型定义
  */
 
 /**

@@ -1,5 +1,5 @@
 /**
- * GeomStore v1.0 - Store组合
+ * GeomStore - Store组合
  *
  * 优化：
  * - 使用类实例替代对象字面量，提升性能
@@ -26,6 +26,42 @@ const ALL_HOOK_NAMES: HookName[] = [
 ]
 
 /**
+ * 对子 store 应用写入，跳过已被独立销毁的子 store
+ *
+ * 子 store 可在组合之外被独立销毁，此时 $patch/$replaceState 会抛
+ * "Cannot call … on a destroyed Store"。此前该异常直接冒泡使循环中断在中间：
+ * 已处理的 store 写入了、之后的 store 永不写入——既没保住一致性又抛了错，
+ * 交付的是调用方无法解释的半更新状态。
+ *
+ * 跳过口径与 _startBatchOnStores / _endBatchOnStores / 企业版 runForegroundChecks
+ * 三处一致（均为「子 store 可被独立销毁 → 跳过」）。不受 strict 影响：
+ * strict 的既有语义是「访问不存在的 Store 报错」，而「存在但已销毁」是另一种故障，
+ * 混进去会让 strict 模式重新产生半更新。
+ *
+ * @private
+ */
+function applyToStore<T>(store: Store, value: T, handler: (store: Store, value: T) => void): void {
+  if (store.destroyed) {
+    if (!isProduction()) {
+      console.warn(`[composeStore] 子 store "${store.name}" 已销毁，跳过对它的写入（其余 store 不受影响）`)
+    }
+    return
+  }
+  try {
+    handler(store, value)
+  } catch (error) {
+    // 只吞「判断之后才被销毁」的竞态；其他异常照常冒泡，不掩盖真实故障
+    if (store.destroyed) {
+      if (!isProduction()) {
+        console.warn(`[composeStore] 子 store "${store.name}" 在写入期间被销毁，已跳过`)
+      }
+      return
+    }
+    throw error
+  }
+}
+
+/**
  * 根据命名空间分发操作到对应 store
  * @private
  */
@@ -43,7 +79,7 @@ function dispatchByNamespace<T>(
       const value = data[key]
       const targetStore = stores.find((s) => s.name === key)
       if (targetStore) {
-        handler(targetStore, value as T)
+        applyToStore(targetStore, value as T, handler)
       } else if (strict) {
         throw new Error(`[composeStore] Cannot find store for key: ${key}`)
       }
@@ -69,9 +105,10 @@ function dispatchByNamespace<T>(
 
     // 一次性调用每个 store
     for (const [store, groupData] of storeGroups) {
-      // $replaceState 整体替换语义下，分组数据缺錇会丢失 store 中的既有键，
-      // 开发模式下告警提示（保留替换语义不变，避免破坏既有行为）
-      if (options?.warnMissingKeys) {
+      // $replaceState 整体替换语义下，分组数据缺失会丢失 store 中的既有键，
+      // 开发模式下告警提示（保留替换语义不变，避免破坏既有行为）。
+      // 已销毁的子 store 会被 applyToStore 跳过，为它输出该告警是误导性噪音
+      if (!store.destroyed && options?.warnMissingKeys) {
         const stateKeys = Object.keys(store.getState())
         const providedKeys = Object.keys(groupData)
         const missing = stateKeys.filter((k) => !providedKeys.includes(k))
@@ -79,7 +116,7 @@ function dispatchByNamespace<T>(
           console.warn(`[composeStore] $replaceState 未包含 store "${store.name}" 的键 [${missing.join(', ')}]，整体替换后这些键将丢失；如需保留请使用 $patch`)
         }
       }
-      handler(store, groupData as T)
+      applyToStore(store, groupData as T, handler)
     }
   }
 }
@@ -175,14 +212,25 @@ class ComposedStore<S extends State = State> implements Store<S> {
 
   /** 防抖相关：实例级统一调度，避免多个订阅者各自维护标志导致非首个订阅者丢通知 */
   private _notificationScheduled: boolean = false
-  /** 当前活跃的订阅者集合 */
-  private _composedListeners: Set<StateListener<S>> = new Set()
+  /** 当前活跃的订阅者：监听器 → 注册次数。
+   *  与 SubscriptionManager 同语义——同一函数注册 N 次通知 N 次，退订只减一，
+   *  减到 0 才真正移除。此前用 Set 会使「退订其中一份」直接删除整个监听器，
+   *  用户仍持有的另一份退订句柄静默失效、永不再收到通知。 */
+  private _composedListeners: Map<StateListener<S>, number> = new Map()
   /** 对子 Store 的订阅句柄（destroy 时统一退订，避免闭包残留） */
   private _storeUnsubscribers: Array<() => void> = []
   /** 已告警过的 state 键冲突组合（每个组合只告警一次，避免高频 getState 刷屏） */
   private _warnedStateKeyConflicts = new Set<string>()
   /** 子 Store 钩子桥接的退订函数（destroy 时统一移除，防止闭包残留） */
   private _hookUnsubscribers: Array<() => void> = []
+  /** 合并状态缓存：非命名空间/命名空间两种读取形态各缓存一份，子 store 变化时失效 */
+  private _mergedCache: Record<string, unknown> | null = null
+  /** 只读冻结形态的合并状态缓存（对应 state getter），与 _mergedCache 独立以免冻结影响 getState 消费者 */
+  private _mergedCacheFrozen: Record<string, unknown> | null = null
+  /** 合并缓存是否启用：子 store 订阅失效回调建立失败时降级为每次读取重合并，保证不返回陈旧状态 */
+  private _mergedCacheEnabled: boolean = true
+  /** 合并缓存失效订阅句柄（构造期对子 store 建立，destroy 时统一退订） */
+  private _cacheInvalidateUnsubscribers: Array<() => void> = []
 
   constructor(stores: Store[], options: ComposeOptions = {}) {
     this._stores = stores
@@ -192,6 +240,35 @@ class ComposedStore<S extends State = State> implements Store<S> {
 
     // 初始化实例级钩子系统（组合 Store 使用独立的 HookSystem）
     this.hooks = new HookSystem()
+
+    // 子 store 重名校验。
+    // 命名空间模式下 store.name 同时是两套查找的键，但两者取值方向相反：
+    // getState() 用 result[store.name] = …（后者覆盖前者），
+    // findTargetStoreWithKey 用 stores.find(s => s.name === …)（取第一个）——
+    // 重名会让读落到后一个 store、写落到前一个，读写分裂且全程无告警。
+    // 这是无法正确工作的配置错误（与 composeStore([]) 同属构造期校验），故直接抛错。
+    // 嵌套组合时内层 ComposedStore 的 name 默认同为 'composed'，最容易踩中
+    const nameCounts = new Map<string, number>()
+    for (const store of stores) {
+      nameCounts.set(store.name, (nameCounts.get(store.name) ?? 0) + 1)
+    }
+    const duplicatedNames: string[] = []
+    nameCounts.forEach((count, name) => {
+      if (count > 1) duplicatedNames.push(name)
+    })
+    if (duplicatedNames.length > 0) {
+      if (this._namespace) {
+        throw new Error(
+          `[composeStore] 命名空间模式下子 store 名称不得重复，否则读写会路由到不同 store: ${duplicatedNames.join(', ')}。` +
+            '请为各子 store 设置唯一 name（嵌套组合时给内层传 namespace 字符串以区分）',
+        )
+      }
+      // 非命名空间模式：state 按键平铺合并，重名只影响 stores 映射与歧义提示的可读性，
+      // 按 _mergeStateMaps 的既有口径在开发模式告警而非抛错
+      if (!isProduction()) {
+        console.warn(`[composeStore] 子 store 名称重复 (${duplicatedNames.join(', ')})：stores 映射中后者覆盖前者，` + '建议设置唯一 name 或启用命名空间模式')
+      }
+    }
 
     // 构建 stores 引用
     for (const store of stores) {
@@ -213,6 +290,21 @@ class ComposedStore<S extends State = State> implements Store<S> {
         this._hookUnsubscribers.push(off)
       }
     }
+
+    // 合并状态缓存失效：任一子 store 状态变化时使合并缓存失效。
+    // 合并结果持有子 store 状态的实时引用（顶层键指向子 store 活引用），值的实时变化经引用自动反映；
+    // 但新增/移除顶层键或子 store 重建需重算才能正确反映，故仅在子 store 通知时失效（而非每次读取重合并），
+    // 降低渲染/computed 热路径的重复合并开销。
+    for (const store of stores) {
+      try {
+        const off = store.subscribe(() => this._invalidateMergedCache())
+        this._cacheInvalidateUnsubscribers.push(off)
+      } catch {
+        // 子 store 订阅失败（如已达上限并采用 throw 策略）：放弃合并缓存，
+        // 降级为每次读取重合并，避免失效订阅缺失导致缓存返回陈旧状态
+        this._mergedCacheEnabled = false
+      }
+    }
   }
 
   // ==================== 状态管理 ====================
@@ -226,17 +318,38 @@ class ComposedStore<S extends State = State> implements Store<S> {
     }
   }
 
+  /** 使合并状态缓存失效：任一子 store 通知时调用（构造期订阅） */
+  private _invalidateMergedCache(): void {
+    this._mergedCache = null
+    this._mergedCacheFrozen = null
+  }
+
   getState(): S {
     this._ensureAlive('getState')
-    // 合并所有store的state
     if (this._namespace) {
-      const result: Record<string, unknown> = {}
-      for (const store of this._stores) {
-        result[store.name] = store.getState()
+      if (!this._mergedCacheEnabled) {
+        const result: Record<string, unknown> = {}
+        for (const store of this._stores) {
+          result[store.name] = store.getState()
+        }
+        return result as S
       }
-      return result as S
+      if (!this._mergedCache) {
+        const result: Record<string, unknown> = {}
+        for (const store of this._stores) {
+          result[store.name] = store.getState()
+        }
+        this._mergedCache = result
+      }
+      return this._mergedCache as S
     }
-    return this._mergeStateMaps((store) => store.getState() as Record<string, unknown>) as S
+    if (!this._mergedCacheEnabled) {
+      return this._mergeStateMaps((store) => store.getState() as Record<string, unknown>) as S
+    }
+    if (!this._mergedCache) {
+      this._mergedCache = this._mergeStateMaps((store) => store.getState() as Record<string, unknown>)
+    }
+    return this._mergedCache as S
   }
 
   /**
@@ -279,16 +392,32 @@ class ComposedStore<S extends State = State> implements Store<S> {
   get state(): S {
     this._ensureAlive('state')
     if (this._namespace) {
-      const result: Record<string, unknown> = {}
-      for (const store of this._stores) {
-        result[store.name] = store.state
+      if (!this._mergedCacheEnabled) {
+        const result: Record<string, unknown> = {}
+        for (const store of this._stores) {
+          result[store.name] = store.state
+        }
+        return Object.freeze(result) as S
       }
-      return Object.freeze(result) as S
+      if (!this._mergedCacheFrozen) {
+        const result: Record<string, unknown> = {}
+        for (const store of this._stores) {
+          result[store.name] = store.state
+        }
+        this._mergedCacheFrozen = Object.freeze(result)
+      }
+      return this._mergedCacheFrozen as S
     }
     // 取值源用子 store 的保护视图（store.state）而非内部裸引用（getState）：
     // 顶层写入落在冻结容器上会抛错；嵌套写入被子 store 保护代理拦截。
     // 此前直接合并裸引用，composed.state.nested.x = 1 会静默穿透进子 store 内部状态
-    return Object.freeze(this._mergeStateMaps((store) => store.state as unknown as Record<string, unknown>)) as S
+    if (!this._mergedCacheEnabled) {
+      return Object.freeze(this._mergeStateMaps((store) => store.state as unknown as Record<string, unknown>)) as S
+    }
+    if (!this._mergedCacheFrozen) {
+      this._mergedCacheFrozen = Object.freeze(this._mergeStateMaps((store) => store.state as unknown as Record<string, unknown>))
+    }
+    return this._mergedCacheFrozen as S
   }
 
   setState<K extends keyof S>(key: K, value: S[K]): void {
@@ -440,14 +569,18 @@ class ComposedStore<S extends State = State> implements Store<S> {
     if (this.destroyed) return
     const state = this.getState()
     // 迭代前快照，防止订阅者在回调中退订导致集合变更
-    for (const listener of [...this._composedListeners]) {
-      try {
-        listener(state)
-      } catch (error) {
-        // 单个 listener 抛错不应中断其余监听器的通知，
-        // 否则错误会冒泡进微任务回调成为 uncaught exception（与 SubscriptionManager 隔离语义一致）
-        if (!isProduction()) {
-          console.error('[GeomStore] Error in composed state listener:', error)
+    const entries = [...this._composedListeners]
+    for (const [listener, count] of entries) {
+      // 按注册次数展开：重复注册的监听器每次通知收到多次回调（与 SubscriptionManager 同语义）
+      for (let i = 0; i < count; i++) {
+        try {
+          listener(state)
+        } catch (error) {
+          // 单个 listener 抛错不应中断其余监听器的通知，
+          // 否则错误会冒泡进微任务回调成为 uncaught exception（与 SubscriptionManager 隔离语义一致）
+          if (!isProduction()) {
+            console.error('[GeomStore] Error in composed state listener:', error)
+          }
         }
       }
     }
@@ -475,23 +608,26 @@ class ComposedStore<S extends State = State> implements Store<S> {
       this._notifyListeners()
     }
 
-    // 使用微任务合并同一事件循环内的多次状态变化；
-    // 旧版小程序基础库（< 2.26.x）无 queueMicrotask，降级为 Promise 微任务
-    if (typeof queueMicrotask === 'function') {
-      queueMicrotask(runNotify)
-    } else {
-      Promise.resolve().then(runNotify)
-    }
+    // 使用微任务合并同一事件循环内的多次状态变化（基础库 3.15.0+ 原生支持 queueMicrotask）
+    queueMicrotask(runNotify)
   }
 
   subscribe(listener: StateListener<S>): () => void {
     this._ensureAlive('subscribe')
-    this._composedListeners.add(listener)
+
+    // 重复订阅只递增计数：与 SubscriptionManager.add 一致，
+    // 不参与子 store 订阅的建立（子 store 侧本就单路复用一份）
+    const existingCount = this._composedListeners.get(listener)
+    if (existingCount !== undefined) {
+      this._composedListeners.set(listener, existingCount + 1)
+      return () => this._releaseListener(listener)
+    }
+    this._composedListeners.set(listener, 1)
 
     // 单路复用：首个组合层监听器进入时对每个子 store 只建一份订阅。
     // 此前每个监听器都重复订阅全部子 store，N 个监听器占用 N 份/子store 的
     // 订阅额度，超出子 store maxSubscribers 时会静默驱逐应用直连的订阅者
-    if (this._composedListeners.size === 1 && this._storeUnsubscribers.length === 0) {
+    if (this._storeUnsubscribers.length === 0) {
       const established: Array<() => void> = []
       try {
         for (const store of this._stores) {
@@ -512,15 +648,41 @@ class ComposedStore<S extends State = State> implements Store<S> {
     // 与普通 Store.subscribe 保持一致：订阅时不立即回调，
     // 仅在子 store 状态变化时通知，避免带副作用的监听器在订阅时被意外执行
 
-    return () => {
-      this._composedListeners.delete(listener)
-      // 最后一个监听器退订时撤销对子 store 的订阅，释放子 store 的订阅额度
-      if (this._composedListeners.size === 0 && this._storeUnsubscribers.length > 0) {
-        for (const unsubscribe of this._storeUnsubscribers) {
-          unsubscribe()
-        }
-        this._storeUnsubscribers = []
+    return () => this._releaseListener(listener)
+  }
+
+  /**
+   * 判断指定状态键自上次通知以来是否发生变更
+   *
+   * 组合 Store 将多个子 store 的状态按 store 名合并，键空间与子 store 不对应，
+   * 无法精确映射到某个子 store 的脏键。这里保守返回 true（视为已变更），
+   * 使绑定层在对象值上保持「宁多勿漏」行为，确保正确性；
+   * 对象值的整体替换（引用变化）仍由引用比较兜底发送。
+   *
+   * @param _key - 组合层状态键（即子 store 名）
+   * @returns 始终返回 true（保守：不跳过任何 setData）
+   */
+  isStateKeyDirty(_key: string): boolean {
+    return true
+  }
+
+  /** 释放一份监听器注册：减到 0 才移除，并在无剩余监听器时撤销子 store 订阅 */
+  private _releaseListener(listener: StateListener<S>): void {
+    const count = this._composedListeners.get(listener)
+    if (count === undefined) {
+      return
+    }
+    if (count > 1) {
+      this._composedListeners.set(listener, count - 1)
+      return
+    }
+    this._composedListeners.delete(listener)
+    // 最后一个监听器退订时撤销对子 store 的订阅，释放子 store 的订阅额度
+    if (this._composedListeners.size === 0 && this._storeUnsubscribers.length > 0) {
+      for (const unsubscribe of this._storeUnsubscribers) {
+        unsubscribe()
       }
+      this._storeUnsubscribers = []
     }
   }
 
@@ -577,6 +739,10 @@ class ComposedStore<S extends State = State> implements Store<S> {
       off()
     }
     this._hookUnsubscribers = []
+    for (const off of this._cacheInvalidateUnsubscribers) {
+      off()
+    }
+    this._cacheInvalidateUnsubscribers = []
     if (destroyStores) {
       for (const store of this._stores) {
         store.destroy()
@@ -660,8 +826,23 @@ class ComposedStore<S extends State = State> implements Store<S> {
 
   startBatch(): void {
     this._ensureAlive('startBatch')
+    this._startBatchOnStores()
+  }
+
+  /** 对各子 store 开启批量：已被独立销毁的子 store 跳过。
+   *
+   *  必须与 _endBatchOnStores 对称容错：此前裸循环在某个子 store 已销毁时抛错中断，
+   *  已成功 startBatch 的子 store 批量深度悬置为 1 且再无 endBatch 到达，
+   *  通知被永久抑制——对仍健康的子 store 是静默失效。跳过已销毁子 store 后
+   *  start/end 两侧深度始终配对（被跳过者从未 start，收尾时同样被跳过）。
+   */
+  private _startBatchOnStores(): void {
     for (const store of this._stores) {
-      store.startBatch()
+      try {
+        store.startBatch()
+      } catch {
+        // 子 store 已被独立销毁：其订阅与状态已清理，跳过开启
+      }
     }
   }
 

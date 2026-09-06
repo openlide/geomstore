@@ -15,30 +15,22 @@ const todoStore = createStore({
   }),
   actions: {
     addTodo(text: string) {
-      // @ts-ignore
       const newItem = {
-        // @ts-ignore
         id: this.state.items.length + 1,
         text,
         done: false,
       }
-      // @ts-ignore
       this.setState('items', [...this.state.items, newItem])
     },
     toggleTodo(id: number) {
-      // @ts-ignore
       const items = this.state.items.map((item) => (item.id === id ? { ...item, done: !item.done } : item))
-      // @ts-ignore
       this.setState('items', items)
     },
     setFilter(filter: 'all' | 'active' | 'completed') {
-      // @ts-ignore
       this.setState('filter', filter)
     },
     clearCompleted() {
-      // @ts-ignore
       const activeItems = this.state.items.filter((item) => !item.done)
-      // @ts-ignore
       this.setState('items', activeItems)
     },
   },

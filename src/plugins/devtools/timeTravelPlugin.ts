@@ -1,5 +1,5 @@
 /**
- * GeomStore v1.0 - 时间旅行插件
+ * GeomStore - 时间旅行插件
  *
  * 提供时间旅行功能，可以：
  * - 记录状态快照
@@ -7,12 +7,50 @@
  * - 跳转到任意历史状态
  * - 导出/导入历史
  *
- * @since 1.0.0
  */
 
 import type { Store, State } from '../../types/store'
 import type { Plugin } from '../../types/plugin'
 import { isProduction, deepCloneState } from '../../core/store/utils'
+
+/**
+ * 循环引用安全的 JSON 序列化
+ *
+ * recordSnapshot 特意复用 deepCloneState 以支持循环引用（见其注释），因此 snapshots
+ * 可以合法含环；直接 JSON.stringify 会抛 "Converting circular structure to JSON"，
+ * 使 exportHistory 对该插件明确支持的状态形态失效。
+ *
+ * 采用祖先路径跟踪算法（json-stringify-safe 同款）：只把真正构成环的引用替换为
+ * "[Circular]" 占位，不误伤菱形共享引用。此处不用更短的 WeakSet 方案——
+ * deepCloneState 对不可克隆对象（类实例等）保留原引用，多个快照之间会真实共享
+ * 同一实例，WeakSet 会把第二个快照里的该实例误标为环，导出结果失真。
+ *
+ * @private
+ */
+function jsonStringifySafe(value: unknown, space?: number): string {
+  const stack: unknown[] = []
+  return JSON.stringify(
+    value,
+    function (this: unknown, _key: string, val: unknown): unknown {
+      if (stack.length > 0) {
+        const thisPos = stack.indexOf(this)
+        if (thisPos !== -1) {
+          // 回到祖先层：截断该层之后的路径
+          stack.splice(thisPos + 1)
+        } else {
+          stack.push(this)
+        }
+        if (stack.indexOf(val) !== -1) {
+          return '[Circular]'
+        }
+      } else {
+        stack.push(val)
+      }
+      return val
+    },
+    space,
+  )
+}
 
 /**
  * 时间旅行选项
@@ -256,14 +294,13 @@ export const timeTravelPlugin = <S extends State = State>(options: TimeTravelOpt
           recordSnapshot(state || (store.getState() as S))
         },
 
-        // 导出历史
+        // 导出历史（循环引用安全：snapshots 可含环，见 jsonStringifySafe 注释）
         exportHistory: () =>
-          JSON.stringify(
+          jsonStringifySafe(
             {
               snapshots,
               currentIndex,
             },
-            null,
             2,
           ),
 

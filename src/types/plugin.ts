@@ -1,5 +1,5 @@
 /**
- * GeomStore v1.0.0 - 插件与钩子类型定义（契约层）
+ * GeomStore - 插件与钩子类型定义（契约层）
  *
  * 本文件是钩子/插件体系的类型契约源头：
  * - types 层定义接口，core/hooks 提供 HookSystem 实现，plugins 层依赖二者

@@ -1,5 +1,5 @@
 /**
- * GeomStore v1.0 - 选择器类型定义
+ * GeomStore - 选择器类型定义
  */
 
 /**

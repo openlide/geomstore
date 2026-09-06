@@ -1,6 +1,6 @@
 # 迁移指南（Migration Guide）
 
-> 本文档面向正在使用其他小程序状态管理方案、希望迁移到 **GeomStore v0.2.0** 的开发者。
+> 本文档面向正在使用其他小程序状态管理方案、希望迁移到 **GeomStore v0.2.1** 的开发者。
 >
 > GeomStore 是零运行时依赖、TypeScript 优先、面向微信小程序（兼容 Skyline / WebView）的轻量级状态管理库。
 
@@ -10,6 +10,7 @@
 
 - [迁移指南（Migration Guide）](#迁移指南migration-guide)
   - [目录](#目录)
+  - [0. 从旧版 GeomStore 升级（瘦核心）](#0-从旧版-geomstore-升级瘦核心)
   - [1. 迁移总览](#1-迁移总览)
   - [2. 从原生 setData 迁移](#2-从原生-setdata-迁移)
     - [迁移前（原生写法）](#迁移前原生写法)
@@ -23,6 +24,76 @@
   - [6. 核心概念对照表](#6-核心概念对照表)
   - [7. 迁移检查清单](#7-迁移检查清单)
   - [相关文档](#相关文档)
+
+---
+
+## 0. 从旧版 GeomStore 升级（瘦核心）
+
+> 适用于已在使用 GeomStore（v0.2.0 及更早）并希望升级到 **v0.2.1 瘦核心** 的项目。
+
+### 为什么需要迁移
+
+v0.2.1 起，主入口 `@openlide/geomstore` 改为**瘦核心**：只导出应用运行所必需的核心 API（`Store`、`createStore`、错误处理、小程序集成 `withPageStore` / `withComponentStore` / `withAppStore`、`composeStore`、LRU 缓存、工具函数）。快照、选择器、性能监控、Action 增强（执行器 / 装饰器）、内置插件、企业微信集成等**高级能力**收敛到 `./extras` 子路径，**不再从主入口导出**。
+
+这样做的好处：主包体积更小，未使用的可选能力不会进入小程序主包；代价是这些能力需要显式从子路径引入。
+
+### 破坏性变更
+
+| 变更 | 说明 |
+| ---- | ---- |
+| 可选能力移出主入口 | 原先从 `@openlide/geomstore` 导入的 `SnapshotManager`、`createSelector`、`PerformanceMonitor`、`ActionExecutor`、`withLog`、`loggerPlugin` 等，改为从对应 `extras` 子路径导入 |
+| `createApp` 已移除 | 原 `createApp` 不再提供，App 集成统一使用核心中的 `withAppStore`（仍从主入口导入） |
+| 核心 API 保持兼容 | `createStore`、`Store`、`getState` / `setState`、`dispatch`、小程序集成、错误处理等核心接口签名不变 |
+
+### 迁移示例
+
+**升级前（v0.2.0）：**
+
+```javascript
+import {
+  createStore,
+  withPageStore,
+  SnapshotManager,
+  createSelector,
+  PerformanceMonitor,
+  loggerPlugin,
+} from '@openlide/geomstore'
+```
+
+**升级后（v0.2.1 瘦核心）：**
+
+```javascript
+// 核心 API 仍从主入口导入
+import { createStore, withPageStore, withAppStore } from '@openlide/geomstore'
+
+// 可选能力按需从 extras 子路径导入
+import { SnapshotManager } from '@openlide/geomstore/extras/snapshot'
+import { createSelector } from '@openlide/geomstore/extras/selector'
+import { PerformanceMonitor } from '@openlide/geomstore/extras/performance'
+import { loggerPlugin } from '@openlide/geomstore/extras/plugins'
+
+// App 集成：使用核心 withAppStore（替代旧版 createApp）
+App(withAppStore(store, options)(config))
+```
+
+### 子路径速查
+
+| 能力 | 子路径 |
+| ---- | ------ |
+| 全部可选能力 | `@openlide/geomstore/extras` |
+| 快照 | `@openlide/geomstore/extras/snapshot` |
+| 选择器 | `@openlide/geomstore/extras/selector` |
+| 性能监控 | `@openlide/geomstore/extras/performance` |
+| Action 增强 | `@openlide/geomstore/extras/action` |
+| 插件 | `@openlide/geomstore/extras/plugins` |
+| 企业微信集成 | `@openlide/geomstore/extras/enterprise` |
+
+### 升级检查清单
+
+- [ ] 全局搜索主入口导入，将 `SnapshotManager` / `createSelector` / `PerformanceMonitor` / `ActionExecutor` / `withLog` / `loggerPlugin` 等改为对应 `extras` 子路径
+- [ ] 将旧版 `createApp(...)` 替换为 `App(withAppStore(store, options)(config))`
+- [ ] 运行 `pnpm typecheck` 确认无缺失导出
+- [ ] 运行 `pnpm test` 全量测试通过
 
 ---
 
@@ -92,7 +163,7 @@ export const userStore = createStore({
 
 ```javascript
 // page.js —— 页面只负责连接与渲染
-import { withPageStore } from '@openlide/geomstore/integrations'
+import { withPageStore } from '@openlide/geomstore'
 import { userStore } from './store'
 
 Page(withPageStore(userStore, {
@@ -151,7 +222,7 @@ Page({
 
 ```javascript
 // app.js —— 使用 withAppStore 统一管理全局状态
-import { withAppStore } from '@openlide/geomstore/integrations'
+import { withAppStore } from '@openlide/geomstore'
 import { appStore } from './store'
 
 App(withAppStore(appStore, {
