@@ -79,16 +79,8 @@ src/
 │   ├── cache/               # LRU 缓存
 │   │   ├── LRUCache.ts
 │   │   └── index.ts
-│   ├── error/               # 错误处理
-│   │   ├── GeomStoreError.ts
-│   │   ├── ErrorHandler.ts
-│   │   ├── ErrorBoundary.ts
-│   │   ├── ErrorRecovery.ts
-│   │   ├── ErrorMonitoring.ts
-│   │   └── index.ts
 │   ├── utils/               # 工具函数
 │   │   ├── helpers.ts
-│   │   ├── TypeValidator.ts
 │   │   └── index.ts
 │   ├── compose/             # Store 组合
 │   │   ├── composeStore.ts
@@ -129,6 +121,7 @@ src/
 │       └── index.ts
 ├── extras/                  # 可选能力聚合与子入口
 │   ├── index.ts             # 一次性引入全部可选能力
+│   ├── error.ts             # → ../extras/error（v0.4.0 起从核心下沉）
 │   ├── snapshot.ts          # → ../core/snapshot
 │   ├── selector.ts          # → ../core/selector
 │   ├── performance.ts       # → ../core/performance
@@ -153,7 +146,7 @@ src/
 
 ## 核心模块
 
-> 注：下文中的「选择器 / 快照 / 性能监控 / Action 增强 / 插件 / 企业微信集成」等模块**不属于主入口自动导出的核心 API**，其源码位于 `src/core` 或 `src/plugins` / `src/integrations`，但仅通过 `@openlide/geomstore/extras/*` 子路径按需引入（详见上方目录结构）。核心 API 仅包含 Store、错误处理、小程序集成、组合、LRU 缓存与工具函数。
+> 注：下文中的「选择器 / 快照 / 性能监控 / Action 增强 / 插件 / 企业微信集成 / 错误处理」等模块**不属于主入口自动导出的核心 API**，其源码位于 `src/core` 或 `src/plugins` / `src/integrations` / `src/extras`，但仅通过 `@openlide/geomstore/extras/*` 子路径按需引入（详见上方目录结构）。核心 API 仅包含 Store、小程序集成、组合、LRU 缓存与工具函数；错误处理位于 `src/extras/error`，通过 `@openlide/geomstore/extras/error` 引入。
 
 ### Store 模块
 

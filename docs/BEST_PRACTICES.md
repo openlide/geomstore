@@ -1,4 +1,4 @@
-# GeomStore v0.2.1 最佳实践
+# GeomStore v0.4.0 最佳实践
 
 本文档总结了在微信小程序项目中使用 GeomStore 的最佳实践，帮助开发者构建高质量、可维护的应用。
 
@@ -882,7 +882,7 @@ const cartStore = require('../../stores').getCartStore()
 
 ```javascript
 // app.js
-const { ErrorMonitoring, ConsoleReporter } = require('@openlide/geomstore')
+const { ErrorMonitoring, ConsoleReporter } = require('@openlide/geomstore/extras/error')
 
 const monitoring = new ErrorMonitoring({
   reporters: [
@@ -915,7 +915,7 @@ App({
 ### 2. Store 错误边界
 
 ```javascript
-const { ErrorBoundary } = require('@openlide/geomstore')
+const { ErrorBoundary } = require('@openlide/geomstore/extras/error')
 
 const boundary = new ErrorBoundary({
   fallback: (error, currentState) => {
@@ -941,7 +941,7 @@ const safeDispatch = (store, actionName, ...args) => {
 ### 3. 错误恢复策略
 
 ```javascript
-const { ErrorRecovery, RecoveryStrategy, createError, ErrorCode } = require('@openlide/geomstore')
+const { ErrorRecovery, RecoveryStrategy, createError, ErrorCode } = require('@openlide/geomstore/extras/error')
 
 const recovery = new ErrorRecovery()
 

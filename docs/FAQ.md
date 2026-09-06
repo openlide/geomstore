@@ -500,7 +500,7 @@ try {
 **A:** 使用 ErrorRecovery：
 
 ```javascript
-const { ErrorRecovery, RecoveryStrategy, ErrorCode } = require('@openlide/geomstore')
+const { ErrorRecovery, RecoveryStrategy, ErrorCode } = require('@openlide/geomstore/extras/error')
 
 const recovery = new ErrorRecovery()
 recovery.configure({
@@ -531,7 +531,7 @@ try {
 **A:** 使用 ErrorMonitoring：
 
 ```javascript
-const { ErrorMonitoring, ConsoleReporter } = require('@openlide/geomstore')
+const { ErrorMonitoring, ConsoleReporter } = require('@openlide/geomstore/extras/error')
 
 const monitoring = new ErrorMonitoring({
   reporters: [new ConsoleReporter()]
@@ -567,7 +567,7 @@ import {
   withCache, 
   withRetry, 
   withTimeout 
-} from '@openlide/geomstore'
+} from '@openlide/geomstore/extras/action'
 
 class DataService {
   results: unknown[] = []
@@ -784,7 +784,7 @@ Page(withPageStore(userStore, { mapState: ['user'] })({
 
 ---
 
-## 行为变更与进阶（v0.1.1 引入，后续版本均保持这些行为；当前版本 v0.2.1）
+## 行为变更与进阶（v0.1.1 引入，后续版本均保持这些行为；当前版本 v0.4.0）
 
 ### Q: 为什么修改 `$snapshot()` 返回的快照会报错？
 

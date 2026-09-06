@@ -209,6 +209,13 @@ store.dispatch('add', 10)        // ✅ 正确
 从简单用法开始，按需使用高级功能：
 
 ```javascript
+// 核心 API 仍从主入口导入；高级能力按需从 extras 子路径引入
+import { createStore, composeStore } from '@openlide/geomstore'
+import { loggerPlugin } from '@openlide/geomstore/extras/plugins'
+import { withDebounce, withRetry, withTimeout } from '@openlide/geomstore/extras/action'
+import { analyzerPlugin } from '@openlide/geomstore/extras/performance'
+import { ErrorBoundary } from '@openlide/geomstore/extras/error'
+
 // Level 1: 基础用法
 const store = createStore({ state, actions })
 
@@ -657,7 +664,7 @@ store.getter('expensiveCalculation')  // 此时才执行
 ### 4. 选择器缓存
 
 ```javascript
-import { createParametricSelector } from '@openlide/geomstore'
+import { createParametricSelector } from '@openlide/geomstore/extras/selector'
 
 // 创建带参数的选择器（第二参数可配置缓存：{ ttl, maxEntries }）
 const selectUserById = createParametricSelector(

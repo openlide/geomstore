@@ -31,7 +31,7 @@
 
 - **Store 组合** - 模块化管理大型应用状态，支持命名空间
 - **插件系统** - 内置日志、持久化、DevTools、时间旅行等插件
-- **错误处理** - 完善的错误边界、恢复策略、监控上报系统
+- **错误处理** - 完善的错误边界、恢复策略、监控上报系统（位于 `extras/error`）
 - **性能监控** - 实时性能指标收集、分析与优化工具
 - **快照系统** - 状态快照、对比、异步克隆与时间旅行调试
 - **Action 增强** - 内置装饰器：日志、防抖、节流、缓存、重试、超时
@@ -66,12 +66,13 @@ yarn add @openlide/geomstore
 import { createStore } from '@openlide/geomstore'
 ```
 
-> 主入口 `@openlide/geomstore` 仅包含**核心 API**（含 `createStore`、小程序集成 `withPageStore` / `withComponentStore` / `withAppStore`、错误处理等）；**可选能力**（插件、选择器、快照、性能监控、Action 增强、企业微信集成）需从子路径 `@openlide/geomstore/extras/*` 按需引入，以减小主包体积：
+> 主入口 `@openlide/geomstore` 仅导出**运行必需的核心 API**（`createStore`、小程序集成 `withPageStore` / `withComponentStore` / `withAppStore`、`composeStore`、LRU 缓存、工具函数）。**可选能力**——插件、选择器、快照、性能监控、Action 增强、企业微信集成、错误处理——从 `@openlide/geomstore/extras/*` 子路径按需引入，以减小主包体积：
 >
 > ```javascript
 > import { createStore, withPageStore } from '@openlide/geomstore'
-> import { persistencePlugin, analyzerPlugin } from '@openlide/geomstore/extras'
+> import { persistencePlugin } from '@openlide/geomstore/extras/plugins'
 > import { createSelector } from '@openlide/geomstore/extras/selector'
+> import { ErrorBoundary } from '@openlide/geomstore/extras/error'
 > ```
 
 ### 方式二：复制编译产物（免构建）
@@ -364,20 +365,26 @@ GeomStore/
 ├── src/                         # 源代码
 │   ├── index.ts                 # 瘦核心入口：export * from './core'
 │   ├── core/                    # 核心实现（始终随主入口打包）
-│   │   ├── index.ts             # 仅导出运行必需 API（Store / 错误处理 / 集成 / compose / LRU / 工具）
+│   │   ├── index.ts             # 仅导出运行必需 API（Store / 集成 / compose / LRU / 工具 / 插件核心）
 │   │   ├── store/               # Store 类与工厂
 │   │   ├── cache/               # LRU 缓存
 │   │   ├── hooks/               # 插件钩子核心（HookSystem / usePlugin）
-│   │   ├── error/               # 错误处理
 │   │   ├── utils/               # 工具函数
 │   │   ├── compose/             # Store 组合
 │   │   ├── selector/            # 选择器实现（经 extras/selector 引入）
 │   │   ├── snapshot/            # 快照实现（经 extras/snapshot 引入）
 │   │   ├── performance/         # 性能监控实现（经 extras/performance 引入）
 │   │   └── action/              # Action 增强实现（经 extras/action 引入）
-│   ├── plugins/                 # 插件实现（经 extras/plugins 引入）
-│   ├── integrations/            # 小程序集成（with-store / with-app-store 在核心；enterprise 经 extras/enterprise 引入）
-│   ├── extras/                  # 可选能力聚合与子入口（snapshot/selector/performance/action/enterprise/plugins）
+│   ├── plugins/                 # 插件实现（logger / persistence / devtools / timeTravel，经 extras/plugins 引入）
+│   ├── integrations/            # 小程序集成（核心集成在 core；enterprise 经 extras/enterprise 引入）
+│   ├── extras/                  # 可选能力子入口（瘦核心不导出，按需引入）
+│   │   ├── error/               # 错误处理（GeomStoreError / ErrorBoundary / 恢复 / 监控，经 extras/error 引入）
+│   │   ├── action.ts            # 执行器与装饰器（withLog / withRetry …）
+│   │   ├── selector.ts          # 选择器（createSelector …）
+│   │   ├── snapshot.ts          # 快照与时间旅行
+│   │   ├── performance.ts       # 性能监控与 analyzerPlugin
+│   │   ├── plugins.ts           # 内置插件聚合
+│   │   └── enterprise.ts        # 企业微信集成
 │   └── types/                   # 类型定义
 ├── dist/                        # 编译产物（CJS 单产物，入口为 dist/index.js）
 │   ├── index.js                 # 入口文件

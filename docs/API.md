@@ -1,8 +1,8 @@
-# GeomStore v0.2.1 API 参考文档
+# GeomStore v0.4.0 API 参考文档
 
 核心公开接口的 API 参考文档，包含类型定义与使用示例（企业版集成、ActionLoader、StoreRegistry 细节等见对应子路径文档或源码 TSDoc）。
 
-> 📦 **模块入口（v0.2.1 起）**：主入口 `@openlide/geomstore`（等价于 `@openlide/geomstore/core`）仅导出**运行必需的核心 API**——`Store`、`createStore`、错误处理、插件核心（`HookSystem`/`usePlugin`/`Plugin`）、小程序集成（`withPageStore`/`withComponentStore`/`withAppStore` + `AppOptions` 类型）、`Store` 组合、LRU 缓存、工具函数。
+> 📦 **模块入口（v0.4.0 起）**：主入口 `@openlide/geomstore`（等价于 `@openlide/geomstore/core`）仅导出**运行必需的核心 API**——`Store`、`createStore`、插件核心（`HookSystem`/`usePlugin`/`Plugin`）、小程序集成（`withPageStore`/`withComponentStore`/`withAppStore` + `AppOptions` 类型）、`Store` 组合、LRU 缓存、工具函数。错误处理（GeomStoreError / ErrorRecovery / ErrorMonitoring / ErrorBoundary 等）已下沉至 `@openlide/geomstore/extras/error`，需从该子路径引入。
 >
 > 快照、选择器、性能监控、Action 增强（执行器 / 装饰器）、内置插件、企业微信集成等**可选能力**收敛至 `./extras` 子路径，按需引入以减小主包体积：
 > - `@openlide/geomstore/extras/plugins` —— `loggerPlugin`、`persistencePlugin`、`devtoolsPlugin`、`WxStorageBackend`、`builtinPlugins`、`timeTravelPlugin`、`createAnalyzerPlugin`
@@ -17,7 +17,7 @@
 
 ## 目录
 
-- [GeomStore v0.2.1 API 参考文档](#geomstore-v021-api-参考文档)
+- [GeomStore v0.4.0 API 参考文档](#geomstore-v040-api-参考文档)
   - [目录](#目录)
   - [核心 API](#核心-api)
     - [createStore](#createstore)
@@ -72,7 +72,7 @@
     - [createMemoizedSelector](#creatememoizedselector)
     - [createParametricSelector](#createparametricselector)
     - [createStructuredSelector](#createstructuredselector)
-  - [错误处理 [核心]](#错误处理-核心)
+  - [错误处理 [Extras]](#错误处理-extras)
     - [GeomStoreError](#geomstoreerror)
     - [ErrorRecovery](#errorrecovery)
     - [ErrorMonitoring](#errormonitoring)
@@ -93,7 +93,7 @@
     - [withRetry](#withretry)
     - [withTimeout](#withtimeout)
     - [createDecorator](#createdecorator)
-  - [ErrorBoundary [核心]](#errorboundary-核心)
+  - [ErrorBoundary [Extras]](#errorboundary-extras)
   - [性能优化工具 [核心]](#性能优化工具-核心)
     - [AsyncBatchNotifier](#asyncbatchnotifier)
     - [StateFingerprint](#statefingerprint)
@@ -1057,7 +1057,7 @@ store.use(persistencePlugin({
 开发者工具插件。
 
 ```javascript
-const { devtoolsPlugin } = require('@openlide/geomstore')
+const { devtoolsPlugin } = require('@openlide/geomstore/extras/plugins')
 
 if (process.env.NODE_ENV === 'development') {
   store.use(devtoolsPlugin)
@@ -1571,7 +1571,7 @@ const summary = selectUserSummary(store.state)
 
 ---
 
-## 错误处理 [核心]
+## 错误处理 [Extras]
 
 ### GeomStoreError
 
@@ -1622,7 +1622,7 @@ class GeomStoreError extends Error {
 **示例：**
 
 ```javascript
-const { GeomStoreError, isGeomStoreError } = require('@openlide/geomstore')
+const { GeomStoreError, isGeomStoreError } = require('@openlide/geomstore/extras/error')
 
 try {
   store.dispatch('someAction')
@@ -1672,7 +1672,7 @@ try {
 **示例：**
 
 ```javascript
-const { ErrorRecovery, RecoveryStrategy } = require('@openlide/geomstore')
+const { ErrorRecovery, RecoveryStrategy } = require('@openlide/geomstore/extras/error')
 
 const recovery = new ErrorRecovery()
 
@@ -1724,7 +1724,7 @@ const result = await recovery.recover(error, { storeName: 'user' })
 **示例：**
 
 ```javascript
-const { ErrorMonitoring, ConsoleReporter, HttpReporter } = require('@openlide/geomstore')
+const { ErrorMonitoring, ConsoleReporter, HttpReporter } = require('@openlide/geomstore/extras/error')
 
 const monitoring = new ErrorMonitoring({
   reporters: [
@@ -1975,7 +1975,7 @@ function withLog(name?: string): MethodDecorator
 **示例：**
 
 ```typescript
-import { withLog } from '@openlide/geomstore'
+import { withLog } from '@openlide/geomstore/extras/action'
 
 class DataService {
   @withLog('fetchData')
@@ -2007,7 +2007,7 @@ function withDebounce(delay?: number): MethodDecorator
 **示例：**
 
 ```typescript
-import { withDebounce } from '@openlide/geomstore'
+import { withDebounce } from '@openlide/geomstore/extras/action'
 
 class SearchService {
   results: unknown[] = []
@@ -2085,7 +2085,7 @@ function withCache(options?: CacheDecoratorOptions): MethodDecorator
 **示例：**
 
 ```typescript
-import { withCache } from '@openlide/geomstore'
+import { withCache } from '@openlide/geomstore/extras/action'
 
 class UserService {
   // API 响应缓存
@@ -2120,7 +2120,7 @@ function withRetry(options?: RetryDecoratorOptions): MethodDecorator
 **示例：**
 
 ```typescript
-import { withRetry } from '@openlide/geomstore'
+import { withRetry } from '@openlide/geomstore/extras/action'
 
 class ApiService {
   // 网络请求重试
@@ -2157,7 +2157,7 @@ function withTimeout(timeout?: number): MethodDecorator
 **示例：**
 
 ```typescript
-import { withTimeout } from '@openlide/geomstore'
+import { withTimeout } from '@openlide/geomstore/extras/action'
 
 class ApiService {
   // 请求超时限制
@@ -2190,7 +2190,7 @@ interface DecoratorOptions {
 **示例：**
 
 ```typescript
-import { createDecorator } from '@openlide/geomstore'
+import { createDecorator } from '@openlide/geomstore/extras/action'
 
 // 创建自定义装饰器
 const withAudit = createDecorator({
@@ -2217,7 +2217,7 @@ class DataService {
 
 ---
 
-## ErrorBoundary [核心]
+## ErrorBoundary [Extras]
 
 错误边界，用于捕获和处理 Action 执行中的错误。
 
@@ -2403,6 +2403,13 @@ type MappedGetters<S, G, M extends (keyof G)[]> = {
 
 ## 版本历史
 
+- **v0.4.0** - 错误子系统下沉、转发层收口与性能优化
+  - **Breaking（错误子系统下沉）**：错误处理（GeomStoreError / createError / ErrorCode / ErrorRecovery / ErrorMonitoring / ErrorBoundary / ErrorHandler 等）从核心入口下沉至 `./extras/error`，主入口 `@openlide/geomstore` 不再导出错误类；请从 `@openlide/geomstore/extras/error` 子路径引入
+  - LRUCache 转发层收口：`Optimizations` 实现模块不再重复转发，出口收敛为 `cache/index`（定义）→ `core/index`（主入口）+ `core/performance/index`（子路径）
+  - `ErrorRecovery` 修复动态 operation id 场景下 `retryWindowStart` / `retryCount` 无界增长（新增容量守卫）
+  - 性能：`createSelector` 缓存比较改为状态版本号 O(1) 整数比较；组合 Store 子 Store 订阅在非只读场景零拷贝；`ComposedStore.isStateKeyDirty` 命名空间模式精确脏追踪
+- **v0.3.0** - 瘦核心拆分与子路径按需引入
+  - 插件 / 选择器 / 快照 / 性能监控 / Action 增强 / 企业微信集成等可选能力迁移至 `src/extras`，并通过 `@openlide/geomstore/extras/*` 子路径按需引入；核心入口仅保留 `createStore` 与小程序集成等核心 API（详见 CHANGELOG）
 - **v0.2.1** - 全量审查第三轮修复与回归修复
   - 数据/视图一致性：$patch 仅对纯对象递归合并（Date/RegExp/类实例等非纯对象整体替换为深拷贝，不再静默丢值）；selector 默认比较器改 deepEqual 且缓存状态快照；bindMappings 对象值免引用脏检查并过滤 undefined
   - 错误子系统：HttpReporter 失败上抛并校验 response.ok；批量 flush 三态判定（超时不算成功、批次重入队）；ErrorBoundary fallback 函数自身抛错时重抛原错误；ErrorRecovery 重试额度按时间窗判定故障周期（修复「新实例重置额度导致 max-retries 失效」回归）

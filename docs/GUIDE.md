@@ -545,7 +545,7 @@ import {
   withCache, 
   withRetry, 
   withTimeout 
-} from '@openlide/geomstore'
+} from '@openlide/geomstore/extras/action'
 
 class DataService {
   searchResults: unknown[] = []
@@ -615,7 +615,7 @@ async cachedSearch(keyword: string) {
 ### 自定义装饰器
 
 ```typescript
-import { createDecorator } from '@openlide/geomstore'
+import { createDecorator } from '@openlide/geomstore/extras/action'
 
 // 创建自定义装饰器：在方法执行前后插入逻辑
 const withAudit = createDecorator({

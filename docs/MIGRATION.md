@@ -1,6 +1,6 @@
 # 迁移指南（Migration Guide）
 
-> 本文档面向正在使用其他小程序状态管理方案、希望迁移到 **GeomStore v0.2.1** 的开发者。
+> 本文档面向正在使用其他小程序状态管理方案、希望迁移到 **GeomStore v0.4.0** 的开发者。
 >
 > GeomStore 是零运行时依赖、TypeScript 优先、面向微信小程序（兼容 Skyline / WebView）的轻量级状态管理库。
 
@@ -11,6 +11,7 @@
 - [迁移指南（Migration Guide）](#迁移指南migration-guide)
   - [目录](#目录)
   - [0. 从旧版 GeomStore 升级（瘦核心）](#0-从旧版-geomstore-升级瘦核心)
+  - [v0.4.0 错误子系统下沉](#v04-0-破坏性变更错误子系统下沉)
   - [1. 迁移总览](#1-迁移总览)
   - [2. 从原生 setData 迁移](#2-从原生-setdata-迁移)
     - [迁移前（原生写法）](#迁移前原生写法)
@@ -29,11 +30,11 @@
 
 ## 0. 从旧版 GeomStore 升级（瘦核心）
 
-> 适用于已在使用 GeomStore（v0.2.0 及更早）并希望升级到 **v0.2.1 瘦核心** 的项目。
+> 适用于已在使用 GeomStore（v0.2.0 及更早）并希望升级到 **v0.4.0 瘦核心 + 错误下沉** 的项目。
 
 ### 为什么需要迁移
 
-v0.2.1 起，主入口 `@openlide/geomstore` 改为**瘦核心**：只导出应用运行所必需的核心 API（`Store`、`createStore`、错误处理、小程序集成 `withPageStore` / `withComponentStore` / `withAppStore`、`composeStore`、LRU 缓存、工具函数）。快照、选择器、性能监控、Action 增强（执行器 / 装饰器）、内置插件、企业微信集成等**高级能力**收敛到 `./extras` 子路径，**不再从主入口导出**。
+v0.2.1 起，主入口 `@openlide/geomstore` 改为**瘦核心**：只导出应用运行所必需的核心 API（`Store`、`createStore`、小程序集成 `withPageStore` / `withComponentStore` / `withAppStore`、`composeStore`、LRU 缓存、工具函数）。快照、选择器、性能监控、Action 增强（执行器 / 装饰器）、内置插件、企业微信集成、错误处理等**高级能力**收敛到 `./extras` 子路径，**不再从主入口导出**。v0.4.0 起，错误处理进一步从核心下沉至 `./extras/error` 子路径（详见下文「v0.4.0 破坏性变更：错误子系统下沉」）。
 
 这样做的好处：主包体积更小，未使用的可选能力不会进入小程序主包；代价是这些能力需要显式从子路径引入。
 
@@ -43,7 +44,7 @@ v0.2.1 起，主入口 `@openlide/geomstore` 改为**瘦核心**：只导出应�
 | ---- | ---- |
 | 可选能力移出主入口 | 原先从 `@openlide/geomstore` 导入的 `SnapshotManager`、`createSelector`、`PerformanceMonitor`、`ActionExecutor`、`withLog`、`loggerPlugin` 等，改为从对应 `extras` 子路径导入 |
 | `createApp` 已移除 | 原 `createApp` 不再提供，App 集成统一使用核心中的 `withAppStore`（仍从主入口导入） |
-| 核心 API 保持兼容 | `createStore`、`Store`、`getState` / `setState`、`dispatch`、小程序集成、错误处理等核心接口签名不变 |
+| 核心 API 保持兼容 | `createStore`、`Store`、`getState` / `setState`、`dispatch`、小程序集成等核心接口签名不变；错误处理下沉至 `extras/error`，其接口签名保持不变 |
 
 ### 迁移示例
 
@@ -87,6 +88,7 @@ App(withAppStore(store, options)(config))
 | Action 增强 | `@openlide/geomstore/extras/action` |
 | 插件 | `@openlide/geomstore/extras/plugins` |
 | 企业微信集成 | `@openlide/geomstore/extras/enterprise` |
+| 错误处理 | `@openlide/geomstore/extras/error` |
 
 ### 升级检查清单
 
@@ -94,6 +96,31 @@ App(withAppStore(store, options)(config))
 - [ ] 将旧版 `createApp(...)` 替换为 `App(withAppStore(store, options)(config))`
 - [ ] 运行 `pnpm typecheck` 确认无缺失导出
 - [ ] 运行 `pnpm test` 全量测试通过
+
+### v0.4.0 破坏性变更：错误子系统下沉
+
+> 适用于已在使用 GeomStore（v0.3.0 及更早）并希望升级到 **v0.4.0** 的项目。
+
+v0.4.0 起，错误处理从核心入口进一步下沉至独立的 `./extras/error` 子路径，主入口 `@openlide/geomstore` **不再导出任何错误类**。这是破坏性变更：凡从主入口导入错误类的代码需在 v0.4.0 改为从 `@openlide/geomstore/extras/error` 引入。
+
+| 变更 | 说明 |
+| ---- | ---- |
+| 错误类移出主入口 | 原先从 `@openlide/geomstore` 导入的 `GeomStoreError`、`createError`、`ErrorCode`、`ErrorRecovery`、`RecoveryStrategy`、`ErrorMonitoring`、`ConsoleReporter`、`ErrorBoundary`、`ErrorHandler` 等，改为从 `@openlide/geomstore/extras/error` 导入 |
+| 接口签名不变 | 错误子系统的 API 形态（错误码、恢复策略、监控上报、边界捕获）与 v0.3.0 保持一致，仅导入路径变化 |
+
+**升级前（v0.3.0）：**
+
+```javascript
+import { ErrorBoundary, ErrorRecovery } from '@openlide/geomstore'
+```
+
+**升级后（v0.4.0）：**
+
+```javascript
+import { ErrorBoundary, ErrorRecovery } from '@openlide/geomstore/extras/error'
+```
+
+- [ ] 全局搜索主入口导入，将 `GeomStoreError` / `createError` / `ErrorCode` / `ErrorRecovery` / `RecoveryStrategy` / `ErrorMonitoring` / `ConsoleReporter` / `ErrorBoundary` / `ErrorHandler` 等改为从 `@openlide/geomstore/extras/error` 引入
 
 ---
 
