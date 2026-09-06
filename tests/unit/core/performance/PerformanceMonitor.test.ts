@@ -575,7 +575,7 @@ describe('计时单位契约（_getTimestamp 恒返回毫秒）', () => {
   const originalWx = (globalThis as any).wx
 
   afterEach(() => {
-    ;(globalThis as any).wx = originalWx
+    (globalThis as any).wx = originalWx
   })
 
   /** 用受控毫秒时钟替换 wx.getPerformance().now() */

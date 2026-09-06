@@ -356,9 +356,10 @@ export function withComponentStore<S extends State, A extends Actions, G extends
         // 移除实例上绑定的 action 方法：同样先做实例级拷贝再删除，
         // 避免 this.methods 仍指向配置级共享对象时误删其他实例仍在使用的方法
         if (this.methods) {
-          this.methods = { ...this.methods }
+          const methods = { ...this.methods }
+          this.methods = methods
           Object.keys(actionsMapping).forEach((localName) => {
-            delete this.methods![localName]
+            delete methods[localName]
           })
         }
         originalDetached?.call(this)
