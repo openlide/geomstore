@@ -246,7 +246,16 @@ export class SelectorComposer {
       const result = {} as Record<K, R>
 
       for (const key of Object.keys(state) as K[]) {
-        result[key] = keySelector(key)(state)
+        // 以 DefineOwnProperty 语义写入：state 可合法含自有 __proto__ 键
+        // （helpers.ts 的 deepMerge/set 有意如此写入），result[key] = … 走 [[Set]]
+        // 会触发 Object.prototype 的 __proto__ setter——该键的派生结果被静默丢弃
+        // 且 result 原型被换掉
+        Object.defineProperty(result, key, {
+          value: keySelector(key)(state),
+          writable: true,
+          enumerable: true,
+          configurable: true,
+        })
       }
 
       return result

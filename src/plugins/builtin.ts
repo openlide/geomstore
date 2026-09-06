@@ -268,6 +268,11 @@ export const devtoolsPlugin: Plugin = {
 
     console.log(`[GeomStore] Plugin "devtools" installed`)
 
+    // 记录本实例注册进全局表的条目，供卸载时按身份守卫清理：
+    // 同一 store.name 后装的第二实例会覆盖这些条目，卸载第一实例时若无条件 delete
+    // 会误删第二实例的接口（与 timeTravelPlugin/analyzerPlugin 的守卫模式对齐）
+    let registeredDevtoolsAPI: unknown
+
     if (typeof globalThis !== 'undefined') {
       const globalObj = globalThis as unknown as Record<string, Record<string, unknown>>
       globalObj.__GEOMSTORE_STORES__ = globalObj.__GEOMSTORE_STORES__ || {}
@@ -317,6 +322,7 @@ export const devtoolsPlugin: Plugin = {
 
       globalObj.__GEOMSTORE_DEVTOOLS__ = globalObj.__GEOMSTORE_DEVTOOLS__ || {}
       globalObj.__GEOMSTORE_DEVTOOLS__[store.name] = devtoolsAPI
+      registeredDevtoolsAPI = devtoolsAPI
 
       console.log(`[GeomStore][devtools] Access API at: globalThis.__GEOMSTORE_DEVTOOLS__["${store.name}"]`)
     }
@@ -324,8 +330,14 @@ export const devtoolsPlugin: Plugin = {
     return () => {
       if (typeof globalThis !== 'undefined') {
         const globalObj = globalThis as unknown as Record<string, Record<string, unknown>>
-        delete globalObj.__GEOMSTORE_STORES__?.[store.name]
-        delete globalObj.__GEOMSTORE_DEVTOOLS__?.[store.name]
+        // 身份守卫：同 store.name 后装的第二实例会覆盖这两个条目，
+        // 无条件 delete 会在卸载第一实例时误删第二实例的接口
+        if (globalObj.__GEOMSTORE_STORES__?.[store.name] === store) {
+          delete globalObj.__GEOMSTORE_STORES__[store.name]
+        }
+        if (registeredDevtoolsAPI !== undefined && globalObj.__GEOMSTORE_DEVTOOLS__?.[store.name] === registeredDevtoolsAPI) {
+          delete globalObj.__GEOMSTORE_DEVTOOLS__[store.name]
+        }
       }
     }
   },

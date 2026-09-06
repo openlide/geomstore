@@ -46,6 +46,10 @@ interface ComponentOptions {
     attached?(this: ComponentInstance): void
     detached?(this: ComponentInstance): void
   }
+  /** 组件生命周期的旧式顶层写法（微信为兼容旧写法保留）。
+   *  与 lifetimes 中同名函数并存时，微信以 lifetimes 为准、顶层声明被覆盖 */
+  attached?(this: ComponentInstance): void
+  detached?(this: ComponentInstance): void
   pageLifetimes?: {
     show?(this: ComponentInstance): void
     hide?(this: ComponentInstance): void
@@ -286,6 +290,14 @@ export function withComponentStore<S extends State, A extends Actions, G extends
 
     // 扩展 lifetimes
     const originalLifetimes = enhancedConfig.lifetimes || {}
+    // 微信规定：顶层 attached/detached 与 lifetimes 中同名函数并存时，lifetimes 覆盖顶层
+    // （官方文档原文「此处 attached 的声明会被 lifetimes 字段中的声明覆盖」）。
+    // 本 HOC 必然注入 lifetimes.attached/detached，若只链式调用 lifetimes 里的原函数，
+    // 用户写在顶层的同名函数会被永久遮蔽、永不执行（定时器不启动、detached 清理泄漏）。
+    // 按微信的优先级捕获：两处都声明时只调 lifetimes 里的，与平台语义一致。
+    // 不删除 enhancedConfig 上的顶层键——微信既已覆盖它便不会再调用，无双重调用风险
+    const originalAttached = originalLifetimes.attached ?? ComponentConfig.attached
+    const originalDetached = originalLifetimes.detached ?? ComponentConfig.detached
     enhancedConfig.lifetimes = {
       ...originalLifetimes,
       attached: function (this: ComponentInstance) {
@@ -335,8 +347,8 @@ export function withComponentStore<S extends State, A extends Actions, G extends
           performAutoInject(this, injectMapping, store, (updates: Record<string, unknown>) => this.setData(updates))
         }
 
-        // 调用原始 attached
-        originalLifetimes.attached?.call(this)
+        // 调用原始 attached（lifetimes 中的优先，缺失时为用户写在顶层的旧式写法）
+        originalAttached?.call(this)
       },
 
       detached: function (this: ComponentInstance) {
@@ -350,7 +362,7 @@ export function withComponentStore<S extends State, A extends Actions, G extends
             delete this.methods![localName]
           })
         }
-        originalLifetimes.detached?.call(this)
+        originalDetached?.call(this)
       },
     }
 

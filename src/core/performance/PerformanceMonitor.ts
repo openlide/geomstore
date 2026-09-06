@@ -221,6 +221,12 @@ export class PerformanceMonitor implements PerformanceMonitorInterface {
    * ```
    */
   record(metrics: PerformanceMetrics): void {
+    // 顺手清理超时未结束的计时条目：调用方缺 try/finally 时 end() 永不执行，
+    // currentOperations 会随错误次数无限增长。
+    // 必须置于采样判断之前——清理是监控器自身的内存维护，与「本条指标是否被采样」
+    // 无关；放在采样之后会让 sampleRate 很低（尤其为 0）时清理永不执行，泄漏照旧
+    this.pruneStaleOperations()
+
     // 采样
     if (Math.random() > this.options.sampleRate) {
       return
@@ -241,10 +247,6 @@ export class PerformanceMonitor implements PerformanceMonitorInterface {
         // 内存监控可能不可用
       }
     }
-
-    // 顺手清理超时未结束的计时条目：调用方缺 try/finally 时 end() 永不执行，
-    // currentOperations 会随错误次数无限增长
-    this.pruneStaleOperations()
 
     // 记录指标
     this.metrics.push(record)
@@ -525,7 +527,12 @@ export class PerformanceMonitor implements PerformanceMonitorInterface {
    * ```
    */
   getRecentMetrics(count: number = 10): PerformanceMetrics[] {
-    return this.metrics.slice(-count)
+    // slice(-0) === slice(0)，会把「最近 0 条」变成返回全部；
+    // 负数则退化为从头截断（slice(5)），与「最近 N 条」语义相反；NaN 同样返回全部
+    if (!Number.isFinite(count) || count <= 0) {
+      return []
+    }
+    return this.metrics.slice(-Math.floor(count))
   }
 
   /**

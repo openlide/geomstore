@@ -286,13 +286,22 @@ export class StateFingerprint {
     }
 
     if (obj instanceof Map) {
+      // Map 与 Set 同为集合，指纹应与插入顺序无关：仓库自带 deepEqual 比较 Map 时
+      // 按键查找、不依赖迭代序，若此处按迭代序组合哈希，两个 deepEqual 判定相等的
+      // Map 会得到不同指纹 → 误判「状态已变化」，触发无谓的重算与 setData
       visited.add(obj as object)
-      let hash = this.hashString('[map]')
+      const entryHashes: number[] = []
       for (const [key, val] of obj) {
-        hash = this.hashCombine(hash, this.hashValue(key, visited, memo))
-        hash = this.hashCombine(hash, this.hashValue(val, visited, memo))
+        // 键值先合成单个条目哈希再参与排序：分别排序会打散键值配对，
+        // 使 Map{a:1,b:2} 与 Map{a:2,b:1} 得到相同指纹
+        entryHashes.push(this.hashCombine(this.hashValue(key, visited, memo), this.hashValue(val, visited, memo)))
       }
       visited.delete(obj as object)
+      entryHashes.sort((a, b) => a - b)
+      let hash = this.hashString('[map]')
+      for (const entryHash of entryHashes) {
+        hash = this.hashCombine(hash, entryHash)
+      }
       memo?.set(obj as object, hash)
       return hash
     }

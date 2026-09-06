@@ -407,7 +407,12 @@ export class SnapshotManager {
       ...this.defaultOptions,
       ...options,
       async: true,
-      batchSize: options.batchSize ?? 100,
+      // batchSize 必须为正数：0 或 NaN 会让 processQueue 里的 `batch.length < batchSize`
+      // 恒为 false，批永远为空 → 立即 break → 无任何克隆且 errors 为空，
+      // 最终 success 判定为 true 而 data 是占位空壳（静默交付半成品）。
+      // 口径与 LRUCache 的容量守卫一致；batchInterval/timeout 的 0 是合法语义
+      // （无延迟 / 立即超时），不可一并抬高下限
+      batchSize: Number.isFinite(options.batchSize) ? Math.max(1, options.batchSize as number) : 100,
       batchInterval: options.batchInterval ?? 0,
       timeout: options.timeout ?? 30000,
     }
@@ -706,6 +711,12 @@ export class SnapshotManager {
       }
 
       if (obj1 === obj2) return
+
+      // NaN 与自身用 === 比较为 false，会落到下方非对象分支被 push 成一条差异，
+      // 使两个含相同 NaN 字段的快照被误判为「有变化」（仓库自带 deepEqual 用 Object.is
+      // 正确处理了这一点）。此处只补 NaN 短路而不整体改用 Object.is：
+      // Object.is(0, -0) 为 false，那会让 0 与 -0 被判为差异，对数值状态引入新误报
+      if (typeof obj1 === 'number' && typeof obj2 === 'number' && Number.isNaN(obj1) && Number.isNaN(obj2)) return
 
       if (typeof obj1 !== typeof obj2) {
         changes.push({ path, oldValue: obj1, newValue: obj2 })

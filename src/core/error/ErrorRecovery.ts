@@ -491,6 +491,10 @@ export class ErrorRecovery {
   /**
    * 清除所有重试计数
    *
+   * 与私有 clearRetryCount 同口径：计数与周期窗必须一起清。只清计数会留下陈旧窗口，
+   * 该窗口在中途过期时触发额度重置，使 max-retries 防重试风暴保护被击穿
+   * （原本应被拦截的重试被放行），且残留窗口条目再无释放路径。
+   *
    * @example
    * ```typescript
    * recovery.clearAllRetryCounts()
@@ -498,6 +502,7 @@ export class ErrorRecovery {
    */
   clearAllRetryCounts(): void {
     this.retryCount.clear()
+    this.retryWindowStart.clear()
   }
 }
 

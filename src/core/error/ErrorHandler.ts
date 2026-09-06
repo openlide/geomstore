@@ -33,6 +33,9 @@ import { createErrorContext, defaultErrorHandler, type ErrorContext, type ErrorH
  * console.log(`Total errors: ${stats.total}`)
  * ```
  */
+/** errorLog 条目上限的默认值：字段初始化与 setMaxLogSize 的非有限值回退共用 */
+const DEFAULT_MAX_LOG_SIZE = 100
+
 export class ErrorHandlerImpl {
   /**
    * 错误处理函数
@@ -53,7 +56,7 @@ export class ErrorHandlerImpl {
    * @private
    * @type {number}
    */
-  private maxLogSize: number = 100
+  private maxLogSize: number = DEFAULT_MAX_LOG_SIZE
 
   /**
    * 设置错误处理器
@@ -226,7 +229,10 @@ export class ErrorHandlerImpl {
    * ```
    */
   setMaxLogSize(size: number): void {
-    this.maxLogSize = Math.max(1, size)
+    // NaN/Infinity 守卫：Math.max(1, NaN) 返回 NaN，此后 logError 的
+    // `length > this.maxLogSize` 与下方截断 while 条件恒为 false，
+    // errorLog 会变成无界增长（入参可能来自 parseInt(配置) 等）
+    this.maxLogSize = Number.isFinite(size) ? Math.max(1, size) : DEFAULT_MAX_LOG_SIZE
 
     // 如果当前日志超过新大小，截断
     while (this.errorLog.length > this.maxLogSize) {

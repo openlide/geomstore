@@ -525,7 +525,15 @@ export function createStructuredSelector<S extends Record<string, unknown>, R ex
 
     for (const [key, selector] of Object.entries(selectors)) {
       if (typeof selector === 'function') {
-        result[key] = selector(state)
+        // 以 DefineOwnProperty 语义写入：选择器映射用计算属性写法（{['__proto__']: fn}）
+        // 可产生自有 __proto__ 键，result[key] = … 走 [[Set]] 会触发 Object.prototype 的
+        // __proto__ setter——该项被静默丢弃且 result 原型被换掉
+        Object.defineProperty(result, key, {
+          value: selector(state),
+          writable: true,
+          enumerable: true,
+          configurable: true,
+        })
       }
     }
 

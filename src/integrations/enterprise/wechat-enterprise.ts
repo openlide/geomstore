@@ -12,6 +12,7 @@
 import { createStore } from '../../core/store/index'
 import type { Store, State } from '../../types/store'
 import { persistencePlugin } from '../../plugins/builtin'
+import { isPlainObject } from '../../core/utils/helpers'
 
 // ==================== wx API 模块级类型声明 ====================
 
@@ -498,8 +499,29 @@ export function restoreFromHotUpdate<S extends State = State>(store: Store<S>, b
     return false
   }
 
+  // 结构预校验：$patch 走 deepMerge，而 deepMerge 对数组等非纯对象会静默跳过合并
+  // （isObject 排除数组）却仍算成功——损坏备份会被当成「已恢复」并删除。
+  // 这类备份永久不可用（不同于下方 catch 的瞬态失败），按过期路径同口径清理两个键，
+  // 否则每次冷启动都会重复告警一遍
+  if (!isPlainObject(backup.state)) {
+    logger.warn('HotUpdate', '备份 state 不是纯对象，跳过恢复并清理')
+    storage.remove(resolvedBackupKey)
+    storage.remove(markerKey)
+    return false
+  }
+
+  // 版本不一致只告警不拦截：CURRENT_VERSION 是本库的版本常量而非宿主 app 版本，
+  // 库升级时备份由旧版写出，硬门禁会白丢用户数据；下方 $patch 的合并语义本身
+  // 就能容忍结构漂移（新版本新增键保留其初始值、备份多余键并入），告警仅供诊断
+  if (backup.version !== CURRENT_VERSION) {
+    logger.warn('HotUpdate', `备份版本(${backup.version})与当前库版本(${CURRENT_VERSION})不一致，按合并语义恢复`)
+  }
+
   try {
-    store.$restore(backup.state as S)
+    // 用 $patch 合并语义而非 $restore（= $replaceState 整树替换）：热更新备份取自
+    // 更新前的旧版本，整树替换会把新版本新增的 state 键整体抹掉，新代码读这些键
+    // 即得 undefined。plugins/builtin.ts 的持久化恢复也为此特意选用 $patch
+    store.$patch(backup.state as Partial<S>)
     storage.remove(resolvedBackupKey)
     storage.remove(markerKey)
     logger.log('HotUpdate', `状态已从备份恢复（版本: ${backup.version}）`)
@@ -632,10 +654,15 @@ export class OfflineManager<S extends State = State> {
       }
     } finally {
       // 回填必须覆盖循环未迭代到的剩余项：中途异常（死信落盘配额满、
-      // onDrop 用户回调抛错）时，剩余项既不在 failedActions 也不在已清空的
+      // onDrop 用户回调抛错）时，剩余项既不在失败段也不在已清空的
       // this.actionQueue——遗漏会让残缺队列落盘覆盖磁盘完整旧队列，丢失成为永久。
       // 含当前项（at-least-once：异常中的操作重新入队重试，可能重复进死信，可接受）
-      this.actionQueue = [...failedActions, ...this.syncPending.slice(this.syncNextIndex), ...this.actionQueue]
+      //
+      // 读 this.syncFailed 而非局部 failedActions：两者初始为同一数组引用，但
+      // clearQueue 在同步进行中会把字段重绑为新的空数组，若仍读局部变量，
+      // 已被用户清空的操作会在此复活并经 saveQueue 落盘——清空被静默撤销。
+      // 改读字段后与 saveQueue 拼接联合视图的口径也一致
+      this.actionQueue = [...this.syncFailed, ...this.syncPending.slice(this.syncNextIndex), ...this.actionQueue]
       // saveQueue 内部已尽力而为（storage.set 不外抛），此处无需再兜底
       this.saveQueue()
       this.syncPending = []
@@ -647,9 +674,18 @@ export class OfflineManager<S extends State = State> {
 
   /**
    * 清空队列
+   *
+   * 同步进行中调用同样生效：syncQueue 采用快照-清空模式，队列分散在
+   * actionQueue（同步期间新入队）、syncPending（本轮待同步快照）、syncFailed（失败段）
+   * 三段，其 finally 会把三段拼回 actionQueue 并落盘。只清 actionQueue 会让
+   * 已「清空」的操作在同步结束时复活继续同步，故三段一并置空——
+   * syncPending 清空后循环条件立即为假、同步停止；清空之后新入队的操作
+   * 仍进 actionQueue，不受影响
    */
   clearQueue(): void {
     this.actionQueue = []
+    this.syncPending = []
+    this.syncFailed = []
     storage.remove(this.queueKey)
   }
 

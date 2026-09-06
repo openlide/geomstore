@@ -83,7 +83,11 @@ export class SubscriptionManager<S extends State = State> implements Subscriptio
       }
       const firstListener = this._listeners.keys().next().value
       if (firstListener !== undefined) {
-        this._listeners.delete(firstListener)
+        // 按注册次数递减而非整条删除：被驱逐的监听器可能注册了 N 份，
+        // 整条删除会让用户仍持有的 N 个退订句柄全部变成静默 no-op，
+        // 也与本类 add/delete 的「注册 N 次通知 N 次、退订只减一」计数语义不一致。
+        // 驱逐一份即腾出新订阅者所需的额度
+        this.delete(firstListener)
       }
     }
 

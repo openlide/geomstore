@@ -196,6 +196,38 @@ class ComposedStore<S extends State = State> implements Store<S> {
     // 初始化实例级钩子系统（组合 Store 使用独立的 HookSystem）
     this.hooks = new HookSystem()
 
+    // 子 store 重名校验。
+    // 命名空间模式下 store.name 同时是两套查找的键，但两者取值方向相反：
+    // getState() 用 result[store.name] = …（后者覆盖前者），
+    // findTargetStoreWithKey 用 stores.find(s => s.name === …)（取第一个）——
+    // 重名会让读落到后一个 store、写落到前一个，读写分裂且全程无告警。
+    // 这是无法正确工作的配置错误（与 composeStore([]) 同属构造期校验），故直接抛错。
+    // 嵌套组合时内层 ComposedStore 的 name 默认同为 'composed'，最容易踩中
+    const nameCounts = new Map<string, number>()
+    for (const store of stores) {
+      nameCounts.set(store.name, (nameCounts.get(store.name) ?? 0) + 1)
+    }
+    const duplicatedNames: string[] = []
+    nameCounts.forEach((count, name) => {
+      if (count > 1) duplicatedNames.push(name)
+    })
+    if (duplicatedNames.length > 0) {
+      if (this._namespace) {
+        throw new Error(
+          `[composeStore] 命名空间模式下子 store 名称不得重复，否则读写会路由到不同 store: ${duplicatedNames.join(', ')}。` +
+            '请为各子 store 设置唯一 name（嵌套组合时给内层传 namespace 字符串以区分）',
+        )
+      }
+      // 非命名空间模式：state 按键平铺合并，重名只影响 stores 映射与歧义提示的可读性，
+      // 按 _mergeStateMaps 的既有口径在开发模式告警而非抛错
+      if (!isProduction()) {
+        console.warn(
+          `[composeStore] 子 store 名称重复 (${duplicatedNames.join(', ')})：stores 映射中后者覆盖前者，` +
+            '建议设置唯一 name 或启用命名空间模式',
+        )
+      }
+    }
+
     // 构建 stores 引用
     for (const store of stores) {
       this.stores[store.name] = store

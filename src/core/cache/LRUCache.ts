@@ -652,7 +652,16 @@ export class LRUCache<K, V> {
   toObject(): Record<string, V> {
     const obj: Record<string, V> = {}
     this.forEach((value, key) => {
-      obj[String(key)] = value
+      // 以 DefineOwnProperty 语义写入：缓存键可来自 state 的自有键，而 state 可合法
+      // 含自有 __proto__ 键（helpers.ts 的 deepMerge/set 有意用 defineOwnProperty 写入）。
+      // obj[key] = value 走 [[Set]]，会触发 Object.prototype 的 __proto__ setter——
+      // 该键被静默丢弃且 obj 原型被换掉。defineProperty 只定义自有数据属性，不触发 setter
+      Object.defineProperty(obj, String(key), {
+        value,
+        writable: true,
+        enumerable: true,
+        configurable: true,
+      })
     })
     return obj
   }

@@ -105,8 +105,10 @@ export class StoreRegistry {
 
     this.stores.set(name, store)
 
-    // 覆盖注册后旧实例已被销毁：若默认 store 指向旧实例，同步指向新实例避免悬空
-    if (this.defaultStore === existingStore) {
+    // 覆盖注册后旧实例已被销毁：若默认 store 指向旧实例，同步指向新实例避免悬空。
+    // 必须排除「两者都为 undefined」——注册全新名字且从未 setDefault 时该等式同样成立，
+    // 否则首个注册的 store 会隐式成为默认，违反 getDefault「未设置则返回 undefined」的契约
+    if (existingStore !== undefined && this.defaultStore === existingStore) {
       this.defaultStore = store
     }
   }
