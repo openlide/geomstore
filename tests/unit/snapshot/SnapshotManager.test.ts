@@ -2405,3 +2405,125 @@ describe('compareSnapshots 数组新增元素（#23 补充）', () => {
     expect(diff.changes.some((c) => c.path === 'root.list[added:2]' && c.kind === 'added')).toBe(true)
   })
 })
+
+// ==================== 覆盖率补全：降级与中止路径 ====================
+describe('覆盖率补全：克隆降级与中止路径', () => {
+  test('COV-R5-001: 同步 ownKeys 抛错且 onError 返回 false 时应中止整个快照', () => {
+    const manager = new SnapshotManager()
+    const onError = jest.fn().mockReturnValue(false)
+    const hostile = new Proxy(
+      { a: 1 },
+      {
+        ownKeys: () => {
+          throw new Error('sync ownKeys boom')
+        },
+      },
+    )
+
+    const result = manager.createSnapshot(hostile, { onError })
+
+    expect(onError).toHaveBeenCalled()
+    expect(onError.mock.calls[0][0].message).toBe('sync ownKeys boom')
+    // onError 返回 false → 抛 SnapshotAbortError 中止，整个快照以失败交付
+    expect(result.success).toBe(false)
+    expect(result.errors.some((e) => e.message.includes('sync ownKeys boom'))).toBe(true)
+  })
+
+  test('COV-R5-002: 同步路径下嵌套子对象中止应上抛而非被逐键 catch 吞掉', () => {
+    const manager = new SnapshotManager()
+    const onError = jest.fn().mockReturnValue(false)
+    const hostile = new Proxy(
+      { a: 1 },
+      {
+        ownKeys: () => {
+          throw new Error('nested sync boom')
+        },
+      },
+    )
+
+    // 根对象是普通对象，子对象才抛错：中止信号须穿过逐键 catch 上抛，
+    // 否则「中止」被降级为静默丢子树且快照仍标记成功
+    const result = manager.createSnapshot({ ok: 1, bad: hostile }, { onError })
+
+    expect(result.success).toBe(false)
+    expect(result.errors.some((e) => e.message.includes('nested sync boom'))).toBe(true)
+  })
+
+  test('COV-R5-003: estimateNodeCount 数组分支在 get 陷阱抛错时按叶子降级计数', async () => {
+    const manager = new SnapshotManager()
+    // Array.prototype.reduce 走 HasProperty/Get（has/get 陷阱），不走
+    // getOwnPropertyDescriptor——既有用例只装了描述符陷阱，实际未触发该 catch
+    const hostileArray = new Proxy([1, 2, 3], {
+      get(target, prop, receiver) {
+        if (prop === '0') {
+          throw new Error('array index trap boom')
+        }
+        return Reflect.get(target, prop, receiver)
+      },
+    })
+
+    const result = await manager.createSnapshotAsync({ arr: hostileArray }, { onError: () => true } as never)
+
+    // 估算阶段降级为叶子计数，不在入口失败
+    expect(result).toBeDefined()
+    expect(Array.isArray(result.errors)).toBe(true)
+  })
+
+  test('COV-R5-004: 异步 processQueue 遇未预期内部异常时落账跳过，且不得兜底填入活引用', async () => {
+    const manager = new SnapshotManager()
+    const liveChild = { secret: 'live-value' }
+    const data = { child: liveChild }
+
+    // 根节点正常处理（会 enqueue 子节点），子节点抛未预期内部异常。
+    // 断言成带方法签名的类型（而非 Record<string, unknown>），否则 jest.spyOn
+    // 会把 method 参数推为 never
+    type NodeProcessor = { processNodeAsync: (...args: unknown[]) => unknown }
+    const processor = manager as unknown as NodeProcessor
+    const original = processor.processNodeAsync.bind(manager)
+    let firstCall = true
+    jest.spyOn(processor, 'processNodeAsync').mockImplementation((...args: unknown[]) => {
+      if (firstCall) {
+        firstCall = false
+        return original(...args)
+      }
+      throw new Error('internal clone boom')
+    })
+
+    const result = await manager.createSnapshotAsync(data, { onError: () => true } as never)
+
+    // 异常落账为 cloneError，队列不中断，快照以失败交付
+    expect(result.success).toBe(false)
+    expect(result.errors.some((e) => e.message.includes('internal clone boom'))).toBe(true)
+    // 关键契约：绝不能把原始活引用兜底填入快照，否则后续对活状态的修改会穿透进快照
+    expect((result.data as { child?: unknown }).child).not.toBe(liveChild)
+
+    jest.restoreAllMocks()
+  })
+
+  test('COV-R5-005: 异步逐键 descriptor 抛错且 onError=false 时应中止快照', async () => {
+    const manager = new SnapshotManager()
+    const onError = jest.fn().mockReturnValue(false)
+    let calls = 0
+    const evil = new Proxy(
+      {},
+      {
+        ownKeys: () => ['boom1'],
+        getOwnPropertyDescriptor(_target, _key) {
+          calls++
+          // 前两次放行使 Object.keys 成功枚举出 boom1，第三次（克隆循环内读取）抛错，
+          // 从而落在逐键 catch 而非入口 ownKeys catch
+          if (calls <= 2) {
+            return { value: 1, writable: true, enumerable: true, configurable: true }
+          }
+          throw new Error('per-key descriptor boom')
+        },
+      },
+    )
+
+    const result = await manager.createSnapshotAsync({ evil }, { onError })
+
+    expect(onError).toHaveBeenCalled()
+    expect(result.success).toBe(false)
+    expect(result.errors.some((e) => e.message.includes('per-key descriptor boom'))).toBe(true)
+  })
+})
