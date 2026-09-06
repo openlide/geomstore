@@ -5,7 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.3.0] - 2026-09-06
+
+### Added
+
+- 瘦核心（thin-core）拆分：插件 / 选择器 / 快照 / 性能监控 / 异步动作增强 / 企业微信集成等可选能力迁移至 `src/extras`，并通过 `@openlide/geomstore/extras/*` 子路径按需引入（如 `extras/snapshot`、`extras/selector`、`extras/performance`、`extras/action`、`extras/enterprise`、`extras/plugins`）；核心入口仅保留 `createStore` 与小程序集成等核心 API，减小主包体积。
 
 ### Changed
 
