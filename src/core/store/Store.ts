@@ -957,9 +957,18 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
     // 不会修改载荷，可直接复用只读保护 Proxy（零拷贝），省去整棵状态树的深拷贝开销。
     // 用户显式 notify.clone=true 时强制拷贝（兼容既有显式配置语义）。
     const needsClone = (this._notifyCloneExplicit && this._notifyClone) || this._subscriptionManager.hasWritableListeners()
-    // 零拷贝模式下传入只读保护 Proxy（状态保护关闭时为原始引用，由用户自行保证不修改）
-    const payload = needsClone || !this._stateProtectionEnabled ? this._state : this._stateProxyManager.createStateProxy(this._state, '')
-    this._subscriptionManager.notify(payload, !needsClone)
+    // 需要克隆：每次通知都生成一份独立深拷贝快照，避免监听器共享被持续就地突变的活对象
+    // （此前直接传原始 this._state 并把 cloneOnNotify 设为 false，导致所有回调在断言时都变成最终态）。
+    // 仅只读订阅者（页面/组件绑定）时跳过深拷贝，传入只读保护 Proxy（零拷贝），且订阅者无法修改载荷。
+    let payload: S
+    if (needsClone) {
+      payload = deepCloneState(this._state)
+    } else if (this._stateProtectionEnabled) {
+      payload = this._stateProxyManager.createStateProxy(this._state, '')
+    } else {
+      payload = this._state
+    }
+    this._subscriptionManager.notify(payload, false)
     // 记录本次通知已覆盖到的变更计数：后续 dispatch 补发按此去重，
     // 避免「续段 setState 已自发通知 + 完成补发」的重复通知
     this._lastNotifiedMutationCount = this._mutationCount

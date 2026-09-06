@@ -14,16 +14,15 @@ import {
   LRUCache,
   AsyncBatchNotifier,
   StateFingerprint,
-  SubscriptionManager,
-  iterativeDeepEqual,
   scheduleIdle,
   debounce,
   throttle,
   createLRUCache,
   createAsyncBatchNotifier,
   createStateFingerprint,
-  createSubscriptionManager,
 } from '@/core/performance'
+import { SubscriptionManager } from '@/core/store/SubscriptionManager'
+import { deepEqual as iterativeDeepEqual } from '@/core/utils/helpers'
 
 describe('LRUCache', () => {
   describe('基础功能', () => {
@@ -797,7 +796,7 @@ describe('SubscriptionManager', () => {
   let manager: SubscriptionManager<{ count: number }>
 
   beforeEach(() => {
-    manager = new SubscriptionManager<{ count: number }>()
+    manager = new SubscriptionManager<{ count: number }>({ storeName: 'test' })
   })
 
   describe('基础功能', () => {
@@ -806,9 +805,12 @@ describe('SubscriptionManager', () => {
       expect(manager).toBeInstanceOf(SubscriptionManager)
     })
 
-    it('PERF-059: subscribe应该返回取消订阅函数', () => {
-      const unsubscribe = manager.subscribe(() => {})
-      expect(typeof unsubscribe).toBe('function')
+    it('PERF-059: add应该注册监听器且经delete退订', () => {
+      const listener = () => {}
+      manager.add(listener)
+      expect(manager.size).toBe(1)
+      manager.delete(listener)
+      expect(manager.size).toBe(0)
     })
   })
 
@@ -818,9 +820,9 @@ describe('SubscriptionManager', () => {
       const listener2 = jest.fn()
       const listener3 = jest.fn()
 
-      manager.subscribe(listener1)
-      manager.subscribe(listener2)
-      manager.subscribe(listener3)
+      manager.add(listener1)
+      manager.add(listener2)
+      manager.add(listener3)
 
       const state = { count: 100 }
       manager.notify(state)
@@ -832,7 +834,7 @@ describe('SubscriptionManager', () => {
 
     it('PERF-061: 多次notify应该每次都触发', () => {
       const listener = jest.fn()
-      manager.subscribe(listener)
+      manager.add(listener)
 
       manager.notify({ count: 1 })
       manager.notify({ count: 2 })
@@ -843,11 +845,11 @@ describe('SubscriptionManager', () => {
   })
 
   describe('取消订阅', () => {
-    it('PERF-062: unsubscribe应该停止通知', () => {
+    it('PERF-062: delete应该停止通知', () => {
       const listener = jest.fn()
-      const unsubscribe = manager.subscribe(listener)
+      manager.add(listener)
 
-      unsubscribe()
+      manager.delete(listener)
       manager.notify({ count: 1 })
 
       expect(listener).not.toHaveBeenCalled()
@@ -857,10 +859,10 @@ describe('SubscriptionManager', () => {
       const listener1 = jest.fn()
       const listener2 = jest.fn()
 
-      const unsubscribe1 = manager.subscribe(listener1)
-      manager.subscribe(listener2)
+      manager.add(listener1)
+      manager.add(listener2)
 
-      unsubscribe1()
+      manager.delete(listener1)
       manager.notify({ count: 1 })
 
       expect(listener1).not.toHaveBeenCalled()
@@ -870,13 +872,13 @@ describe('SubscriptionManager', () => {
     it('PERF-064: 取消订阅后应该能够重新订阅', () => {
       const listener = jest.fn()
 
-      const unsubscribe1 = manager.subscribe(listener)
-      unsubscribe1()
+      manager.add(listener)
+      manager.delete(listener)
 
       manager.notify({ count: 1 })
       expect(listener).not.toHaveBeenCalled()
 
-      manager.subscribe(listener)
+      manager.add(listener)
       manager.notify({ count: 2 })
       expect(listener).toHaveBeenCalledWith({ count: 2 })
     })
@@ -884,31 +886,41 @@ describe('SubscriptionManager', () => {
 
   describe('管理功能', () => {
     it('PERF-065: size应该返回订阅者数量', () => {
-      expect(manager.size()).toBe(0)
+      expect(manager.size).toBe(0)
 
-      manager.subscribe(() => {})
-      expect(manager.size()).toBe(1)
+      manager.add(() => {})
+      expect(manager.size).toBe(1)
 
-      manager.subscribe(() => {})
-      expect(manager.size()).toBe(2)
+      manager.add(() => {})
+      expect(manager.size).toBe(2)
     })
 
-    it('PERF-066: has应该检查监听器是否已订阅', () => {
+    it('PERF-066: 重复add按计数、delete只减一', () => {
       const listener1 = jest.fn()
       const listener2 = jest.fn()
 
-      manager.subscribe(listener1)
+      manager.add(listener1)
+      manager.add(listener1)
+      manager.add(listener2)
 
-      expect(manager.has(listener1)).toBe(true)
-      expect(manager.has(listener2)).toBe(false)
+      expect(manager.size).toBe(3)
+
+      manager.delete(listener1)
+      manager.notify({ count: 1 })
+      expect(listener1).toHaveBeenCalledTimes(1)
+      expect(listener2).toHaveBeenCalledWith({ count: 1 })
+
+      manager.delete(listener1)
+      manager.notify({ count: 2 })
+      expect(listener1).toHaveBeenCalledTimes(1)
     })
 
     it('PERF-067: clear应该清空所有订阅', () => {
       const listener1 = jest.fn()
       const listener2 = jest.fn()
 
-      manager.subscribe(listener1)
-      manager.subscribe(listener2)
+      manager.add(listener1)
+      manager.add(listener2)
 
       manager.clear()
       manager.notify({ count: 1 })
@@ -926,8 +938,8 @@ describe('SubscriptionManager', () => {
       })
       const listener2 = jest.fn()
 
-      manager.subscribe(listener1)
-      manager.subscribe(listener2)
+      manager.add(listener1)
+      manager.add(listener2)
 
       manager.notify({ count: 1 })
 
@@ -941,7 +953,7 @@ describe('SubscriptionManager', () => {
 
   describe('便捷函数', () => {
     it('PERF-069: createSubscriptionManager应该创建实例', () => {
-      const mgr = createSubscriptionManager<{ count: number }>()
+      const mgr = new SubscriptionManager<{ count: number }>({ storeName: 'perf' })
       expect(mgr).toBeInstanceOf(SubscriptionManager)
     })
   })

@@ -3,7 +3,8 @@
  * @file tests/unit/plugins/builtin.test.ts
  */
 
-import { createStore, loggerPlugin, persistencePlugin, devtoolsPlugin } from '@/index'
+import { createStore } from '@/index'
+import { loggerPlugin, persistencePlugin, devtoolsPlugin } from '@/extras/plugins'
 
 describe('Builtin Plugins - 内置插件', () => {
   describe('loggerPlugin', () => {
@@ -235,15 +236,8 @@ describe('Builtin Plugins - 内置插件', () => {
         removeItem: jest.fn(),
       }
 
-      // 使用适配器包装 persistencePlugin
-      const customPersistencePlugin = {
-        name: 'custom-persistence',
-        install: (store: any) => {
-          return (persistencePlugin as any).install(store, {
-            storage: customStorage,
-          })
-        },
-      }
+      // 工厂形式传入自定义 storage 后端
+      const customPersistencePlugin = persistencePlugin({ storage: customStorage } as any)
 
       const store = createStore({
         name: 'test-store',
@@ -259,14 +253,7 @@ describe('Builtin Plugins - 内置插件', () => {
     it('PERSIST-009: 应该支持自定义key', () => {
       mockGetStorageSync.mockReturnValue(null)
 
-      const customPersistencePlugin = {
-        name: 'custom-key-persistence',
-        install: (store: any) => {
-          return (persistencePlugin as any).install(store, {
-            key: 'my-custom-key',
-          })
-        },
-      }
+      const customPersistencePlugin = persistencePlugin({ key: 'my-custom-key' } as any)
 
       const store = createStore({
         name: 'test-store',
@@ -282,14 +269,7 @@ describe('Builtin Plugins - 内置插件', () => {
     it('PERSIST-010: 应该支持函数类型的key', () => {
       mockGetStorageSync.mockReturnValue(null)
 
-      const customPersistencePlugin = {
-        name: 'function-key-persistence',
-        install: (store: any) => {
-          return (persistencePlugin as any).install(store, {
-            key: (name: string) => `custom_${name}_key`,
-          })
-        },
-      }
+      const customPersistencePlugin = persistencePlugin({ key: (name: string) => `custom_${name}_key` } as any)
 
       const store = createStore({
         name: 'test-store',
@@ -1253,7 +1233,8 @@ describe('Builtin Plugins 补充覆盖', () => {
 
     it('DEVTOOLS-COVER-001: 生产环境应该打印警告并返回空卸载函数', () => {
       // 重新加载模块以清除 isProduction 缓存
-      const { createStore: _createStore, devtoolsPlugin: _devtoolsPlugin } = require('@/index')
+      const { createStore: _createStore } = require('@/index')
+      const { devtoolsPlugin: _devtoolsPlugin } = require('@/extras/plugins')
 
       const store = _createStore({ name: 'prod-store', state: { count: 0 } })
       const consoleWarnSpy = jest.spyOn(console, 'warn').mockImplementation()
@@ -1286,7 +1267,8 @@ describe('Builtin Plugins 补充覆盖', () => {
     })
 
     it('LOGGER-COVER-001: 生产环境应该返回空卸载函数且不订阅任何钩子', () => {
-      const { createStore: _createStore, loggerPlugin: _loggerPlugin } = require('@/index')
+      const { createStore: _createStore } = require('@/index')
+      const { loggerPlugin: _loggerPlugin } = require('@/extras/plugins')
 
       const store = _createStore({ name: 'prod-logger-store', state: { count: 0 } })
       const consoleLogSpy = jest.spyOn(console, 'log').mockImplementation()

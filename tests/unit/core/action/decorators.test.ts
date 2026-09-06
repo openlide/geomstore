@@ -675,7 +675,7 @@ describe('Action Decorators', () => {
     })
 
     it('DECORATOR-CACHE-001: 应该使用默认 TTL (5000ms) 缓存方法结果', async () => {
-      const consoleLogSpy = jest.spyOn(console, 'log').mockImplementation()
+      const consoleLogSpy = jest.spyOn(console, 'debug').mockImplementation()
 
       class CacheClass {
         callCount = 0
@@ -878,7 +878,7 @@ describe('Action Decorators', () => {
     })
 
     it('DECORATOR-CACHE-009: keyFn 为 undefined 时应使用 JSON.stringify 生成缓存键', async () => {
-      const consoleLogSpy = jest.spyOn(console, 'log').mockImplementation()
+      const consoleLogSpy = jest.spyOn(console, 'debug').mockImplementation()
 
       class DefaultKeyFnCacheClass {
         callCount = 0

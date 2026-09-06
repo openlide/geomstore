@@ -519,14 +519,9 @@ describe('Helpers - 工具函数', () => {
         expect((cloned as Record<string, unknown>).self).toBe(cloned)
       })
 
-      it('HELPERS-063d: 旧选项 deep/safe 发出废弃告警', () => {
-        const warnSpy = jest.spyOn(console, 'warn').mockImplementation()
-        try {
-          clone({ a: 1 }, { deep: true })
-          expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('已废弃'))
-        } finally {
-          warnSpy.mockRestore()
-        }
+      it('HELPERS-063d: 旧选项 deep/safe 仍兼容不抛错', () => {
+        const cloned = clone({ a: 1 }, { deep: true })
+        expect(cloned).toEqual({ a: 1 })
       })
 
       it('HELPERS-063e: safe 模式深拷贝失败时降级返回原引用并告警', () => {

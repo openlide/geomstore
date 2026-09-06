@@ -362,9 +362,13 @@ export const storeManager = new StoreManager()
 
 // ==================== 3. 热更新处理 ====================
 
+/** 本库版本常量：用于热更新备份的版本比对（区别于宿主 app 版本）。需随发版同步更新 */
+const LIBRARY_VERSION = '1.0.0'
+
 export interface BackupData {
   timestamp: number
   state: unknown
+  version: string
 }
 
 export interface HotUpdateConfig<S extends State = State> {
@@ -387,6 +391,7 @@ function backupState<S extends State = State>(store: Store<S>, backupKey: string
   const backupData: BackupData = {
     timestamp: Date.now(),
     state: store.$snapshot(),
+    version: LIBRARY_VERSION,
   }
   // 写入失败（配额满等）必须抛错：调用方据此跳过标记写入与 applyUpdate，
   // 避免重启后凭空执行一次无源恢复
@@ -510,6 +515,13 @@ export function restoreFromHotUpdate<S extends State = State>(store: Store<S>, b
     storage.remove(resolvedBackupKey)
     storage.remove(markerKey)
     return false
+  }
+
+  // 版本比对：备份 version 与本库版本常量（而非宿主 app 版本）比对。
+  // 硬门禁会在库升级时白丢用户数据，而合并语义本身已能容忍结构漂移，
+  // 故版本不一致只告警、不拦截，仍按下方 $patch 合并语义恢复
+  if (backup.version !== undefined && backup.version !== LIBRARY_VERSION) {
+    logger.warn('HotUpdate', `备份版本(${backup.version})与当前库版本(${LIBRARY_VERSION})不一致，仍按合并语义恢复`)
   }
 
   try {

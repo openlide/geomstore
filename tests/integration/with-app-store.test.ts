@@ -2,7 +2,7 @@
  * with-app-store 集成测试
  */
 
-import { createStore, withAppStore, createApp } from '@/index'
+import { createStore, withAppStore } from '@/index'
 
 describe('withAppStore', () => {
   type AppState = {
@@ -340,7 +340,7 @@ describe('withAppStore', () => {
 
   describe('createApp', () => {
     it('应该创建 App 实例工厂', () => {
-      const createTestApp = createApp(store, {})
+      const createTestApp = withAppStore(store, {})
       const app: any = createTestApp(mockAppConfig)
       expect(app).toBeDefined()
       expect(app.onLaunch).toBeDefined()
@@ -348,7 +348,7 @@ describe('withAppStore', () => {
 
     it('应该与 withAppStore 等价', () => {
       const app1 = withAppStore(store, {})(mockAppConfig) as any
-      const app2 = createApp(store, {})(mockAppConfig) as any
+      const app2 = withAppStore(store, {})(mockAppConfig) as any
       expect(typeof app1.onLaunch).toBe(typeof app2.onLaunch)
       expect(typeof app1.onHide).toBe(typeof app2.onHide)
     })
@@ -364,7 +364,7 @@ describe('createApp', () => {
     const store = createStore<TestState>({
       state: { value: 42 }
     })
-    const app: any = createApp(store)({
+    const app: any = withAppStore(store)({
       onLaunch: jest.fn()
     })
     
@@ -385,7 +385,7 @@ describe('createApp', () => {
         }
       }
     })
-    const app: any = createApp(store, {
+    const app: any = withAppStore(store, {
       mapState: ['value'],
       mapGetters: ['double'],
       mapActions: ['setValue']

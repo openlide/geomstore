@@ -60,9 +60,13 @@ describe('通知行为优化', () => {
         stateProtection: { enabled: false },
       })
       let received: unknown
-      store.subscribe((state) => {
-        received = state
-      })
+      // 零拷贝语义：clone=false + 状态保护关闭 + 只读订阅者时，监听器收到原始状态引用
+      store.subscribe(
+        (state) => {
+          received = state
+        },
+        { readOnly: true },
+      )
 
       store.setState('count', 5)
 

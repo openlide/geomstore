@@ -219,6 +219,8 @@ class ComposedStore<S extends State = State> implements Store<S> {
   private _composedListeners: Map<StateListener<S>, number> = new Map()
   /** 对子 Store 的订阅句柄（destroy 时统一退订，避免闭包残留） */
   private _storeUnsubscribers: Array<() => void> = []
+  /** 子 store 单路合并订阅是否已建立（构造期为缓存失效建立，组合层订阅复用，避免重复占额度） */
+  private _childSubscriptionsReady: boolean = false
   /** 已告警过的 state 键冲突组合（每个组合只告警一次，避免高频 getState 刷屏） */
   private _warnedStateKeyConflicts = new Set<string>()
   /** 子 Store 钩子桥接的退订函数（destroy 时统一移除，防止闭包残留） */
@@ -291,19 +293,48 @@ class ComposedStore<S extends State = State> implements Store<S> {
       }
     }
 
-    // 合并状态缓存失效：任一子 store 状态变化时使合并缓存失效。
-    // 合并结果持有子 store 状态的实时引用（顶层键指向子 store 活引用），值的实时变化经引用自动反映；
-    // 但新增/移除顶层键或子 store 重建需重算才能正确反映，故仅在子 store 通知时失效（而非每次读取重合并），
-    // 降低渲染/computed 热路径的重复合并开销。
-    for (const store of stores) {
-      try {
-        const off = store.subscribe(() => this._invalidateMergedCache())
-        this._cacheInvalidateUnsubscribers.push(off)
-      } catch {
-        // 子 store 订阅失败（如已达上限并采用 throw 策略）：放弃合并缓存，
-        // 降级为每次读取重合并，避免失效订阅缺失导致缓存返回陈旧状态
-        this._mergedCacheEnabled = false
+    // 合并状态缓存失效与组合层通知复用同一条「单路订阅」：构造期即建立（供缓存失效），
+    // 组合层订阅时复用同一条，对每个子 store 只建一份订阅，其回调同时完成
+    // 「缓存失效 + 调度通知」两件事。这样既保证子 store 变化能触发合并缓存重建，
+    // 又不额外占用子 store 的订阅配额（此前多建一条缓存失效订阅会挤掉外部直连监听器）。
+    // 构造期订阅失败（如子 store 已销毁/达上限）则优雅降级：放弃合并缓存，
+    // 后续读取退回每次重合并，避免失效订阅缺失导致缓存返回陈旧状态
+    try {
+      this._ensureChildSubscriptions()
+    } catch {
+      this._mergedCacheEnabled = false
+    }
+  }
+
+  /**
+   * 建立（或复用）对子 store 的单路合并订阅：每个子 store 仅一份，
+   * 回调同时完成「合并缓存失效 + 调度通知」。幂等：已建立则直接返回，
+   * 保证构造期与组合层订阅期共用同一条订阅，不重复占用子 store 订阅额度。
+   */
+  private _ensureChildSubscriptions(): void {
+    if (this._childSubscriptionsReady) {
+      return
+    }
+    const established: Array<() => void> = []
+    try {
+      for (const store of this._stores) {
+        established.push(
+          store.subscribe(() => {
+            this._invalidateMergedCache()
+            this._scheduleNotify()
+          }),
+        )
       }
+      this._storeUnsubscribers.push(...established)
+      this._childSubscriptionsReady = true
+    } catch (error) {
+      // 子 store 订阅失败（如已达上限并采用 throw 策略）：回滚已建句柄，
+      // 重新抛出交给调用方处理——构造期优雅降级（放弃合并缓存），
+      // 组合层订阅期触发监听器回滚，避免半订阅状态
+      for (const unsubscribe of established) {
+        unsubscribe()
+      }
+      throw error
     }
   }
 
@@ -609,7 +640,12 @@ class ComposedStore<S extends State = State> implements Store<S> {
     }
 
     // 使用微任务合并同一事件循环内的多次状态变化（基础库 3.15.0+ 原生支持 queueMicrotask）
-    queueMicrotask(runNotify)
+    // 环境无 queueMicrotask 时降级为 Promise 微任务，保证通知仍能在微任务中执行
+    if (typeof queueMicrotask === 'function') {
+      queueMicrotask(runNotify)
+    } else {
+      Promise.resolve().then(runNotify)
+    }
   }
 
   subscribe(listener: StateListener<S>): () => void {
@@ -624,25 +660,16 @@ class ComposedStore<S extends State = State> implements Store<S> {
     }
     this._composedListeners.set(listener, 1)
 
-    // 单路复用：首个组合层监听器进入时对每个子 store 只建一份订阅。
-    // 此前每个监听器都重复订阅全部子 store，N 个监听器占用 N 份/子store 的
-    // 订阅额度，超出子 store maxSubscribers 时会静默驱逐应用直连的订阅者
-    if (this._storeUnsubscribers.length === 0) {
-      const established: Array<() => void> = []
-      try {
-        for (const store of this._stores) {
-          established.push(store.subscribe(() => this._scheduleNotify()))
-        }
-        this._storeUnsubscribers.push(...established)
-      } catch (error) {
-        // 某个子 store 订阅失败（如已被独立销毁）：回滚已建句柄并移除监听器，
-        // 避免监听器已入集合却收不到通知、也无法退订的半订阅状态
-        for (const unsubscribe of established) {
-          unsubscribe()
-        }
-        this._composedListeners.delete(listener)
-        throw error
-      }
+    // 单路复用：首个组合层监听器进入时对每个子 store 只建一份订阅（与构造期缓存失效
+    // 订阅共用同一条，不重复占额度）。此前每个监听器都重复订阅全部子 store，N 个监听器
+    // 占用 N 份/子store 的订阅额度，超出子 store maxSubscribers 时会静默驱逐应用直连的订阅者
+    try {
+      this._ensureChildSubscriptions()
+    } catch (error) {
+      // 子 store 订阅失败（如已被独立销毁）：回滚已入集合的监听器，
+      // 避免监听器收不到通知、也无法退订的半订阅状态
+      this._composedListeners.delete(listener)
+      throw error
     }
 
     // 与普通 Store.subscribe 保持一致：订阅时不立即回调，

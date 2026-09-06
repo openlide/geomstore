@@ -93,7 +93,8 @@ Object.defineProperty(_persistencePluginFactory, 'name', {
   writable: true,
   configurable: true,
 })
-;(_persistencePluginFactory as unknown as Plugin).install = <S extends State>(store: Store<S>) => installPersistence(store)
+;(_persistencePluginFactory as unknown as Plugin).install = <S extends State>(store: Store<S>, pluginOptions?: PersistenceOptions<S>) =>
+  installPersistence(store, pluginOptions)
 
 export const persistencePlugin: Plugin & {
   <S extends State = State>(options?: PersistenceOptions<S>): Plugin

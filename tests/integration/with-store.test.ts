@@ -682,24 +682,25 @@ describe('withComponentStore - Component集成', () => {
       expect(originalDetached).toHaveBeenCalled()
     })
 
-    it('INTEGRATION-R5-001: 用户写在顶层的 attached/detached 应被调用（旧式写法）', () => {
-      const topLevelAttached = jest.fn()
-      const topLevelDetached = jest.fn()
+    it('INTEGRATION-R5-001: lifetimes 中的 attached/detached 应被调用', () => {
+      const lifetimesAttached = jest.fn()
+      const lifetimesDetached = jest.fn()
       const store = createStore({
         state: { count: 0 },
       })
 
-      // 微信为兼容旧写法支持顶层 attached/detached，但规定 lifetimes 中的同名声明会覆盖它。
-      // 本 HOC 必然注入 lifetimes.attached/detached，故必须由包装函数代为调用顶层写法，
-      // 否则用户的 attached/detached 永不执行（定时器不启动、清理逻辑泄漏）
+      // 瘦核心重构已移除对微信旧式顶层 attached/detached 的兼容（基础库 3.15.0+ 仅支持 lifetimes 写法），
+      // 用户须将生命周期写在 lifetimes 中，HOC 注入的包装函数才会代为调用
       const instance: any = {
         data: {},
         setData(data: any) {
           Object.assign(this.data, data)
         },
         methods: {},
-        attached: topLevelAttached,
-        detached: topLevelDetached,
+        lifetimes: {
+          attached: lifetimesAttached,
+          detached: lifetimesDetached,
+        },
       }
 
       const ComponentWithStore = withComponentStore(store, {
@@ -709,8 +710,8 @@ describe('withComponentStore - Component集成', () => {
       ComponentWithStore.lifetimes?.attached?.call(instance)
       ComponentWithStore.lifetimes?.detached?.call(instance)
 
-      expect(topLevelAttached).toHaveBeenCalledTimes(1)
-      expect(topLevelDetached).toHaveBeenCalledTimes(1)
+      expect(lifetimesAttached).toHaveBeenCalledTimes(1)
+      expect(lifetimesDetached).toHaveBeenCalledTimes(1)
     })
 
     it('INTEGRATION-R5-002: 两处都声明时按微信语义只调 lifetimes 中的，不得双调', () => {

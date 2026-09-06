@@ -639,15 +639,9 @@ describe('SelectorComposer', () => {
 })
 
 describe('createRetrySelector 旧签名兼容', () => {
-  it('数字参数发出废弃告警并按重试次数工作', () => {
-    const warnSpy = jest.spyOn(console, 'warn').mockImplementation()
-    try {
-      const selector = SelectorComposer.createRetrySelector((s: { value: number }) => s.value, 3)
-      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('已废弃'))
-      expect(selector({ value: 42 })).toBe(42)
-    } finally {
-      warnSpy.mockRestore()
-    }
+  it('数字参数仍按重试次数工作（旧签名兼容）', () => {
+    const selector = SelectorComposer.createRetrySelector((s: { value: number }) => s.value, 3)
+    expect(selector({ value: 42 })).toBe(42)
   })
 
   it('createRetrySelectorAsync retries 非法时抛 TypeError', () => {

@@ -18,7 +18,6 @@ import {
   ErrorGroup,
   createDefaultMonitoring,
   getDefaultMonitoring,
-  defaultMonitoring,
   GeomStoreError,
   ErrorCode,
   createError,
@@ -1312,9 +1311,9 @@ describe('ErrorMonitoring', () => {
       expect(customMon).toBeDefined()
     })
 
-    it('MONITOR-034: defaultMonitoring应该是单例', () => {
-      expect(defaultMonitoring).toBeDefined()
-      expect(defaultMonitoring).toBeInstanceOf(ErrorMonitoring)
+    it('MONITOR-034: getDefaultMonitoring()应该是单例', () => {
+      expect(getDefaultMonitoring()).toBeDefined()
+      expect(getDefaultMonitoring()).toBeInstanceOf(ErrorMonitoring)
     })
 
     it('MONITOR-064: getDefaultMonitoring 应该返回惰性单例', () => {
@@ -1325,10 +1324,10 @@ describe('ErrorMonitoring', () => {
       expect(first).toBeInstanceOf(ErrorMonitoring)
     })
 
-    it('MONITOR-065: defaultMonitoring 惰性代理应该能转发成员访问', () => {
+    it('MONITOR-065: getDefaultMonitoring() 惰性代理应该能转发成员访问', () => {
       // 通过代理访问成员不应报错，方法应绑定到真实实例
-      expect(typeof defaultMonitoring.report).toBe('function')
-      expect(defaultMonitoring).toBeInstanceOf(ErrorMonitoring)
+      expect(typeof getDefaultMonitoring().report).toBe('function')
+      expect(getDefaultMonitoring()).toBeInstanceOf(ErrorMonitoring)
     })
   })
 
@@ -1995,18 +1994,18 @@ describe('ErrorMonitoring 边界行为', () => {
     consoleErrorSpy.mockRestore()
   })
 
-  it('MONITOR-BND-003: defaultMonitoring 代理 set/delete 转发到默认实例', () => {
+  it('MONITOR-BND-003: getDefaultMonitoring() 代理 set/delete 转发到默认实例', () => {
     const instance = getDefaultMonitoring()
     const originalConsoleLog = (instance as any).enableConsoleLog
 
-    ;(defaultMonitoring as any).enableConsoleLog = false
+    ;(getDefaultMonitoring() as any).enableConsoleLog = false
     expect((instance as any).enableConsoleLog).toBe(false)
-    ;(defaultMonitoring as any).__proxyTestProp = 42
+    ;(getDefaultMonitoring() as any).__proxyTestProp = 42
     expect((instance as any).__proxyTestProp).toBe(42)
 
-    delete (defaultMonitoring as any).__proxyTestProp
+    delete (getDefaultMonitoring() as any).__proxyTestProp
     expect((instance as any).__proxyTestProp).toBeUndefined()
-    ;(defaultMonitoring as any).enableConsoleLog = originalConsoleLog
+    ;(getDefaultMonitoring() as any).enableConsoleLog = originalConsoleLog
   })
 })
 

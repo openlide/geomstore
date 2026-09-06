@@ -16,6 +16,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 构建产物目录扁平化：CJS 产物由 `dist/cjs/**` 改为 `dist/**`，`main`、`types` 与 `exports` 全部同步（入口现为 `dist/index.js`）。**Breaking（复制安装）**：直接引用 `dist/cjs/...` 路径的项目请改为 `dist/...`；NPM 安装方式不受影响。
 - 子路径转发 stub（`store/`、`hooks/`、`plugins/`、`integrations/` 等 14 个）不再由 `postbuild` 写入仓库根目录：改由 `prepack` 在打包/发布前生成、`postpack` 清理，并新增 `pnpm stubs` / `pnpm stubs:clean` 手动入口；`.gitignore` 中对应的 11 条忽略规则随之移除。
 
+### Breaking（行为变更，需同步调整调用方）
+
+- **移除微信旧式顶层 `attached`/`detached` 兼容**：`withComponentStore` / `withPageStore` 现在仅识别 `lifetimes` 写法（基础库 3.15.0+ 要求），旧式写在组件配置顶层的 `attached`/`detached` 不再被调用。请迁移到 `lifetimes: { attached, detached }`。
+- **`SubscriptionManager` API 重命名（内部类）**：`subscribe` → `add`、`unsubscribe` → `delete`；`size` 由方法改为 getter；移除 `has`。通过 `store.subscribe` 的公共 API 不受影响。
+- **`persistencePlugin` 直接作为插件安装时不再透传第二参数**：`install(store, options)` 的 `options` 被忽略；传入自定义 `storage` / `key` / `filter` / `validate` 等请使用工厂形式 `persistencePlugin(options)`。
+- **热更新备份新增 `version` 字段**：`backupState` 写入库版本常量；`restoreFromHotUpdate` 在备份版本与库版本不一致时仅告警、仍按合并语义（`$patch`）恢复（不再硬门禁白丢用户数据）。
+- **零拷贝通知语义收紧**：`notify.clone=false` 且状态保护关闭时，仅当**无可读写订阅者**（如只读订阅）才返回原始状态引用；存在可读写订阅者时出于安全仍克隆，避免外部篡改内部状态。
+- **`withCache` 命中日志从 `console.log` 改为 `console.debug`**（格式 `[Cache] Hit for <method>`）；移除 `createRetrySelector` 数字参数、`clone` 的 `deep`/`safe` 旧选项的「已废弃」告警（功能仍按旧签名兼容）。
+- **组合 Store 订阅复用单路合并订阅**：组合层 N 个监听器只占用每个子 Store 一份订阅（此前每监听器各占一份），外部直连子 Store 的订阅不再因组合层订阅被静默驱逐。
+
 ## [0.2.1] - 2026-08-28
 
 ### Added
