@@ -10,6 +10,9 @@
 
 import { GeomStoreError, isGeomStoreError, ErrorCode } from './GeomStoreError'
 
+/** retryWindowStart / retryCount 的容量上限：防止动态 operation id 场景下的无界增长 */
+const MAX_RETRY_KEYS = 1000
+
 /**
  * 错误恢复策略类型
  *
@@ -329,6 +332,27 @@ export class ErrorRecovery {
     if (windowStart === undefined || now - windowStart > cycleWindow) {
       this.retryWindowStart.set(retryKey, now)
       this.retryCount.delete(retryKey)
+    }
+
+    // 容量守卫：动态 operation id（如 fetchUser:${id}）场景下，停止调用的键永不触发周期
+    // 重置与清理，retryWindowStart / retryCount 会无界增长。超过阈值时先清理已过期窗口
+    // （最小窗口 60s）的键，仍超限则淘汰最旧插入的键（Map 保留插入顺序），与超窗口重置
+    // 语义一致，避免内存泄漏
+    if (this.retryWindowStart.size > MAX_RETRY_KEYS) {
+      const expiredCutoff = now - 60_000
+      for (const [k, ws] of this.retryWindowStart) {
+        if (ws < expiredCutoff) {
+          this.retryWindowStart.delete(k)
+          this.retryCount.delete(k)
+        }
+      }
+      let guard = 0
+      while (this.retryWindowStart.size > MAX_RETRY_KEYS && guard++ < MAX_RETRY_KEYS) {
+        const oldest = this.retryWindowStart.keys().next().value as string | undefined
+        if (oldest === undefined) break
+        this.retryWindowStart.delete(oldest)
+        this.retryCount.delete(oldest)
+      }
     }
 
     const currentAttempt = this.getRetryCount(retryKey)

@@ -4,8 +4,8 @@
  * 测试覆盖率目标: 95%+
  */
 
-import { ErrorRecovery, RecoveryStrategy, createDefaultErrorRecovery, defaultErrorRecovery } from '../../../src/extras/error/ErrorRecovery'
-import { GeomStoreError, ActionError, StateError, ErrorCode, isGeomStoreError } from '../../../src/extras/error/GeomStoreError'
+import { ErrorRecovery, RecoveryStrategy, createDefaultErrorRecovery, defaultErrorRecovery } from '@/extras/error/ErrorRecovery'
+import { GeomStoreError, ActionError, StateError, ErrorCode, isGeomStoreError, createError } from '@/extras/error/GeomStoreError'
 
 describe('ErrorRecovery 模块', () => {
   let recovery: ErrorRecovery
@@ -1476,3 +1476,35 @@ describe('RETRY 额度按故障周期计量（BUG 回归）', () => {
     await expect(recovery.recover(mkError())).rejects.toThrow('Max retries (2) exceeded')
   })
 })
+
+describe('ErrorRecovery 内存守卫（RECOVERY-LEAK）', () => {
+  it('RECOVERY-LEAK-001: 动态 operation id 场景 retryWindowStart 不无界增长', async () => {
+    const recovery = new ErrorRecovery()
+    // 跳过真实退避等待，避免 1200 次重试的累计延迟
+    ;(recovery as unknown as { delay: () => Promise<void> }).delay = async () => {}
+
+    const makeErr = (id: number) =>
+      createError(ErrorCode.ACTION_EXECUTION_ERROR, `err-${id}`, {
+        operation: `op-${id}`,
+        storeName: 'leak-store',
+      })
+
+    // 触发远超阈值的不同键（每个 operation 唯一），每个仅调用一次（不超 maxRetries），
+    // 使 retryWindowStart 持续累积，验证容量守卫将其限制在阈值附近而非无限增长
+    for (let i = 0; i < 1200; i++) {
+      try {
+        await recovery.recover(makeErr(i), {
+          strategy: RecoveryStrategy.RETRY,
+          maxRetries: 100,
+          retryDelay: 0,
+        })
+      } catch {
+        // RETRY 策略重抛原错误，属预期
+      }
+    }
+
+    const size = (recovery as unknown as { retryWindowStart: Map<string, number> }).retryWindowStart.size
+    expect(size).toBeLessThanOrEqual(1001)
+  })
+})
+
