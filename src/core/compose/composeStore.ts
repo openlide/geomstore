@@ -225,6 +225,8 @@ class ComposedStore<S extends State = State> implements Store<S> {
   private _warnedStateKeyConflicts = new Set<string>()
   /** 子 Store 钩子桥接的退订函数（destroy 时统一移除，防止闭包残留） */
   private _hookUnsubscribers: Array<() => void> = []
+  /** 自上次通知以来发生变更的子 store 名集合：命名空间模式下供 isStateKeyDirty 精确跳过 setData */
+  private _dirtyStores: Set<string> = new Set()
   /** 合并状态缓存：非命名空间/命名空间两种读取形态各缓存一份，子 store 变化时失效 */
   private _mergedCache: Record<string, unknown> | null = null
   /** 只读冻结形态的合并状态缓存（对应 state getter），与 _mergedCache 独立以免冻结影响 getState 消费者 */
@@ -324,6 +326,7 @@ class ComposedStore<S extends State = State> implements Store<S> {
           store.subscribe(
             () => {
               this._invalidateMergedCache()
+              this._dirtyStores.add(store.name)
               this._scheduleNotify()
             },
             { readOnly: true },
@@ -620,6 +623,8 @@ class ComposedStore<S extends State = State> implements Store<S> {
         }
       }
     }
+    // 通知结束清空脏子 store 集合（与 Store._dirtyKeys 语义对齐）
+    this._dirtyStores.clear()
   }
 
   /**
@@ -694,7 +699,18 @@ class ComposedStore<S extends State = State> implements Store<S> {
    * @param _key - 组合层状态键（即子 store 名）
    * @returns 始终返回 true（保守：不跳过任何 setData）
    */
-  isStateKeyDirty(_key: string): boolean {
+  isStateKeyDirty(key: string): boolean {
+    // 合并缓存订阅未建立（降级场景）：无脏追踪，保守返回 true（不跳过 setData，避免丢失更新）
+    if (!this._mergedCacheEnabled) {
+      return true
+    }
+    // 命名空间模式：组合状态键即子 store 名，可精确追踪哪个子 store 变更，
+    // 使集成层据此跳过未变化映射键的冗余 setData（恢复此前被恒 true 抑制的跳过优化）
+    if (this._namespace) {
+      return this._dirtyStores.has(key)
+    }
+    // 非命名空间模式：状态键为子 store 内部 key 平铺，无法精确映射到脏子 store，
+    // 保守返回 true（不跳过 setData），对象值整体替换仍由引用比较兜底
     return true
   }
 
