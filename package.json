@@ -7,18 +7,45 @@
   "sideEffects": false,
   "exports": {
     ".": {
-      "types": "./src/core/index.ts",
-      "default": "./src/core/index.ts"
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
     },
-    "./core": "./src/core/index.ts",
-    "./extras": "./src/extras/index.ts",
-    "./extras/snapshot": "./src/extras/snapshot.ts",
-    "./extras/selector": "./src/extras/selector.ts",
-    "./extras/performance": "./src/extras/performance.ts",
-    "./extras/action": "./src/extras/action.ts",
-    "./extras/enterprise": "./src/extras/enterprise.ts",
-    "./extras/plugins": "./src/extras/plugins.ts",
-    "./extras/error": "./src/extras/error/index.ts",
+    "./core": {
+      "types": "./dist/core/index.d.ts",
+      "default": "./dist/core/index.js"
+    },
+    "./extras": {
+      "types": "./dist/extras/index.d.ts",
+      "default": "./dist/extras/index.js"
+    },
+    "./extras/snapshot": {
+      "types": "./dist/extras/snapshot.d.ts",
+      "default": "./dist/extras/snapshot.js"
+    },
+    "./extras/selector": {
+      "types": "./dist/extras/selector.d.ts",
+      "default": "./dist/extras/selector.js"
+    },
+    "./extras/performance": {
+      "types": "./dist/extras/performance.d.ts",
+      "default": "./dist/extras/performance.js"
+    },
+    "./extras/action": {
+      "types": "./dist/extras/action.d.ts",
+      "default": "./dist/extras/action.js"
+    },
+    "./extras/enterprise": {
+      "types": "./dist/extras/enterprise.d.ts",
+      "default": "./dist/extras/enterprise.js"
+    },
+    "./extras/plugins": {
+      "types": "./dist/extras/plugins.d.ts",
+      "default": "./dist/extras/plugins.js"
+    },
+    "./extras/error": {
+      "types": "./dist/extras/error/index.d.ts",
+      "default": "./dist/extras/error/index.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
