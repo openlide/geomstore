@@ -175,8 +175,11 @@ class ComposedStore<S extends State = State> implements Store<S> {
 
   /** 防抖相关：实例级统一调度，避免多个订阅者各自维护标志导致非首个订阅者丢通知 */
   private _notificationScheduled: boolean = false
-  /** 当前活跃的订阅者集合 */
-  private _composedListeners: Set<StateListener<S>> = new Set()
+  /** 当前活跃的订阅者：监听器 → 注册次数。
+   *  与 SubscriptionManager 同语义——同一函数注册 N 次通知 N 次，退订只减一，
+   *  减到 0 才真正移除。此前用 Set 会使「退订其中一份」直接删除整个监听器，
+   *  用户仍持有的另一份退订句柄静默失效、永不再收到通知。 */
+  private _composedListeners: Map<StateListener<S>, number> = new Map()
   /** 对子 Store 的订阅句柄（destroy 时统一退订，避免闭包残留） */
   private _storeUnsubscribers: Array<() => void> = []
   /** 已告警过的 state 键冲突组合（每个组合只告警一次，避免高频 getState 刷屏） */
@@ -440,14 +443,18 @@ class ComposedStore<S extends State = State> implements Store<S> {
     if (this.destroyed) return
     const state = this.getState()
     // 迭代前快照，防止订阅者在回调中退订导致集合变更
-    for (const listener of [...this._composedListeners]) {
-      try {
-        listener(state)
-      } catch (error) {
-        // 单个 listener 抛错不应中断其余监听器的通知，
-        // 否则错误会冒泡进微任务回调成为 uncaught exception（与 SubscriptionManager 隔离语义一致）
-        if (!isProduction()) {
-          console.error('[GeomStore] Error in composed state listener:', error)
+    const entries = [...this._composedListeners]
+    for (const [listener, count] of entries) {
+      // 按注册次数展开：重复注册的监听器每次通知收到多次回调（与 SubscriptionManager 同语义）
+      for (let i = 0; i < count; i++) {
+        try {
+          listener(state)
+        } catch (error) {
+          // 单个 listener 抛错不应中断其余监听器的通知，
+          // 否则错误会冒泡进微任务回调成为 uncaught exception（与 SubscriptionManager 隔离语义一致）
+          if (!isProduction()) {
+            console.error('[GeomStore] Error in composed state listener:', error)
+          }
         }
       }
     }
@@ -486,12 +493,20 @@ class ComposedStore<S extends State = State> implements Store<S> {
 
   subscribe(listener: StateListener<S>): () => void {
     this._ensureAlive('subscribe')
-    this._composedListeners.add(listener)
+
+    // 重复订阅只递增计数：与 SubscriptionManager.add 一致，
+    // 不参与子 store 订阅的建立（子 store 侧本就单路复用一份）
+    const existingCount = this._composedListeners.get(listener)
+    if (existingCount !== undefined) {
+      this._composedListeners.set(listener, existingCount + 1)
+      return () => this._releaseListener(listener)
+    }
+    this._composedListeners.set(listener, 1)
 
     // 单路复用：首个组合层监听器进入时对每个子 store 只建一份订阅。
     // 此前每个监听器都重复订阅全部子 store，N 个监听器占用 N 份/子store 的
     // 订阅额度，超出子 store maxSubscribers 时会静默驱逐应用直连的订阅者
-    if (this._composedListeners.size === 1 && this._storeUnsubscribers.length === 0) {
+    if (this._storeUnsubscribers.length === 0) {
       const established: Array<() => void> = []
       try {
         for (const store of this._stores) {
@@ -512,15 +527,26 @@ class ComposedStore<S extends State = State> implements Store<S> {
     // 与普通 Store.subscribe 保持一致：订阅时不立即回调，
     // 仅在子 store 状态变化时通知，避免带副作用的监听器在订阅时被意外执行
 
-    return () => {
-      this._composedListeners.delete(listener)
-      // 最后一个监听器退订时撤销对子 store 的订阅，释放子 store 的订阅额度
-      if (this._composedListeners.size === 0 && this._storeUnsubscribers.length > 0) {
-        for (const unsubscribe of this._storeUnsubscribers) {
-          unsubscribe()
-        }
-        this._storeUnsubscribers = []
+    return () => this._releaseListener(listener)
+  }
+
+  /** 释放一份监听器注册：减到 0 才移除，并在无剩余监听器时撤销子 store 订阅 */
+  private _releaseListener(listener: StateListener<S>): void {
+    const count = this._composedListeners.get(listener)
+    if (count === undefined) {
+      return
+    }
+    if (count > 1) {
+      this._composedListeners.set(listener, count - 1)
+      return
+    }
+    this._composedListeners.delete(listener)
+    // 最后一个监听器退订时撤销对子 store 的订阅，释放子 store 的订阅额度
+    if (this._composedListeners.size === 0 && this._storeUnsubscribers.length > 0) {
+      for (const unsubscribe of this._storeUnsubscribers) {
+        unsubscribe()
       }
+      this._storeUnsubscribers = []
     }
   }
 
@@ -660,8 +686,23 @@ class ComposedStore<S extends State = State> implements Store<S> {
 
   startBatch(): void {
     this._ensureAlive('startBatch')
+    this._startBatchOnStores()
+  }
+
+  /** 对各子 store 开启批量：已被独立销毁的子 store 跳过。
+   *
+   *  必须与 _endBatchOnStores 对称容错：此前裸循环在某个子 store 已销毁时抛错中断，
+   *  已成功 startBatch 的子 store 批量深度悬置为 1 且再无 endBatch 到达，
+   *  通知被永久抑制——对仍健康的子 store 是静默失效。跳过已销毁子 store 后
+   *  start/end 两侧深度始终配对（被跳过者从未 start，收尾时同样被跳过）。
+   */
+  private _startBatchOnStores(): void {
     for (const store of this._stores) {
-      store.startBatch()
+      try {
+        store.startBatch()
+      } catch {
+        // 子 store 已被独立销毁：其订阅与状态已清理，跳过开启
+      }
     }
   }
 

@@ -33,6 +33,23 @@ const MAX_SYMBOL_IDS = 1000
 const symbolIds = new Map<symbol, number>()
 let nextSymbolId = 0
 
+/** 按身份编号的对象 → 唯一序号：覆盖函数参数与「无可枚举键的不透明对象」
+ *  （Promise/WeakMap/WeakSet/无状态类实例）。前者经 JSON.stringify 折叠为 null
+ *  （与真实 null 参数撞键），后者恒为 `{}`（与普通空对象及彼此撞键）。
+ *  WeakMap 可随参数回收，无需像 symbolIds 那样设上限 */
+const identityIds = new WeakMap<object, number>()
+let nextIdentityId = 0
+
+/** 取得（或分配）某个按身份标记对象的唯一序号 */
+function identityId(value: object): number {
+  let id = identityIds.get(value)
+  if (id === undefined) {
+    id = ++nextIdentityId
+    identityIds.set(value, id)
+  }
+  return id
+}
+
 /**
  * async 函数原型引用：用于压缩安全的异步判定。
  * `fn.constructor.name === 'AsyncFunction'` 在压缩 mangle 后失效（name 被改写），
@@ -43,22 +60,48 @@ let nextSymbolId = 0
 const ASYNC_FUNCTION_PROTOTYPE = Object.getPrototypeOf(async () => {})
 
 /**
- * 递归排序对象键，保证属性声明顺序不同的等价参数生成相同的缓存键
+ * 递归排序对象键并给每个叶子打上类型标记
  *
- * JSON.stringify 对属性顺序敏感：`{a:1,b:2}` 与 `{b:2,a:1}` 语义等价却生成
- * 不同键，导致缓存命中率下降。此函数仅处理普通对象与数组，其余类型原样返回。
+ * 保证两条性质：属性声明顺序不同的等价参数生成相同键；互异参数生成互异键。
  *
- * Map/Set 特殊处理：Object.keys(Map/Set) 恒为空，若落入通用对象分支会被折叠成 `{}`，
- * 导致内容不同的所有 Map/Set 参数生成同一缓存键而串用缓存。按插入序展开为数组参与序列化
- * （插入序不同的等价 Map 会生成不同键，仅损失命中率，不会串用错误结果——保守正确性优先）。
+ * 第二条此前不成立：JSON.stringify 跨类型不注入，直接用它会**串用缓存**
+ * （返回错误结果，而非仅损失命中率）——
+ * - undefined / 函数 / NaN / Infinity 序列化为 null，与真实 null 参数撞键
+ * - 对象里值为 undefined 的属性被整键丢弃，`{a: undefined}` 与 `{}` 撞键
+ * - RegExp 序列化为 `{}`，所有正则互相撞键且与普通空对象撞键
+ * - Date 序列化为 ISO 字符串，与同文本的字符串参数撞键
+ * - Promise/WeakMap 等无可枚举键的对象恒为 `{}`，互相撞键
+ *
+ * 故所有叶子统一映射为「类型前缀 + 文本」。字符串叶子经 JSON.stringify 转义，
+ * 无法伪造其他类型的前缀（字符串 `"n:5"` 标记为 `s:"n:5"`，与数字 5 的 `n:5` 不同），
+ * 因此标记后的结构再经 JSON.stringify 仍是注入的。
+ *
+ * Map/Set 保留 `__map`/`__set` 包装与插入序（插入序不同的等价 Map 生成不同键，
+ * 仅损失命中率不会串用结果——保守正确性优先）；叶子已带类型标记，
+ * 用户自带的 `__map`/`__set` 键也无法伪造这两种包装。
  *
  * @private
  */
 function sortKeysDeep(value: unknown): unknown {
-  // Symbol 会被 JSON.stringify 序列化为 null，导致互异 Symbol 参数串用缓存：
-  // 带 description 标记区分
-  if (typeof value === 'symbol') {
-    let id = symbolIds.get(value)
+  if (value === undefined) return 'u:'
+  if (value === null) return 'z:'
+
+  const type = typeof value
+  if (type === 'boolean') return `b:${String(value)}`
+  if (type === 'number') {
+    const num = value as number
+    // NaN/Infinity 经 JSON.stringify 变 null；-0 与 0 经 String 同为 '0' 但 Object.is 下不等
+    if (!Number.isFinite(num)) return `n:${String(num)}`
+    return `n:${Object.is(num, -0) ? '-0' : String(num)}`
+  }
+  // BigInt 会让 JSON.stringify 直接抛 TypeError（此前落入 defaultKeyFn 的 catch
+  // 退化为「每次都 miss」），标记后可正常缓存
+  if (type === 'bigint') return `i:${String(value)}`
+  if (type === 'string') return `s:${JSON.stringify(value)}`
+  if (type === 'function') return `f:${identityId(value as object)}`
+  if (type === 'symbol') {
+    const sym = value as symbol
+    let id = symbolIds.get(sym)
     if (id === undefined) {
       // 整表清空而非逐条淘汰：nextSymbolId 保持单调递增，被清空 Symbol 的
       // 旧缓存键（含旧 id）只会自然失配为 miss（损失命中率），不会与新 id 撞键串用
@@ -66,10 +109,14 @@ function sortKeysDeep(value: unknown): unknown {
         symbolIds.clear()
       }
       id = ++nextSymbolId
-      symbolIds.set(value, id)
+      symbolIds.set(sym, id)
     }
-    return `symbol:${String(value)}#${id}`
+    return `symbol:${String(sym)}#${id}`
   }
+
+  if (value instanceof Date) return `d:${String(value.getTime())}`
+  if (value instanceof RegExp) return `r:${JSON.stringify([value.source, value.flags])}`
+
   if (Array.isArray(value)) {
     return value.map(sortKeysDeep)
   }
@@ -83,14 +130,24 @@ function sortKeysDeep(value: unknown): unknown {
   if (value instanceof Set) {
     return { __set: [...value].map(sortKeysDeep) }
   }
-  if (value !== null && typeof value === 'object' && !(value instanceof Date) && !(value instanceof RegExp)) {
-    const sorted: Record<string, unknown> = {}
-    for (const key of Object.keys(value as Record<string, unknown>).sort()) {
-      sorted[key] = sortKeysDeep((value as Record<string, unknown>)[key])
-    }
-    return sorted
+
+  const record = value as Record<string, unknown>
+  const keys = Object.keys(record)
+  // 无可枚举键的非纯对象按身份标记：Object.keys 恒为空，按值序列化会让
+  // 互异的 Promise/WeakMap/无状态类实例全部折叠为 {} 而串用缓存
+  const proto = Object.getPrototypeOf(value)
+  if (keys.length === 0 && proto !== Object.prototype && proto !== null) {
+    return `o:${identityId(value as object)}`
   }
-  return value
+
+  // 纯对象与带可枚举状态的类实例：按键排序后递归，保持值语义
+  // Object.create(null) 承载：参数可合法含自有 __proto__ 键，普通对象上赋值会触发
+  // 原型 setter（键被静默丢弃且容器原型被换）；null 原型对象无该 setter
+  const sorted: Record<string, unknown> = Object.create(null) as Record<string, unknown>
+  for (const key of keys.sort()) {
+    sorted[key] = sortKeysDeep(record[key])
+  }
+  return sorted
 }
 
 /**

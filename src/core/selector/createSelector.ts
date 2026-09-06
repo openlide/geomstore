@@ -367,7 +367,9 @@ export function createMemoizedSelector<S extends Record<string, unknown>, R>(
  * @template R - 返回值类型
  * @param {(state: S, params: P) => R} selectorFn - 接受参数的选择器函数
  * @param {object} [options] - 缓存配置选项
- * @param {number} [options.ttl=5000] - 缓存生存时间（毫秒）
+ * @param {number} [options.ttl=5000] - 缓存生存时间（毫秒）。除 TTL 外，每次调用还会用
+ *   deepEqual 校验 state 内容快照：Store 状态就地变异（引用不变）时立即作废该 state 下的
+ *   全部参数缓存，不会在 TTL 内返回陈旧值
  * @param {number} [options.maxEntries=1000] - 单个 state 下原始类型参数的缓存条目上限
  * @returns {(state: S) => (params: P) => R} 参数化选择器工厂
  * @since 1.0.0
@@ -397,9 +399,15 @@ export function createParametricSelector<S extends Record<string, unknown>, P, R
   // 使用 WeakMap 缓存，避免内存泄漏
   // 外层 WeakMap: state object -> 内层缓存
   // 对于对象参数使用 WeakMap，原始类型使用 Map
+  //
+  // snapshot 字段：Store 状态是就地变异的同一对象（getState 返回活动引用、
+  // setState/$patch 原地写入），WeakMap 键引用恒定，仅靠 TTL 失效会在状态已变化时
+  // 误命中并返回陈旧值（与 SelectorFactory.updateCache 缓存 clone 快照同理）。
+  // 命中前用 deepEqual 校验快照，不等则整体作废内层缓存并刷新快照
   const stateCache = new WeakMap<
     object,
     {
+      snapshot: S
       objectParamsCache: WeakMap<object, { value: R; timestamp: number }>
       primitiveParamsCache: Map<string | number | boolean | symbol | null | undefined, { value: R; timestamp: number }>
     }
@@ -434,10 +442,17 @@ export function createParametricSelector<S extends Record<string, unknown>, P, R
       let cache = stateCache.get(state as object)
       if (!cache) {
         cache = {
+          snapshot: clone(state),
           objectParamsCache: new WeakMap(),
           primitiveParamsCache: new Map(),
         }
         stateCache.set(state as object, cache)
+      } else if (!deepEqual(cache.snapshot, state)) {
+        // 状态已就地变异（WeakMap 键引用不变）：按参数分桶的两份缓存全部作废，
+        // 否则 TTL 内会命中变异前的陈旧结果
+        cache.objectParamsCache = new WeakMap()
+        cache.primitiveParamsCache = new Map()
+        cache.snapshot = clone(state)
       }
 
       // 根据参数类型选择不同的缓存策略

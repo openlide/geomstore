@@ -927,6 +927,21 @@ function installAppLifecycleHooks(): void {
 }
 
 /**
+ * 确保全局 App 已被本模块包装（幂等，不触碰处理器注册表）
+ *
+ * 与 initBackgroundSync 的区别：后者在「全局 App 已被外部替换」时会清空
+ * backgroundSyncHandlers 再重装（旧包装已失效，残留处理器无意义）；本函数只负责
+ * 把包装就位，供 createEnterpriseApp 在返回配置前调用——包装通过替换全局 App 来
+ * 拦截 options.onShow/onHide，必须早于 App(options) 执行，否则拦截不到任何回调。
+ */
+function ensureAppLifecycleHooks(): void {
+  const globalObj = globalThis as { App?: unknown }
+  if (typeof globalObj.App !== 'function') return
+  if (globalObj.App === installedAppWrapper) return
+  installAppLifecycleHooks()
+}
+
+/**
  * 注销指定 Store 的后台同步处理器
  *
  * 账号切换/登出时应调用，避免已销毁 Store 的处理器残留在注册表中，
@@ -983,6 +998,14 @@ export interface EnterpriseAppConfig {
  */
 export function createEnterpriseApp(config: EnterpriseAppConfig = {}) {
   const { maxInactiveTime = 10 * 60 * 1000 } = config
+
+  // 必须在返回配置（即 App(options) 被调用）之前安装全局 App 包装。
+  // 包装靠替换全局 App 拦截 options.onShow/onHide，而 onLaunch/login 里的
+  // initBackgroundSync 执行时框架早已消费完本配置的回调——那时安装拦不到任何东西，
+  // runForegroundChecks/runBackgroundChecks 永不执行，refreshData 与
+  // onForeground/onBackground 全部静默失效（installAppLifecycleHooks 注释已声明此前置要求）。
+  // 无登录用户（store 为 null）时同样要安装：login() 之后注册的处理器依赖包装已就位
+  ensureAppLifecycleHooks()
 
   // 获取当前用户ID
   const currentUserId = storage.get<string>(CURRENT_USER_KEY)

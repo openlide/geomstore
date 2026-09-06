@@ -56,6 +56,10 @@ export function isProduction(): boolean {
  * 仅冻结纯对象与数组（Date/RegExp/Map/Set 等内建对象的 mutator 方法
  * 不走 [[Set]] 陷阱，Object.freeze 无法阻止，冻结无意义故跳过）；
  * 循环引用用 WeakSet 守卫避免重复冻结枝；冻结失败（如 sealed 对象）不拖垮快照。
+ *
+ * 不变量：冻结范围必须 ⊆ deepCloneState 的隔离范围。
+ * 非纯对象（class 实例/Promise/WeakMap 等）在 deepCloneState 中走「保留原引用」
+ * 降级路径，副本与源共享同一实例，故整体跳过——详见下方分支注释。
  */
 export function deepFreezeState<T>(value: T, seen?: WeakSet<object>): T {
   if (value === null || typeof value !== 'object') {
@@ -80,19 +84,25 @@ export function deepFreezeState<T>(value: T, seen?: WeakSet<object>): T {
     return value
   }
 
-  // 非纯对象（class 实例等）不冻结，仅递归其可枚举属性
   const proto = Object.getPrototypeOf(value as object)
   const isPlain = proto === Object.prototype || proto === null
+  // 非纯对象整体跳过：deepCloneState 对它们保留原引用（不可安全克隆的降级路径），
+  // 副本与活状态共享同一实例。此前虽不冻结自身、却仍递归冻结其可枚举成员，
+  // 等于经共享引用冻结了活状态——$snapshot() 之后 action 内写入这些成员会抛
+  // TypeError（生产 warn/silent 下静默丢写）。Date/RegExp/Map/Set 的自有可枚举键
+  // 恒为空，跳过与原先「递归零次 + 不冻结」等价，行为不变
+  if (!isPlain) {
+    return value
+  }
+
   const record = value as Record<string, unknown>
   for (const key of Object.keys(record)) {
     deepFreezeState(record[key], visited)
   }
-  if (isPlain) {
-    try {
-      Object.freeze(value)
-    } catch {
-      // 同上：冻结失败时保留可变引用，不拖垮快照
-    }
+  try {
+    Object.freeze(value)
+  } catch {
+    // 同上：冻结失败时保留可变引用，不拖垮快照
   }
   return value
 }
