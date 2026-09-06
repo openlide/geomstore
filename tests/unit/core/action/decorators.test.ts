@@ -1093,6 +1093,268 @@ describe('Action Decorators', () => {
       expect(instance.callCount).toBe(3)
     })
 
+    it('REGR-CACHE-004: undefined/null/函数参数不得折叠为同一缓存键', async () => {
+      jest.spyOn(console, 'log').mockImplementation()
+
+      class NullishCacheClass {
+        callCount = 0
+
+        @withCache({ ttl: 5000 })
+        async lookup(value: unknown) {
+          this.callCount++
+          return this.callCount
+        }
+      }
+
+      const instance = new NullishCacheClass()
+
+      // 修复前：undefined 与函数经 JSON.stringify 均变 null，三者串用同一缓存键
+      await instance.lookup(undefined)
+      await instance.lookup(null)
+      await instance.lookup(() => 1)
+      await instance.lookup(function named() {})
+
+      expect(instance.callCount).toBe(4)
+    })
+
+    it('REGR-CACHE-005: 不同 RegExp 之间、RegExp 与普通空对象不得折叠为同一缓存键', async () => {
+      jest.spyOn(console, 'log').mockImplementation()
+
+      class RegExpCacheClass {
+        callCount = 0
+
+        @withCache({ ttl: 5000 })
+        async lookup(value: unknown) {
+          this.callCount++
+          return this.callCount
+        }
+      }
+
+      const instance = new RegExpCacheClass()
+
+      // 修复前：RegExp 序列化为 {}，三个正则互相撞键且与空对象撞键
+      await instance.lookup(/aaa/)
+      await instance.lookup(/zzz/g)
+      await instance.lookup(/aaa/g)
+      await instance.lookup({})
+
+      expect(instance.callCount).toBe(4)
+
+      // 同一正则字面量内容应命中缓存（值语义，非身份语义）
+      await instance.lookup(/aaa/)
+      expect(instance.callCount).toBe(4)
+    })
+
+    it('REGR-CACHE-006: Date 与同 ISO 文本的字符串参数不得撞键', async () => {
+      jest.spyOn(console, 'log').mockImplementation()
+
+      class DateCacheClass {
+        callCount = 0
+
+        @withCache({ ttl: 5000 })
+        async lookup(value: unknown) {
+          this.callCount++
+          return this.callCount
+        }
+      }
+
+      const instance = new DateCacheClass()
+      const epoch = new Date(0)
+
+      // 修复前：Date 经 toJSON 变 ISO 字符串，与同文本字符串参数撞键
+      await instance.lookup(epoch)
+      await instance.lookup(epoch.toISOString())
+      await instance.lookup(new Date(1000))
+
+      expect(instance.callCount).toBe(3)
+
+      // 同一时刻的不同 Date 实例应命中缓存（值语义）
+      await instance.lookup(new Date(0))
+      expect(instance.callCount).toBe(3)
+    })
+
+    it('REGR-CACHE-007: 值为 undefined 的属性不得与缺失该键的对象撞键', async () => {
+      jest.spyOn(console, 'log').mockImplementation()
+
+      class UndefinedPropCacheClass {
+        callCount = 0
+
+        @withCache({ ttl: 5000 })
+        async lookup(value: unknown) {
+          this.callCount++
+          return this.callCount
+        }
+      }
+
+      const instance = new UndefinedPropCacheClass()
+
+      // 修复前：JSON.stringify 丢弃值为 undefined 的键，三者均为 {}
+      await instance.lookup({ a: undefined })
+      await instance.lookup({})
+      await instance.lookup({ a: 1, b: undefined })
+      await instance.lookup({ a: 1 })
+
+      expect(instance.callCount).toBe(4)
+    })
+
+    it('REGR-CACHE-008: NaN/Infinity 不得与 null 撞键', async () => {
+      jest.spyOn(console, 'log').mockImplementation()
+
+      class NonFiniteCacheClass {
+        callCount = 0
+
+        @withCache({ ttl: 5000 })
+        async lookup(value: unknown) {
+          this.callCount++
+          return this.callCount
+        }
+      }
+
+      const instance = new NonFiniteCacheClass()
+
+      // 修复前：NaN/Infinity/-Infinity 经 JSON.stringify 均变 null
+      await instance.lookup(NaN)
+      await instance.lookup(Infinity)
+      await instance.lookup(-Infinity)
+      await instance.lookup(null)
+
+      expect(instance.callCount).toBe(4)
+
+      // NaN 与自身应命中（键稳定）
+      await instance.lookup(NaN)
+      expect(instance.callCount).toBe(4)
+    })
+
+    it('REGR-CACHE-009: 不同 Promise/WeakMap 实例不得折叠为同一缓存键', async () => {
+      jest.spyOn(console, 'log').mockImplementation()
+
+      class OpaqueCacheClass {
+        callCount = 0
+
+        @withCache({ ttl: 5000 })
+        async lookup(value: unknown) {
+          this.callCount++
+          return this.callCount
+        }
+      }
+
+      const instance = new OpaqueCacheClass()
+
+      // 修复前：无可枚举键的非纯对象 Object.keys 恒为空，全部折叠为 {}
+      const p1 = Promise.resolve(1)
+      const p2 = Promise.resolve(2)
+      await instance.lookup(p1)
+      await instance.lookup(p2)
+      await instance.lookup(new WeakMap())
+      await instance.lookup({})
+
+      expect(instance.callCount).toBe(4)
+
+      // 同一实例应命中（身份语义）
+      await instance.lookup(p1)
+      expect(instance.callCount).toBe(4)
+    })
+
+    it('REGR-CACHE-010: BigInt 参数应可正常缓存而非每次 miss', async () => {
+      jest.spyOn(console, 'log').mockImplementation()
+
+      class BigIntCacheClass {
+        callCount = 0
+
+        @withCache({ ttl: 5000 })
+        async lookup(value: unknown) {
+          this.callCount++
+          return this.callCount
+        }
+      }
+
+      const instance = new BigIntCacheClass()
+
+      // 修复前：JSON.stringify(BigInt) 抛 TypeError → 退化为 __uncacheable__ 唯一键
+      await instance.lookup(BigInt(10))
+      await instance.lookup(BigInt(10))
+      expect(instance.callCount).toBe(1)
+
+      await instance.lookup(BigInt(20))
+      expect(instance.callCount).toBe(2)
+    })
+
+    it('REGR-CACHE-011: 类型标记后等价参数仍应命中缓存（不得退化为永不命中）', async () => {
+      jest.spyOn(console, 'log').mockImplementation()
+
+      class EquivalentCacheClass {
+        callCount = 0
+
+        @withCache({ ttl: 5000 })
+        async lookup(a: unknown, b: unknown) {
+          this.callCount++
+          return this.callCount
+        }
+      }
+
+      const instance = new EquivalentCacheClass()
+
+      await instance.lookup({ a: 1, b: [2, 'x', true, null] }, 'k')
+      // 键序不同的等价对象 + 内容等价的数组应命中
+      await instance.lookup({ b: [2, 'x', true, null], a: 1 }, 'k')
+      expect(instance.callCount).toBe(1)
+
+      // 带可枚举状态的类实例按值语义比较：字段相同即命中
+      class Point {
+        constructor(
+          public x: number,
+          public y: number,
+        ) {}
+      }
+      await instance.lookup(new Point(1, 2), 'p')
+      await instance.lookup(new Point(1, 2), 'p')
+      expect(instance.callCount).toBe(2)
+
+      // 字符串 "n:5" 不得与数字 5 撞键
+      await instance.lookup(5, 'mix')
+      await instance.lookup('n:5', 'mix')
+      expect(instance.callCount).toBe(4)
+    })
+
+    it('REGR-CACHE-012: 含自有 __proto__ 键的参数不得丢键或撞键', async () => {
+      jest.spyOn(console, 'log').mockImplementation()
+
+      class ProtoKeyCacheClass {
+        callCount = 0
+
+        @withCache({ ttl: 5000 })
+        async lookup(value: unknown) {
+          this.callCount++
+          return this.callCount
+        }
+      }
+
+      const instance = new ProtoKeyCacheClass()
+      // 以 defineProperty 构造自有 __proto__ 数据属性（对象字面量里的 __proto__: 会走原型 setter）
+      const withProtoA = Object.defineProperty({}, '__proto__', {
+        value: 'a',
+        writable: true,
+        enumerable: true,
+        configurable: true,
+      })
+      const withProtoB = Object.defineProperty({}, '__proto__', {
+        value: 'b',
+        writable: true,
+        enumerable: true,
+        configurable: true,
+      })
+
+      // 修复前：sorted[key] = ... 触发 Object.prototype 的 __proto__ setter，
+      // 键被静默丢弃且排序容器原型被换成字符串（静默失败），两个参数折叠为同一 {} 键
+      await instance.lookup(withProtoA)
+      await instance.lookup(withProtoB)
+      await instance.lookup({})
+
+      expect(instance.callCount).toBe(3)
+      // 排序容器自身原型未被污染
+      expect(Object.getPrototypeOf(withProtoA)).toBe(Object.prototype)
+    })
+
     it('DECORATOR-CACHE-015: 参数无法序列化（循环引用）时跳过缓存直接执行', async () => {
       class UnserializableClass {
         callCount = 0

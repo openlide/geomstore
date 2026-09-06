@@ -910,9 +910,10 @@ describe('composeStore', () => {
       const listenerB = jest.fn()
 
       // 绕过 subscribe 的同步初始通知，直接注册会抛错的监听器
-      ;(composed as any)._composedListeners.add(() => {
+      // （_composedListeners 为 Map<listener, 注册次数>，与 SubscriptionManager 同语义）
+      ;(composed as any)._composedListeners.set(() => {
         throw new Error('listener boom')
-      })
+      }, 1)
       composed.subscribe(listenerB)
       listenerB.mockClear()
 
@@ -2074,7 +2075,7 @@ describe('BUG 回归：订阅回滚与 batch 收尾', () => {
     expect(() => composed.subscribe(() => {})).toThrow()
 
     // 回滚：组合层监听器未入册；子 A 的订阅句柄已撤销
-    expect((composed as unknown as { _composedListeners: Set<unknown> })._composedListeners.size).toBe(0)
+    expect((composed as unknown as { _composedListeners: Map<unknown, number> })._composedListeners.size).toBe(0)
     expect((composed as unknown as { _storeUnsubscribers: unknown[] })._storeUnsubscribers.length).toBe(0)
 
     // 释放额度后重新订阅可正常工作
@@ -2294,5 +2295,146 @@ describe('P2 compose 批修复回归', () => {
       uninstall()
       expect((okChild as unknown as { _plugins: unknown[] })._plugins).toHaveLength(0)
     })
+  })
+})
+
+// ==================== 第五轮高危修复回归 ====================
+
+describe('R5 回归：startBatch 容忍已销毁子 store', () => {
+  it('子 store 已销毁时 startBatch 不应使健康子 store 的批量深度悬置', () => {
+    const s1 = createStore({ name: 'r5-batch-a', state: { v: 0 } })
+    const s2 = createStore({ name: 'r5-batch-b', state: { w: 0 } })
+    const composed = composeStore([s1, s2])
+    s2.destroy()
+
+    // 此前裸循环在 s2 抛错中断，s1 批量深度已到 1 且再无 endBatch 到达
+    expect(() => composed.startBatch()).not.toThrow()
+    composed.endBatch()
+
+    // 核心断言：s1 仍健康，其通知不得被悬置的批量深度永久抑制
+    const listener = jest.fn()
+    s1.subscribe(listener)
+    s1.setState('v', 1)
+    s1.setState('v', 2)
+    expect(listener).toHaveBeenCalledTimes(2)
+
+    // destroyStores 标志只在 ComposedStore 实现签名上，Store 接口未暴露
+    ;(composed as unknown as { destroy: (destroyStores?: boolean) => void }).destroy(false)
+  })
+
+  it('batch(fn) 中子 store 已销毁同样不应悬置深度', () => {
+    const s1 = createStore({ name: 'r5-batch-c', state: { v: 0 } })
+    const s2 = createStore({ name: 'r5-batch-d', state: { w: 0 } })
+    const composed = composeStore([s1, s2])
+    s2.destroy()
+
+    composed.batch(() => {
+      s1.setState('v', 5)
+    })
+
+    const listener = jest.fn()
+    s1.subscribe(listener)
+    s1.setState('v', 6)
+    expect(listener).toHaveBeenCalledTimes(1)
+
+    ;(composed as unknown as { destroy: (destroyStores?: boolean) => void }).destroy(false)
+  })
+
+  it('start/end 两侧深度应配对：多次 startBatch 后需等量 endBatch', () => {
+    const s1 = createStore({ name: 'r5-batch-e', state: { v: 0 } })
+    const composed = composeStore([s1])
+
+    composed.startBatch()
+    composed.startBatch()
+    composed.endBatch()
+
+    const listener = jest.fn()
+    s1.subscribe(listener)
+    s1.setState('v', 1)
+    // 深度仍为 1：批量期间的变更被挂起
+    expect(listener).toHaveBeenCalledTimes(0)
+
+    composed.endBatch()
+    // 深度归零：补发批量期间挂起的 v=1 通知
+    expect(listener).toHaveBeenCalledTimes(1)
+
+    s1.setState('v', 2)
+    expect(listener).toHaveBeenCalledTimes(2)
+
+    composed.destroy()
+  })
+})
+
+describe('R5 回归：ComposedStore 订阅计数语义与 Store 对齐', () => {
+  it('同一监听器订阅两次，退订一份后另一份仍应收到通知', async () => {
+    const s1 = createStore({ name: 'r5-sub-a', state: { v: 0 } })
+    const composed = composeStore([s1])
+    const listener = jest.fn()
+
+    const u1 = composed.subscribe(listener)
+    composed.subscribe(listener)
+
+    u1()
+    s1.setState('v', 1)
+    await Promise.resolve()
+    await Promise.resolve()
+
+    // 此前 Set 语义下 u1() 直接删除整个监听器并撤销子 store 订阅，
+    // 用户仍持有的第二份句柄静默失效
+    expect(listener).toHaveBeenCalledTimes(1)
+
+    composed.destroy()
+  })
+
+  it('同一监听器注册两份时每次通知应回调两次', async () => {
+    const s1 = createStore({ name: 'r5-sub-b', state: { v: 0 } })
+    const composed = composeStore([s1])
+    const listener = jest.fn()
+
+    composed.subscribe(listener)
+    composed.subscribe(listener)
+
+    s1.setState('v', 1)
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(listener).toHaveBeenCalledTimes(2)
+
+    composed.destroy()
+  })
+
+  it('全部份数退订后才撤销对子 store 的订阅', async () => {
+    const s1 = createStore({ name: 'r5-sub-c', state: { v: 0 } })
+    const composed = composeStore([s1])
+    const listener = jest.fn()
+
+    const u1 = composed.subscribe(listener)
+    const u2 = composed.subscribe(listener)
+
+    u1()
+    u2()
+    s1.setState('v', 1)
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(listener).toHaveBeenCalledTimes(0)
+    // 组合层已无监听器：子 store 的订阅额度应被释放
+    expect((s1 as unknown as { _subscriptionManager: { size: number } })._subscriptionManager.size).toBe(0)
+
+    composed.destroy()
+  })
+
+  it('对照：普通 Store 的计数语义（注册两次通知两次，退订一次仍通知）', () => {
+    const s = createStore({ name: 'r5-sub-d', state: { v: 0 } })
+    const listener = jest.fn()
+    const u1 = s.subscribe(listener)
+    s.subscribe(listener)
+
+    s.setState('v', 1)
+    expect(listener).toHaveBeenCalledTimes(2)
+
+    u1()
+    s.setState('v', 2)
+    expect(listener).toHaveBeenCalledTimes(3)
   })
 })

@@ -715,4 +715,57 @@ describe('就地变异状态的缓存正确性（BUG 回归）', () => {
     selector({ ...live })
     expect(callCount).toBe(1)
   })
+
+  it('REGR-SEL-003: 参数化选择器（原始参数）状态就地变异后不应返回陈旧值', () => {
+    // createParametricSelector 以 state 引用作 WeakMap 键，而 Store 状态就地变异、
+    // 引用恒定：仅靠 TTL 失效会在 TTL 内一直返回变异前的结果
+    const live: { users: Record<string, { name: string }> } = { users: { u1: { name: 'old' } } }
+    let callCount = 0
+    const selector = createParametricSelector((s: typeof live, id: string) => {
+      callCount++
+      return s.users[id].name
+    })
+    const getUser = selector(live)
+
+    expect(getUser('u1')).toBe('old')
+
+    live.users.u1.name = 'new'
+
+    expect(getUser('u1')).toBe('new')
+    expect(callCount).toBe(2)
+  })
+
+  it('REGR-SEL-004: 参数化选择器（对象参数）状态就地变异后不应返回陈旧值', () => {
+    const live: { items: Array<{ price: number }> } = { items: [{ price: 100 }] }
+    let callCount = 0
+    const selector = createParametricSelector((s: typeof live, params: { index: number }) => {
+      callCount++
+      return s.items[params.index].price
+    })
+    const getPrice = selector(live)
+    const params = { index: 0 }
+
+    expect(getPrice(params)).toBe(100)
+
+    live.items[0].price = 250
+
+    expect(getPrice(params)).toBe(250)
+    expect(callCount).toBe(2)
+  })
+
+  it('REGR-SEL-005: 参数化选择器在状态未变时仍应命中缓存', () => {
+    const live: { users: Record<string, { name: string }> } = { users: { u1: { name: 'a' }, u2: { name: 'b' } } }
+    let callCount = 0
+    const selector = createParametricSelector((s: typeof live, id: string) => {
+      callCount++
+      return s.users[id].name
+    })
+    const getUser = selector(live)
+
+    expect(getUser('u1')).toBe('a')
+    expect(getUser('u1')).toBe('a')
+    expect(getUser('u2')).toBe('b')
+    // u1 两次调用只算一次；u2 另算一次
+    expect(callCount).toBe(2)
+  })
 })

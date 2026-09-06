@@ -848,6 +848,43 @@ describe('Store - 核心功能', () => {
       expect(Object.isFrozen(snapshot.user)).toBe(true)
     })
 
+    it('REGR-STORE-003: $snapshot 不得经共享的类实例冻结活状态', () => {
+      class User {
+        profile: { name: string } = { name: 'Alice' }
+      }
+      const store = createStore({ state: { user: new User() } })
+      const liveProfile = store.getState().user.profile
+
+      store.$snapshot()
+
+      // 类实例是 deepCloneState 的「保留原引用」降级路径，快照与活状态共享该实例；
+      // 冻结范围必须 ⊆ 克隆隔离范围，否则会经共享引用冻结活状态
+      expect(Object.isFrozen(liveProfile)).toBe(false)
+    })
+
+    it('REGR-STORE-004: $snapshot 之后 action 内写入类实例成员仍应生效', () => {
+      class User {
+        profile: { name: string } = { name: 'Alice' }
+      }
+      const store = createStore({
+        state: { user: new User() },
+        actions: {
+          rename(this: { state: { user: User } }) {
+            this.state.user.profile.name = 'Bob'
+          },
+        },
+      })
+
+      store.dispatch('rename')
+      expect(store.getState().user.profile.name).toBe('Bob')
+
+      store.$snapshot()
+      store.dispatch('rename')
+
+      // 此前 $snapshot 会冻结活状态的 profile，此处写入抛 TypeError
+      expect(store.getState().user.profile.name).toBe('Bob')
+    })
+
     it('STORE-067: $restore应该从快照恢复状态', () => {
       const store = createStore({
         state: { count: 0, user: { name: 'Alice' } },

@@ -1479,3 +1479,108 @@ describe('覆盖率补充：热更新守卫与恢复失败路径', () => {
     spy.mockRestore()
   })
 })
+
+// ==================== 第五轮高危回归：createEnterpriseApp 初始化时序 ====================
+
+describe('R5 回归：createEnterpriseApp 必须在 App(options) 之前安装生命周期包装', () => {
+  const originalApp = (global as any).App
+  // 捕获 App(options) 实际接收的 options（包装后），供测试触发生命周期回调
+  let appOptions: Record<string, any> | null = null
+
+  // 函数形式的全局 App：与真实小程序一致，用户回调经 options 注册，
+  // 框架直接调用 options 上的回调（改 prototype 拦不到）
+  const mockApp = (options: Record<string, any> = {}) => {
+    appOptions = options
+    return options
+  }
+
+  beforeEach(() => {
+    Object.keys(mockStorage).forEach((key) => delete mockStorage[key])
+    storeManager.clearAll()
+    jest.clearAllMocks()
+    // 每个用例都从「未包装的原始 App」开始，模拟小程序冷启动时的全局状态
+    ;(global as any).App = mockApp
+    appOptions = null
+  })
+
+  afterAll(() => {
+    (global as any).App = originalApp
+  })
+
+  it('ENTERPRISE-R5-001: 工厂返回时全局 App 应已被包装', () => {
+    expect((global as any).App).toBe(mockApp)
+
+    createEnterpriseApp()
+
+    // 修复前包装只在 onLaunch/login 里安装，此时全局 App 仍是原始的
+    expect((global as any).App).not.toBe(mockApp)
+    expect(typeof (global as any).App).toBe('function')
+  })
+
+  it('ENTERPRISE-R5-002: App(createEnterpriseApp()) 应拦截到 onShow/onHide', () => {
+    const config = createEnterpriseApp() as Record<string, any>
+    // 包装器就地改写传入的 options，故须在 App() 之前留存原引用才能判断是否被替换
+    const originalOnShow = config.onShow
+    expect(typeof originalOnShow).toBe('function')
+    expect(config.onHide).toBeUndefined()
+
+    // 关键时序：App 在 createEnterpriseApp() 求值之后才解析，拿到的已是包装函数
+    ;(global as any).App(config)
+
+    expect(appOptions).not.toBeNull()
+    expect(config.onShow).not.toBe(originalOnShow)
+    // onHide 即使配置未提供也被注入，否则切后台检查无从触发
+    expect(typeof config.onHide).toBe('function')
+  })
+
+  it('ENTERPRISE-R5-003: 包装后的 onShow 仍应执行配置原有的 onShow 逻辑', () => {
+    mockStorage['current_user_id'] = 'r5-user-1'
+    const config = createEnterpriseApp() as Record<string, any>
+    config.onLaunch()
+    ;(global as any).App(config)
+
+    const hideLoadingSpy = jest.spyOn(mockWx, 'hideLoading')
+    // 无离线队列时原 onShow 体不弹 loading，但必须被调用且不抛错
+    expect(() => appOptions!.onShow()).not.toThrow()
+    expect(hideLoadingSpy).not.toHaveBeenCalled()
+  })
+
+  it('ENTERPRISE-R5-004: App 创建之后注册的处理器应能经包装 onShow 收到回调', () => {
+    const config = createEnterpriseApp() as Record<string, any>
+    ;(global as any).App(config)
+
+    // 模拟 login() 的时序：处理器在 App 已创建之后才注册
+    const store = createStore({
+      name: 'r5-bg-store',
+      state: { refreshed: 0 },
+      actions: {
+        refreshData() {
+          (this.state as any).refreshed++
+        },
+      },
+    })
+    const onForeground = jest.fn()
+    const onBackground = jest.fn()
+    initBackgroundSync({ store, maxInactiveTime: -1, onForeground, onBackground })
+
+    // 修复前 runForegroundChecks/runBackgroundChecks 只存在于「未被安装」的包装闭包里，
+    // 通过 App(config) 注册的 onShow/onHide 永不触发它们，以下全部静默失效
+    appOptions!.onShow()
+    expect(store.state.refreshed).toBe(1)
+    expect(onForeground).toHaveBeenCalledTimes(1)
+
+    appOptions!.onHide()
+    expect(onBackground).toHaveBeenCalledTimes(1)
+  })
+
+  it('ENTERPRISE-R5-005: 重复调用工厂不应层层叠加包装', () => {
+    createEnterpriseApp()
+    const afterFirst = (global as any).App
+
+    createEnterpriseApp()
+    const afterSecond = (global as any).App
+
+    // 已是本模块包装时直接跳过，避免 onShow 被包装多层导致检查重复执行
+    expect(afterSecond).toBe(afterFirst)
+  })
+})
