@@ -35,9 +35,13 @@ export const loggerPlugin: Plugin = {
 
     console.log(`[GeomStore] Plugin "logger" installed`)
 
-    const unsubscribe = store.subscribe((state) => {
-      console.log('[GeomStore] State changed:', state)
-    })
+    // 只读订阅：仅打印日志，不修改载荷，避免为 logger 引入整树深拷贝
+    const unsubscribe = store.subscribe(
+      (state) => {
+        console.log('[GeomStore] State changed:', state)
+      },
+      { readOnly: true },
+    )
 
     const unhookBeforeSetState = store.hooks.on('beforeSetState', (key: unknown, value: unknown) => {
       console.log('[GeomStore] Setting state:', key, '=>', value)
@@ -198,24 +202,28 @@ function installPersistence<S extends State>(store: Store<S>, options: Persisten
   // 防抖窗口内最近一次待写入的状态：卸载时用于同步补写，避免最后一次变更丢失
   let pendingState: Partial<S> | null = null
 
-  const unsubscribe = store.subscribe((state) => {
-    const stateToSave = filter ? filter(state) : state
+  // 只读订阅：仅序列化后落盘，不修改载荷，避免为持久化引入整树深拷贝
+  const unsubscribe = store.subscribe(
+    (state) => {
+      const stateToSave = filter ? filter(state) : state
 
-    if (debounceMs > 0) {
-      if (debounceTimer) {
-        clearTimeout(debounceTimer)
-      }
-      pendingState = stateToSave
-      debounceTimer = setTimeout(() => {
-        // 卸载后不再执行保存操作
-        if (isUninstalled) return
-        pendingState = null
+      if (debounceMs > 0) {
+        if (debounceTimer) {
+          clearTimeout(debounceTimer)
+        }
+        pendingState = stateToSave
+        debounceTimer = setTimeout(() => {
+          // 卸载后不再执行保存操作
+          if (isUninstalled) return
+          pendingState = null
+          saveState(stateToSave)
+        }, debounceMs)
+      } else {
         saveState(stateToSave)
-      }, debounceMs)
-    } else {
-      saveState(stateToSave)
-    }
-  })
+      }
+    },
+    { readOnly: true },
+  )
 
   function saveState(state: Partial<S>): void {
     // 卸载后不再执行保存操作

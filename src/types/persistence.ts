@@ -34,7 +34,14 @@ export interface PersistenceOptions<S extends State = State> {
   validate?: (state: unknown) => state is S
   /** 是否恢复状态 */
   restore?: boolean
-  /** 防抖延迟（毫秒） */
+  /**
+   * 防抖延迟（毫秒），默认 0（每次变更立即落盘）。
+   *
+   * 默认立即写入可保证「变更即持久化」的可靠性，但每次通知都会执行一次
+   * `JSON.stringify(整棵状态树)` + 同步 `wx.setStorageSync`（小程序内为阻塞 I/O）。
+   * 高频更新场景（输入联想、拖拽、轮询）建议设为 300~500，或配合 `filter`
+   * 只持久化必要子集；插件卸载时会自动补写防抖窗口内未落盘的最后一次变更。
+   */
   debounce?: number
   /** 卸载插件时是否清除存储数据（默认 false，仅停止监听，保留已持久化的数据） */
   clearOnUninstall?: boolean

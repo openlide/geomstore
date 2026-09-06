@@ -132,7 +132,9 @@ export function bindMappings(
   setter(initialValues)
 
   // 订阅 Store 变化（单个订阅覆盖全部映射，进一步减少回调数）
-  const unsubscribe = subscribeStore(() => updateAll())
+  // 标记只读：updateAll 只读取状态写入 data，从不修改载荷，
+  // 使 Store 走零拷贝路径（传只读保护 Proxy），避免每次通知的整树深拷贝
+  const unsubscribe = subscribeStore(() => updateAll(), { readOnly: true })
   unbinds.push(unsubscribe)
 
   return unbinds

@@ -319,10 +319,15 @@ class ComposedStore<S extends State = State> implements Store<S> {
     try {
       for (const store of this._stores) {
         established.push(
-          store.subscribe(() => {
-            this._invalidateMergedCache()
-            this._scheduleNotify()
-          }),
+          // 标记为只读订阅：回调仅做缓存失效与通知调度，从不写入子 store 状态。
+          // 使子 store 在「仅组合层订阅」场景下走零拷贝路径，省去每次通知的整树深拷贝
+          store.subscribe(
+            () => {
+              this._invalidateMergedCache()
+              this._scheduleNotify()
+            },
+            { readOnly: true },
+          ),
         )
       }
       this._storeUnsubscribers.push(...established)

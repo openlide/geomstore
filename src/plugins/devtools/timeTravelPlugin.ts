@@ -210,11 +210,16 @@ export const timeTravelPlugin = <S extends State = State>(options: TimeTravelOpt
       }
 
       // 监控状态变化
-      const unsubscribe = store.subscribe((state) => {
-        if (autoRecord) {
-          recordSnapshot(state as S)
-        }
-      })
+      // 只读订阅：仅读取状态做快照，不修改载荷（快照自身仍需独立深拷贝，
+      // 否则会与后续变更共享活引用），避免额外引入一份整树深拷贝
+      const unsubscribe = store.subscribe(
+        (state) => {
+          if (autoRecord) {
+            recordSnapshot(state as S)
+          }
+        },
+        { readOnly: true },
+      )
 
       // 立即记录初始状态
       recordSnapshot(store.getState() as S)
