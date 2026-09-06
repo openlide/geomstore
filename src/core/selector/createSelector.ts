@@ -7,6 +7,7 @@
 
 import type { Selector, SelectorOptions, SelectorCacheItem, SelectorResult } from '../../types/selector'
 import { deepEqual, clone } from '../utils/helpers'
+import { getStateVersion } from '../store/stateVersion'
 
 /**
  * 选择器工厂类
@@ -137,9 +138,19 @@ export class SelectorFactory<S extends Record<string, unknown> = Record<string, 
    *
    * @private
    */
-  private isCacheHit(item: SelectorCacheItem<R>, state: S, now: number): boolean {
+  private isCacheHit(item: SelectorCacheItem<R>, state: S, now: number, stateVersion: number | undefined): boolean {
+    // TTL 判定先行：比状态比较便宜，过期条目无需再比较
+    if (item.timestamp + this.options.cacheTTL <= now) {
+      return false
+    }
+    // 版本化快路径：Store 状态带版本号时退化为 O(1) 整数比较，免去此前
+    // 每次执行都要对 cache + cacheHistory 逐条做全树 deepEqual 的开销
+    if (item.version !== undefined && stateVersion !== undefined) {
+      return item.version === stateVersion
+    }
+    // 回退：状态无版本标记（非 Store 状态，如直接传入的普通对象），沿用 equalityFn 比较
     const stateEqual = this.options.equalityFn ? this.options.equalityFn(item.state, state) : item.state === state
-    return stateEqual && item.timestamp + this.options.cacheTTL > now
+    return stateEqual
   }
 
   /**
@@ -151,13 +162,15 @@ export class SelectorFactory<S extends Record<string, unknown> = Record<string, 
    */
   private findCacheHit(state: S): SelectorCacheItem<R> | null {
     const now = Date.now()
+    // 版本号只读取一次，供全部候选条目比较复用（O(1)）
+    const stateVersion = getStateVersion(state)
 
-    if (this.cache && this.isCacheHit(this.cache, state, now)) {
+    if (this.cache && this.isCacheHit(this.cache, state, now, stateVersion)) {
       return this.cache
     }
 
     for (let i = this.cacheHistory.length - 1; i >= 0; i--) {
-      if (this.isCacheHit(this.cacheHistory[i], state, now)) {
+      if (this.isCacheHit(this.cacheHistory[i], state, now, stateVersion)) {
         const hit = this.cacheHistory[i]
         this.cache = hit
         this.cacheHistory.splice(i, 1)
@@ -182,11 +195,15 @@ export class SelectorFactory<S extends Record<string, unknown> = Record<string, 
     //   无法检测变异，TTL 内返回陈旧值；
     // - 引用相等 (a === b) 场景下若仍 clone，则「克隆体」与当前「活引用」永不等 → 永远 miss，
     //   故直接缓存活引用，使同一引用命中、不同引用（含变异后的新对象）正确 miss。
-    const stateForCache = this.options.equalityFn === deepEqual ? clone(state) : state
+    const version = getStateVersion(state)
+    // 有版本号：命中判定改用版本比较，不再依赖内容快照，故无需克隆整棵状态树；
+    // 无版本号（普通对象）时仍需快照，否则就地变异无法被 deepEqual 感知
+    const stateForCache = version === undefined && this.options.equalityFn === deepEqual ? clone(state) : state
     const cacheItem: SelectorCacheItem<R> = {
       value,
       timestamp: Date.now(),
       state: stateForCache,
+      version,
     }
 
     // 更新当前缓存
@@ -416,6 +433,8 @@ export function createParametricSelector<S extends Record<string, unknown>, P, R
   const stateCache = new WeakMap<
     object,
     {
+      /** 状态版本号（Store 状态）；undefined 表示无版本标记，回退快照 + deepEqual 校验 */
+      version?: number
       snapshot: S
       objectParamsCache: WeakMap<object, { value: R; timestamp: number }>
       primitiveParamsCache: Map<string | number | boolean | symbol | null | undefined, { value: R; timestamp: number }>
@@ -428,6 +447,11 @@ export function createParametricSelector<S extends Record<string, unknown>, P, R
    * 避免高基数参数场景下 Map 无界增长
    */
   const maintainPrimitiveCache = (cacheMap: Map<string | number | boolean | symbol | null | undefined, { value: R; timestamp: number }>, now: number): void => {
+    // 仅在接近容量上限时才做清理：过期条目在读取侧已按 timestamp + ttl 判定（不会命中），
+    // 故无需每次写入都全表扫描（此前每次写入都遍历至多 maxEntries 条，高基数参数下开销显著）
+    if (cacheMap.size < maxEntries) {
+      return
+    }
     if (ttl > 0) {
       for (const [key, entry] of cacheMap) {
         if (entry.timestamp + ttl <= now) {
@@ -448,17 +472,30 @@ export function createParametricSelector<S extends Record<string, unknown>, P, R
       const now = Date.now()
 
       // 获取或创建 state 对应的缓存
+      const version = getStateVersion(state)
       let cache = stateCache.get(state as object)
       if (!cache) {
         cache = {
-          snapshot: clone(state),
+          version,
+          // 有版本号时无需内容快照：命中校验改用版本比较
+          snapshot: version === undefined ? clone(state) : state,
           objectParamsCache: new WeakMap(),
           primitiveParamsCache: new Map(),
         }
         stateCache.set(state as object, cache)
+      } else if (version !== undefined) {
+        // 版本化快路径：O(1) 整数比较判定状态是否变化，免去此前每次调用
+        // 都要对整棵状态树做一次 deepEqual 的开销（长列表逐行取数时是 O(N×T)）
+        if (cache.version !== version) {
+          // 状态已就地变异（WeakMap 键引用不变）：两份参数缓存全部作废，
+          // 否则 TTL 内会命中变异前的陈旧结果
+          cache.objectParamsCache = new WeakMap()
+          cache.primitiveParamsCache = new Map()
+          cache.version = version
+          cache.snapshot = state
+        }
       } else if (!deepEqual(cache.snapshot, state)) {
-        // 状态已就地变异（WeakMap 键引用不变）：按参数分桶的两份缓存全部作废，
-        // 否则 TTL 内会命中变异前的陈旧结果
+        // 回退：无版本标记（普通对象），沿用快照 + deepEqual 校验
         cache.objectParamsCache = new WeakMap()
         cache.primitiveParamsCache = new Map()
         cache.snapshot = clone(state)

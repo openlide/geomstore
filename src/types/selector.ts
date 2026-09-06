@@ -31,6 +31,12 @@ export interface SelectorCacheItem<R> {
   timestamp: number
   /** 缓存的state引用 */
   state: unknown
+  /**
+   * 缓存条目对应的状态版本号（来自 Store 的变更计数）。
+   * 有值时命中判定退化为 O(1) 整数比较，无需 deepEqual 全树比较；
+   * 为 undefined 表示状态无版本标记（普通对象），回退到 equalityFn 比较。
+   */
+  version?: number
 }
 
 /**

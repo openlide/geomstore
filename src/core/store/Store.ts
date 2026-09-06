@@ -47,6 +47,7 @@ import { ActionManager, GetterManager } from './ActionManager'
 import { BatchManager } from './BatchManager'
 import type { ProxyCache, InternalStateProtectionConfig } from './types'
 import { deepCloneState, deepFreezeState, isProduction } from './utils'
+import { defineStateVersion } from './stateVersion'
 import { AsyncBatchNotifier } from '../performance/Optimizations'
 
 // Plugin类型别名
@@ -385,6 +386,8 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
 
       // 深拷贝新状态，防止外部修改 newState 影响 Store 内部状态
       this._state = deepCloneState(resolvedState)
+      // 整树替换后 state 是新对象，需重新挂版本号 getter
+      defineStateVersion(this._state, () => this._mutationCount)
 
       // 更新新状态缓存
       if (this._cacheManager.enabled) {
@@ -821,6 +824,8 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
     const resolvedState = typeof state === 'function' ? (state as () => S)() : state
     // 深拷贝初始状态，防止外部修改 options.state 引用污染 Store 内部状态（与 $replaceState 行为一致）
     this._state = resolvedState ? deepCloneState(resolvedState) : ({} as S)
+    // 挂状态版本号 getter：供选择器以 O(1) 判定状态是否变化（见 core/store/stateVersion.ts）
+    defineStateVersion(this._state, () => this._mutationCount)
   }
 
   /** 初始化Actions和Getters */
