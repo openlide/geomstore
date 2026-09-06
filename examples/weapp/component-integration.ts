@@ -16,29 +16,20 @@ const cartStore = createStore({
   }),
   actions: {
     addItem(item: { id: number; name: string; price: number }) {
-      // @ts-ignore
       const existingItem = this.state.items.find((i) => i.id === item.id)
       if (existingItem) {
-        // @ts-ignore
         const items = this.state.items.map((i) => (i.id === item.id ? { ...i, quantity: i.quantity + 1 } : i))
-        // @ts-ignore
         this.setState('items', items)
       } else {
-        // @ts-ignore
         this.setState('items', [...this.state.items, { ...item, quantity: 1 }])
       }
-      // @ts-ignore
       this.setState('totalCount', this.state.totalCount + 1)
     },
     removeItem(id: number) {
-      // @ts-ignore
       const item = this.state.items.find((i) => i.id === id)
       if (item) {
-        // @ts-ignore
         const items = this.state.items.filter((i) => i.id !== id)
-        // @ts-ignore
         this.setState('items', items)
-        // @ts-ignore
         this.setState('totalCount', this.state.totalCount - item.quantity)
       }
     },
@@ -61,17 +52,17 @@ Component(
       componentName: 'cart-list',
     },
     methods: {
-      onAddItem(e: { currentTarget: { dataset: { item: { id: number; name: string; price: number } } } }) {
+      onAddItem(this: any, e: { currentTarget: { dataset: { item: { id: number; name: string; price: number } } } }) {
         const item = e.currentTarget.dataset.item
         this.addItem(item)
       },
-      onRemoveItem(e: { currentTarget: { dataset: { id: number } } }) {
+      onRemoveItem(this: any, e: { currentTarget: { dataset: { id: number } } }) {
         const id = e.currentTarget.dataset.id
         this.removeItem(id)
       },
     },
     lifetimes: {
-      attached() {
+      attached(this: any) {
         console.log('Cart component attached')
         console.log('Cart items:', this.data.items)
         console.log('Total count:', this.data.totalCount)

@@ -112,6 +112,7 @@ export type { TimeTravelOptions } from './plugins/devtools/index'
 // ==================== 微信小程序集成 ====================
 export { withPageStore, withComponentStore } from './integrations/with-store'
 export { withAppStore, createApp } from './integrations/with-app-store'
+export type { AppOptions } from './integrations/with-app-store'
 export type {
   ConnectOptions,
   PageThis,

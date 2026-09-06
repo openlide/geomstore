@@ -18,7 +18,7 @@ export type { ConnectOptions } from '../types/integration'
 
 // ==================== 类型定义 ====================
 
-interface AppOptions {
+export interface AppOptions {
   globalData?: Record<string, unknown>
   onLaunch?(this: AppOptions, ...args: unknown[]): void
   onShow?(...args: unknown[]): void
