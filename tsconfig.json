@@ -24,6 +24,8 @@
     "verbatimModuleSyntax": false,
     "experimentalDecorators": true,
     "emitDecoratorMetadata": true,
+    "noEmit": true,
+    "incremental": false,
     "types": ["node", "jest"],
     "paths": {
       "@/*": ["./src/*"],

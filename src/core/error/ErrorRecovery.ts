@@ -323,9 +323,7 @@ export class ErrorRecovery {
     // 不再调用 recover，残留计数无清除路径），重置计数使额度按周期而非按错误码终身累计。
     // 周期判定是启发式：调用方自身重试耗时若使间隔超出窗口，会被视为新周期重新计额
     const now = Date.now()
-    const cycleSpan = useExponentialBackoff
-      ? baseDelay * (Math.pow(2, maxRetries) - 1)
-      : baseDelay * maxRetries
+    const cycleSpan = useExponentialBackoff ? baseDelay * (Math.pow(2, maxRetries) - 1) : baseDelay * maxRetries
     const cycleWindow = Math.max(60_000, cycleSpan * 2)
     const windowStart = this.retryWindowStart.get(retryKey)
     if (windowStart === undefined || now - windowStart > cycleWindow) {

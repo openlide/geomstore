@@ -574,14 +574,14 @@ export class SnapshotManager {
                       configurable: t.descriptor.configurable,
                     })
                   } else {
-                    (t.container as Record<string, unknown>)[t.key as string] = result
+                    ;(t.container as Record<string, unknown>)[t.key as string] = result
                   }
                 } else if (t.kind === 'index') {
-                  (t.container as unknown[])[t.key as number] = result
+                  ;(t.container as unknown[])[t.key as number] = result
                 } else if (t.kind === 'mapValue') {
-                  (t.container as Map<unknown, unknown>).set(t.key, result)
+                  ;(t.container as Map<unknown, unknown>).set(t.key, result)
                 } else {
-                  (t.container as Set<unknown>).add(result)
+                  ;(t.container as Set<unknown>).add(result)
                 }
               } catch (error) {
                 // 单个位置填充失败只降级记录错误，不中断队列：
@@ -1083,10 +1083,7 @@ export class SnapshotManager {
     // 处理普通对象
     // 保留源对象原型：类实例快照后仍是该类实例（方法/继承链可用），
     // 仅复制自有可枚举属性，不触发任何构造器或 getter
-    const cloned: Record<string, unknown> = Object.create(Object.getPrototypeOf(value) as object | null) as Record<
-      string,
-      unknown
-    >
+    const cloned: Record<string, unknown> = Object.create(Object.getPrototypeOf(value) as object | null) as Record<string, unknown>
     context.visited.set(value as object, cloned)
 
     // keys 计算纳入 try：Proxy 的 ownKeys/getOwnPropertyDescriptor 陷阱抛错时
@@ -1184,12 +1181,7 @@ export class SnapshotManager {
             depth: context.depth,
             // 数据属性复用已取到的描述符值；访问器属性的 getter 已证明会抛错，
             // 不经 safeReadProperty 二次触发；描述符都拿不到才尝试兜底读取
-            value:
-              descriptor && 'value' in descriptor
-                ? descriptor.value
-                : descriptor
-                  ? undefined
-                  : safeReadProperty(value as Record<string, unknown>, key),
+            value: descriptor && 'value' in descriptor ? descriptor.value : descriptor ? undefined : safeReadProperty(value as Record<string, unknown>, key),
             recoverable: true,
           },
         )
@@ -1413,10 +1405,7 @@ export class SnapshotManager {
     // 处理普通对象
     // 保留源对象原型：类实例快照后仍是该类实例（方法/继承链可用），
     // 仅复制自有可枚举属性，不触发任何构造器或 getter
-    const cloned: Record<string, unknown> = Object.create(Object.getPrototypeOf(value) as object | null) as Record<
-      string,
-      unknown
-    >
+    const cloned: Record<string, unknown> = Object.create(Object.getPrototypeOf(value) as object | null) as Record<string, unknown>
     context.visited.set(value as object, cloned)
 
     // keys 计算纳入 try（与同步路径同语义：陷阱抛错走 onError 降级）
@@ -1523,12 +1512,7 @@ export class SnapshotManager {
             depth: context.depth,
             // 数据属性复用已取到的描述符值；访问器属性的 getter 已证明会抛错，
             // 不经 safeReadProperty 二次触发；描述符都拿不到才尝试兜底读取
-            value:
-              descriptor && 'value' in descriptor
-                ? descriptor.value
-                : descriptor
-                  ? undefined
-                  : safeReadProperty(value as Record<string, unknown>, key),
+            value: descriptor && 'value' in descriptor ? descriptor.value : descriptor ? undefined : safeReadProperty(value as Record<string, unknown>, key),
             recoverable: true,
           },
         )

@@ -36,24 +36,13 @@
 │  └─────────────────────────────────────────────────────┘   │
 │                                                             │
 │  ┌─────────────────────────────────────────────────────┐   │
-│  │               Core Layer (核心层)                     │   │
-│  │                                                       │   │
-│  │  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌────────┐  │   │
-│  │  │  Store  │  │ Compose │  │ Selector│  │ Action │  │   │
-│  │  │         │  │  Store  │  │         │  │        │  │   │
-│  │  └─────────┘  └─────────┘  └─────────┘  └────────┘  │   │
-│  │                                                       │   │
-│  │  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌────────┐  │   │
-│  │  │  Cache  │  │ Snapshot│  │  Error  │  │ Perform│  │   │
-│  │  │  LRU    │  │ Manager │  │ Handler │  │ Monitor│  │   │
-│  │  └─────────┘  └─────────┘  └─────────┘  └────────┘  │   │
+│  │               Core Layer (核心层 · 始终打包)           │   │
+│  │  Store · Compose · Cache(LRU) · Error · Hooks · Integration  │   │
 │  └─────────────────────────────────────────────────────┘   │
 │                                                             │
 │  ┌─────────────────────────────────────────────────────┐   │
-│  │              Plugin Layer (插件层)                    │   │
-│  │  ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐       │   │
-│  │  │ Logger │ │Persist │ │DevTools│ │Analyzer│       │   │
-│  │  └────────┘ └────────┘ └────────┘ └────────┘       │   │
+│  │    Optional Layer (可选能力层 · 经 /extras/* 引入)      │   │
+│  │  Selector · Snapshot · Performance · Action增强 · Plugins · Enterprise │   │
 │  └─────────────────────────────────────────────────────┘   │
 │                                                             │
 │  ┌─────────────────────────────────────────────────────┐   │
@@ -70,105 +59,101 @@
 
 ```
 src/
-├── index.ts                 # 主入口，导出所有公共 API
-│
-├── types/                   # 类型定义层
-│   ├── store.ts            # Store 相关类型
-│   ├── action.ts           # Action 相关类型
-│   ├── compose.ts          # 组合相关类型
-│   ├── error.ts            # 错误相关类型
-│   ├── integration.ts      # 集成相关类型
-│   ├── performance.ts      # 性能相关类型
-│   ├── persistence.ts      # 持久化相关类型
-│   ├── selector.ts         # 选择器相关类型
-│   ├── plugin.ts           # 插件相关类型
-│   ├── global.ts           # 全局类型扩展
-│   └── index.ts            # 类型导出入口
-│
-├── core/                    # 核心实现层
-│   ├── store/              # Store 核心实现
-│   │   ├── Store.ts        # Store 类定义
-│   │   ├── factory.ts      # createStore 工厂
-│   │   ├── ActionManager.ts    # Action 注册与执行
-│   │   ├── BatchManager.ts     # 批量通知管理
-│   │   ├── StateProxy.ts       # 状态代理
-│   │   ├── StoreCache.ts       # Store 级缓存
-│   │   ├── SubscriptionManager.ts # 订阅管理
-│   │   ├── types.ts        # Store 内部类型
-│   │   ├── utils.ts        # Store 工具函数
-│   │   └── index.ts        # 导出
-│   │
-│   ├── hooks/              # 钩子系统
-│   │   ├── HookSystem.ts   # 钩子系统实现
-│   │   └── index.ts        # 导出
-│   │
-│   ├── cache/              # 缓存系统
-│   │   ├── LRUCache.ts     # LRU 缓存实现
-│   │   └── index.ts        # 导出
-│   │
-│   ├── selector/           # 选择器系统
-│   │   ├── createSelector.ts   # 选择器工厂
-│   │   ├── selectorComposer.ts # 选择器组合器
-│   │   └── index.ts        # 导出
-│   │
-│   ├── error/              # 错误处理系统
-│   │   ├── GeomStoreError.ts   # 自定义错误类
-│   │   ├── ErrorHandler.ts     # 错误处理器
-│   │   ├── ErrorBoundary.ts    # 错误边界
-│   │   ├── ErrorRecovery.ts    # 错误恢复
-│   │   ├── ErrorMonitoring.ts  # 错误监控
-│   │   └── index.ts        # 导出
-│   │
-│   ├── action/             # Action 增强系统
-│   │   ├── ActionLoader.ts     # Action 加载状态
-│   │   ├── ActionUtils.ts      # Action 工具
-│   │   ├── AsyncActionSupport.ts # 异步支持
-│   │   ├── decorators/     # 装饰器
-│   │   └── index.ts        # 导出
-│   │
-│   ├── snapshot/           # 快照系统
-│   │   ├── SnapshotManager.ts  # 快照管理器
-│   │   └── index.ts        # 导出
-│   │
-│   ├── compose/            # Store 组合系统
-│   │   ├── composeStore.ts     # 组合函数
-│   │   ├── StoreRegistry.ts    # Store 注册表
-│   │   └── index.ts        # 导出
-│   │
-│   ├── performance/        # 性能监控系统
-│   │   ├── PerformanceMonitor.ts # 性能监控器
-│   │   ├── Optimizations.ts     # 性能优化（批量通知/指纹）
-│   │   ├── metrics.ts           # 性能指标统计
-│   │   └── index.ts        # 导出
-│   │
-│   └── utils/              # 工具函数
-│       ├── helpers.ts      # 通用工具函数
-│       ├── TypeValidator.ts    # 类型校验器
-│       └── index.ts        # 导出
-│
-├── plugins/                 # 插件实现层
-│   ├── builtin.ts          # 内置插件
-│   ├── devtools/           # 开发工具插件
-│   │   ├── timeTravelPlugin.ts # 时间旅行插件
-│   │   └── index.ts        # 导出
-│   ├── performance/        # 性能分析插件
-│   │   ├── analyzerPlugin.ts   # 性能分析插件
-│   │   └── index.ts        # 导出
-│   └── index.ts            # 插件导出
-│
-└── integrations/            # 集成层
-    ├── with-store.ts       # 页面/组件集成
-    ├── with-app-store.ts   # App 集成
-    ├── utils.ts            # 集成工具
-    ├── enterprise/         # 企业级集成
-    │   ├── wechat-enterprise.ts # 微信企业版集成
-    │   └── index.ts        # 导出
-    └── index.ts            # 集成导出
+├── index.ts                 # 瘦核心入口：export * from './core'（仅核心 API）
+├── core/                    # 核心实现（始终随主入口打包）
+│   ├── index.ts             # 仅导出运行必需 API
+│   ├── store/               # Store 类与工厂
+│   │   ├── Store.ts
+│   │   ├── factory.ts
+│   │   ├── ActionManager.ts
+│   │   ├── BatchManager.ts
+│   │   ├── StateProxy.ts
+│   │   ├── StoreCache.ts
+│   │   ├── SubscriptionManager.ts
+│   │   ├── types.ts
+│   │   ├── utils.ts
+│   │   └── index.ts
+│   ├── hooks/               # 插件钩子核心（HookSystem / usePlugin）
+│   │   ├── HookSystem.ts
+│   │   └── index.ts
+│   ├── cache/               # LRU 缓存
+│   │   ├── LRUCache.ts
+│   │   └── index.ts
+│   ├── error/               # 错误处理
+│   │   ├── GeomStoreError.ts
+│   │   ├── ErrorHandler.ts
+│   │   ├── ErrorBoundary.ts
+│   │   ├── ErrorRecovery.ts
+│   │   ├── ErrorMonitoring.ts
+│   │   └── index.ts
+│   ├── utils/               # 工具函数
+│   │   ├── helpers.ts
+│   │   ├── TypeValidator.ts
+│   │   └── index.ts
+│   ├── compose/             # Store 组合
+│   │   ├── composeStore.ts
+│   │   ├── StoreRegistry.ts
+│   │   └── index.ts
+│   ├── selector/            # 选择器实现（源码在 core，经 extras/selector 引入）
+│   │   ├── createSelector.ts
+│   │   ├── selectorComposer.ts
+│   │   └── index.ts
+│   ├── snapshot/            # 快照实现（经 extras/snapshot 引入）
+│   │   ├── SnapshotManager.ts
+│   │   └── index.ts
+│   ├── performance/         # 性能监控实现（经 extras/performance 引入）
+│   │   ├── PerformanceMonitor.ts
+│   │   ├── Optimizations.ts
+│   │   ├── metrics.ts
+│   │   └── index.ts
+│   └── action/              # Action 增强实现（经 extras/action 引入）
+│       ├── ActionLoader.ts
+│       ├── ActionUtils.ts
+│       ├── AsyncActionSupport.ts
+│       ├── decorators/
+│       └── index.ts
+├── plugins/                 # 插件实现（经 extras/plugins 引入）
+│   ├── builtin.ts           # loggerPlugin / persistencePlugin / devtoolsPlugin
+│   ├── devtools/
+│   │   ├── timeTravelPlugin.ts
+│   │   └── index.ts
+│   └── performance/
+│       ├── analyzerPlugin.ts
+│       └── index.ts
+├── integrations/            # 集成层
+│   ├── with-store.ts        # withPageStore / withComponentStore（核心）
+│   ├── with-app-store.ts    # withAppStore（核心）
+│   ├── utils.ts
+│   └── enterprise/          # 企业微信集成（经 extras/enterprise 引入）
+│       ├── wechat-enterprise.ts
+│       └── index.ts
+├── extras/                  # 可选能力聚合与子入口
+│   ├── index.ts             # 一次性引入全部可选能力
+│   ├── snapshot.ts          # → ../core/snapshot
+│   ├── selector.ts          # → ../core/selector
+│   ├── performance.ts       # → ../core/performance
+│   ├── action.ts            # → ../core/action
+│   ├── plugins.ts           # → ../plugins
+│   └── enterprise.ts        # → ../integrations/enterprise
+└── types/                   # 类型定义
+    ├── store.ts
+    ├── action.ts
+    ├── compose.ts
+    ├── error.ts
+    ├── integration.ts
+    ├── performance.ts
+    ├── persistence.ts
+    ├── selector.ts
+    ├── plugin.ts
+    ├── global.ts
+    └── index.ts
 ```
 
 ---
 
 ## 核心模块
+
+> 注：下文中的「选择器 / 快照 / 性能监控 / Action 增强 / 插件 / 企业微信集成」等模块**不属于主入口自动导出的核心 API**，其源码位于 `src/core` 或 `src/plugins` / `src/integrations`，但仅通过 `@openlide/geomstore/extras/*` 子路径按需引入（详见上方目录结构）。核心 API 仅包含 Store、错误处理、小程序集成、组合、LRU 缓存与工具函数。
 
 ### Store 模块
 

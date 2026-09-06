@@ -440,7 +440,7 @@ store.batch(() => {
 对复杂计算使用记忆化。
 
 ```javascript
-const { createMemoizedSelector } = require('@openlide/geomstore')
+const { createMemoizedSelector } = require('@openlide/geomstore/extras/selector')
 
 // 在 Store 外部创建记忆化选择器（记忆化默认启用；
 // 可选第二参数为自定义相等性函数，如 (a, b) => a === b）
@@ -494,7 +494,7 @@ const products = store.getter('getProductsByCategory')(1, 'price')
 ```javascript
 // getter 是纯函数，仅接收 state，无法在内部通过 this.getter() 调用其他 getter。
 // 组合多个 getter 的正确方式：将公共逻辑提取为外部选择器函数，在多个 getter 中复用。
-const { createMemoizedSelector } = require('@openlide/geomstore')
+const { createMemoizedSelector } = require('@openlide/geomstore/extras/selector')
 
 const selectUserBasic = createMemoizedSelector((state) => ({
   name: state.userInfo?.name,
@@ -536,7 +536,7 @@ getters: {
 ```javascript
 // app.js
 const { createStore } = require('@openlide/geomstore')
-const { withAppStore } = require('@openlide/geomstore/integrations')
+const { withAppStore } = require('@openlide/geomstore')
 const { userStore, cartStore, settingsStore } = require('./stores')
 
 App(withAppStore(createStore({
@@ -596,7 +596,7 @@ App(withAppStore(createStore({
 ```javascript
 // pages/index/index.js
 const app = getApp()
-const { withPageStore } = require('@openlide/geomstore/integrations')
+const { withPageStore } = require('@openlide/geomstore')
 
 Page(withPageStore(app.userStore, {
   // 明确映射需要的状态
@@ -660,7 +660,7 @@ Page(withPageStore(app.userStore, {
 ```javascript
 // components/product-card/index.js
 const app = getApp()
-const { withComponentStore } = require('@openlide/geomstore/integrations')
+const { withComponentStore } = require('@openlide/geomstore')
 
 Component(withComponentStore(app.productStore, {
   mapState: ['currency'],
@@ -790,7 +790,7 @@ store.subscribe((state) => {
 })
 
 // 更好的方式：使用选择器
-const { createSelector } = require('@openlide/geomstore')
+const { createSelector } = require('@openlide/geomstore/extras/selector')
 const selectUserName = createSelector(state => state.userInfo?.name)
 
 store.subscribe((state) => {
@@ -1085,7 +1085,7 @@ describe('UserStore', () => {
 
 ```javascript
 // tests/integration/page.test.js
-const { withPageStore } = require('@openlide/geomstore/integrations')
+const { withPageStore } = require('@openlide/geomstore')
 const { createStore } = require('@openlide/geomstore')
 
 describe('Page Integration', () => {

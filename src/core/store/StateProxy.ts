@@ -153,7 +153,7 @@ export class StateProxyManager<S extends State = State> {
           self._handleIllegalMutation(fullPath, value)
         }
 
-        (obj as Record<string | symbol, unknown>)[key] = value
+        ;(obj as Record<string | symbol, unknown>)[key] = value
         return true
       },
 
@@ -206,7 +206,7 @@ export class StateProxyManager<S extends State = State> {
           self._handleIllegalMutation(fullPath, value)
         }
 
-        (obj as Record<string | symbol, unknown>)[key] = value
+        ;(obj as Record<string | symbol, unknown>)[key] = value
         return true
       },
 
@@ -299,11 +299,7 @@ export class StateProxyManager<S extends State = State> {
 
         // 其他属性（非索引/length/变异方法）：对象值同样需要包装保护，
         // 裸返回会让挂在数组自定义属性上的对象绕过写保护
-        return self._wrapArrayChild(
-          (arr as unknown as Record<string | symbol, unknown>)[key],
-          path,
-          `.${String(key)}`
-        )
+        return self._wrapArrayChild((arr as unknown as Record<string | symbol, unknown>)[key], path, `.${String(key)}`)
       },
 
       set(arr: T, key: string | symbol, value: unknown): boolean {
@@ -314,7 +310,7 @@ export class StateProxyManager<S extends State = State> {
           self._handleIllegalMutation(fullPath, value)
         }
 
-        (arr as unknown as Record<string | symbol, unknown>)[key] = value
+        ;(arr as unknown as Record<string | symbol, unknown>)[key] = value
         return true
       },
 

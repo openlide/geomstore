@@ -177,13 +177,16 @@ export class SelectorFactory<S extends Record<string, unknown> = Record<string, 
    * @param {R} value - 计算结果
    */
   private updateCache(state: S, value: R): void {
-    // 缓存状态快照而非活动引用：若缓存持有原引用，等值比较会变成
-    // 「同一对象自比较」（永远相等），就地变异（如 $patch 深合并）后
-    // 的再次执行将误命中并返回陈旧值；快照才能让等值比较感知变异
+    // 仅深比较（默认 equalityFn = deepEqual）时缓存状态快照，其余情况缓存活动引用：
+    // - deepEqual 需快照才能在状态就地变异时感知变化——否则 deepEqual(同引用, 同引用) 永远相等，
+    //   无法检测变异，TTL 内返回陈旧值；
+    // - 引用相等 (a === b) 场景下若仍 clone，则「克隆体」与当前「活引用」永不等 → 永远 miss，
+    //   故直接缓存活引用，使同一引用命中、不同引用（含变异后的新对象）正确 miss。
+    const stateForCache = this.options.equalityFn === deepEqual ? clone(state) : state
     const cacheItem: SelectorCacheItem<R> = {
       value,
       timestamp: Date.now(),
-      state: clone(state),
+      state: stateForCache,
     }
 
     // 更新当前缓存

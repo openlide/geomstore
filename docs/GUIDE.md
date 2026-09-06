@@ -330,7 +330,7 @@ const total = store.getter('totalPrice')
 
 ```javascript
 // pages/index/index.js
-const { withPageStore } = require('@openlide/geomstore/integrations')
+const { withPageStore } = require('@openlide/geomstore')
 const app = getApp()
 
 Page(withPageStore(app.userStore, {
@@ -401,7 +401,7 @@ Page(withPageStore(app.userStore, {
 
 ```javascript
 // components/user-card/index.js
-const { withComponentStore } = require('@openlide/geomstore/integrations')
+const { withComponentStore } = require('@openlide/geomstore')
 const app = getApp()
 
 Component(withComponentStore(app.userStore, {
@@ -453,7 +453,7 @@ Component(withComponentStore(app.userStore, {
 ```javascript
 // app.js
 const { createStore } = require('@openlide/geomstore')
-const { withAppStore } = require('@openlide/geomstore/integrations')
+const { withAppStore } = require('@openlide/geomstore')
 
 // 创建全局 store
 const globalStore = createStore({
@@ -649,7 +649,7 @@ class DataService {
 #### 日志插件
 
 ```javascript
-const { loggerPlugin } = require('@openlide/geomstore/plugins')
+const { loggerPlugin } = require('@openlide/geomstore/extras/plugins')
 
 // 安装日志插件
 store.use(loggerPlugin)
@@ -662,7 +662,7 @@ store.use(loggerPlugin)
 #### 持久化插件
 
 ```javascript
-const { persistencePlugin, WxStorageBackend } = require('@openlide/geomstore')
+const { persistencePlugin, WxStorageBackend } = require('@openlide/geomstore/extras/plugins')
 
 store.use(persistencePlugin({
   // 存储键名
@@ -693,13 +693,13 @@ store.use(persistencePlugin({
 **说明：**
 
 - `storage` 可省略：插件会自动检测微信环境并使用 `wx.getStorageSync` / `wx.setStorageSync`；两者都不可用时降级为进程内内存存储（开发模式输出告警），不影响运行。
-- 也可显式传入内置 `WxStorageBackend`（主入口导出）或自定义同步 `StorageBackend`（仅支持同步实现）。
+- 也可显式传入内置 `WxStorageBackend`（从 `@openlide/geomstore/extras/plugins` 导入）或自定义同步 `StorageBackend`（仅支持同步实现）。
 - 启动恢复采用**合并语义**（`$patch`）：未持久化的键（如被 `filter` 过滤的键）保留初始值，不会被覆盖为 `undefined`。
 
 #### DevTools 插件
 
 ```javascript
-const { devtoolsPlugin } = require('@openlide/geomstore/plugins')
+const { devtoolsPlugin } = require('@openlide/geomstore/extras/plugins')
 
 // 仅在开发环境启用
 if (process.env.NODE_ENV === 'development') {

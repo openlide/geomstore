@@ -366,103 +366,6 @@ export class StateFingerprint {
   }
 }
 
-// ==================== 深度比较导出 ====================
-
-// 从工具模块重新导出深度比较函数
-export { deepEqual as iterativeDeepEqual } from '../utils/helpers'
-
-// ==================== 订阅管理优化 ====================
-
-/**
- * 订阅管理器（使用WeakMap优化）
- *
- * @class SubscriptionManager
- * @description
- * 高效的订阅管理实现，使用WeakMap自动清理不再使用的订阅，
- * 减少内存泄漏风险。
- *
- * @template S - 状态类型
- *
- * @example
- * ```typescript
- * const manager = new SubscriptionManager<MyState>()
- *
- * const listener = (state) => console.log(state)
- * const unsubscribe = manager.subscribe(listener)
- *
- * manager.notify(state) // 触发监听器
- *
- * unsubscribe() // 取消订阅
- * ```
- */
-export class SubscriptionManager<S> {
-  // 仅需去重监听器，无需记录顺序序号，使用 Set 更简洁
-  private listeners = new Set<(state: S) => void>()
-
-  /**
-   * 订阅状态变化
-   *
-   * @param {(state: S) => void} listener - 监听函数
-   * @returns {() => void} 取消订阅的函数
-   */
-  subscribe(listener: (state: S) => void): () => void {
-    this.listeners.add(listener)
-
-    return () => this.unsubscribe(listener)
-  }
-
-  /**
-   * 取消订阅
-   *
-   * @param {(state: S) => void} listener - 监听函数
-   * @returns {boolean} 是否成功取消
-   */
-  unsubscribe(listener: (state: S) => void): boolean {
-    return this.listeners.delete(listener)
-  }
-
-  /**
-   * 通知所有监听器
-   *
-   * @param {S} state - 状态
-   */
-  notify(state: S): void {
-    for (const listener of this.listeners) {
-      try {
-        listener(state)
-      } catch (error) {
-        console.error('[SubscriptionManager] Error in listener:', error)
-      }
-    }
-  }
-
-  /**
-   * 清空所有订阅
-   */
-  clear(): void {
-    this.listeners.clear()
-  }
-
-  /**
-   * 获取订阅者数量
-   *
-   * @returns {number} 订阅者数量
-   */
-  size(): number {
-    return this.listeners.size
-  }
-
-  /**
-   * 检查是否已订阅
-   *
-   * @param {(state: S) => void} listener - 监听函数
-   * @returns {boolean} 是否已订阅
-   */
-  has(listener: (state: S) => void): boolean {
-    return this.listeners.has(listener)
-  }
-}
-
 // ==================== 调度工具 ====================
 
 /**
@@ -569,7 +472,6 @@ export function throttle<T extends (...args: any[]) => unknown>(
 
   return function (this: unknown, ...args: Parameters<T>) {
     const now = Date.now()
-    const host = this
 
     const fireTrailing = () => {
       timer = null
@@ -580,7 +482,7 @@ export function throttle<T extends (...args: any[]) => unknown>(
         // 尾随补发运行在定时器回调中：同步抛错没有调用方栈可传播，
         // 会成为 uncaught exception；记录后保持节流器可用（与防抖同口径）
         try {
-          fn.apply(host, trailingArgs)
+          fn.apply(this, trailingArgs)
         } catch (error) {
           console.error('[GeomStore] throttled function threw:', error)
         }
@@ -642,13 +544,4 @@ export function createAsyncBatchNotifier<S>(): AsyncBatchNotifier<S> {
  */
 export function createStateFingerprint(): StateFingerprint {
   return new StateFingerprint()
-}
-
-/**
- * 创建订阅管理器的便捷函数
- *
- * @returns {SubscriptionManager} 订阅管理器实例
- */
-export function createSubscriptionManager<S>(): SubscriptionManager<S> {
-  return new SubscriptionManager<S>()
 }

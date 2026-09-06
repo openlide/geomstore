@@ -263,12 +263,12 @@ export function withCache(options: CacheDecoratorOptions = {}): MethodDecorator 
         // in-flight 命中：直接复用进行中的 Promise（失败时条目已被删除，后续调用重新执行）
         if (cached.pending) {
           if (!isProduction()) {
-            console.log(`[Cache] In-flight dedup for ${String(propertyKey)}`)
+            console.debug(`[Cache] In-flight dedup for ${String(propertyKey)}`)
           }
           return cached.pending
         }
         if (!isProduction()) {
-          console.log(`[Cache] Hit for ${String(propertyKey)}`)
+          console.debug(`[Cache] Hit for ${String(propertyKey)}`)
         }
         // 异步方法（或已观测到返回 Promise 的方法）命中时恢复 Promise 语义：
         // 保证两次调用返回类型一致，避免调用方 .then()/Promise.all 在第二次调用时崩溃

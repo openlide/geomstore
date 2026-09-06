@@ -365,7 +365,6 @@ export const storeManager = new StoreManager()
 export interface BackupData {
   timestamp: number
   state: unknown
-  version: string
 }
 
 export interface HotUpdateConfig<S extends State = State> {
@@ -375,7 +374,6 @@ export interface HotUpdateConfig<S extends State = State> {
 }
 
 const DEFAULT_BACKUP_KEY = 'store_backup_before_update'
-const CURRENT_VERSION = '1.0.0'
 
 /** 待更新重启标记键：确认更新时写入，用于区分「更新后首启」与「普通重启」 */
 function pendingLaunchKey(backupKey: string): string {
@@ -389,7 +387,6 @@ function backupState<S extends State = State>(store: Store<S>, backupKey: string
   const backupData: BackupData = {
     timestamp: Date.now(),
     state: store.$snapshot(),
-    version: CURRENT_VERSION,
   }
   // 写入失败（配额满等）必须抛错：调用方据此跳过标记写入与 applyUpdate，
   // 避免重启后凭空执行一次无源恢复
@@ -515,13 +512,6 @@ export function restoreFromHotUpdate<S extends State = State>(store: Store<S>, b
     return false
   }
 
-  // 版本不一致只告警不拦截：CURRENT_VERSION 是本库的版本常量而非宿主 app 版本，
-  // 库升级时备份由旧版写出，硬门禁会白丢用户数据；下方 $patch 的合并语义本身
-  // 就能容忍结构漂移（新版本新增键保留其初始值、备份多余键并入），告警仅供诊断
-  if (backup.version !== CURRENT_VERSION) {
-    logger.warn('HotUpdate', `备份版本(${backup.version})与当前库版本(${CURRENT_VERSION})不一致，按合并语义恢复`)
-  }
-
   try {
     // 用 $patch 合并语义而非 $restore（= $replaceState 整树替换）：热更新备份取自
     // 更新前的旧版本，整树替换会把新版本新增的 state 键整体抹掉，新代码读这些键
@@ -529,7 +519,7 @@ export function restoreFromHotUpdate<S extends State = State>(store: Store<S>, b
     store.$patch(backup.state as Partial<S>)
     storage.remove(resolvedBackupKey)
     storage.remove(markerKey)
-    logger.log('HotUpdate', `状态已从备份恢复（版本: ${backup.version}）`)
+    logger.log('HotUpdate', '状态已从备份恢复')
     return true
   } catch (error) {
     logger.error('HotUpdate', '恢复状态失败:', error)

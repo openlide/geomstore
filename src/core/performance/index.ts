@@ -11,13 +11,10 @@ export {
   LRUCache,
   AsyncBatchNotifier,
   StateFingerprint,
-  SubscriptionManager,
-  iterativeDeepEqual,
   scheduleIdle,
   debounce,
   throttle,
   createLRUCache,
   createAsyncBatchNotifier,
   createStateFingerprint,
-  createSubscriptionManager,
 } from './Optimizations'

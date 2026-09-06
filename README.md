@@ -1,7 +1,7 @@
 # GeomStore
 
 <p align="center">
-  <strong>轻量级微信小程序状态管理库</strong>
+  <strong>原生微信小程序状态管理库</strong>
 </p>
 
 <p align="center">
@@ -25,7 +25,7 @@
 - **简洁易用的 API** - 类似 Pinia 的设计理念，学习成本极低
 - **完整的 TypeScript 支持** - 开箱即用的类型推断，无需额外配置
 - **高性能设计** - LRU 缓存、批量更新、高效的状态变更检测
-- **零外部依赖** - 纯原生实现，包体积极小
+- **零外部依赖** - 纯原生实现，包体积小
 
 ### 🚀 企业级功能
 
@@ -46,9 +46,37 @@
 
 ## 安装
 
-### 方式一：复制文件（推荐小程序项目）
+GeomStore 同时支持 **NPM 引入** 与 **复制编译产物** 两种方式，按你的小程序工程习惯选择即可。
 
-将 `dist` 文件夹复制到小程序项目：
+### 方式一：NPM 安装（推荐）
+
+使用你喜欢的包管理器安装：
+
+```bash
+npm install @openlide/geomstore
+# 或
+pnpm add @openlide/geomstore
+# 或
+yarn add @openlide/geomstore
+```
+
+> 微信 / 企业微信小程序需在**微信开发者工具**中执行「工具 → 构建 npm」后，才能使用 `import` 引入依赖。
+
+```javascript
+import { createStore } from '@openlide/geomstore'
+```
+
+> 主入口 `@openlide/geomstore` 仅包含**核心 API**（含 `createStore`、小程序集成 `withPageStore` / `withComponentStore` / `withAppStore`、错误处理等）；**可选能力**（插件、选择器、快照、性能监控、Action 增强、企业微信集成）需从子路径 `@openlide/geomstore/extras/*` 按需引入，以减小主包体积：
+>
+> ```javascript
+> import { createStore, withPageStore } from '@openlide/geomstore'
+> import { persistencePlugin, analyzerPlugin } from '@openlide/geomstore/extras'
+> import { createSelector } from '@openlide/geomstore/extras/selector'
+> ```
+
+### 方式二：复制编译产物（免构建）
+
+将仓库 `dist` 目录（CJS 单产物，入口为 `dist/index.js`）复制到小程序工程的 `utils` 目录下，直接 `require`，无需构建 npm：
 
 ```
 小程序项目/
@@ -61,23 +89,7 @@
 const { createStore } = require('./utils/geomstore/dist/index.js')
 ```
 
-### 方式二：NPM 安装
-
-```bash
-npm install @openlide/geomstore
-```
-
-```javascript
-import { createStore } from '@openlide/geomstore'
-```
-
-> 支持子路径按需导入（插件、集成、选择器等）：
->
-> ```javascript
-> import { withPageStore } from '@openlide/geomstore/integrations'
-> import { persistencePlugin, analyzerPlugin } from '@openlide/geomstore/plugins'
-> import { createSelector } from '@openlide/geomstore/selectors'
-> ```
+> 若需使用可选能力，请将 `dist/extras` 一并复制，并按需 `require` 对应子路径（如 `require('./utils/geomstore/dist/extras/selector')`）。
 
 ---
 
@@ -144,7 +156,7 @@ const userStore = createStore({
 
 ```javascript
 // pages/index/index.js
-const { withPageStore } = require('@openlide/geomstore/integrations')
+const { withPageStore } = require('@openlide/geomstore')
 const { userStore } = require('../../stores/user')
 
 Page(withPageStore(userStore, {
@@ -192,7 +204,7 @@ Page(withPageStore(userStore, {
 
 ```javascript
 // components/user-card/index.js
-const { withComponentStore } = require('@openlide/geomstore/integrations')
+const { withComponentStore } = require('@openlide/geomstore')
 
 Component(withComponentStore(userStore, {
   mapState: ['userInfo'],
@@ -311,7 +323,8 @@ const cartStore = createStore({
 ### 使用插件
 
 ```javascript
-const { createStore, loggerPlugin, persistencePlugin, devtoolsPlugin } = require('@openlide/geomstore')
+const { createStore } = require('@openlide/geomstore')
+const { loggerPlugin, persistencePlugin, devtoolsPlugin } = require('@openlide/geomstore/extras/plugins')
 
 const store = createStore({
   name: 'app',
@@ -348,29 +361,29 @@ if (process.env.NODE_ENV === 'development') {
 
 ```
 GeomStore/
-├── dist/                    # 编译产物（CJS 单产物）
-│   ├── index.js             # 入口文件
-│   ├── index.d.ts           # 类型声明
-│   ├── core/                # 核心模块
-│   ├── plugins/             # 插件
-│   └── integrations/        # 集成模块
-├── src/                     # 源代码
-│   ├── core/                # 核心实现
-│   │   ├── store/           # Store 类
-│   │   ├── cache/           # LRU 缓存
-│   │   ├── hooks/           # 钩子系统
-│   │   ├── selector/        # 选择器
-│   │   ├── error/           # 错误处理
-│   │   ├── action/          # Action 增强
-│   │   ├── snapshot/        # 快照系统
-│   │   ├── compose/         # Store 组合
-│   │   ├── performance/     # 性能监控
-│   │   └── utils/           # 工具函数
-│   ├── plugins/             # 插件实现
-│   ├── integrations/        # 小程序集成
-│   └── types/               # 类型定义
-├── tests/                   # 测试用例
-├── docs/                    # 文档
+├── src/                         # 源代码
+│   ├── index.ts                 # 瘦核心入口：export * from './core'
+│   ├── core/                    # 核心实现（始终随主入口打包）
+│   │   ├── index.ts             # 仅导出运行必需 API（Store / 错误处理 / 集成 / compose / LRU / 工具）
+│   │   ├── store/               # Store 类与工厂
+│   │   ├── cache/               # LRU 缓存
+│   │   ├── hooks/               # 插件钩子核心（HookSystem / usePlugin）
+│   │   ├── error/               # 错误处理
+│   │   ├── utils/               # 工具函数
+│   │   ├── compose/             # Store 组合
+│   │   ├── selector/            # 选择器实现（经 extras/selector 引入）
+│   │   ├── snapshot/            # 快照实现（经 extras/snapshot 引入）
+│   │   ├── performance/         # 性能监控实现（经 extras/performance 引入）
+│   │   └── action/              # Action 增强实现（经 extras/action 引入）
+│   ├── plugins/                 # 插件实现（经 extras/plugins 引入）
+│   ├── integrations/            # 小程序集成（with-store / with-app-store 在核心；enterprise 经 extras/enterprise 引入）
+│   ├── extras/                  # 可选能力聚合与子入口（snapshot/selector/performance/action/enterprise/plugins）
+│   └── types/                   # 类型定义
+├── dist/                        # 编译产物（CJS 单产物，入口为 dist/index.js）
+│   ├── index.js                 # 入口文件
+│   └── index.d.ts               # 类型声明
+├── tests/                       # 测试用例
+├── docs/                        # 文档
 └── package.json
 ```
 

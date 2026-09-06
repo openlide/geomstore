@@ -93,7 +93,6 @@ export function withThrottle(interval: number = 300, options: ThrottleDecoratorO
         byMethod.set(methodKey, state)
       }
 
-      const host = this
       const fireTrailing = (): void => {
         state.timer = null
         if (state.pendingArgs !== null) {
@@ -102,7 +101,7 @@ export function withThrottle(interval: number = 300, options: ThrottleDecoratorO
           state.lastCallTime = Date.now()
           // fire-and-forget：返回值不回传；异步方法的 rejection 不能变成
           // unhandled rejection，显式记录
-          const result = originalMethod.apply(host, trailingArgs) as unknown
+          const result = originalMethod.apply(this, trailingArgs) as unknown
           if (result instanceof Promise) {
             observesPromise = true
             result.catch((error) => {

@@ -223,6 +223,14 @@ class ComposedStore<S extends State = State> implements Store<S> {
   private _warnedStateKeyConflicts = new Set<string>()
   /** 子 Store 钩子桥接的退订函数（destroy 时统一移除，防止闭包残留） */
   private _hookUnsubscribers: Array<() => void> = []
+  /** 合并状态缓存：非命名空间/命名空间两种读取形态各缓存一份，子 store 变化时失效 */
+  private _mergedCache: Record<string, unknown> | null = null
+  /** 只读冻结形态的合并状态缓存（对应 state getter），与 _mergedCache 独立以免冻结影响 getState 消费者 */
+  private _mergedCacheFrozen: Record<string, unknown> | null = null
+  /** 合并缓存是否启用：子 store 订阅失效回调建立失败时降级为每次读取重合并，保证不返回陈旧状态 */
+  private _mergedCacheEnabled: boolean = true
+  /** 合并缓存失效订阅句柄（构造期对子 store 建立，destroy 时统一退订） */
+  private _cacheInvalidateUnsubscribers: Array<() => void> = []
 
   constructor(stores: Store[], options: ComposeOptions = {}) {
     this._stores = stores
@@ -258,10 +266,7 @@ class ComposedStore<S extends State = State> implements Store<S> {
       // 非命名空间模式：state 按键平铺合并，重名只影响 stores 映射与歧义提示的可读性，
       // 按 _mergeStateMaps 的既有口径在开发模式告警而非抛错
       if (!isProduction()) {
-        console.warn(
-          `[composeStore] 子 store 名称重复 (${duplicatedNames.join(', ')})：stores 映射中后者覆盖前者，` +
-            '建议设置唯一 name 或启用命名空间模式',
-        )
+        console.warn(`[composeStore] 子 store 名称重复 (${duplicatedNames.join(', ')})：stores 映射中后者覆盖前者，` + '建议设置唯一 name 或启用命名空间模式')
       }
     }
 
@@ -285,6 +290,21 @@ class ComposedStore<S extends State = State> implements Store<S> {
         this._hookUnsubscribers.push(off)
       }
     }
+
+    // 合并状态缓存失效：任一子 store 状态变化时使合并缓存失效。
+    // 合并结果持有子 store 状态的实时引用（顶层键指向子 store 活引用），值的实时变化经引用自动反映；
+    // 但新增/移除顶层键或子 store 重建需重算才能正确反映，故仅在子 store 通知时失效（而非每次读取重合并），
+    // 降低渲染/computed 热路径的重复合并开销。
+    for (const store of stores) {
+      try {
+        const off = store.subscribe(() => this._invalidateMergedCache())
+        this._cacheInvalidateUnsubscribers.push(off)
+      } catch {
+        // 子 store 订阅失败（如已达上限并采用 throw 策略）：放弃合并缓存，
+        // 降级为每次读取重合并，避免失效订阅缺失导致缓存返回陈旧状态
+        this._mergedCacheEnabled = false
+      }
+    }
   }
 
   // ==================== 状态管理 ====================
@@ -298,17 +318,38 @@ class ComposedStore<S extends State = State> implements Store<S> {
     }
   }
 
+  /** 使合并状态缓存失效：任一子 store 通知时调用（构造期订阅） */
+  private _invalidateMergedCache(): void {
+    this._mergedCache = null
+    this._mergedCacheFrozen = null
+  }
+
   getState(): S {
     this._ensureAlive('getState')
-    // 合并所有store的state
     if (this._namespace) {
-      const result: Record<string, unknown> = {}
-      for (const store of this._stores) {
-        result[store.name] = store.getState()
+      if (!this._mergedCacheEnabled) {
+        const result: Record<string, unknown> = {}
+        for (const store of this._stores) {
+          result[store.name] = store.getState()
+        }
+        return result as S
       }
-      return result as S
+      if (!this._mergedCache) {
+        const result: Record<string, unknown> = {}
+        for (const store of this._stores) {
+          result[store.name] = store.getState()
+        }
+        this._mergedCache = result
+      }
+      return this._mergedCache as S
     }
-    return this._mergeStateMaps((store) => store.getState() as Record<string, unknown>) as S
+    if (!this._mergedCacheEnabled) {
+      return this._mergeStateMaps((store) => store.getState() as Record<string, unknown>) as S
+    }
+    if (!this._mergedCache) {
+      this._mergedCache = this._mergeStateMaps((store) => store.getState() as Record<string, unknown>)
+    }
+    return this._mergedCache as S
   }
 
   /**
@@ -351,16 +392,32 @@ class ComposedStore<S extends State = State> implements Store<S> {
   get state(): S {
     this._ensureAlive('state')
     if (this._namespace) {
-      const result: Record<string, unknown> = {}
-      for (const store of this._stores) {
-        result[store.name] = store.state
+      if (!this._mergedCacheEnabled) {
+        const result: Record<string, unknown> = {}
+        for (const store of this._stores) {
+          result[store.name] = store.state
+        }
+        return Object.freeze(result) as S
       }
-      return Object.freeze(result) as S
+      if (!this._mergedCacheFrozen) {
+        const result: Record<string, unknown> = {}
+        for (const store of this._stores) {
+          result[store.name] = store.state
+        }
+        this._mergedCacheFrozen = Object.freeze(result)
+      }
+      return this._mergedCacheFrozen as S
     }
     // 取值源用子 store 的保护视图（store.state）而非内部裸引用（getState）：
     // 顶层写入落在冻结容器上会抛错；嵌套写入被子 store 保护代理拦截。
     // 此前直接合并裸引用，composed.state.nested.x = 1 会静默穿透进子 store 内部状态
-    return Object.freeze(this._mergeStateMaps((store) => store.state as unknown as Record<string, unknown>)) as S
+    if (!this._mergedCacheEnabled) {
+      return Object.freeze(this._mergeStateMaps((store) => store.state as unknown as Record<string, unknown>)) as S
+    }
+    if (!this._mergedCacheFrozen) {
+      this._mergedCacheFrozen = Object.freeze(this._mergeStateMaps((store) => store.state as unknown as Record<string, unknown>))
+    }
+    return this._mergedCacheFrozen as S
   }
 
   setState<K extends keyof S>(key: K, value: S[K]): void {
@@ -551,13 +608,8 @@ class ComposedStore<S extends State = State> implements Store<S> {
       this._notifyListeners()
     }
 
-    // 使用微任务合并同一事件循环内的多次状态变化；
-    // 旧版小程序基础库（< 2.26.x）无 queueMicrotask，降级为 Promise 微任务
-    if (typeof queueMicrotask === 'function') {
-      queueMicrotask(runNotify)
-    } else {
-      Promise.resolve().then(runNotify)
-    }
+    // 使用微任务合并同一事件循环内的多次状态变化（基础库 3.15.0+ 原生支持 queueMicrotask）
+    queueMicrotask(runNotify)
   }
 
   subscribe(listener: StateListener<S>): () => void {
@@ -597,6 +649,21 @@ class ComposedStore<S extends State = State> implements Store<S> {
     // 仅在子 store 状态变化时通知，避免带副作用的监听器在订阅时被意外执行
 
     return () => this._releaseListener(listener)
+  }
+
+  /**
+   * 判断指定状态键自上次通知以来是否发生变更
+   *
+   * 组合 Store 将多个子 store 的状态按 store 名合并，键空间与子 store 不对应，
+   * 无法精确映射到某个子 store 的脏键。这里保守返回 true（视为已变更），
+   * 使绑定层在对象值上保持「宁多勿漏」行为，确保正确性；
+   * 对象值的整体替换（引用变化）仍由引用比较兜底发送。
+   *
+   * @param _key - 组合层状态键（即子 store 名）
+   * @returns 始终返回 true（保守：不跳过任何 setData）
+   */
+  isStateKeyDirty(_key: string): boolean {
+    return true
   }
 
   /** 释放一份监听器注册：减到 0 才移除，并在无剩余监听器时撤销子 store 订阅 */
@@ -672,6 +739,10 @@ class ComposedStore<S extends State = State> implements Store<S> {
       off()
     }
     this._hookUnsubscribers = []
+    for (const off of this._cacheInvalidateUnsubscribers) {
+      off()
+    }
+    this._cacheInvalidateUnsubscribers = []
     if (destroyStores) {
       for (const store of this._stores) {
         store.destroy()

@@ -38,6 +38,5 @@ export {
   HttpReporter,
   createDefaultMonitoring,
   getDefaultMonitoring,
-  defaultMonitoring,
 } from './ErrorMonitoring'
 export type { ErrorReporter, ErrorGroup, ErrorReport, MonitoringConfig } from '../../types/error'

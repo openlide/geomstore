@@ -333,7 +333,7 @@ export class SelectorComposer {
    * @template S - 状态类型
    * @template R - 返回值类型
    * @param {Selector<S, R>} selector - 原始选择器
-   * @param {number} [maxRetries=3] - 最大重试次数
+   * @param {RetrySelectorOptions} [options] - 重试选项（默认 { retries: 3 }）
    * @returns {Selector<S, R>} 重试选择器
    *
    * @example
@@ -343,23 +343,15 @@ export class SelectorComposer {
    *     if (!s.ready) throw new Error('Not ready')
    *     return s.value
    *   },
-   *   3
+   *   { retries: 3 }
    * )
    *
    * // 会重试最多3次
    * const result = selector(state)
    * ```
    */
-  static createRetrySelector<S extends Record<string, unknown>, R>(selector: Selector<S, R>, options: RetrySelectorOptions | number = {}): Selector<S, R> {
-    // 旧签名的位置参数（maxRetries: number）兼容告警：静默忽略会使其退化为默认 3 次
-    let resolvedOptions: RetrySelectorOptions
-    if (typeof options === 'number') {
-      console.warn('[SelectorComposer] createRetrySelector(sel, number) 已废弃：请使用 { retries } 选项')
-      resolvedOptions = { retries: options }
-    } else {
-      resolvedOptions = options
-    }
-    const { retries = 3, shouldRetry } = resolvedOptions
+  static createRetrySelector<S extends Record<string, unknown>, R>(selector: Selector<S, R>, options: RetrySelectorOptions = {}): Selector<S, R> {
+    const { retries = 3, shouldRetry } = options
     if (!Number.isInteger(retries) || retries < 0) {
       throw new TypeError(`[SelectorComposer] retries 必须是非负整数，收到: ${retries}`)
     }

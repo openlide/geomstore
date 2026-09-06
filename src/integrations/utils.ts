@@ -70,7 +70,9 @@ export function bindMappings(
   mappings: Record<string, string>,
   getValue: (storeKey: string) => unknown,
   setter: (updates: Record<string, unknown>) => void,
-  subscribeStore: (callback: () => void) => () => void,
+  subscribeStore: (callback: () => void, options?: { readOnly?: boolean }) => () => void,
+  /** 判断某状态键自上次通知以来是否变更（仅 state 映射可传入；getters 不提供，缺失时对象值保持「宁多勿漏」始终发送） */
+  changedKeys?: (storeKey: string) => boolean,
 ): Array<() => void> {
   const entries = Object.entries(mappings)
   const unbinds: Array<() => void> = []
@@ -92,11 +94,20 @@ export function bindMappings(
     let changed = false
     for (const [localKey, storeKey] of entries) {
       const next = getValue(storeKey)
-      // 对象值不参与引用脏检查：$patch 对嵌套对象是原地深合并（引用不变），
-      // 缓存的旧引用与下次读取是同一对象，任何比较都是自比较，无法感知内部变化；
-      // 按宁多勿漏原则对象值始终纳入更新（原始值仍走引用/NaN 比较）
       const isObjectValue = next !== null && typeof next === 'object'
-      if (isObjectValue || !safeEqual(next, prevValues[localKey])) {
+      let include: boolean
+      if (isObjectValue) {
+        // 对象值：引用未变且本批次该键未被标记为变更 → 视为未变化，跳过该键的 setData，
+        // 避免对大体量对象（如列表）在无关 state 变更时反复整包下发。
+        // changedKeys 仅对 state 映射可用（getters 不提供），缺失时保持「宁多勿漏」始终发送；
+        // 引用已变（如 setState/$replaceState 整体替换）必发送，覆盖整包替换场景。
+        const dirty = changedKeys ? changedKeys(storeKey) : true
+        include = !(next === prevValues[localKey] && !dirty)
+      } else {
+        // 原始值走引用/NaN 比较
+        include = !safeEqual(next, prevValues[localKey])
+      }
+      if (include) {
         prevValues[localKey] = next
         // 过滤 undefined：微信 setData 不接受 undefined 值（报错且字段不生效），
         // 清除字段应使用 null

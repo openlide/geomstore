@@ -78,8 +78,6 @@ export const loggerPlugin: Plugin = {
  *    ```ts
  *    store.use(persistencePlugin({ key: 'app-state', storage: wx }))
  *    ```
- * 此外 `persistencePlugin.install(store, options)` 也接受可选的第二参数 options，
- * 以兼容 `(persistencePlugin as any).install(store, {...})` 的调用方式。
  */
 // 使用工厂函数创建"可调用 + 可安装"的插件：
 // - 作为函数调用时：persistencePlugin(options) 返回新的带配置 Plugin
@@ -95,8 +93,7 @@ Object.defineProperty(_persistencePluginFactory, 'name', {
   writable: true,
   configurable: true,
 })
-;(_persistencePluginFactory as unknown as Plugin).install = <S extends State>(store: Store<S>, options?: PersistenceOptions<S>) =>
-  installPersistence(store, options)
+;(_persistencePluginFactory as unknown as Plugin).install = <S extends State>(store: Store<S>) => installPersistence(store)
 
 export const persistencePlugin: Plugin & {
   <S extends State = State>(options?: PersistenceOptions<S>): Plugin

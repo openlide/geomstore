@@ -185,7 +185,7 @@ store.subscribe((state) => {
 })
 
 // 方式二：使用选择器
-const { createSelector } = require('@openlide/geomstore')
+const { createSelector } = require('@openlide/geomstore/extras/selector')
 const selectCount = createSelector(s => s.count)
 
 let lastCount = selectCount(store.state)

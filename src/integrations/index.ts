@@ -9,7 +9,7 @@
 // ==================== 核心集成函数 ====================
 
 export { withPageStore, withComponentStore } from './with-store'
-export { withAppStore, createApp } from './with-app-store'
+export { withAppStore } from './with-app-store'
 
 // ==================== 企业级方案 ====================
 

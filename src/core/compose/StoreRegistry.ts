@@ -6,7 +6,7 @@
  */
 
 import type { Store, State } from '../../types/store'
-import { deepCloneState } from '../store/utils'
+import { deepCloneState } from '../utils/clone'
 
 /**
  * Store注册表类

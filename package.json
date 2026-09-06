@@ -1,71 +1,23 @@
 {
   "name": "@openlide/geomstore",
   "version": "0.2.1",
-  "description": "轻量级微信小程序状态管理库 - 简洁、高效、易用",
+  "description": "原生微信小程序状态管理库 - 简洁、高效、易用",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "sideEffects": false,
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "require": "./dist/index.js"
+      "types": "./src/core/index.ts",
+      "default": "./src/core/index.ts"
     },
-    "./store": {
-      "types": "./dist/core/store/index.d.ts",
-      "require": "./dist/core/store/index.js"
-    },
-    "./hooks": {
-      "types": "./dist/core/hooks/index.d.ts",
-      "require": "./dist/core/hooks/index.js"
-    },
-    "./plugins": {
-      "types": "./dist/plugins/index.d.ts",
-      "require": "./dist/plugins/index.js"
-    },
-    "./plugins/devtools": {
-      "types": "./dist/plugins/devtools/index.d.ts",
-      "require": "./dist/plugins/devtools/index.js"
-    },
-    "./plugins/performance": {
-      "types": "./dist/plugins/performance/index.d.ts",
-      "require": "./dist/plugins/performance/index.js"
-    },
-    "./integrations": {
-      "types": "./dist/integrations/index.d.ts",
-      "require": "./dist/integrations/index.js"
-    },
-    "./integrations/enterprise": {
-      "types": "./dist/integrations/enterprise/index.d.ts",
-      "require": "./dist/integrations/enterprise/index.js"
-    },
-    "./error": {
-      "types": "./dist/core/error/index.d.ts",
-      "require": "./dist/core/error/index.js"
-    },
-    "./compose": {
-      "types": "./dist/core/compose/index.d.ts",
-      "require": "./dist/core/compose/index.js"
-    },
-    "./selectors": {
-      "types": "./dist/core/selector/index.d.ts",
-      "require": "./dist/core/selector/index.js"
-    },
-    "./snapshot": {
-      "types": "./dist/core/snapshot/index.d.ts",
-      "require": "./dist/core/snapshot/index.js"
-    },
-    "./performance": {
-      "types": "./dist/core/performance/index.d.ts",
-      "require": "./dist/core/performance/index.js"
-    },
-    "./actions": {
-      "types": "./dist/core/action/index.d.ts",
-      "require": "./dist/core/action/index.js"
-    },
-    "./cache": {
-      "types": "./dist/core/cache/index.d.ts",
-      "require": "./dist/core/cache/index.js"
-    },
+    "./core": "./src/core/index.ts",
+    "./extras": "./src/extras/index.ts",
+    "./extras/snapshot": "./src/extras/snapshot.ts",
+    "./extras/selector": "./src/extras/selector.ts",
+    "./extras/performance": "./src/extras/performance.ts",
+    "./extras/action": "./src/extras/action.ts",
+    "./extras/enterprise": "./src/extras/enterprise.ts",
+    "./extras/plugins": "./src/extras/plugins.ts",
     "./package.json": "./package.json"
   },
   "files": [
@@ -87,9 +39,7 @@
     "access": "public",
     "registry": "https://registry.npmjs.org/"
   },
-  "workspaces": [
-    "packages/*"
-  ],
+  "workspaces": ["packages/*"],
   "scripts": {
     "test": "jest",
     "test:watch": "jest --watch",
@@ -112,16 +62,7 @@
     "typecheck:examples": "tsc --noEmit -p tools/tsconfig.examples.json",
     "typecheck:src": "tsc --noEmit"
   },
-  "keywords": [
-    "state-management",
-    "miniprogram",
-    "wechat",
-    "weixin",
-    "skyline",
-    "typescript",
-    "store",
-    "lightweight"
-  ],
+  "keywords": ["state-management", "miniprogram", "wechat", "weixin", "skyline", "typescript", "store", "lightweight"],
   "author": "openlide",
   "license": "MIT",
   "packageManager": "pnpm@12.3.4+sha512.961aa41fb077da3a04a441d9f8e15ebc0c96da8ef710b2eb67bf9ee7cb0610eabd48f1fd85f51cffe73846785fa0f87c56a3a872a1d893f8446741b5cce45457",

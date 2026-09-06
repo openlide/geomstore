@@ -122,7 +122,7 @@ function createDefaultRequest(options: RequestInit): HttpRequestImpl {
   return async (url, body, method, headers) => {
     // 透传全部 RequestInit 配置；method/headers/body 以归一化后的上报参数为准。
     // 必须校验 ok：fetch 对 4xx/5xx 不 reject，不校验会把服务端拒绝当作上报成功
-    const response = await fetch(url, { ...options, method, headers, body })
+    const response = (await fetch(url, { ...options, method, headers, body })) as unknown as { ok: boolean; status: number }
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}`)
     }
@@ -713,8 +713,9 @@ export class ErrorMonitoring {
       })
     }, this.batchInterval)
     // 调用 unref() 让定时器不阻止 Node.js 进程退出（解决测试/小程序环境句柄泄漏）
-    if (timer && typeof (timer as { unref?: () => void }).unref === 'function') {
-      (timer as { unref: () => void }).unref()
+    const timerWithUnref = timer as unknown as { unref?: () => void }
+    if (timer && typeof timerWithUnref.unref === 'function') {
+      timerWithUnref.unref()
     }
     this.batchTimer = timer
   }
@@ -731,8 +732,9 @@ export class ErrorMonitoring {
       const timer = setTimeout(resolve, ms)
       // unref()：退避等待定时器不应阻止 Node.js 进程/测试 worker 退出
       // （与 batchTimer 的 unref 处理一致，小程序/浏览器环境无 unref 时跳过）
-      if (typeof (timer as { unref?: () => void }).unref === 'function') {
-        (timer as { unref: () => void }).unref()
+      const timerWithUnref = timer as unknown as { unref?: () => void }
+      if (typeof timerWithUnref.unref === 'function') {
+        timerWithUnref.unref()
       }
     })
   }
@@ -785,29 +787,3 @@ export function getDefaultMonitoring(): ErrorMonitoring {
   }
   return _defaultMonitoring
 }
-
-/**
- * 全局默认实例（惰性代理）
- *
- * 首次访问任意属性/方法时才创建真实实例，避免仅 import 就产生实例与调度器；
- * 代理目标继承自 ErrorMonitoring.prototype，保证 instanceof 检查通过
- *
- * @deprecated 建议改用 {@link getDefaultMonitoring} 以获得更明确的惰性语义
- */
-export const defaultMonitoring: ErrorMonitoring = new Proxy(Object.create(ErrorMonitoring.prototype) as ErrorMonitoring, {
-  get(_target, prop) {
-    const instance = getDefaultMonitoring()
-    const value = (instance as unknown as Record<PropertyKey, unknown>)[prop]
-    return typeof value === 'function' ? value.bind(instance) : value
-  },
-  // 缺少 set/deleteProperty 陷阱时，属性写入落在哑 target 上被静默丢弃，
-  // 用户配置（如 enableConsoleLog = false）不生效且无任何提示
-  set(_target, prop, value) {
-    (getDefaultMonitoring() as unknown as Record<PropertyKey, unknown>)[prop] = value
-    return true
-  },
-  deleteProperty(_target, prop) {
-    delete (getDefaultMonitoring() as unknown as Record<PropertyKey, unknown>)[prop]
-    return true
-  },
-})

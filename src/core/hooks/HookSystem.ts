@@ -88,7 +88,7 @@ export function usePlugin(plugin: Plugin, store: Store): () => void {
   try {
     const uninstall = plugin.install(store)
     if (!isProduction()) {
-      console.log(`[GeomStore] Plugin "${plugin.name}" installed`)
+      console.debug(`[GeomStore] Plugin "${plugin.name}" installed`)
     }
 
     return () => {
@@ -96,7 +96,7 @@ export function usePlugin(plugin: Plugin, store: Store): () => void {
         uninstall()
       }
       if (!isProduction()) {
-        console.log(`[GeomStore] Plugin "${plugin.name}" uninstalled`)
+        console.debug(`[GeomStore] Plugin "${plugin.name}" uninstalled`)
       }
     }
   } catch (error) {

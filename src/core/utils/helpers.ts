@@ -8,7 +8,7 @@
  * - 克隆操作函数
  */
 
-import { deepCloneState } from '../store/utils'
+import { deepCloneState } from './clone'
 
 // ==================== 类型判断 ====================
 
@@ -473,13 +473,8 @@ export type CloneMode = 'deep' | 'shallow' | 'safe' | 'json'
  *   序列化失败（循环引用等）时返回原引用
  * @returns 克隆后的对象
  */
-export function clone<T>(obj: T, options?: { mode?: CloneMode } & Record<string, unknown>): T {
-  const rawOptions = (options || {}) as Record<string, unknown>
-  // 旧选项（deep/safe）已废弃：JS 调用方传入时静默按默认 deep 处理会改变行为，显式告警
-  if (('deep' in rawOptions || 'safe' in rawOptions) && !('mode' in rawOptions)) {
-    console.warn("[clone] 选项 { deep, safe } 已废弃：请使用 { mode: 'deep' | 'shallow' | 'safe' | 'json' }，当前调用按 mode='deep' 处理")
-  }
-  const { mode = 'deep' } = rawOptions as { mode?: CloneMode }
+export function clone<T>(obj: T, options?: { mode?: CloneMode }): T {
+  const { mode = 'deep' } = options ?? {}
 
   if (obj === null || typeof obj !== 'object') {
     return obj

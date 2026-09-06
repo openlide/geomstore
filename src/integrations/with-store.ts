@@ -22,9 +22,9 @@ export type { Actions } from '../types/store'
 interface PageOptions {
   data?: Record<string, unknown>
   setData?: (data: Record<string, unknown>, callback?: () => void) => void
-  onLoad?(this: PageInstance, ...args: unknown[]): void
+  onLoad?(...args: unknown[]): void
   onUnload?(): void
-  onShow?(this: PageInstance, ...args: unknown[]): void
+  onShow?(...args: unknown[]): void
   /** 实例级订阅清理列表（由 withPageStore 维护，避免多页面实例共享） */
   __geomUnbinds?: Array<() => void>
   [key: string]: unknown
@@ -45,17 +45,13 @@ interface ComponentOptions {
     attached?(this: ComponentInstance): void
     detached?(this: ComponentInstance): void
   }
-  /** 组件生命周期的旧式顶层写法（微信为兼容旧写法保留）。
-   *  与 lifetimes 中同名函数并存时，微信以 lifetimes 为准、顶层声明被覆盖 */
-  attached?(this: ComponentInstance): void
-  detached?(this: ComponentInstance): void
   pageLifetimes?: {
     show?(this: ComponentInstance): void
     hide?(this: ComponentInstance): void
     [key: string]: unknown
   }
   setData?: (data: Record<string, unknown>, callback?: () => void) => void
-  onShow?(this: ComponentInstance, ...args: unknown[]): void
+  onShow?(...args: unknown[]): void
   /** 实例级订阅清理列表（由 withComponentStore 维护，避免多组件实例共享） */
   __geomUnbinds?: Array<() => void>
   [key: string]: unknown
@@ -144,7 +140,7 @@ export function withPageStore<S extends State, A extends Actions, G extends Gett
       const unbindFunctions = this.__geomUnbinds
 
       // 辅助函数：订阅 store 变化
-      const subscribeStore = (callback: () => void) => store.subscribe(callback)
+      const subscribeStore = (callback: () => void, subscribeOptions?: { readOnly?: boolean }) => store.subscribe(callback, subscribeOptions)
 
       // 绑定 state
       if (options.mapState) {
@@ -154,6 +150,7 @@ export function withPageStore<S extends State, A extends Actions, G extends Gett
           (key) => store.state[key as keyof S],
           (updates) => this.setData(updates),
           subscribeStore,
+          (storeKey) => store.isStateKeyDirty(storeKey),
         )
         unbindFunctions.push(...unbindState)
       }
@@ -288,15 +285,11 @@ export function withComponentStore<S extends State, A extends Actions, G extends
     const enhancedConfig: ComponentOptions = { ...ComponentConfig }
 
     // 扩展 lifetimes
+    // 仅从 lifetimes 捕获原始 attached/detached：基础库 3.15.0+ 仅支持 lifetimes 写法，
+    // 已移除对微信旧式顶层 attached/detached 的兼容
     const originalLifetimes = enhancedConfig.lifetimes || {}
-    // 微信规定：顶层 attached/detached 与 lifetimes 中同名函数并存时，lifetimes 覆盖顶层
-    // （官方文档原文「此处 attached 的声明会被 lifetimes 字段中的声明覆盖」）。
-    // 本 HOC 必然注入 lifetimes.attached/detached，若只链式调用 lifetimes 里的原函数，
-    // 用户写在顶层的同名函数会被永久遮蔽、永不执行（定时器不启动、detached 清理泄漏）。
-    // 按微信的优先级捕获：两处都声明时只调 lifetimes 里的，与平台语义一致。
-    // 不删除 enhancedConfig 上的顶层键——微信既已覆盖它便不会再调用，无双重调用风险
-    const originalAttached = originalLifetimes.attached ?? ComponentConfig.attached
-    const originalDetached = originalLifetimes.detached ?? ComponentConfig.detached
+    const originalAttached = originalLifetimes.attached
+    const originalDetached = originalLifetimes.detached
     enhancedConfig.lifetimes = {
       ...originalLifetimes,
       attached: function (this: ComponentInstance) {
@@ -315,7 +308,7 @@ export function withComponentStore<S extends State, A extends Actions, G extends
         }
 
         // 辅助函数：订阅 store 变化
-        const subscribeStore = (callback: () => void) => store.subscribe(callback)
+        const subscribeStore = (callback: () => void, subscribeOptions?: { readOnly?: boolean }) => store.subscribe(callback, subscribeOptions)
 
         // 绑定 state
         if (options.mapState) {
@@ -325,6 +318,7 @@ export function withComponentStore<S extends State, A extends Actions, G extends
             (key) => store.state[key as keyof S],
             (updates) => this.setData(updates),
             subscribeStore,
+            (storeKey) => store.isStateKeyDirty(storeKey),
           )
           unbindFunctions.push(...unbindState)
         }
@@ -346,7 +340,7 @@ export function withComponentStore<S extends State, A extends Actions, G extends
           performAutoInject(this, injectMapping, store, (updates: Record<string, unknown>) => this.setData(updates))
         }
 
-        // 调用原始 attached（lifetimes 中的优先，缺失时为用户写在顶层的旧式写法）
+        // 调用原始 attached（来自 lifetimes）
         originalAttached?.call(this)
       },
 
