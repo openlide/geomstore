@@ -899,3 +899,46 @@ describe('#39 回归：timeTravel 卸载只清理属于自己的引用', () => {
     expect((globalThis as unknown as { __GEOMSTORE_TIME_TRAVEL__?: Record<string, unknown> }).__GEOMSTORE_TIME_TRAVEL__?.['tt-guard-store']).toBeUndefined()
   })
 })
+
+describe('R5 回归：exportHistory 对循环引用安全', () => {
+  it('状态含循环引用时不应抛 TypeError，环以 [Circular] 占位', () => {
+    const store = createStore({ name: 'tt-cyclic-store', state: { count: 0 } })
+    store.use(timeTravelPlugin())
+    const api = (store as unknown as { __timeTravel__: { record(s: unknown): void; exportHistory(): string } }).__timeTravel__
+
+    // recordSnapshot 复用 deepCloneState，明确支持循环引用；
+    // 修复前 exportHistory 用裸 JSON.stringify，对同一形态直接抛
+    // "Converting circular structure to JSON"
+    const cyclic: Record<string, unknown> = { name: 'cyc' }
+    cyclic.self = cyclic
+    api.record(cyclic)
+
+    let json = ''
+    expect(() => {
+      json = api.exportHistory()
+    }).not.toThrow()
+    expect(typeof json).toBe('string')
+    expect(json).toContain('[Circular]')
+    expect(json).toContain('cyc')
+  })
+
+  it('跨快照共享的不可克隆实例（菱形非环）不应被误标为循环', () => {
+    class Holder {
+      tag = 'shared-instance'
+    }
+    const shared = new Holder()
+    const store = createStore({ name: 'tt-diamond-store', state: { count: 0 } })
+    store.use(timeTravelPlugin())
+    const api = (store as unknown as { __timeTravel__: { record(s: unknown): void; exportHistory(): string } }).__timeTravel__
+
+    // deepCloneState 对类实例保留原引用 → 两个快照共享同一实例，构成菱形而非环。
+    // WeakSet 方案会把第二个快照里的该实例误标为 [Circular]，导出失真；
+    // 祖先路径跟踪算法只标记真正的环
+    api.record({ h: shared, n: 1 })
+    api.record({ h: shared, n: 2 })
+
+    const json = api.exportHistory()
+    expect(json).not.toContain('[Circular]')
+    expect(json).toContain('shared-instance')
+  })
+})

@@ -182,6 +182,26 @@ describe('SnapshotManager', () => {
       expect(result.data).toEqual(data)
     })
 
+    test('REGR-SNAP-011: batchSize 为 0/NaN/负数时不得交付空壳却报 success', async () => {
+      const manager = new SnapshotManager()
+      const data = { a: 1, b: [1, 2, 3], c: { nested: 'value' } }
+
+      // 修复前 `batch.length < batchSize` 对 0/NaN/负数恒为 false → 批永远为空 →
+      // processQueue 立即 break：无任何克隆、errors 也为空，success 判定为 true
+      // 而 data 是占位空壳，静默交付半成品
+      const zero = await manager.createSnapshotAsync(data, { batchSize: 0 })
+      expect(zero.success).toBe(true)
+      expect(zero.data).toEqual(data)
+
+      const nan = await manager.createSnapshotAsync(data, { batchSize: Number.NaN })
+      expect(nan.success).toBe(true)
+      expect(nan.data).toEqual(data)
+
+      const negative = await manager.createSnapshotAsync(data, { batchSize: -5 })
+      expect(negative.success).toBe(true)
+      expect(negative.data).toEqual(data)
+    })
+
     test('should call progress callback', async () => {
       const manager = new SnapshotManager()
       // Create larger data to ensure progress is reported
@@ -1534,6 +1554,30 @@ describe('SnapshotManager', () => {
       const snapshot2 = manager.createSnapshot({ set: new Set([1, 2]) })
 
       expect(manager.compareSnapshots(snapshot1, snapshot2).changed).toBe(true)
+    })
+
+    test('REGR-SNAP-010: 相同的 NaN 字段不应被误报为差异', () => {
+      const manager = new SnapshotManager()
+      const snapshot1 = manager.createSnapshot({ v: Number.NaN, nested: { w: Number.NaN } })
+      const snapshot2 = manager.createSnapshot({ v: Number.NaN, nested: { w: Number.NaN } })
+
+      // 修复前 NaN === NaN 为 false 且 typeof 是 number 而非 object，
+      // 会落到非对象分支 push 一条 change，使两份相同快照被判为「有变化」
+      // （仓库自带 deepEqual 用 Object.is 正确处理了这一点）
+      const diff = manager.compareSnapshots(snapshot1, snapshot2)
+      expect(diff.changed).toBe(false)
+      expect(diff.changes).toHaveLength(0)
+    })
+
+    test('REGR-SNAP-010b: NaN 与数值之间仍应检出差异，0 与 -0 不应误报', () => {
+      const manager = new SnapshotManager()
+
+      // NaN 短路不得写宽：NaN 与 0 必须仍判为差异
+      expect(manager.compareSnapshots(manager.createSnapshot({ v: Number.NaN }), manager.createSnapshot({ v: 0 })).changed).toBe(true)
+
+      // 不整体改用 Object.is 的原因：Object.is(0, -0) 为 false，
+      // 那会让数值状态里的 0 与 -0 被判为差异，引入新的误报
+      expect(manager.compareSnapshots(manager.createSnapshot({ v: 0 }), manager.createSnapshot({ v: -0 })).changed).toBe(false)
     })
   })
 

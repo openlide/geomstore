@@ -614,6 +614,42 @@ describe('StateFingerprint', () => {
     it('REGR-PERF-006: 相同内容不同插入顺序的 Set 指纹应相同', () => {
       expect(fingerprint.generate(new Set([1, 2, 3]))).toBe(fingerprint.generate(new Set([3, 2, 1])))
     })
+
+    it('REGR-PERF-010: 相同内容不同插入顺序的 Map 指纹应相同', () => {
+      // Map 与 Set 同为集合，且仓库自带 deepEqual 比较 Map 时按键查找、不依赖迭代序。
+      // 修复前按迭代序组合哈希，两个 deepEqual 判定相等的 Map 指纹不同 →
+      // 误判「状态已变化」，触发无谓的重算与 setData
+      const h1 = fingerprint.generate(
+        new Map([
+          ['a', 1],
+          ['b', 2],
+        ]),
+      )
+      const h2 = fingerprint.generate(
+        new Map([
+          ['b', 2],
+          ['a', 1],
+        ]),
+      )
+      expect(h1).toBe(h2)
+    })
+
+    it('REGR-PERF-011: Map 排序不得打散键值配对', () => {
+      // 若把键哈希与值哈希分别排序，Map{a:1,b:2} 与 Map{a:2,b:1} 会得到相同指纹
+      const h1 = fingerprint.generate(
+        new Map([
+          ['a', 1],
+          ['b', 2],
+        ]),
+      )
+      const h2 = fingerprint.generate(
+        new Map([
+          ['a', 2],
+          ['b', 1],
+        ]),
+      )
+      expect(h1).not.toBe(h2)
+    })
   })
 
   describe('循环引用回归（BUG-15）', () => {

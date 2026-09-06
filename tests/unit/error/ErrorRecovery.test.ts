@@ -1442,4 +1442,37 @@ describe('RETRY 额度按故障周期计量（BUG 回归）', () => {
     const third = new GeomStoreError('失败3', 'TEST_STORM')
     await expect(recovery.recover(third)).rejects.toThrow('Max retries (2) exceeded')
   })
+
+  it('REGR-RECOVERY-004: clearAllRetryCounts 应与私有 clearRetryCount 同口径清掉周期窗', async () => {
+    recovery.configure({
+      TEST_CLEAR: {
+        strategy: RecoveryStrategy.RETRY,
+        maxRetries: 2,
+        retryDelay: 0,
+        exponentialBackoff: false,
+      },
+    })
+    const mkError = () => new GeomStoreError('失败', 'TEST_CLEAR')
+    const windows = (recovery as unknown as { retryWindowStart: Map<string, number> }).retryWindowStart
+
+    // t=0：建立周期窗并计入一次额度
+    await expect(recovery.recover(mkError())).rejects.toThrow('失败')
+    expect(windows.size).toBe(1)
+
+    // t=10s：公开 API 清计数。修复前只清 retryCount，窗口仍停留在 t=0
+    now += 10_000
+    recovery.clearAllRetryCounts()
+    expect(windows.size).toBe(0)
+
+    // t=50s / t=55s：均落在 60s 窗口内，额度累计到上限
+    now += 40_000
+    await expect(recovery.recover(mkError())).rejects.toThrow('失败')
+    now += 5_000
+    await expect(recovery.recover(mkError())).rejects.toThrow('失败')
+
+    // t=65s：修复前 now - 陈旧 windowStart(t=0) = 65s > 60s，窗口中途过期触发额度重置，
+    // 本应被拦截的重试被放行——max-retries 防风暴保护被击穿
+    now += 10_000
+    await expect(recovery.recover(mkError())).rejects.toThrow('Max retries (2) exceeded')
+  })
 })

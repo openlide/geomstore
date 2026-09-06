@@ -684,6 +684,75 @@ describe('企业级方案 - 热更新状态恢复', () => {
       // 存储读取失败按"无备份"处理：返回 false（不抛错）
       expect(result).toBe(false)
     })
+
+    it('REGR-ENT-001: 恢复应保留新版本新增的 state 键（合并语义）', () => {
+      const backupKey = 'store_backup_before_update_hot-update-test-store'
+      // 备份取自旧版本：没有 settings，也没有新版本的 newFeature
+      mockStorage[backupKey] = JSON.stringify({
+        timestamp: Date.now(),
+        state: { userData: { name: 'Old User', score: 1 } },
+        version: '1.0.0',
+      })
+      mockStorage[`${backupKey}__pending_update_launch`] = JSON.stringify(true)
+
+      const newVersionStore = createStore({
+        name: 'hot-update-test-store',
+        state: {
+          userData: { name: 'Init', score: 0 },
+          settings: { theme: 'dark' },
+          newFeature: { enabled: true },
+        },
+      })
+
+      const result = restoreFromHotUpdate(newVersionStore)
+
+      expect(result).toBe(true)
+      expect(newVersionStore.state.userData).toEqual({ name: 'Old User', score: 1 })
+      // 修复前用 $restore（= $replaceState 整树替换）：新版本新增/未备份的键被整体抹掉，
+      // 新代码读 newFeature.enabled 即得 undefined
+      expect(newVersionStore.state.settings).toEqual({ theme: 'dark' })
+      expect(newVersionStore.state.newFeature).toEqual({ enabled: true })
+    })
+
+    it('REGR-ENT-002: 备份 state 非纯对象时应返回 false 并清理，不得静默成功', () => {
+      const backupKey = 'store_backup_before_update_hot-update-test-store'
+      mockStorage[backupKey] = JSON.stringify({
+        timestamp: Date.now(),
+        state: [1, 2, 3],
+        version: '1.0.0',
+      })
+      mockStorage[`${backupKey}__pending_update_launch`] = JSON.stringify(true)
+
+      const result = restoreFromHotUpdate(testStore)
+
+      // $patch 走 deepMerge，而 deepMerge 对数组会静默跳过合并却仍算成功；
+      // 无预校验时损坏备份会被当成「已恢复」删掉，状态却原封不动
+      expect(result).toBe(false)
+      expect(testStore.state.userData).toEqual({ name: 'Test User', score: 100 })
+      // 结构性损坏永久不可重试，按过期路径同口径清理两个键
+      expect(mockStorage[backupKey]).toBeUndefined()
+      expect(mockStorage[`${backupKey}__pending_update_launch`]).toBeUndefined()
+    })
+
+    it('REGR-ENT-003: 备份版本与库版本不一致时应告警但仍按合并语义恢复', () => {
+      const warnSpy = jest.spyOn(console, 'warn').mockImplementation()
+      const backupKey = 'store_backup_before_update_hot-update-test-store'
+      mockStorage[backupKey] = JSON.stringify({
+        timestamp: Date.now(),
+        state: { userData: { name: 'Legacy', score: 7 } },
+        version: '0.9.0',
+      })
+      mockStorage[`${backupKey}__pending_update_launch`] = JSON.stringify(true)
+
+      const result = restoreFromHotUpdate(testStore)
+
+      // version 是本库版本常量而非宿主 app 版本：硬门禁会在库升级时白丢用户数据，
+      // 合并语义本身已能容忍结构漂移，故只告警不拦截
+      expect(result).toBe(true)
+      expect(testStore.state.userData).toEqual({ name: 'Legacy', score: 7 })
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('不一致'))
+      warnSpy.mockRestore()
+    })
   })
 })
 
@@ -1464,7 +1533,8 @@ describe('覆盖率补充：热更新守卫与恢复失败路径', () => {
     mockStorage[`${backupKey}__pending_update_launch`] = 'true'
 
     const store = createStore({ name: 'restore-fail-store', state: { counter: 1 } })
-    const spy = jest.spyOn(store, '$restore').mockImplementation(() => {
+    // 恢复已改用 $patch 合并语义（见 REGR-ENT-003），spy 随之落在 $patch 上
+    const spy = jest.spyOn(store, '$patch').mockImplementation(() => {
       throw new Error('restore boom')
     })
 
@@ -1582,5 +1652,66 @@ describe('R5 回归：createEnterpriseApp 必须在 App(options) 之前安装生
 
     // 已是本模块包装时直接跳过，避免 onShow 被包装多层导致检查重复执行
     expect(afterSecond).toBe(afterFirst)
+  })
+})
+
+// ==================== 第五轮中危回归：clearQueue 与同步窗口的竞态 ====================
+
+describe('R5 回归：clearQueue 在同步进行中不得被静默撤销', () => {
+  beforeEach(() => {
+    Object.keys(mockStorage).forEach((key) => delete mockStorage[key])
+  })
+
+  it('同步途中 clearQueue 后，已清空的操作不应复活并落盘', async () => {
+    let entered = false
+    let release: () => void = () => {}
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+
+    const store = createStore({
+      name: 'r5-offline-store',
+      state: { done: 0 },
+      actions: {
+        async addItem() {
+          entered = true
+          await gate
+          ;(this.state as any).done++
+        },
+      },
+    })
+
+    const manager = new OfflineManager(store, 'r5_offline_queue')
+    ;(manager as any).isOnline = false
+    await manager.execute('addItem', () => Promise.resolve(null), 'a')
+    await manager.execute('addItem', () => Promise.resolve(null), 'b')
+    expect(manager.getQueueLength()).toBe(2)
+
+    ;(manager as any).isOnline = true
+    const syncing = manager.syncQueue()
+
+    // 轮询等待第一个操作真正进入 action（不依赖固定的微任务层数），
+    // 制造「同步进行中」窗口
+    for (let i = 0; i < 20 && !entered; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    }
+    expect(entered).toBe(true)
+
+    manager.clearQueue()
+    expect(manager.getQueueLength()).toBe(0)
+
+    release()
+    await syncing
+
+    // 修复前 clearQueue 只清 actionQueue 与磁盘键，而 syncQueue 的 finally 用
+    // 局部 failedActions + 未清的 syncPending 回填并 saveQueue，
+    // 已「清空」的操作 b 会复活继续同步并落盘
+    expect(manager.getQueueLength()).toBe(0)
+
+    // 从磁盘重新加载也读不到被复活的操作
+    const reloaded = new OfflineManager(store, 'r5_offline_queue')
+    expect(reloaded.getQueueLength()).toBe(0)
+
+    store.destroy()
   })
 })

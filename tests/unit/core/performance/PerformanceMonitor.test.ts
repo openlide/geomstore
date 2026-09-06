@@ -128,6 +128,31 @@ describe('PerformanceMonitor', () => {
     expect(metrics.length).toBe(0) // 0% 采样率不应记录任何指标
   })
 
+  it('REGR-PERF-012: sampleRate=0 时仍应清理超时未结束的计时条目', () => {
+    const monitor = new PerformanceMonitor({ sampleRate: 0 })
+    const ops = (monitor as unknown as { currentOperations: Map<string, number> }).currentOperations
+
+    // 模拟调用方漏掉 end()：条目滞留，把起始时间戳人为推到超过 MAX_OPERATION_AGE_MS(10min) 之前
+    monitor.start('leaked')
+    expect(ops.size).toBe(1)
+    const staleKey = [...ops.keys()][0]
+    ops.set(staleKey, (ops.get(staleKey) as number) - 11 * 60 * 1000)
+
+    // 修复前 record() 的采样判断在最前，sampleRate=0 时直接 return，
+    // pruneStaleOperations 永不执行，泄漏条目随调用次数无限累积
+    monitor.record({
+      operation: 'x',
+      type: 'dispatch',
+      duration: 1,
+      timestamp: Date.now(),
+      exceedThreshold: false,
+    })
+
+    expect(ops.size).toBe(0)
+    // 采样本身仍生效：本条指标不被记录
+    expect(monitor.getMetrics().length).toBe(0)
+  })
+
   // 新增测试：阈值超限日志
   it('should call logger when threshold exceeded', () => {
     const logger = jest.fn()
@@ -237,6 +262,33 @@ describe('PerformanceMonitor', () => {
 
     const recent = monitor.getRecentMetrics()
     expect(recent.length).toBe(10) // 默认 10 条
+  })
+
+  it('REGR-PERF-013: getRecentMetrics 对 0/负数/NaN 应返回空数组', () => {
+    const monitor = new PerformanceMonitor()
+
+    for (let i = 0; i < 5; i++) {
+      monitor.record({
+        operation: `op${i}`,
+        type: 'dispatch',
+        duration: i,
+        timestamp: Date.now(),
+        exceedThreshold: false,
+      })
+    }
+    expect(monitor.getMetrics().length).toBe(5)
+
+    // 修复前 slice(-0) === slice(0) 返回全部；负数退化为从头截断（slice(3)），
+    // 与「最近 N 条」语义相反；NaN 同样返回全部
+    expect(monitor.getRecentMetrics(0)).toHaveLength(0)
+    expect(monitor.getRecentMetrics(-3)).toHaveLength(0)
+    expect(monitor.getRecentMetrics(Number.NaN)).toHaveLength(0)
+
+    // 正常路径不受影响
+    const last2 = monitor.getRecentMetrics(2)
+    expect(last2).toHaveLength(2)
+    expect(last2[0].operation).toBe('op3')
+    expect(last2[1].operation).toBe('op4')
   })
 
   // 新增测试：导出 JSON

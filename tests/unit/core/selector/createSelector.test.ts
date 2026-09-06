@@ -681,6 +681,25 @@ describe('createStructuredSelector', () => {
       value: 42,
     })
   })
+
+  it('REGR-STRUCT-001: 选择器映射含自有 __proto__ 键时应安全承载结果', () => {
+    // 计算属性写法可产生自有 __proto__ 键（对象字面量里的 __proto__: 会走原型 setter）
+    const selectors = Object.defineProperty({}, '__proto__', {
+      value: (s: TestState) => s.value * 2,
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    })
+    const selector = createStructuredSelector<TestState>(selectors as never)
+
+    const result = selector(state) as unknown as Record<string, unknown>
+
+    // 修复前 result[key] = selector(state) 走 [[Set]]，触发 Object.prototype 的
+    // __proto__ setter：该项被静默丢弃且 result 原型被换掉
+    expect(Object.prototype.hasOwnProperty.call(result, '__proto__')).toBe(true)
+    expect(result['__proto__']).toBe(84)
+    expect(Object.getPrototypeOf(result)).toBe(Object.prototype)
+  })
 })
 
 // ==================== BUG 回归：就地变异状态的缓存正确性 ====================

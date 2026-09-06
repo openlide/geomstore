@@ -219,6 +219,27 @@ describe('ErrorHandlerImpl', () => {
       // 应该自动设置为至少1
     })
 
+    test('REGR-ERRH-001: 传入 NaN/Infinity 时上限不应失效导致日志无界增长', () => {
+      // 修复前 Math.max(1, NaN) 返回 NaN，此后 logError 的 length > NaN
+      // 与截断 while 条件恒为 false，errorLog 随错误数无限增长
+      // （入参可能来自 parseInt(配置) 等，NaN 是现实输入）
+      errorHandler.setMaxLogSize(Number.NaN)
+      for (let i = 0; i < 250; i++) {
+        errorHandler.handle('nan-store', 'dispatch' as OperationType, new Error(`Error ${i}`))
+      }
+      expect(errorHandler.getErrorLog().length).toBeLessThanOrEqual(100)
+
+      errorHandler.setMaxLogSize(Number.POSITIVE_INFINITY)
+      for (let i = 0; i < 250; i++) {
+        errorHandler.handle('inf-store', 'dispatch' as OperationType, new Error(`Error ${i}`))
+      }
+      expect(errorHandler.getErrorLog().length).toBeLessThanOrEqual(100)
+
+      // 正常路径不受影响
+      errorHandler.setMaxLogSize(3)
+      expect(errorHandler.getErrorLog()).toHaveLength(3)
+    })
+
     test('超过限制时应该移除最旧的错误', () => {
       errorHandler.setMaxLogSize(3)
 

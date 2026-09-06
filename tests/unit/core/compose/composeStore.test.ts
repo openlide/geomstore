@@ -2438,3 +2438,58 @@ describe('R5 回归：ComposedStore 订阅计数语义与 Store 对齐', () => {
     expect(listener).toHaveBeenCalledTimes(3)
   })
 })
+
+describe('R5 回归：子 store 重名校验', () => {
+  it('命名空间模式下重名子 store 应在构造期抛错', () => {
+    const a = createStore({ name: 'dup', state: { x: 1 } })
+    const b = createStore({ name: 'dup', state: { y: 2 } })
+
+    // 修复前不校验：getState()['dup'] 取后一个 store，而 setState('dup/x', …) 经
+    // find 路由到前一个 store —— 读写分裂且全程无告警
+    expect(() => composeStore([a, b], { namespace: true })).toThrow(/名称不得重复/)
+
+    a.destroy()
+    b.destroy()
+  })
+
+  it('嵌套组合的内层默认名 composed 相撞时应抛错，传 namespace 字符串后可正常组合', () => {
+    const s1 = createStore({ name: 'nest-a', state: { x: 1 } })
+    const s2 = createStore({ name: 'nest-b', state: { y: 2 } })
+    const s3 = createStore({ name: 'nest-c', state: { z: 3 } })
+
+    // 两个内层组合 store 的 name 默认都是 'composed'
+    const inner1 = composeStore([s1])
+    const inner2 = composeStore([s2])
+    expect(inner1.name).toBe('composed')
+    expect(() => composeStore([inner1, inner2, s3], { namespace: true })).toThrow(/composed/)
+
+    // 给内层传 namespace 字符串即可区分
+    const s4 = createStore({ name: 'nest-d', state: { w: 4 } })
+    const inner3 = composeStore([s4], { namespace: 'groupB' })
+    expect(inner3.name).toBe('groupB')
+    expect(() => composeStore([inner1, inner3, s3], { namespace: true })).not.toThrow()
+  })
+
+  it('非命名空间模式下重名只告警不抛错', () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation()
+    const a = createStore({ name: 'dup-flat', state: { x: 1 } })
+    const b = createStore({ name: 'dup-flat', state: { y: 2 } })
+
+    // 非命名空间模式 state 按键平铺合并，重名危害较小，按既有歧义告警口径处理
+    expect(() => composeStore([a, b])).not.toThrow()
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('子 store 名称重复'))
+
+    warnSpy.mockRestore()
+  })
+
+  it('名称唯一时不应产生重名告警', () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation()
+    const a = createStore({ name: 'uniq-a', state: { x: 1 } })
+    const b = createStore({ name: 'uniq-b', state: { y: 2 } })
+
+    composeStore([a, b], { namespace: true })
+
+    expect(warnSpy).not.toHaveBeenCalledWith(expect.stringContaining('子 store 名称重复'))
+    warnSpy.mockRestore()
+  })
+})

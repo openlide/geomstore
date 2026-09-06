@@ -271,6 +271,32 @@ describe('StoreRegistry', () => {
       registry.setDefault('test')
       expect(registry.getDefault()).toBe(mockStore)
     })
+
+    it('REGR-REGISTRY-001: 从未 setDefault 时注册不应隐式设置默认 store', () => {
+      // 修复前 register 末尾的 this.defaultStore === existingStore 在两者都为
+      // undefined（注册全新名字且从未 setDefault）时同样成立，导致首个注册的
+      // store 隐式成为默认，违反 getDefault「未设置则返回 undefined」的契约
+      expect(registry.getDefault()).toBeUndefined()
+
+      registry.register('first', mockStore)
+      expect(registry.getDefault()).toBeUndefined()
+
+      registry.register('second', { ...mockStore })
+      expect(registry.getDefault()).toBeUndefined()
+    })
+
+    it('REGR-REGISTRY-002: 覆盖注册时默认引用仍应同步到新实例', () => {
+      const warnSpy = jest.spyOn(console, 'warn').mockImplementation()
+      registry.register('target', mockStore)
+      registry.setDefault('target')
+
+      const replacement = { ...mockStore }
+      registry.register('target', replacement)
+
+      // 旧实例已被销毁，默认引用须跟随到新实例而非悬空
+      expect(registry.getDefault()).toBe(replacement)
+      warnSpy.mockRestore()
+    })
   })
 
   describe('getNames', () => {

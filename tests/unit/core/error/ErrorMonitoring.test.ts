@@ -2045,6 +2045,101 @@ describe('#37 回归：flush 全部报告器失败', () => {
     expect(failingReporter.reportBatch).toHaveBeenCalledTimes(1)
     expect((monitoring as unknown as { errorQueue: unknown[] }).errorQueue).toHaveLength(0)
   })
+
+  test('连续全失败超过上限后应丢弃该批而非无限重入队', async () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation()
+    const failingReporter: ErrorReporter = {
+      getName: () => 'always-failing',
+      report: jest.fn(),
+      reportBatch: jest.fn().mockRejectedValue(new Error('payload 不可序列化')),
+    }
+    const monitoring = new ErrorMonitoring({
+      reporters: [failingReporter],
+      batchInterval: 60000,
+      batchThreshold: 100,
+      enableConsoleLog: false,
+    })
+    const queueOf = (m: unknown) => (m as { errorQueue: unknown[] }).errorQueue
+
+    await monitoring.report({ storeName: 's', operation: 'dispatch', error: new Error('x'), level: 'error' })
+
+    // maxFlushRetries = 3：前三次重入队保留批次，第四次丢弃并告警
+    for (let i = 0; i < 3; i++) {
+      await monitoring.flushReports()
+      expect(queueOf(monitoring)).toHaveLength(1)
+    }
+    expect(warnSpy).not.toHaveBeenCalled()
+
+    await monitoring.flushReports()
+    expect(queueOf(monitoring)).toHaveLength(0)
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('丢弃本批 1 条错误'))
+    expect(failingReporter.reportBatch).toHaveBeenCalledTimes(4)
+
+    warnSpy.mockRestore()
+    await monitoring.shutdown()
+  })
+
+  test('一次成功上报应清零连续失败计数，后续失败重新获得完整额度', async () => {
+    let shouldFail = true
+    const flakyReporter: ErrorReporter = {
+      getName: () => 'flaky',
+      report: jest.fn(),
+      reportBatch: jest.fn().mockImplementation(() => (shouldFail ? Promise.reject(new Error('down')) : Promise.resolve())),
+    }
+    const monitoring = new ErrorMonitoring({
+      reporters: [flakyReporter],
+      batchInterval: 60000,
+      batchThreshold: 100,
+      enableConsoleLog: false,
+    })
+    const queueOf = (m: unknown) => (m as { errorQueue: unknown[] }).errorQueue
+    const ctx = (): ErrorContext => ({ storeName: 's', operation: 'dispatch', error: new Error('x'), level: 'error' })
+
+    await monitoring.report(ctx())
+    for (let i = 0; i < 3; i++) {
+      await monitoring.flushReports()
+    }
+    expect(queueOf(monitoring)).toHaveLength(1)
+
+    // 成功一次：计数清零、批次落地
+    shouldFail = false
+    await monitoring.flushReports()
+    expect(queueOf(monitoring)).toHaveLength(0)
+
+    // 再次失败应重新获得完整的 3 次重入队额度（而非沿用已耗尽的计数）
+    shouldFail = true
+    await monitoring.report(ctx())
+    for (let i = 0; i < 3; i++) {
+      await monitoring.flushReports()
+      expect(queueOf(monitoring)).toHaveLength(1)
+    }
+
+    await monitoring.shutdown()
+  })
+
+  test('reporters 为空数组时不应无限空转重入队', async () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation()
+    const monitoring = new ErrorMonitoring({
+      reporters: [],
+      batchInterval: 60000,
+      batchThreshold: 100,
+      enableConsoleLog: false,
+    })
+    const queueOf = (m: unknown) => (m as { errorQueue: unknown[] }).errorQueue
+
+    await monitoring.report({ storeName: 's', operation: 'dispatch', error: new Error('x'), level: 'error' })
+
+    // 修复前：promises 为空数组 → anyReporterSucceeded 恒 false → 每个周期空转重入队，
+    // 批次永不落地也永不丢弃
+    for (let i = 0; i < 4; i++) {
+      await monitoring.flushReports()
+    }
+    expect(queueOf(monitoring)).toHaveLength(0)
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('当前报告器数: 0'))
+
+    warnSpy.mockRestore()
+    await monitoring.shutdown()
+  })
 })
 
 // ==================== BUG 回归：超时不计为上报成功 ====================

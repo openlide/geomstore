@@ -198,6 +198,27 @@ describe('SelectorComposer', () => {
       const result = selector({})
       expect(result).toEqual({})
     })
+
+    it('REGR-COMPOSER-001: state 含自有 __proto__ 键时应安全承载派生结果', () => {
+      const keySelector = (key: string) => () => `v:${key}`
+      const selector = SelectorComposer.createObjectSelector(keySelector)
+      // state 可合法含自有 __proto__ 键（helpers.ts 的 deepMerge/set 有意如此写入）
+      const stateWithProto = Object.defineProperty({ a: 1 }, '__proto__', {
+        value: 2,
+        writable: true,
+        enumerable: true,
+        configurable: true,
+      })
+
+      const result = selector(stateWithProto as never) as Record<string, unknown>
+
+      // 修复前 result[key] = … 走 [[Set]]，触发 Object.prototype 的 __proto__ setter：
+      // 该键的派生结果被静默丢弃且 result 原型被换掉
+      expect(Object.prototype.hasOwnProperty.call(result, '__proto__')).toBe(true)
+      expect(result['__proto__']).toBe('v:__proto__')
+      expect(result.a).toBe('v:a')
+      expect(Object.getPrototypeOf(result)).toBe(Object.prototype)
+    })
   })
 
   describe('createConditionalSelector', () => {

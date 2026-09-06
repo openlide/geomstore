@@ -270,6 +270,24 @@ describe('LRUCache', () => {
 
       expect(cache.toObject()).toEqual({ b: 2, a: 1 })
     })
+
+    test('REGR-LRU-001: toObject 应安全承载自有 __proto__ 键', () => {
+      const cache = new LRUCache<string, number>(3)
+      cache.set('a', 1)
+      // 缓存键可来自 state 的自有键，而 state 可合法含自有 __proto__ 键
+      // （helpers.ts 的 deepMerge/set 有意用 defineOwnProperty 写入）
+      cache.set('__proto__', 2)
+
+      const obj = cache.toObject()
+
+      // 修复前 obj[key] = value 走 [[Set]]，触发 Object.prototype 的 __proto__ setter：
+      // 值为原始类型时被静默忽略，键丢失
+      expect(Object.prototype.hasOwnProperty.call(obj, '__proto__')).toBe(true)
+      expect(obj['__proto__']).toBe(2)
+      expect(obj.a).toBe(1)
+      // 返回对象仍是普通对象，消费方原型链未被污染
+      expect(Object.getPrototypeOf(obj)).toBe(Object.prototype)
+    })
   })
 
   describe('特殊操作', () => {
