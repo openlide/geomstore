@@ -41,13 +41,13 @@
 
 ```javascript
 // 方式一：CommonJS
-const { createStore } = require('./utils/geomstore/dist/cjs/index.js')
+const { createStore } = require('./utils/geomstore/dist/index.js')
 
 // 方式二：解构导入（如果支持）
-const { createStore, withPageStore } = require('./utils/geomstore/dist/cjs/index.js')
+const { createStore, withPageStore } = require('./utils/geomstore/dist/index.js')
 ```
 
-> 💡 复制安装时，本文示例中的 `@openlide/geomstore`（含 `/integrations`、`/plugins` 等子路径）需替换为 `./utils/geomstore/dist/cjs/index.js` 全路径；采用 NPM 安装则无需修改。
+> 💡 复制安装时，本文示例中的 `@openlide/geomstore`（含 `/integrations`、`/plugins` 等子路径）需替换为 `./utils/geomstore/dist/index.js` 全路径；采用 NPM 安装则无需修改。
 
 ### 方式二：NPM 安装
 

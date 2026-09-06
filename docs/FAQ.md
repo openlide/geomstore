@@ -28,7 +28,7 @@
 小程序项目/
 └── utils/
     └── geomstore/
-        └── dist/      # 入口为 dist/cjs/index.js（CJS 单产物）
+        └── dist/      # 入口为 dist/index.js（CJS 单产物）
 ```
 
 **方式二：NPM 安装**
@@ -51,7 +51,7 @@ npm install @openlide/geomstore
 1. **路径是否正确**
 ```javascript
 // 确认路径正确
-const { createStore } = require('./utils/geomstore/dist/cjs/index.js')
+const { createStore } = require('./utils/geomstore/dist/index.js')
 ```
 
 2. **NPM 是否构建**
@@ -63,7 +63,7 @@ const { createStore } = require('./utils/geomstore/dist/cjs/index.js')
 3. **文件是否存在**
 ```bash
 # 检查文件是否存在
-ls utils/geomstore/dist/cjs/index.js
+ls utils/geomstore/dist/index.js
 ```
 
 ---
@@ -784,7 +784,7 @@ Page(withPageStore(userStore, { mapState: ['user'] })({
 
 ---
 
-## 行为变更与进阶（v0.1.1 引入，后续版本均保持这些行为；当前版本 v0.2.0）
+## 行为变更与进阶（v0.1.1 引入，后续版本均保持这些行为；当前版本 v0.2.1）
 
 ### Q: 为什么修改 `$snapshot()` 返回的快照会报错？
 

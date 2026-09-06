@@ -1,7 +1,7 @@
 import type { Plugin, IHookSystem } from './plugin'
 
 /**
- * GeomStore v1.0.0 - Store类型定义
+ * GeomStore - Store类型定义
  * 采用 ThisType 方案消除循环依赖
  */
 

@@ -1,8 +1,7 @@
 /**
- * GeomStore v1.0 - 插件模块入口（子路径导出 `geomstore/plugins`）
+ * GeomStore - 插件模块入口（子路径导出 `geomstore/plugins`）
  *
  * @module plugins
- * @since 1.0.0
  */
 
 // 内置插件

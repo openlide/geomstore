@@ -1,5 +1,5 @@
 /**
- * GeomStore v1.0 - 性能监控模块导出
+ * GeomStore - 性能监控模块导出
  */
 
 export { PerformanceMonitor } from './PerformanceMonitor'

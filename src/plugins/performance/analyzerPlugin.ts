@@ -1,5 +1,5 @@
 /**
- * GeomStore v1.0 - 性能分析插件
+ * GeomStore - 性能分析插件
  *
  * 提供全面的性能监控和分析功能，包括：
  * - 操作性能监控
@@ -7,7 +7,6 @@
  * - 性能统计
  * - 实时分析
  *
- * @since 1.0.0
  */
 
 import type { Store } from '../../types/store'
@@ -23,7 +22,6 @@ import { isProduction } from '../../core/store/utils'
  * 自动监控所有Store操作的性能，并提供分析工具
  *
  * @type {Plugin}
- * @since 1.0.0
  *
  * @example
  * ```typescript

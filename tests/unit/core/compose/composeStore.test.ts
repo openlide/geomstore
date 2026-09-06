@@ -2493,3 +2493,81 @@ describe('R5 回归：子 store 重名校验', () => {
     warnSpy.mockRestore()
   })
 })
+
+describe('R5 回归：dispatchByNamespace 跳过已销毁子 store', () => {
+  it('命名空间模式：某子 store 已销毁时不应抛错，其余 store 全部写入', () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation()
+    const s1 = createStore({ name: 'dns-a', state: { x: 1 } })
+    const s2 = createStore({ name: 'dns-b', state: { y: 1 } })
+    const s3 = createStore({ name: 'dns-c', state: { z: 1 } })
+    const composed = composeStore([s1, s2, s3], { namespace: true })
+    s2.destroy()
+
+    // 修复前：s1 已写入 → s2 抛 "Cannot call $patch on a destroyed Store" 中断循环
+    // → s3 永不写入，交付「半更新 + 抛错」这种调用方无法解释的状态
+    expect(() =>
+      composed.$patch({
+        'dns-a': { x: 10 },
+        'dns-b': { y: 20 },
+        'dns-c': { z: 30 },
+      } as never),
+    ).not.toThrow()
+
+    expect(s1.getState().x).toBe(10)
+    expect(s3.getState().z).toBe(30)
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('已销毁，跳过对它的写入'))
+
+    warnSpy.mockRestore()
+  })
+
+  it('非命名空间模式：某子 store 已销毁时不应抛错，其余 store 全部写入', () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation()
+    const s1 = createStore({ name: 'flat-a', state: { x: 1 } })
+    const s2 = createStore({ name: 'flat-b', state: { y: 1 } })
+    const composed = composeStore([s1, s2])
+    s2.destroy()
+
+    expect(() => composed.$patch({ x: 10, y: 20 } as never)).not.toThrow()
+    expect(s1.getState().x).toBe(10)
+
+    warnSpy.mockRestore()
+  })
+
+  it('strict 模式：已销毁子 store 仍跳过，键找不到对应 store 仍应抛错', () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation()
+    const s1 = createStore({ name: 'strict-a', state: { x: 1 } })
+    const s2 = createStore({ name: 'strict-b', state: { y: 1 } })
+    const composed = composeStore([s1, s2], { namespace: true, strict: true })
+    s2.destroy()
+
+    // 「存在但已销毁」与「不存在」是两种故障：strict 只针对后者
+    expect(() =>
+      composed.$patch({
+        'strict-a': { x: 5 },
+        'strict-b': { y: 5 },
+      } as never),
+    ).not.toThrow()
+    expect(s1.getState().x).toBe(5)
+
+    expect(() => composed.$patch({ 'no-such-store': { q: 1 } } as never)).toThrow(/Cannot find store for key/)
+
+    warnSpy.mockRestore()
+  })
+
+  it('已销毁子 store 不应再收到 $replaceState 的缺失键告警', () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation()
+    const s1 = createStore({ name: 'warn-a', state: { x: 1, keep: 9 } })
+    const s2 = createStore({ name: 'warn-b', state: { y: 1 } })
+    const composed = composeStore([s1, s2])
+    s2.destroy()
+
+    composed.$replaceState({ x: 2 } as never)
+
+    // s1 仍存活：缺失键告警照常给出
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('$replaceState 未包含 store "warn-a"'))
+    // s2 已销毁会被跳过，为它输出该告警是误导性噪音
+    expect(warnSpy).not.toHaveBeenCalledWith(expect.stringContaining('未包含 store "warn-b"'))
+
+    warnSpy.mockRestore()
+  })
+})

@@ -1413,6 +1413,15 @@ function createSelector<S, R>(
 
 > ⚠️ 默认比较器是 `deepEqual` 而非 `shallowEqual`：Store 状态为就地变异（`getState` 返回活动引用、`$patch` 原地深合并），引用/浅比较会在状态已变化时误判相等，TTL 内返回陈旧值。缓存对状态的比较基于写入时的**快照**（深拷贝）而非活动引用，保证就地变异能被感知。
 
+> ⚠️ **限制：不可克隆对象的就地变异感知不到。** 快照由 `deepCloneState` 生成，而它对不可克隆对象（类实例、`Promise`、`WeakMap`/`WeakSet` 等）保留原引用而非拷贝（这是有意的降级契约：这类对象无法安全深拷贝，强行拷贝会破坏 `#私有字段` 等内部槽位）。因此若 state 里放了类实例并**就地修改它的字段**，快照与活状态共享同一实例，`deepEqual` 会因引用相等直接判定「未变化」，TTL 内返回陈旧值。
+>
+> 规避方式（任选其一）：
+> - 用 `setState` / `$patch` 整体替换该字段，让状态树产生新的纯对象（推荐，与本库「不要就地变异 state」的核心约定一致）；
+> - 或不要把类实例放进 state，改存纯数据对象；
+> - 或对该选择器显式传 `cache: false` / 自定义 `equalityFn`。
+>
+> 纯对象、数组、`Date`、`RegExp`、`Map`、`Set` 都会被正确深拷贝，不受此限制影响。
+
 **示例：**
 
 ```javascript
@@ -1502,6 +1511,10 @@ const itemAgain = selectItemById(store.state)(123)
 ```
 
 > 对象参数使用 WeakMap 缓存（随参数对象被回收自动释放）；原始类型参数（string/number/boolean 等）使用 Map 缓存并按 `ttl` / `maxEntries` 维护。
+
+> ℹ️ **失效语义：** 除 `ttl` 外，每次调用还会用 `deepEqual` 校验 state 内容快照。Store 状态就地变异（引用不变）时会立即作废该 state 下的全部参数缓存并重算，因此不会在 TTL 内返回陈旧值——`ttl` 只是额外的时间上限，不是唯一的失效条件。
+
+> ⚠️ **限制：** 与 [createSelector](#createselector) 相同——state 内容快照由 `deepCloneState` 生成，它对不可克隆对象（类实例、`Promise`、`WeakMap`/`WeakSet` 等）保留原引用，因此这类对象被**就地变异**时校验会因引用相等判定「未变化」，TTL 内返回陈旧值。规避方式见 createSelector 小节的说明（推荐用 `setState` / `$patch` 整体替换该字段）。
 
 ---
 

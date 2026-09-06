@@ -1,4 +1,4 @@
-# GeomStore v0.2.0 最佳实践
+# GeomStore v0.2.1 最佳实践
 
 本文档总结了在微信小程序项目中使用 GeomStore 的最佳实践，帮助开发者构建高质量、可维护的应用。
 
@@ -58,7 +58,7 @@ miniprogram/
     └── analytics.js           # 分析插件
 ```
 
-> 📌 本文示例默认采用 NPM 安装方式（`require('@openlide/geomstore')` 等包路径，需在微信开发者工具中执行「构建 npm」）；若使用复制安装（上述 `utils/geomstore/` 目录），请将整个 `dist` 目录复制过去，并把包路径替换为 `utils/geomstore/dist/cjs/index.js` 全路径（入口为 `dist/cjs/index.js`）。
+> 📌 本文示例默认采用 NPM 安装方式（`require('@openlide/geomstore')` 等包路径，需在微信开发者工具中执行「构建 npm」）；若使用复制安装（上述 `utils/geomstore/` 目录），请将整个 `dist` 目录复制过去，并把包路径替换为 `utils/geomstore/dist/index.js` 全路径（入口为 `dist/index.js`）。
 
 ### Store 文件组织
 

@@ -1,9 +1,8 @@
 /**
- * GeomStore v1.0 - 选择器创建
+ * GeomStore - 选择器创建
  *
  * 提供创建记忆化选择器的功能，支持缓存和性能优化
  *
- * @since 1.0.0
  */
 
 import type { Selector, SelectorOptions, SelectorCacheItem, SelectorResult } from '../../types/selector'
@@ -17,7 +16,6 @@ import { deepEqual, clone } from '../utils/helpers'
  * @class SelectorFactory
  * @template S - 状态类型
  * @template R - 返回值类型
- * @since 1.0.0
  *
  * @example
  * ```typescript
@@ -285,12 +283,17 @@ export class SelectorFactory<S extends Record<string, unknown> = Record<string, 
  *
  * 创建一个可缓存的选择器，用于从状态中派生数据
  *
+ * 限制：缓存对状态的比较基于 `clone(state)` 快照，而 clone（即 deepCloneState）对
+ * 不可克隆对象（类实例、Promise、WeakMap/WeakSet 等）保留原引用而非拷贝。因此若
+ * state 里放了类实例并就地修改其字段，快照与活状态共享同一实例，比较会因引用相等
+ * 判定「未变化」，TTL 内返回陈旧值。规避：用 setState/$patch 整体替换该字段，
+ * 让状态树产生新的纯对象。纯对象/数组/Date/RegExp/Map/Set 会被正确深拷贝，不受影响。
+ *
  * @template S - 状态类型
  * @template R - 返回值类型
  * @param {Selector<S, R>} selectorFn - 选择器函数
  * @param {SelectorOptions} [options] - 缓存选项
  * @returns {Selector<S, R>} 选择器函数
- * @since 1.0.0
  *
  * @example
  * ```typescript
@@ -333,7 +336,6 @@ export function createSelector<S extends Record<string, unknown>, R>(selectorFn:
  * @param {Selector<S, R>} selectorFn - 选择器函数
  * @param {(a: unknown, b: unknown) => boolean} [equalityFn] - 自定义相等性函数
  * @returns {Selector<S, R>} 记忆化选择器
- * @since 1.0.0
  *
  * @example
  * ```typescript
@@ -372,7 +374,11 @@ export function createMemoizedSelector<S extends Record<string, unknown>, R>(
  *   全部参数缓存，不会在 TTL 内返回陈旧值
  * @param {number} [options.maxEntries=1000] - 单个 state 下原始类型参数的缓存条目上限
  * @returns {(state: S) => (params: P) => R} 参数化选择器工厂
- * @since 1.0.0
+ *
+ * 限制：与 createSelector 相同——校验所用的 state 快照由 clone（deepCloneState）生成，
+ * 它对不可克隆对象（类实例、Promise、WeakMap/WeakSet 等）保留原引用，因此这类对象被
+ * 就地变异时校验会因引用相等判定「未变化」，TTL 内返回陈旧值。规避：用 setState/$patch
+ * 整体替换该字段。
  *
  * @example
  * ```typescript
@@ -502,7 +508,6 @@ export function createParametricSelector<S extends Record<string, unknown>, P, R
  * @template R - 返回结构类型（默认从选择器映射推断）
  * @param {[K in keyof R]?: Selector<S, R[K]>} selectors - 选择器映射
  * @returns {Selector<S, R>} 组合选择器
- * @since 1.0.0
  *
  * @example
  * ```typescript

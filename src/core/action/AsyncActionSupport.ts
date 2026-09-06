@@ -1,5 +1,5 @@
 /**
- * GeomStore v1.0 - 异步Action支持
+ * GeomStore - 异步Action支持
  *
  * 提供高性能的Action执行和管理功能，包括：
  * - 异步Action执行
@@ -9,7 +9,6 @@
  * - 执行历史记录
  * - 性能统计
  *
- * @since 1.0.0
  */
 
 import type { AsyncActions, ActionResult } from '../../types/action'
@@ -22,7 +21,6 @@ import type { Actions } from '../../types/store'
  *
  * @class ActionExecutor
  * @template A - Actions 类型（异步/同步均可；AsyncActions 仅作为默认值）
- * @since 1.0.0
  *
  * @example
  * ```typescript

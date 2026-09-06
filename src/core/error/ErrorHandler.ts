@@ -1,9 +1,8 @@
 /**
- * GeomStore v1.0 - 错误处理器
+ * GeomStore - 错误处理器
  *
  * 提供统一的错误处理、记录和统计功能
  *
- * @since 1.0.0
  */
 
 import { createErrorContext, defaultErrorHandler, type ErrorContext, type ErrorHandler, type ErrorLevel, type OperationType } from '../../types/error'
@@ -14,7 +13,6 @@ import { createErrorContext, defaultErrorHandler, type ErrorContext, type ErrorH
  * 用于管理GeomStore运行过程中的错误处理、记录和统计
  *
  * @class ErrorHandlerImpl
- * @since 1.0.0
  *
  * @example
  * ```typescript

@@ -1,5 +1,5 @@
 /**
- * GeomStore v1.0 - Store组合
+ * GeomStore - Store组合
  *
  * 优化：
  * - 使用类实例替代对象字面量，提升性能
@@ -26,6 +26,42 @@ const ALL_HOOK_NAMES: HookName[] = [
 ]
 
 /**
+ * 对子 store 应用写入，跳过已被独立销毁的子 store
+ *
+ * 子 store 可在组合之外被独立销毁，此时 $patch/$replaceState 会抛
+ * "Cannot call … on a destroyed Store"。此前该异常直接冒泡使循环中断在中间：
+ * 已处理的 store 写入了、之后的 store 永不写入——既没保住一致性又抛了错，
+ * 交付的是调用方无法解释的半更新状态。
+ *
+ * 跳过口径与 _startBatchOnStores / _endBatchOnStores / 企业版 runForegroundChecks
+ * 三处一致（均为「子 store 可被独立销毁 → 跳过」）。不受 strict 影响：
+ * strict 的既有语义是「访问不存在的 Store 报错」，而「存在但已销毁」是另一种故障，
+ * 混进去会让 strict 模式重新产生半更新。
+ *
+ * @private
+ */
+function applyToStore<T>(store: Store, value: T, handler: (store: Store, value: T) => void): void {
+  if (store.destroyed) {
+    if (!isProduction()) {
+      console.warn(`[composeStore] 子 store "${store.name}" 已销毁，跳过对它的写入（其余 store 不受影响）`)
+    }
+    return
+  }
+  try {
+    handler(store, value)
+  } catch (error) {
+    // 只吞「判断之后才被销毁」的竞态；其他异常照常冒泡，不掩盖真实故障
+    if (store.destroyed) {
+      if (!isProduction()) {
+        console.warn(`[composeStore] 子 store "${store.name}" 在写入期间被销毁，已跳过`)
+      }
+      return
+    }
+    throw error
+  }
+}
+
+/**
  * 根据命名空间分发操作到对应 store
  * @private
  */
@@ -43,7 +79,7 @@ function dispatchByNamespace<T>(
       const value = data[key]
       const targetStore = stores.find((s) => s.name === key)
       if (targetStore) {
-        handler(targetStore, value as T)
+        applyToStore(targetStore, value as T, handler)
       } else if (strict) {
         throw new Error(`[composeStore] Cannot find store for key: ${key}`)
       }
@@ -69,9 +105,10 @@ function dispatchByNamespace<T>(
 
     // 一次性调用每个 store
     for (const [store, groupData] of storeGroups) {
-      // $replaceState 整体替换语义下，分组数据缺錇会丢失 store 中的既有键，
-      // 开发模式下告警提示（保留替换语义不变，避免破坏既有行为）
-      if (options?.warnMissingKeys) {
+      // $replaceState 整体替换语义下，分组数据缺失会丢失 store 中的既有键，
+      // 开发模式下告警提示（保留替换语义不变，避免破坏既有行为）。
+      // 已销毁的子 store 会被 applyToStore 跳过，为它输出该告警是误导性噪音
+      if (!store.destroyed && options?.warnMissingKeys) {
         const stateKeys = Object.keys(store.getState())
         const providedKeys = Object.keys(groupData)
         const missing = stateKeys.filter((k) => !providedKeys.includes(k))
@@ -79,7 +116,7 @@ function dispatchByNamespace<T>(
           console.warn(`[composeStore] $replaceState 未包含 store "${store.name}" 的键 [${missing.join(', ')}]，整体替换后这些键将丢失；如需保留请使用 $patch`)
         }
       }
-      handler(store, groupData as T)
+      applyToStore(store, groupData as T, handler)
     }
   }
 }

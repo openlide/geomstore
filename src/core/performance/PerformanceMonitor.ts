@@ -1,5 +1,5 @@
 /**
- * GeomStore v1.0 - 性能监控器
+ * GeomStore - 性能监控器
  *
  * 提供全面的性能监控功能，包括：
  * - 操作计时
@@ -9,7 +9,6 @@
  * - 内存使用监控
  * - 数据导出
  *
- * @since 1.0.0
  */
 
 import type {
@@ -27,7 +26,6 @@ import type {
  *
  * @class PerformanceMonitor
  * @implements PerformanceMonitor
- * @since 1.0.0
  *
  * @example
  * ```typescript
@@ -132,11 +130,18 @@ export class PerformanceMonitor implements PerformanceMonitorInterface {
 
   /**
    * 获取高精度时间戳（兼容微信小程序）
+   *
+   * 契约：**返回值单位恒为毫秒**。全类下游一律按毫秒比较——threshold 默认 16
+   * （一帧 16ms 预算）、MAX_OPERATION_AGE_MS 常量名自带 _MS、record 的 timestamp
+   * 取 Date.now()、测试 mock 复用 Node performance.now()（同为毫秒）。
+   * 若某基础库实测 wx.getPerformance().now() 返回微秒，归一化只能改本函数这一处
+   * （除以 1000），下游不得各自换算，否则口径会分散失配。
+   *
    * @private
    */
   private _getTimestamp(): number {
-    // 优先使用小程序高精度计时 wx.getPerformance().now()（基础库 2.20.1+，微秒级），
-    // 旧基础库降级使用 Date.now()（毫秒精度）；
+    // 优先使用小程序高精度计时 wx.getPerformance().now()（基础库 2.20.1+），
+    // 旧基础库降级使用 Date.now()；两者均为毫秒，可直接互换比较
     // wx 经 globalThis 读取，避免直接引用未声明的小程序全局标识符
     const wxGlobal = (globalThis as { wx?: { getPerformance?: () => unknown } }).wx
     if (wxGlobal && typeof wxGlobal.getPerformance === 'function') {

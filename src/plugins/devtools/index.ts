@@ -1,10 +1,9 @@
 /**
- * GeomStore v1.0 - DevTools插件导出
+ * GeomStore - DevTools插件导出
  *
  * 提供开发者工具相关的插件，包括时间旅行等功能
  *
  * @module @geomstore/plugins/devtools
- * @since 1.0.0
  *
  * @example
  * ```typescript

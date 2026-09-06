@@ -1,6 +1,5 @@
 /**
- * GeomStore v1.0 - 内置插件
- * @since 1.0.0
+ * GeomStore - 内置插件
  */
 
 import type { Store, State } from '../types/store'

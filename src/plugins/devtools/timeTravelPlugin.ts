@@ -1,5 +1,5 @@
 /**
- * GeomStore v1.0 - 时间旅行插件
+ * GeomStore - 时间旅行插件
  *
  * 提供时间旅行功能，可以：
  * - 记录状态快照
@@ -7,7 +7,6 @@
  * - 跳转到任意历史状态
  * - 导出/导入历史
  *
- * @since 1.0.0
  */
 
 import type { Store, State } from '../../types/store'

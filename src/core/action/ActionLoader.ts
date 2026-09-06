@@ -1,9 +1,8 @@
 /**
- * GeomStore v1.0 - Action加载状态管理
+ * GeomStore - Action加载状态管理
  *
  * 提供自动管理Action执行时的loading状态、错误状态和错误数据的功能
  *
- * @since 1.0.0
  */
 
 import type { ActionLoaderOptions } from '../../types/action'
@@ -14,7 +13,6 @@ import type { ActionLoaderOptions } from '../../types/action'
  * 用于包装异步Action，自动管理其执行状态（loading、error、errorData）
  *
  * @class ActionLoader
- * @since 1.0.0
  *
  * @example
  * ```typescript
@@ -449,7 +447,6 @@ export class ActionLoader {
  *
  * @param {ActionLoaderOptions} [options={}] - 配置选项
  * @returns {MethodDecorator} 方法装饰器
- * @since 1.0.0
  *
  * @example
  * ```typescript

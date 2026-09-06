@@ -1,5 +1,5 @@
 /**
- * GeomStore v1.0 - Action类型定义
+ * GeomStore - Action类型定义
  */
 
 import type { Actions } from './store'

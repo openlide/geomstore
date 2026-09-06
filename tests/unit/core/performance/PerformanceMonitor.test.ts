@@ -569,3 +569,89 @@ describe('PerformanceMonitor', () => {
     expect(stateUpdateMetrics.length).toBe(1)
   })
 })
+
+// ==================== 待裁决 A 裁定：计时单位口径为毫秒 ====================
+describe('计时单位契约（_getTimestamp 恒返回毫秒）', () => {
+  const originalWx = (globalThis as any).wx
+
+  afterEach(() => {
+    ;(globalThis as any).wx = originalWx
+  })
+
+  /** 用受控毫秒时钟替换 wx.getPerformance().now() */
+  const installWxClock = (startAt: number) => {
+    let current = startAt
+    ;(globalThis as any).wx = {
+      ...(originalWx || {}),
+      getPerformance: () => ({ now: () => current }),
+    }
+    return {
+      advance(ms: number) {
+        current += ms
+      },
+    }
+  }
+
+  const metric = (operation: string) => ({
+    operation,
+    type: 'dispatch' as const,
+    duration: 1,
+    timestamp: Date.now(),
+    exceedThreshold: false,
+  })
+
+  it('wx 时钟推进 20ms 时 duration 应为 20 且超过 16ms 阈值', () => {
+    const clock = installWxClock(1000)
+    const logger = jest.fn()
+    const monitor = new PerformanceMonitor({ threshold: 16, logger })
+
+    const end = monitor.start('op')
+    clock.advance(20)
+    end()
+
+    const metrics = monitor.getMetrics()
+    expect(metrics).toHaveLength(1)
+    // duration 直接等于时钟推进量，即 wx 时钟被按毫秒解读。
+    // 若日后在 _getTimestamp 内除以 1000（实测某基础库返回微秒）而未同步本契约，
+    // 此断言会失败，提醒改动者一并复核 threshold 与 MAX_OPERATION_AGE_MS
+    expect(metrics[0].duration).toBe(20)
+    expect(metrics[0].exceedThreshold).toBe(true)
+    expect(logger).toHaveBeenCalled()
+  })
+
+  it('wx 时钟推进 10ms 时不应超过 16ms 阈值', () => {
+    const clock = installWxClock(1000)
+    const logger = jest.fn()
+    const monitor = new PerformanceMonitor({ threshold: 16, logger })
+
+    const end = monitor.start('op')
+    clock.advance(10)
+    end()
+
+    const metrics = monitor.getMetrics()
+    expect(metrics).toHaveLength(1)
+    expect(metrics[0].duration).toBe(10)
+    expect(metrics[0].exceedThreshold).toBe(false)
+    expect(logger).not.toHaveBeenCalled()
+  })
+
+  it('超时条目清理按毫秒口径：满 10 分钟才判定为泄漏', () => {
+    const clock = installWxClock(1_000_000)
+    const monitor = new PerformanceMonitor()
+    const ops = (monitor as unknown as { currentOperations: Map<string, number> }).currentOperations
+
+    // 模拟调用方漏掉 end()：条目滞留
+    monitor.start('leaked')
+    expect(ops.size).toBe(1)
+
+    // MAX_OPERATION_AGE_MS = 10 * 60 * 1000；推进 9 分钟不应清理
+    clock.advance(9 * 60 * 1000)
+    monitor.record(metric('x'))
+    expect(ops.size).toBe(1)
+
+    // 累计 11 分钟应清理
+    clock.advance(2 * 60 * 1000)
+    monitor.record(metric('y'))
+    expect(ops.size).toBe(0)
+  })
+})

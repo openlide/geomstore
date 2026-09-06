@@ -1,5 +1,5 @@
 /**
- * GeomStore v1.0.0 - 类型定义入口
+ * GeomStore - 类型定义入口
  */
 
 export * from './store'

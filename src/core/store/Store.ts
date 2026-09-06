@@ -1,5 +1,5 @@
 /**
- * GeomStore v1.0 - Store核心实现
+ * GeomStore - Store核心实现
  *
  * 核心特性：
  * - 简洁的状态管理API
@@ -489,6 +489,27 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
     if (this._destroyed) {
       throw new Error('[GeomStore] Cannot call use on a destroyed Store')
     }
+
+    // 同一插件实例重复安装：_pluginUninstallFns 以 plugin 对象为键，第二次 use 会覆盖
+    // 首条映射使第一个 uninstall 永久丢失；且返回的 token 用 indexOf 只移除一个数组槽位
+    // 却删除共享映射，_plugins 里残留的那份在 destroy() 时再也拿不到卸载函数——
+    // 第二份安装永不卸载。对本仓库全部内置插件（loggerPlugin/devtoolsPlugin/
+    // analyzerPlugin/persistencePlugin 都是共享单例对象）而言，同 store 二次安装只有害处
+    // （重复订阅、重复 hooks、重复全局注册），无合法用途，故告警并幂等返回既有卸载函数。
+    // 不抛错：与仓库既有「歧义→开发模式告警」口径一致（_mergeStateMaps、
+    // findTargetStoreWithKey、子 store 重名的非命名空间分支）。
+    // 不引入按实例计数：插件不同于监听器（后者「注册 N 次通知 N 次」是正当语义），
+    // 需要多份独立副作用时应使用插件工厂（如 timeTravelPlugin()）产生不同实例
+    if (this._plugins.indexOf(plugin) !== -1) {
+      if (!isProduction()) {
+        console.warn(
+          `[GeomStore][${this.name}] 插件 "${plugin.name}" 已安装，忽略重复的 use() 调用。` +
+            '同一实例重复安装会丢失卸载函数；如需多份独立副作用，请用插件工厂产生不同实例',
+        )
+      }
+      return this._createPluginUninstaller(plugin)
+    }
+
     this._plugins.push(plugin)
 
     let uninstall: unknown
@@ -506,6 +527,19 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
 
     this._pluginUninstallFns.set(plugin, uninstall as (() => void) | undefined)
 
+    return this._createPluginUninstaller(plugin)
+  }
+
+  /**
+   * 创建插件卸载句柄
+   *
+   * 幂等：重复调用只在首次生效（移出 _plugins、调用插件自身的卸载函数、清除映射），
+   * 之后再调为安全 no-op。首次安装与重复安装返回的都是由本工厂生成的等价句柄，
+   * 因此重复 use() 拿到的 token 与首个 token 行为一致。
+   *
+   * @private
+   */
+  private _createPluginUninstaller(plugin: PluginType): () => void {
     return () => {
       const index = this._plugins.indexOf(plugin)
       if (index !== -1) {

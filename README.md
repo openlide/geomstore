@@ -54,11 +54,11 @@
 小程序项目/
 └── utils/
     └── geomstore/
-        └── dist/        # 构建产物（CJS 单产物，入口为 dist/cjs/index.js）
+        └── dist/        # 构建产物（CJS 单产物，入口为 dist/index.js）
 ```
 
 ```javascript
-const { createStore } = require('./utils/geomstore/dist/cjs/index.js')
+const { createStore } = require('./utils/geomstore/dist/index.js')
 ```
 
 ### 方式二：NPM 安装
@@ -226,8 +226,7 @@ Component(withComponentStore(userStore, {
 | [API 参考](docs/API.md)                               | 完整的 API 接口文档                    |
 | [最佳实践](docs/BEST_PRACTICES.md)                    | 开发建议与性能优化指南                 |
 | [常见问题](docs/FAQ.md)                               | 常见问题解答                           |
-| [生产可行性评审](docs/PRODUCTION_READINESS_REPORT.md) | 企业级生产环境部署评审报告             |
-| [技术文档](docs/TECHNICAL_DOCUMENTATION.md)           | 完整技术规范文档                       |
+| [迁移指南](docs/MIGRATION.md)                        | 从其他状态管理方案迁移到 GeomStore     |
 
 ---
 
@@ -350,12 +349,11 @@ if (process.env.NODE_ENV === 'development') {
 ```
 GeomStore/
 ├── dist/                    # 编译产物（CJS 单产物）
-│   └── cjs/
-│       ├── index.js         # 入口文件
-│       ├── index.d.ts       # 类型声明
-│       ├── core/            # 核心模块
-│       ├── plugins/         # 插件
-│       └── integrations/    # 集成模块
+│   ├── index.js             # 入口文件
+│   ├── index.d.ts           # 类型声明
+│   ├── core/                # 核心模块
+│   ├── plugins/             # 插件
+│   └── integrations/        # 集成模块
 ├── src/                     # 源代码
 │   ├── core/                # 核心实现
 │   │   ├── store/           # Store 类

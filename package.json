@@ -2,69 +2,69 @@
   "name": "@openlide/geomstore",
   "version": "0.2.1",
   "description": "轻量级微信小程序状态管理库 - 简洁、高效、易用",
-  "main": "dist/cjs/index.js",
-  "types": "dist/cjs/index.d.ts",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
   "sideEffects": false,
   "exports": {
     ".": {
-      "types": "./dist/cjs/index.d.ts",
-      "require": "./dist/cjs/index.js"
+      "types": "./dist/index.d.ts",
+      "require": "./dist/index.js"
     },
     "./store": {
-      "types": "./dist/cjs/core/store/index.d.ts",
-      "require": "./dist/cjs/core/store/index.js"
+      "types": "./dist/core/store/index.d.ts",
+      "require": "./dist/core/store/index.js"
     },
     "./hooks": {
-      "types": "./dist/cjs/core/hooks/index.d.ts",
-      "require": "./dist/cjs/core/hooks/index.js"
+      "types": "./dist/core/hooks/index.d.ts",
+      "require": "./dist/core/hooks/index.js"
     },
     "./plugins": {
-      "types": "./dist/cjs/plugins/index.d.ts",
-      "require": "./dist/cjs/plugins/index.js"
+      "types": "./dist/plugins/index.d.ts",
+      "require": "./dist/plugins/index.js"
     },
     "./plugins/devtools": {
-      "types": "./dist/cjs/plugins/devtools/index.d.ts",
-      "require": "./dist/cjs/plugins/devtools/index.js"
+      "types": "./dist/plugins/devtools/index.d.ts",
+      "require": "./dist/plugins/devtools/index.js"
     },
     "./plugins/performance": {
-      "types": "./dist/cjs/plugins/performance/index.d.ts",
-      "require": "./dist/cjs/plugins/performance/index.js"
+      "types": "./dist/plugins/performance/index.d.ts",
+      "require": "./dist/plugins/performance/index.js"
     },
     "./integrations": {
-      "types": "./dist/cjs/integrations/index.d.ts",
-      "require": "./dist/cjs/integrations/index.js"
+      "types": "./dist/integrations/index.d.ts",
+      "require": "./dist/integrations/index.js"
     },
     "./integrations/enterprise": {
-      "types": "./dist/cjs/integrations/enterprise/index.d.ts",
-      "require": "./dist/cjs/integrations/enterprise/index.js"
+      "types": "./dist/integrations/enterprise/index.d.ts",
+      "require": "./dist/integrations/enterprise/index.js"
     },
     "./error": {
-      "types": "./dist/cjs/core/error/index.d.ts",
-      "require": "./dist/cjs/core/error/index.js"
+      "types": "./dist/core/error/index.d.ts",
+      "require": "./dist/core/error/index.js"
     },
     "./compose": {
-      "types": "./dist/cjs/core/compose/index.d.ts",
-      "require": "./dist/cjs/core/compose/index.js"
+      "types": "./dist/core/compose/index.d.ts",
+      "require": "./dist/core/compose/index.js"
     },
     "./selectors": {
-      "types": "./dist/cjs/core/selector/index.d.ts",
-      "require": "./dist/cjs/core/selector/index.js"
+      "types": "./dist/core/selector/index.d.ts",
+      "require": "./dist/core/selector/index.js"
     },
     "./snapshot": {
-      "types": "./dist/cjs/core/snapshot/index.d.ts",
-      "require": "./dist/cjs/core/snapshot/index.js"
+      "types": "./dist/core/snapshot/index.d.ts",
+      "require": "./dist/core/snapshot/index.js"
     },
     "./performance": {
-      "types": "./dist/cjs/core/performance/index.d.ts",
-      "require": "./dist/cjs/core/performance/index.js"
+      "types": "./dist/core/performance/index.d.ts",
+      "require": "./dist/core/performance/index.js"
     },
     "./actions": {
-      "types": "./dist/cjs/core/action/index.d.ts",
-      "require": "./dist/cjs/core/action/index.js"
+      "types": "./dist/core/action/index.d.ts",
+      "require": "./dist/core/action/index.js"
     },
     "./cache": {
-      "types": "./dist/cjs/core/cache/index.d.ts",
-      "require": "./dist/cjs/core/cache/index.js"
+      "types": "./dist/core/cache/index.d.ts",
+      "require": "./dist/core/cache/index.js"
     },
     "./package.json": "./package.json"
   },
@@ -96,6 +96,10 @@
     "test:integration": "jest tests/integration",
     "test:ci": "jest --ci --coverage --maxWorkers=2",
     "build": "tsc -p tsconfig.cjs.json && node scripts/postbuild-dist.cjs",
+    "stubs": "node scripts/generate-subpath-stubs.cjs",
+    "stubs:clean": "node scripts/generate-subpath-stubs.cjs --clean",
+    "prepack": "node scripts/generate-subpath-stubs.cjs",
+    "postpack": "node scripts/generate-subpath-stubs.cjs --clean",
     "prepublishOnly": "pnpm test && pnpm build",
     "lint": "eslint src tests --ext .ts",
     "lint:ci": "eslint src tests --ext .ts --max-warnings 70",
@@ -109,7 +113,7 @@
   "keywords": ["state-management", "miniprogram", "wechat", "weixin", "skyline", "typescript", "store", "lightweight"],
   "author": "openlide",
   "license": "MIT",
-  "packageManager": "pnpm@11.21.0",
+  "packageManager": "pnpm@11.25.0+sha512.5cde925b4f075f725eb71fbae18a42ffe784524789f19b61c731cb8721ec28aaee160e01a8d5af4fedb2a42cdbf300efe23db356b0d4a17b4d63e11f8ab7c956",
   "repository": {
     "type": "git",
     "url": "https://github.com/openlide/geomstore.git"

@@ -197,6 +197,26 @@ describe('企业级方案 - 多账号隔离', () => {
 
       expect(storeManager.getCurrentStore()).toBeNull()
     })
+
+    it('REGR-ENT-004: getUserStore 只读预览另一账号不应切换当前身份', () => {
+      storeManager.switchUser('user-A')
+
+      // 只读预览 B（缓存未命中）：修复前未命中分支会顺带写 currentUserId，
+      // 而命中分支不会——身份副作用取决于 LRU 淘汰状态这一调用方不可见的实现细节
+      const preview = storeManager.getUserStore('user-B')
+      expect(preview.name).toBe('user-store-user-B')
+      expect(storeManager.getCurrentStore()?.name).toBe('user-store-user-A')
+
+      // 再次预览（此时缓存命中）：两条路径行为必须一致
+      storeManager.getUserStore('user-B')
+      expect(storeManager.getCurrentStore()?.name).toBe('user-store-user-A')
+
+      // logout 清的必须是真正登录的 A，而非被静默切换到的 B
+      storeManager.logout()
+      expect(storeManager.getCurrentStore()).toBeNull()
+      // B 的 store 未被登出流程牵连销毁
+      expect(storeManager.getUserStore('user-B')).toBe(preview)
+    })
   })
 })
 
@@ -1301,6 +1321,28 @@ describe('企业级方案 - App 集成', () => {
     expect(app.getStore()).toBeNull()
     expect(app.getOfflineManager()).toBeNull()
     expect(mockStorage['current_user_id']).toBeUndefined()
+  })
+
+  it('REGR-ENT-006: 冷启动应显式恢复身份，登出才能真正清理持久化数据', () => {
+    mockStorage['current_user_id'] = 'cold-user'
+    // 预置该账号的持久化状态：logout 是否真正执行可由它是否被删除判别
+    mockStorage['user-store-cold-user'] = JSON.stringify({
+      userInfo: { name: 'Cold' },
+      preferences: {},
+      lastSyncTime: null,
+    })
+
+    const app = createEnterpriseApp()
+    expect(app.globalData.store?.name).toBe('user-store-cold-user')
+
+    app.logout()
+
+    // 修复前 getUserStore 不设 currentUserId，冷启动后该字段仍为 null，
+    // StoreManager.logout() 开头的 `if (!this.currentUserId) return` 早退，
+    // store.destroy() 与用户持久化键都不会被清理（App 层只清 CURRENT_USER_KEY）
+    expect(mockStorage['user-store-cold-user']).toBeUndefined()
+    expect(mockStorage['current_user_id']).toBeUndefined()
+    expect(app.getStore()).toBeNull()
   })
 
   it('ENTERPRISE-063: login 切换账号应注销旧处理器，旧 store 不再被刷新', () => {

@@ -1,5 +1,5 @@
 /**
- * GeomStore v1.0.0 - App 集成
+ * GeomStore - App 集成
  *
  * 提供 Store 与微信小程序 App 的集成方案，包括：
  * - withAppStore: App 集成
@@ -8,7 +8,6 @@
  * - 调试 API 暴露
  * - 自动清理订阅
  *
- * @since 1.0.0
  */
 
 import type { Store, State, Actions, Getters } from '../types/store'

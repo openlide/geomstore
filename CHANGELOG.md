@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- 构建产物目录扁平化：CJS 产物由 `dist/cjs/**` 改为 `dist/**`，`main`、`types` 与 `exports` 全部同步（入口现为 `dist/index.js`）。**Breaking（复制安装）**：直接引用 `dist/cjs/...` 路径的项目请改为 `dist/...`；NPM 安装方式不受影响。
+- 子路径转发 stub（`store/`、`hooks/`、`plugins/`、`integrations/` 等 14 个）不再由 `postbuild` 写入仓库根目录：改由 `prepack` 在打包/发布前生成、`postpack` 清理，并新增 `pnpm stubs` / `pnpm stubs:clean` 手动入口；`.gitignore` 中对应的 11 条忽略规则随之移除。
+
 ## [0.2.1] - 2026-08-28
 
 ### Added

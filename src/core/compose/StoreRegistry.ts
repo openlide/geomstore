@@ -1,9 +1,8 @@
 /**
- * GeomStore v1.0 - Store注册表
+ * GeomStore - Store注册表
  *
  * 提供全局Store管理、注册、注销和批量操作功能
  *
- * @since 1.0.0
  */
 
 import type { Store, State } from '../../types/store'
@@ -15,7 +14,6 @@ import { deepCloneState } from '../store/utils'
  * 用于管理多个Store实例，提供统一的注册、访问和生命周期管理
  *
  * @class StoreRegistry
- * @since 1.0.0
  *
  * @example
  * ```typescript
@@ -60,7 +58,6 @@ export class StoreRegistry {
    * @param {string} name - Store名称
    * @param {Store} store - Store实例
    * @throws {Error} 如果名称无效或store无效
-   * @since 1.0.0
    *
    * @example
    * ```typescript
@@ -119,7 +116,6 @@ export class StoreRegistry {
    * 将多个Store实例批量注册到注册表中
    *
    * @param {Record<string, Store>} stores - Store名称到实例的映射
-   * @since 1.0.0
    *
    * @example
    * ```typescript
@@ -147,7 +143,6 @@ export class StoreRegistry {
    * 从注册表中移除Store并调用其destroy方法
    *
    * @param {string} name - Store名称
-   * @since 1.0.0
    *
    * @example
    * ```typescript
@@ -188,7 +183,6 @@ export class StoreRegistry {
    *
    * @param {string} name - Store名称
    * @returns {Store | undefined} Store实例，不存在则返回undefined
-   * @since 1.0.0
    *
    * @example
    * ```typescript
@@ -212,7 +206,6 @@ export class StoreRegistry {
    * @param {string} name - Store名称
    * @returns {Store} Store实例
    * @throws {Error} 如果Store不存在
-   * @since 1.0.0
    *
    * @example
    * ```typescript
@@ -237,7 +230,6 @@ export class StoreRegistry {
    *
    * @param {string} name - Store名称
    * @returns {boolean} 是否存在
-   * @since 1.0.0
    *
    * @example
    * ```typescript
@@ -255,7 +247,6 @@ export class StoreRegistry {
    * 获取所有Store
    *
    * @returns {Record<string, Store>} 所有Store的映射
-   * @since 1.0.0
    *
    * @example
    * ```typescript
@@ -273,7 +264,6 @@ export class StoreRegistry {
    * 获取Store数量
    *
    * @returns {number} 注册的Store数量
-   * @since 1.0.0
    *
    * @example
    * ```typescript
@@ -289,7 +279,6 @@ export class StoreRegistry {
    *
    * 注销所有Store并清空注册表
    *
-   * @since 1.0.0
    *
    * @example
    * ```typescript
@@ -318,7 +307,6 @@ export class StoreRegistry {
    *
    * @param {string} name - Store名称
    * @throws {Error} 如果Store不存在
-   * @since 1.0.0
    *
    * @example
    * ```typescript
@@ -344,7 +332,6 @@ export class StoreRegistry {
    * 获取默认Store
    *
    * @returns {Store | undefined} 默认Store，未设置则返回undefined
-   * @since 1.0.0
    *
    * @example
    * ```typescript
@@ -362,7 +349,6 @@ export class StoreRegistry {
    * 获取Store名称列表
    *
    * @returns {string[]} 所有Store名称的数组
-   * @since 1.0.0
    *
    * @example
    * ```typescript
@@ -380,7 +366,6 @@ export class StoreRegistry {
    * 对每个注册的Store执行回调函数
    *
    * @param {(name: string, store: Store) => void} callback - 回调函数
-   * @since 1.0.0
    *
    * @example
    * ```typescript
@@ -401,7 +386,6 @@ export class StoreRegistry {
    * 创建所有Store的状态快照
    *
    * @returns {Record<string, unknown>} Store名称到状态的映射
-   * @since 1.0.0
    *
    * @example
    * ```typescript
@@ -433,7 +417,6 @@ export class StoreRegistry {
    * 根据快照恢复所有Store的状态
    *
    * @param {Record<string, unknown>} snapshot - Store快照
-   * @since 1.0.0
    *
    * @example
    * ```typescript
@@ -466,7 +449,6 @@ export class StoreRegistry {
  * 提供全局访问的注册表实例
  *
  * @type {StoreRegistry}
- * @since 1.0.0
  *
  * @example
  * ```typescript

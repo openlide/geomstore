@@ -1,5 +1,5 @@
 /**
- * GeomStore v1.0 - 持久化类型定义
+ * GeomStore - 持久化类型定义
  */
 
 import type { State } from './store'

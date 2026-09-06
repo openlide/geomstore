@@ -1,5 +1,5 @@
 /**
- * GeomStore v1.0 - Action工具类
+ * GeomStore - Action工具类
  *
  * 提供Action执行功能
  *
@@ -7,7 +7,6 @@
  * - `geomstore` 主入口
  * - `geomstore/core/action/decorators`
  *
- * @since 1.0.0
  */
 
 import type { AsyncActions } from '../../types/action'
@@ -29,7 +28,6 @@ export interface ActionUtilsOptions<A extends Actions = AsyncActions> {
  *
  * @class ActionUtils
  * @template A - 异步Actions类型
- * @since 1.0.0
  *
  * @example
  * ```typescript

@@ -83,7 +83,6 @@ export class StateProxyManager<S extends State = State> {
   /**
    * 使 Proxy 缓存失效
    *
-   * 注意：自 v1.0.0 起写入/删除不再清除缓存（引用稳定），Proxy 始终包装同一 target；
    * 同一对象被重新挂到状态树其他位置时，缓存 Proxy 闭包中的 path 可能保持旧值，
    * 仅影响直接变异报错消息中的路径展示，读写语义不受影响。
    */

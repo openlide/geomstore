@@ -1,5 +1,5 @@
 /**
- * GeomStore v1.0 - 工具函数导出
+ * GeomStore - 工具函数导出
  */
 
 export * from './helpers'

@@ -1,5 +1,5 @@
 /**
- * GeomStore v1.0.0 - 集成类型定义
+ * GeomStore - 集成类型定义
  */
 
 import type { State, Actions, Getters, InferActionArgs, InferActionReturn } from './store'

@@ -1,12 +1,11 @@
 /**
- * GeomStore v1.0 - 缓存装饰器
+ * GeomStore - 缓存装饰器
  *
  * 缓存方法的执行结果，在TTL内重复调用时直接返回缓存结果
  *
  * 修复说明：原实现将 cache Map 声明在工厂函数作用域，导致同一装饰器装饰的
  * 所有方法/实例共享同一份缓存（闭包陷阱）。现改为按宿主对象（this）隔离缓存。
  *
- * @since 1.0.0
  */
 
 import { isProduction } from '../../store/utils'

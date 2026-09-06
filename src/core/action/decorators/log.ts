@@ -1,9 +1,8 @@
 /**
- * GeomStore v1.0 - 日志装饰器
+ * GeomStore - 日志装饰器
  *
  * 在Action执行前后记录日志，便于调试
  *
- * @since 1.0.0
  */
 
 import { createDecorator } from './common'

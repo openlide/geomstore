@@ -682,6 +682,74 @@ describe('Store - 核心功能', () => {
         store.use(plugin)
       }).not.toThrow()
     })
+
+    it('REGR-STORE-005: 同一插件实例重复 use 应只安装一次并告警', () => {
+      const warnSpy = jest.spyOn(console, 'warn').mockImplementation()
+      const store = createStore({ name: 'dup-plugin-store', state: { count: 0 } })
+      const install = jest.fn()
+      const plugin = { name: 'dup-plugin', install }
+
+      store.use(plugin)
+      store.use(plugin)
+
+      // 内置插件均为共享单例对象，同 store 二次安装只会重复订阅/重复 hooks/重复全局注册
+      expect(install).toHaveBeenCalledTimes(1)
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('已安装，忽略重复的 use()'))
+      expect((store as unknown as { _plugins: unknown[] })._plugins).toHaveLength(1)
+
+      warnSpy.mockRestore()
+    })
+
+    it('REGR-STORE-006: 重复 use 后卸载不得留下无法卸载的残留注册', () => {
+      const warnSpy = jest.spyOn(console, 'warn').mockImplementation()
+      const store = createStore({ name: 'dup-plugin-store-2', state: { count: 0 } })
+      const uninstallFn = jest.fn()
+      const plugin = {
+        name: 'dup-plugin-2',
+        install: () => uninstallFn,
+      }
+
+      const token1 = store.use(plugin)
+      const token2 = store.use(plugin)
+
+      // 修复前：_pluginUninstallFns 以 plugin 对象为键，第二次 use 覆盖首条映射；
+      // token1 只移除一个数组槽位却删除共享映射，_plugins 残留的那份在 destroy() 时
+      // 再也拿不到卸载函数 → 第二份安装永不卸载
+      token1()
+      expect(uninstallFn).toHaveBeenCalledTimes(1)
+      expect((store as unknown as { _plugins: unknown[] })._plugins).toHaveLength(0)
+
+      // 重复 use 拿到的句柄与首个等价且幂等：再调为安全 no-op
+      token2()
+      expect(uninstallFn).toHaveBeenCalledTimes(1)
+
+      store.destroy()
+      expect(uninstallFn).toHaveBeenCalledTimes(1)
+
+      warnSpy.mockRestore()
+    })
+
+    it('REGR-STORE-007: 不同插件实例（工厂产物）应各自安装', () => {
+      const warnSpy = jest.spyOn(console, 'warn').mockImplementation()
+      const store = createStore({ name: 'factory-plugin-store', state: { count: 0 } })
+      const installs: string[] = []
+      const makePlugin = (tag: string) => ({
+        name: 'factory-plugin',
+        install: () => {
+          installs.push(tag)
+        },
+      })
+
+      store.use(makePlugin('a'))
+      store.use(makePlugin('b'))
+
+      // 同名但不同实例：不属于重复安装，两份副作用都要生效（timeTravelPlugin 即此形态）
+      expect(installs).toEqual(['a', 'b'])
+      expect((store as unknown as { _plugins: unknown[] })._plugins).toHaveLength(2)
+      expect(warnSpy).not.toHaveBeenCalledWith(expect.stringContaining('已安装，忽略重复的 use()'))
+
+      warnSpy.mockRestore()
+    })
   })
 
   describe('边界条件', () => {

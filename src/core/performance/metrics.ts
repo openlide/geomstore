@@ -1,9 +1,8 @@
 /**
- * GeomStore v1.0 - 性能指标采集
+ * GeomStore - 性能指标采集
  *
  * 提供性能指标的收集、批量操作、筛选排序、统计分析与退化检测能力。
  *
- * @since 1.0.0
  */
 
 import type { PerformanceMetrics, PerformanceStats } from '../../types/performance'

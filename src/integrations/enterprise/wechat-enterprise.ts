@@ -1,5 +1,5 @@
 /**
- * GeomStore v1.0 - 微信小程序企业级方案
+ * GeomStore - 微信小程序企业级方案
  *
  * 包含：
  * - 多账号隔离（持久化 key 与登出清理 key 统一为 store name）
@@ -262,6 +262,12 @@ export class StoreManager {
 
   /**
    * 获取或创建用户 Store
+   *
+   * 只负责「取/建某账号的 store」，**不改变当前登录身份**。
+   * 此前未命中分支会顺带写 this.currentUserId，而命中分支不会——同一调用的身份
+   * 副作用取决于 LRU 淘汰状态这一调用方不可见的实现细节；只读预览另一账号
+   * （getUserStore('B')）会静默把身份切成 B，随后 logout() 清的是 B 的数据。
+   * 身份切换与冷启动恢复一律走 switchUser 显式表达。
    */
   getUserStore(userId: string): Store<UserState> {
     const existingStore = this.stores.get(userId)
@@ -277,7 +283,6 @@ export class StoreManager {
 
     const store = createUserStore({ userId })
     this.stores.set(userId, store)
-    this.currentUserId = userId
 
     return store
   }
@@ -1045,7 +1050,11 @@ export function createEnterpriseApp(config: EnterpriseAppConfig = {}) {
 
   // 获取当前用户ID
   const currentUserId = storage.get<string>(CURRENT_USER_KEY)
-  const store = currentUserId ? storeManager.getUserStore(currentUserId) : null
+  // 用 switchUser 而非 getUserStore：冷启动时 StoreManager.currentUserId 为 null，
+  // 必须显式恢复身份，否则 StoreManager.logout() 的 `if (!this.currentUserId) return`
+  // 会早退，导致 store.destroy() 与持久化键 user-store-<id> 都不被清理。
+  // 冷启动本就是一次「切换到持久化的用户」，switchUser 语义正确
+  const store = currentUserId ? storeManager.switchUser(currentUserId) : null
 
   // 离线管理器实例（延迟初始化）
   let offlineManager: OfflineManager<UserState> | null = null

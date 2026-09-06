@@ -1,9 +1,8 @@
 /**
- * GeomStore v1.0.0 - 微信小程序集成工具
+ * GeomStore - 微信小程序集成工具
  *
  * 提供 Store 与微信小程序集成的共享工具函数
  *
- * @since 1.0.0
  */
 
 import type { Store, State } from '../types/store'
