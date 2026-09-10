@@ -1,5 +1,5 @@
 /**
- * GeomStore - 状态选择器模块实现（v0.4.0 起由 `src/core/selector` 物理下沉）
+ * GeomStore - 状态选择器模块实现（v0.5.0 起由 `src/core/selector` 物理下沉）
  *
  * 目录构成：
  * - `createSelector.ts`：基础 / 记忆化 / 结构化选择器

@@ -1,5 +1,5 @@
 /**
- * GeomStore - 快照模块实现（v0.4.0 起由 `src/core/snapshot` 物理下沉）
+ * GeomStore - 快照模块实现（v0.5.0 起由 `src/core/snapshot` 物理下沉）
  *
  * 目录构成：
  * - `SnapshotManager.ts`：对外门面——`createSnapshot` / `createSnapshotAsync` 编排与便捷函数

@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-10
+
 ### Added
 
 - **`withThrottle` 新增 `assumeAsync` 选项**：对「非 `async` 语法但返回 Promise」的方法（包装函数、手写 thenable），首次调用被抑制（`leading: false`）时也返回 Promise，避免调用方 `await` 拿到 `undefined` 而与后续调用返回类型不一致。
@@ -284,4 +286,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [0.1.1]: https://github.com/openlide/GeomStore/releases/tag/v0.1.1
 [0.1.2]: https://github.com/openlide/GeomStore/releases/tag/v0.1.2
 [0.2.0]: https://github.com/openlide/GeomStore/releases/tag/v0.2.0
-[Unreleased]: https://github.com/openlide/GeomStore/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/openlide/GeomStore/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/openlide/GeomStore/releases/tag/v0.5.0

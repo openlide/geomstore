@@ -12,7 +12,7 @@
  * 从本入口（`@openlide/geomstore/extras`）引入会一并拉入全部可选能力，
  * 仅在「确实都要用」或开发调试时使用。
  *
- * @remarks v0.4.0 起快照 / 选择器 / Action 增强的实现已由 `src/core` 物理下沉至
+ * @remarks v0.5.0 起快照 / 选择器 / Action 增强的实现已由 `src/core` 物理下沉至
  * `src/extras`，与各自子入口同层；核心主入口（`@openlide/geomstore` 与
  * `@openlide/geomstore/core`）始终不导出这些能力。
  */

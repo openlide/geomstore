@@ -1,7 +1,7 @@
 /**
  * Action 增强（可选能力，按需动态引入）
  *
- * 实现位于同层 `./action/`（v0.4.0 起由 `src/core/action` 物理下沉至 extras）：
+ * 实现位于同层 `./action/`（v0.5.0 起由 `src/core/action` 物理下沉至 extras）：
  * - `ActionLoader` / `withLoading`：异步 Action 的 loading 状态托管
  * - `ActionExecutor`：并发与批量执行
  * - `ActionUtils`：Action 元信息与依赖注入工具

@@ -1,5 +1,5 @@
 /**
- * GeomStore - Action 增强模块实现（v0.4.0 起由 `src/core/action` 物理下沉）
+ * GeomStore - Action 增强模块实现（v0.5.0 起由 `src/core/action` 物理下沉）
  *
  * 目录构成：
  * - `ActionLoader.ts` / `withLoading.ts`：异步 Action 的 loading 状态托管
