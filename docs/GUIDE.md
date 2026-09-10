@@ -1,1049 +1,349 @@
-# GeomStore 入门指南
+# 使用指南
 
-本指南将帮助你快速掌握 GeomStore 的使用方法，从基础概念到高级特性，循序渐进地学习如何在小程序项目中高效管理状态。
+面向首次接入的开发者，从「跑起来」到「用对」。所有代码片段与 [`examples/`](../examples) 保持同源——那批示例由 `pnpm typecheck:examples` 全量类型校验，可直接复制运行。
 
----
+> 概念与设计取舍见 [CONCEPTS.md](./CONCEPTS.md)；逐个 API 的参数说明见 [API.md](./API.md)。
 
-## 目录
-
-1. [安装配置](#安装配置)
-2. [基础用法](#基础用法)
-3. [连接小程序](#连接小程序)
-4. [插件系统](#插件系统)
-5. [Store 组合](#store-组合)
-6. [TypeScript 支持](#typescript-支持)
-7. [常见问题](#常见问题)
-
----
-
-## 安装配置
-
-### 方式一：直接复制（推荐小程序项目）
-
-微信小程序项目推荐直接复制编译产物：
-
-1. 将 `dist` 文件夹复制到小程序项目的 `utils/geomstore/` 目录下：
-
-```
-你的小程序项目/
-├── pages/
-├── utils/
-│   └── geomstore/
-│       └── dist/           ← 复制整个 dist 文件夹
-│           ├── index.js
-│           ├── index.d.ts
-│           └── ...
-├── app.js
-└── app.json
-```
-
-2. 在代码中引入：
-
-```javascript
-// 方式一：CommonJS
-const { createStore } = require('./utils/geomstore/dist/index.js')
-
-// 方式二：解构导入（如果支持）
-const { createStore, withPageStore } = require('./utils/geomstore/dist/index.js')
-```
-
-> 💡 复制安装时，本文示例中的 `@openlide/geomstore`（含 `/integrations`、`/plugins` 等子路径）需替换为 `./utils/geomstore/dist/index.js` 全路径；采用 NPM 安装则无需修改。
-
-### 方式二：NPM 安装
-
-如果你的小程序项目使用 NPM：
+## 0. 安装与要求
 
 ```bash
-# 进入小程序项目目录
-cd your-miniprogram-project
-
-# 安装依赖
-npm install @openlide/geomstore
-
-# 构建npm（微信开发者工具）
-# 工具 -> 构建npm
+pnpm add @openlide/geomstore
 ```
 
-```javascript
-// 使用
-const { createStore } = require('@openlide/geomstore')
-```
+- **Node.js ≥ 22**，包为 **ESM**（仅支持 `import`）
+- 主入口只含运行必需 API；可选能力（快照 / 选择器 / Action 增强 / 性能 / 错误处理 / 企业集成 / 插件实现）从 `extras/*` 引入，避免主包体积膨胀——见 [README 的引入方式表](../README.md)
 
-### 方式三：源码引入（开发调试）
+## 1. 五分钟接入
 
-如果需要调试或二次开发，可以复制 `src` 源码目录：
+### 1.1 定义 Store
 
-```
-小程序项目/
-└── utils/
-    └── geomstore/
-        └── src/           ← 复制源码
-```
-
----
-
-## 基础用法
-
-### 创建第一个 Store
-
-```javascript
-// stores/counter.js
-const { createStore } = require('@openlide/geomstore')
-
-const counterStore = createStore({
-  // Store 名称（可选，用于调试）
-  name: 'counter',
-
-  // 状态（推荐使用工厂函数形式，初始化时执行一次并深拷贝）
-  state: () => ({
-    count: 0,
-    step: 1
-  }),
-
-  // Actions：修改状态的方法（通过 this.state 读写状态，参数为调用时传入）
-  actions: {
-    // 增加
-    increment() {
-      this.state.count += this.state.step
-    },
-
-    // 减少
-    decrement() {
-      this.state.count -= this.state.step
-    },
-
-    // 设置步长
-    setStep(newStep) {
-      this.state.step = newStep
-    },
-
-    // 重置
-    reset() {
-      this.state.count = 0
-      this.state.step = 1
-    },
-
-    // 异步操作
-    async fetchCount() {
-      const res = await wx.request({
-        url: '/api/count'
-      })
-      this.state.count = res.data.count
-    }
-  },
-
-  // Getters：派生状态
-  getters: {
-    doubleCount(state) {
-      return state.count * 2
-    },
-
-    isPositive(state) {
-      return state.count > 0
-    }
-  }
-})
-
-module.exports = { counterStore }
-```
-
-### 直接使用 Store
-
-```javascript
-const { counterStore } = require('./stores/counter')
-
-// 获取状态
-console.log(counterStore.state.count)  // 0
-
-// 调用 action
-counterStore.dispatch('increment')
-console.log(counterStore.state.count)  // 1
-
-// 使用 getter
-console.log(counterStore.getter('doubleCount'))  // 2
-
-// 订阅状态变化
-const unsubscribe = counterStore.subscribe((state) => {
-  console.log('状态已更新:', state)
-})
-
-// 取消订阅
-unsubscribe()
-```
-
-### Action 详解
-
-#### 同步 Action
-
-```javascript
-actions: {
-  // 无参数 action
-  increment() {
-    this.state.count++
-  },
-
-  // 带参数 action
-  add(amount) {
-    this.state.count += amount
-  },
-
-  // 多参数 action
-  addRange(start, end) {
-    for (let i = start; i <= end; i++) {
-      this.state.count += i
-    }
-  }
-}
-
-// 调用方式
-store.dispatch('increment')
-store.dispatch('add', 10)
-store.dispatch('addRange', 1, 10)
-```
-
-#### 异步 Action
-
-```javascript
-actions: {
-  // 异步获取数据
-  async fetchData() {
-    try {
-      const res = await wx.request({ url: '/api/data' })
-      this.state.data = res.data
-    } catch (error) {
-      console.error('获取数据失败:', error)
-    }
-  },
-
-  // 带参数的异步 action
-  async fetchUser(userId) {
-    const res = await wx.request({
-      url: `/api/users/${userId}`
-    })
-    this.state.currentUser = res.data
-  },
-
-  // 组合多个异步操作
-  async loadAllData() {
-    const [users, products] = await Promise.all([
-      wx.request({ url: '/api/users' }),
-      wx.request({ url: '/api/products' })
-    ])
-    this.state.users = users.data
-    this.state.products = products.data
-  }
-}
-
-// 调用异步 action
-await store.dispatch('fetchData')
-await store.dispatch('fetchUser', 123)
-await store.dispatch('loadAllData')
-```
-
-#### Action 上下文
-
-在 action 内部，`this` 指向 action 上下文，可通过 `this.state` 读写状态：
-
-```javascript
-actions: {
-  async login(credentials) {
-    // 通过 this.state 读写状态
-    console.log(this.state.loading)
-
-    // 调用其他 action
-    await this.clearSession()
-
-    // dispatch 其他 action
-    this.dispatch('setLoading', true)
-
-    try {
-      const res = await wx.request({
-        url: '/api/login',
-        method: 'POST',
-        data: credentials
-      })
-      this.state.user = res.data.user
-      this.state.token = res.data.token
-    } finally {
-      this.dispatch('setLoading', false)
-    }
-  },
-
-  clearSession() {
-    this.state.user = null
-    this.state.token = null
-  },
-
-  setLoading(loading) {
-    this.state.loading = loading
-  }
-}
-```
-
-### Getter 详解
-
-```javascript
-getters: {
-  // 基础 getter
-  doubleCount(state) {
-    return state.count * 2
-  },
-
-  // 返回对象
-  userInfo(state) {
-    return {
-      name: state.user?.name || '未登录',
-      avatar: state.user?.avatar || '/images/default-avatar.png',
-      level: state.user?.level || 0
-    }
-  },
-
-  // 返回函数（参数化 getter）
-  getItemById(state) {
-    return (id) => {
-      return state.items.find(item => item.id === id)
-    }
-  },
-
-  // 复杂计算
-  totalPrice(state) {
-    return state.cartItems.reduce((sum, item) => {
-      return sum + item.price * item.quantity
-    }, 0)
-  }
-}
-
-// 使用 getter
-const doubled = store.getter('doubleCount')
-const info = store.getter('userInfo')
-const item = store.getter('getItemById')(123)
-const total = store.getter('totalPrice')
-```
-
----
-
-## 连接小程序
-
-### 连接页面
-
-使用 `withPageStore` 将 Store 连接到页面：
-
-```javascript
-// pages/index/index.js
-const { withPageStore } = require('@openlide/geomstore')
-const app = getApp()
-
-Page(withPageStore(app.userStore, {
-  // 映射配置
-  mapState: ['userInfo', 'token', 'isLoggedIn'],
-  mapGetters: ['displayName', 'isVip'],
-  mapActions: ['login', 'logout', 'updateProfile']
-})({
-  // 页面配置
-  data: {
-    // 页面私有数据
-    loading: false,
-    showLoginModal: false
-  },
-
-  onLoad(options) {
-    // 访问映射的状态
-    console.log(this.data.userInfo)
-    console.log(this.data.displayName)
-
-    // 访问原始 store（withPageStore 不会向页面实例暴露 store 属性，
-    // 请通过 getApp() 或模块导入的 store 引用访问）
-    console.log(app.userStore.getState())  // 当前状态
-  },
-
-  onShow() {
-    // 页面显示时自动更新状态
-  },
-
-  // 自定义方法
-  handleLogin() {
-    this.setData({ showLoginModal: true })
-  },
-
-  async doLogin(e) {
-    const { username, password } = e.detail.value
-    this.setData({ loading: true })
-
-    try {
-      await this.login({ username, password })
-      this.setData({ showLoginModal: false })
-      wx.showToast({ title: '登录成功' })
-    } catch (error) {
-      wx.showToast({ title: error.message, icon: 'error' })
-    } finally {
-      this.setData({ loading: false })
-    }
-  },
-
-  handleLogout() {
-    wx.showModal({
-      title: '确认退出',
-      content: '确定要退出登录吗？',
-      success: (res) => {
-        if (res.confirm) {
-          this.logout()
-          wx.showToast({ title: '已退出' })
-        }
-      }
-    })
-  }
-}))
-```
-
-### 连接组件
-
-使用 `withComponentStore` 将 Store 连接到组件：
-
-```javascript
-// components/user-card/index.js
-const { withComponentStore } = require('@openlide/geomstore')
-const app = getApp()
-
-Component(withComponentStore(app.userStore, {
-  // 映射配置
-  mapState: ['userInfo'],
-  mapGetters: ['displayName', 'isVip'],
-  mapActions: ['updateProfile']
-})({
-  // 组件属性
-  properties: {
-    showEdit: {
-      type: Boolean,
-      value: false
-    }
-  },
-
-  // 组件数据
-  data: {
-    editing: false
-  },
-
-  // 生命周期
-  lifetimes: {
-    attached() {
-      console.log('组件已挂载', this.data.userInfo)
-    }
-  },
-
-  // 组件方法
-  methods: {
-    onEdit() {
-      this.setData({ editing: true })
-    },
-
-    onSave(e) {
-      const { nickname, avatar } = e.detail.value
-      this.updateProfile({ nickname, avatar })
-      this.setData({ editing: false })
-      this.triggerEvent('updated', this.data.userInfo)
-    }
-  }
-}))
-```
-
-### 连接 App
-
-使用 `withAppStore` 将 Store 连接到 App：
-
-```javascript
-// app.js
-const { createStore } = require('@openlide/geomstore')
-const { withAppStore } = require('@openlide/geomstore')
-
-// 创建全局 store
-const globalStore = createStore({
-  name: 'global',
-  state: () => ({
-    theme: 'light',
-    language: 'zh_CN',
-    systemInfo: null
-  }),
-  actions: {
-    setTheme(theme) {
-      this.state.theme = theme
-    },
-    setLanguage(language) {
-      this.state.language = language
-    },
-    initSystemInfo() {
-      this.state.systemInfo = wx.getSystemInfoSync()
-    }
-  }
-})
-
-App(withAppStore(globalStore)({
-  onLaunch(options) {
-    // 初始化系统信息
-    this.store.dispatch('initSystemInfo')
-
-    // 订阅状态变化
-    this.store.subscribe((state) => {
-      if (state.theme) {
-        this.applyTheme(state.theme)
-      }
-    })
-  },
-
-  onShow() {},
-
-  onHide() {},
-
-  // 自定义方法
-  applyTheme(theme) {
-    // 应用主题
-  },
-
-  // 暴露 store 给页面使用
-  globalStore
-}))
-```
-
-### 自动注入配置
-
-```javascript
-// 自动注入状态到页面 data
-Page(withPageStore(store, {
-  // 自动注入配置
-  autoInject: true,  // 显式开启（默认 false，不会自动注入）
-  injectMapping: {
-    // store 键 -> 本地键
-    'userInfo': 'user',
-    'isLoggedIn': 'loggedIn'
-  },
-
-  // 页面显示时重新注入（需同时开启 autoInject，否则此配置不生效）
-  autoUpdateOnShow: true  // 默认 false
-})({
-  onLoad() {
-    // 自动注入后可访问
-    console.log(this.data.user)      // 对应 store.userInfo
-    console.log(this.data.loggedIn)  // 对应 store.isLoggedIn
-  }
-}))
-```
-
----
-
-## Action 装饰器
-
-GeomStore 提供了多种装饰器，用于增强方法的行为。
-
-> **注意**：这些是 **TypeScript 传统方法装饰器工厂**，需配合 `@decorator` 语法用于类方法（tsconfig 需开启 `experimentalDecorators: true`），不支持 `withX(fn, options)` 函数包装器写法。
-
-### 内置装饰器
-
-```typescript
-import { 
-  withLog, 
-  withDebounce, 
-  withThrottle, 
-  withCache, 
-  withRetry, 
-  withTimeout 
-} from '@openlide/geomstore/extras/action'
-
-class DataService {
-  searchResults: unknown[] = []
-  userData: unknown = null
-  scrollPosition = 0
-
-  // 防抖搜索 - 300ms 内只执行最后一次
-  @withDebounce(300)
-  async search(keyword: string) {
-    const res = await fetch(`/api/search?q=${keyword}`)
-    this.searchResults = await res.json()
-  }
-  
-  // 节流更新 - 每 100ms 一个窗口：窗口首调立即执行，窗口内被抑制的调用
-  // 以最新参数在窗口末尾补发（leading/trailing 默认双开启）
-  @withThrottle(100)
-  updateScroll(position: number) {
-    this.scrollPosition = position
-  }
-  
-  // 缓存 API 响应 - 5 分钟缓存
-  @withCache({ ttl: 300000 })
-  async fetchUser(userId: string) {
-    const res = await fetch(`/api/user/${userId}`)
-    this.userData = await res.json()
-    return this.userData
-  }
-  
-  // 网络请求重试 - 最多重试 3 次（共至多 4 次执行），指数退避：1s → 2s → 4s
-  @withRetry({ retries: 3, delay: 1000 })
-  async fetchWithRetry(url: string) {
-    const res = await fetch(url)
-    return res.json()
-  }
-  
-  // 超时控制 - 10 秒超时
-  @withTimeout(10000)
-  async fetchWithTimeout() {
-    const res = await fetch('/api/data')
-    return res.json()
-  }
-}
-```
-
-### 组合装饰器
-
-多个装饰器可以叠加在同一个方法上：
-
-```typescript
-// 重试 + 超时
-@withRetry({ retries: 3, delay: 1000 })
-@withTimeout(5000)
-async safeFetch(url: string) {
-  const res = await fetch(url)
-  return res.json()
-}
-
-// 缓存 + 防抖
-@withCache({ ttl: 60000 })
-@withDebounce(300)
-async cachedSearch(keyword: string) {
-  const res = await fetch(`/api/search?q=${keyword}`)
-  return res.json()
-}
-```
-
-### 自定义装饰器
-
-```typescript
-import { createDecorator } from '@openlide/geomstore/extras/action'
-
-// 创建自定义装饰器：在方法执行前后插入逻辑
-const withAudit = createDecorator({
-  before: (...args) => {
-    console.log('[Audit] action called with:', args)
-  },
-  after: (result) => {
-    console.log('[Audit] action completed:', result)
-  },
-  onError: (error) => {
-    console.error('[Audit] action failed:', error)
-  }
-})
-
-// 使用自定义装饰器
-class DataService {
-  @withAudit
-  async fetchData() {
-    const res = await fetch('/api/data')
-    return res.json()
-  }
-}
-```
-
----
-
-## 插件系统
-
-### 内置插件
-
-#### 日志插件
-
-```javascript
-const { loggerPlugin } = require('@openlide/geomstore/extras/plugins')
-
-// 安装日志插件
-store.use(loggerPlugin)
-
-// 效果：每次状态变化都会打印日志
-// [GeomStore] State changed: { count: 1 }
-// 注意：生产环境 (NODE_ENV=production) 下自动禁用，无性能影响
-```
-
-#### 持久化插件
-
-```javascript
-const { persistencePlugin, WxStorageBackend } = require('@openlide/geomstore/extras/plugins')
-
-store.use(persistencePlugin({
-  // 存储键名
-  key: 'app-state',
-
-  // 存储后端：可省略（自动检测微信环境），或显式传入内置 WxStorageBackend / 自定义同步实现
-  storage: new WxStorageBackend(),
-
-  // 状态过滤器（只持久化部分状态）
-  filter: (state) => ({
-    userInfo: state.userInfo,
-    token: state.token,
-    settings: state.settings
-  }),
-
-  // 是否在启动时恢复状态
-  restore: true,
-
-  // 防抖延迟（毫秒）
-  debounce: 500,
-
-  // 卸载插件时是否清除存储数据（默认 false，仅停止监听）
-  // 注意：开启 debounce 时，卸载会先同步落盘防抖窗口内最后一次变更（clearOnUninstall 为 true 时跳过落盘直接清除）
-  clearOnUninstall: false
-}))
-```
-
-**说明：**
-
-- `storage` 可省略：插件会自动检测微信环境并使用 `wx.getStorageSync` / `wx.setStorageSync`；两者都不可用时降级为进程内内存存储（开发模式输出告警），不影响运行。
-- 也可显式传入内置 `WxStorageBackend`（从 `@openlide/geomstore/extras/plugins` 导入）或自定义同步 `StorageBackend`（仅支持同步实现）。
-- 启动恢复采用**合并语义**（`$patch`）：未持久化的键（如被 `filter` 过滤的键）保留初始值，不会被覆盖为 `undefined`。
-
-#### DevTools 插件
-
-```javascript
-const { devtoolsPlugin } = require('@openlide/geomstore/extras/plugins')
-
-// 仅在开发环境启用
-if (process.env.NODE_ENV === 'development') {
-  store.use(devtoolsPlugin)
-}
-
-// 使用 DevTools
-// 在控制台访问：
-console.log(globalThis.__GEOMSTORE_STORES__)
-console.log(globalThis.__GEOMSTORE_DEVTOOLS__)
-```
-
-### 自定义插件
-
-```javascript
-// 自定义插件结构
-const myPlugin = {
-  name: 'my-plugin',
-
-  install(store) {
-    // 插件安装逻辑
-    console.log('插件已安装到', store.name)
-
-    // 订阅状态变化
-    const unsubscribe = store.subscribe((state) => {
-      console.log('状态变化:', state)
-    })
-
-    // 监听 action
-    store.hooks?.on('afterDispatch', (actionName, ...args) => {
-      console.log(`Action ${actionName} 已执行`)
-    })
-
-    // 返回卸载函数
-    return () => {
-      unsubscribe()
-      console.log('插件已卸载')
-    }
-  }
-}
-
-// 使用插件
-store.use(myPlugin)
-```
-
----
-
-## Store 组合
-
-对于大型应用，可以将多个 Store 组合起来管理：
-
-```javascript
-const { composeStore } = require('@openlide/geomstore')
-
-// 创建多个独立 store
-const userStore = createStore({
-  name: 'user',
-  state: () => ({ userInfo: null, token: '' }),
-  actions: { /* ... */ }
-})
-
-const cartStore = createStore({
-  name: 'cart',
-  state: () => ({ items: [] }),
-  actions: { /* ... */ }
-})
-
-const settingsStore = createStore({
-  name: 'settings',
-  state: () => ({ theme: 'light' }),
-  actions: { /* ... */ }
-})
-
-// 组合多个 store
-const rootStore = composeStore([userStore, cartStore, settingsStore], {
-  namespace: true,  // 启用命名空间
-  strict: true      // 严格模式
-})
-
-// 访问组合后的状态
-console.log(rootStore.state)  // { user: {...}, cart: {...}, settings: {...} }
-
-// 调用 action（带命名空间）
-rootStore.dispatch('user/login', credentials)
-rootStore.dispatch('cart/addItem', product)
-
-// 获取子 store
-const user = rootStore.stores['user']
-```
-
----
-
-## TypeScript 支持
-
-### 定义类型安全的 Store
-
-```typescript
+```ts
 import { createStore } from '@openlide/geomstore'
-import type { State, Actions, Getters } from '@openlide/geomstore'
 
-// 定义状态类型
-interface UserState {
-  userInfo: {
-    id: number
-    name: string
-    avatar: string
-    vipLevel: number
-  } | null
-  token: string
+// 先定义状态类型：state / getters / actions 共用一份，避免同一形状在各处重复书写
+interface SessionState {
+  userInfo: string          // 未登录为空串
   isLoggedIn: boolean
 }
 
-// 定义 actions 类型
-interface UserActions {
-  login: (credentials: { username: string; password: string }) => Promise<void>
-  logout: () => void
-  updateProfile: (profile: Partial<UserState['userInfo']>) => void
-}
-
-// 定义 getters 类型
-interface UserGetters {
-  isVip: () => boolean
-  displayName: () => string
-}
-
-// 创建类型安全的 store
-const userStore = createStore<UserState, UserActions, UserGetters>({
-  name: 'user',
-
-  state: () => ({
-    userInfo: null,
-    token: '',
-    isLoggedIn: false
+const sessionStore = createStore({
+  name: 'session',
+  // 工厂函数：避免引用类型被多实例共享
+  // 标注返回类型：状态形状有单一来源，也使下面的字段无需任何断言
+  state: (): SessionState => ({
+    userInfo: '',
+    isLoggedIn: false,
   }),
-
-  actions: {
-    async login(credentials) {
-      const res = await wx.request({
-        url: '/api/login',
-        method: 'POST',
-        data: credentials
-      })
-      this.state.userInfo = res.data.user
-      this.state.token = res.data.token
-      this.state.isLoggedIn = true
-    },
-
-    logout() {
-      this.state.userInfo = null
-      this.state.token = ''
-      this.state.isLoggedIn = false
-    },
-
-    updateProfile(profile) {
-      if (this.state.userInfo) {
-        Object.assign(this.state.userInfo, profile)
-      }
-    }
-  },
-
   getters: {
-    isVip(state) {
-      return (state.userInfo?.vipLevel ?? 0) > 0
+    greet: (state: SessionState) => (state.userInfo ? `Hi, ${state.userInfo}` : '未登录'),
+  },
+  actions: {
+    // action 的 this 由 Store 自动注入（state / setState / $patch / dispatch 等），无需手写标注
+    login(userInfo: string): void {
+      this.$patch({ userInfo, isLoggedIn: true })
     },
-
-    displayName(state) {
-      return state.userInfo?.name ?? '未登录'
-    }
-  }
+  },
 })
-
-// 类型自动推断
-userStore.dispatch('login', { username: 'test', password: '123' })  // ✅ 类型正确
-userStore.dispatch('login', { username: 123 })  // ❌ 类型错误
-
-const isVip = userStore.getter('isVip')  // boolean
-const name = userStore.getter('displayName')  // string
 ```
 
-### state 工厂函数形式（推荐）
+> 关键在 `state: (): SessionState => ({ … })` 这个**返回类型标注**：它让 `S` 有唯一来源。对比「不标注 + 内联字面量」的写法，好处有三——`state` 里不必写 `as` 断言（字段类型由上下文决定）、getters / actions 不必重复写同一份字面量类型、状态形状变化时只需改 `interface` 一处。
 
-`createStore` 同时支持对象字面量与 **state 工厂函数**两种形式（Pinia 同款；上文示例已采用工厂形式）：
+### 1.2 页面中使用
 
-```typescript
-import { createStore } from '@openlide/geomstore'
+```ts
+import { withPageStore } from '@openlide/geomstore'
 
-interface CityGroup {
-  key: string
-  cities: Array<{ id: number; name: string }>
-}
-
-interface CityState {
-  historyList: string[]
-  cityGroups: CityGroup[]
-  activeLetter: string | null
-}
-
-const cityStore = createStore<CityState>({
-  name: 'city',
-
-  state: (): CityState => ({
-    historyList: [],
-    cityGroups: [],
-    activeLetter: null,
+Page(
+  withPageStore(sessionStore, {
+    mapState: ['isLoggedIn'],            // 数组简写：注入 this.data.isLoggedIn
+    mapGetters: ['greet'],
+    mapActions: ['login'],               // 注入 this.login(...)
+  })({
+    // 页面方法的 this 由集成层注入（入参类型带 ThisType<PageThis<…>>），无需手写标注
+    onLoad() {
+      this.login('Ada')
+    },
+    // onUnload 自动退订，无需手动清理
   }),
+)
+```
 
-  actions: {
-    setHistoryList(historyList: string[]) {
-      this.setState('historyList', historyList)
+需要避免与页面本地字段重名时用对象别名：
+
+```ts
+withPageStore(sessionStore, {
+  mapState: { loggedIn: 'isLoggedIn' },
+  mapActions: { doLogin: 'login' },
+})
+```
+
+### 1.3 组件中使用
+
+```ts
+import { withComponentStore } from '@openlide/geomstore'
+
+Component(
+  withComponentStore(counterStore, {
+    mapState: ['count'],
+    mapGetters: ['doubled'],
+    mapActions: ['add'],
+  })({
+    methods: {
+      // this 由集成层注入（注入方法与 data 均可用），无需手写标注
+      onTapPlus() {
+        this.add(1)
+      },
     },
-  },
+    lifetimes: {
+      attached() { /* 挂载 */ },
+      detached() { /* detached 自动退订 */ },
+    },
+  }),
+)
+```
+
+> 组件生命周期必须写在 `lifetimes` 字段内（基础库 3.15.0+）；写在配置顶层的 `attached` / `detached` 不会被调用。支持的生命周期：`created` / `attached` / `ready` / `moved` / `detached` / `error`，页面级为 `show` / `hide` / `resize`（均与微信官方一致，写错会在编译期报错）；这些生命周期内的 `this` 已注入，可直接访问 `this.data` 与注入的方法。
+
+### 1.4 App 级
+
+```ts
+import { withAppStore } from '@openlide/geomstore'
+
+App(
+  withAppStore(appStore)({
+    onLaunch() { appStore.dispatch('markLaunched', '') },
+    onShow() { /* 进入前台 */ },
+  }),
+)
+```
+
+> 生命周期内的 `this` 已由集成层注入：映射状态出现在 `this.globalData` 上，映射的 action 与调试 API 直接可用，**无需手写 `this` 标注**——三个集成的差异详见 FAQ。
+
+## 2. 状态
+
+### 读写
+
+| 操作 | API |
+| --- | --- |
+| 读取（活动引用） | `store.getState()` |
+| 不可变副本（深克隆 + 递归冻结） | `store.$snapshot()` |
+| 单键 / 多键合并写入 | `store.setState(key, value)` / `store.$patch({ ... })` |
+| 整体替换（支持工厂） | `store.$replaceState({ ... })` 或 `store.$replaceState(() => ({ ... }))` |
+| 从快照恢复 | `store.$restore(snapshot)`（经 `$replaceState`，不重复深拷贝） |
+
+```ts
+const snap = store.$snapshot()   // Readonly<S>，嵌套纯对象/数组也被冻结
+store.$patch({ count: 1 })
+store.$restore(snap)             // 回到快照时刻
+```
+
+### 就地变异与隔离
+
+`getState()` 返回的是内部状态的引用，写入是**就地变异**——因此不能靠 `===` 判断内容是否变化（这也是缓存/通知判定依赖内部版本号与脏计数的原因）。需要与内部彻底隔离的副本时用 `$snapshot()`；需要完全隔离的一次性深拷贝用 `createSnapshot()`（见 §7）。
+
+### 状态保护
+
+开启 `stateProtection` 后，绕过 `setState` / `$patch` 的直接变异（含 `Object.defineProperty`、数组元素赋值）会**抛错**并在开发模式给出可读路径；`deep: false` 表示只保护顶层（性能优先，嵌套对象不再包装）。
+
+### 批量更新
+
+```ts
+store.batch(() => {          // 期间合并通知，结束时统一发一次
+  store.setState('a', 1)
+  store.setState('b', 2)
 })
 ```
 
-**两种形式的选择：**
+也可手动 `startBatch()` / `endBatch()`（支持嵌套，仅最外层收尾时通知）。
 
-| 形式                        | 适用场景                                                                     |
-| --------------------------- | ---------------------------------------------------------------------------- |
-| `state: { ... }`            | 对象字面量类型简单、无空数组/`null` 字面量需要精确推断时，可直接配合泛型使用 |
-| `state: (): S => ({ ... })` | 状态字段包含 `[]`、`null` 等字面量，需要精确类型锚定时，**推荐使用**         |
+> ⚠️ `batch(fn)` 传入**异步回调**时，`await` 之后的变更会逐条通知——批保护只在同步段有效（开发模式会显式告警）。异步场景请让 action 承担合并职责。
 
-**为什么需要工厂函数 + 显式返回类型：**
+## 3. Action
 
-在 strict TypeScript 下，字面量 `[]` 会被推断为 `never[]`、`null` 会被收窄为 `null`，而非接口声明的 `string[]` / `string | null`。这会直接导致 action 内 `this.setState('historyList', historyList)` 等写入操作无法通过类型检查。使用 `state: (): CityState => ({ ... })` 显式锚定返回类型后，空数组精确推断为 `string[]`、`activeLetter` 保持 `string | null`。
-
-> 注意：`satisfies` 不改变字面量推断（空数组仍为 `never[]`、`null` 仍被收窄为 `null`），因此**不可用** `state: {...} satisfies CityState` 替代。
-
-另外，工厂函数在 Store 初始化时执行一次并深拷贝结果，可避免外部修改 `options.state` 引用污染 Store 内部状态。
-
-### 类型推断工具
-
-```typescript
-import type { InferActionArgs, InferActionReturn, InferGetterReturn } from '@openlide/geomstore'
-
-// 推断 action 参数类型
-type LoginArgs = InferActionArgs<UserActions, 'login'>  // [{ username: string; password: string }]
-
-// 推断 action 返回类型
-type LoginReturn = InferActionReturn<UserActions, 'login'>  // Promise<void>
-
-// 推断 getter 返回类型
-type IsVipReturn = InferGetterReturn<UserGetters, 'isVip'>  // boolean
+```ts
+store.dispatch('login', user)        // 同步 action：原样返回其返回值
+await store.dispatch('load')         // 异步 action：返回 Promise，失败原样抛出
 ```
 
----
+**通知语义**（只有一个统一规则，避免重复/遗漏）：
 
-## 常见问题
+- 异步 action 的**同步段不单独通知**，其变更由完成时（fulfill 或 reject）的补发覆盖一次
+- `await` 之后的变更同样在结算时补发
+- **嵌套 dispatch 仅最外层通知**；与 batch 交叉时由 batch 收尾统一通知
+- reject 是 action 最常见的失败形态，**也会先补发 `onError` 钩子**（监控/上报插件对异步失败不失明）
 
-### Q: 状态更新后页面没有刷新？
+**Action 增强**（`extras/action`）：
 
-A: 确保使用了 `withPageStore` 或手动订阅状态变化：
+```ts
+import { ActionLoader, withLoading } from '@openlide/geomstore/extras/action'
 
-```javascript
-// ✅ 正确：使用 withPageStore
-Page(withPageStore(store, {
-  mapState: ['userInfo']
-})({
-  // 页面配置
+const loader = new ActionLoader({ perActionKeys: true })  // loading/error 键按 action 名区分
+const wrapped = loader.wrap(doIt, 'doIt', setState)       // setState 为 (key, value) 两参数
+```
+
+- `withLoading` 的引用计数按 (宿主, loading 键) 集中：多个装饰器并发不会提前翻转 `loading`
+- `withThrottle(interval, { leading, trailing, assumeAsync })`：间隔是**第一个位置参数**；`assumeAsync` 用于「非 `async` 语法但返回 Promise」的方法被抑制时仍返回 Promise
+
+## 4. Getter
+
+```ts
+const total = store.getter('total')   // 泛型签名会推导出返回类型
+```
+
+- getter **只接收 state**（需要组合时在函数体内自行计算），保持纯函数便于缓存与调试
+- 依赖未变时复用结果，判定基于内部状态版本号（O(1) 整数比较）
+
+## 5. 订阅与通知
+
+```ts
+const unsubscribe = store.subscribe((state) => { /* 只接收新状态 */ })
+unsubscribe()
+
+store.subscribe(listener, { readOnly: true })   // 声明不写状态：通知路径可零拷贝
+```
+
+| 配置 | 作用 | 默认 |
+| --- | --- | --- |
+| `notify.clone` | 通知时是否克隆状态；关闭且状态保护关闭时，**仅当无可读写订阅者**才返回原始引用 | `true` |
+| `notify.async` | 微任务合并：同一 tick 内多次写入只通知一次 | `false` |
+| `notify.onlyOnChange` | 脏跟踪：dispatch / batch 期间未实际改变状态则不通知 | `false` |
+
+- 监听器签名是 **`(state: S) => void`**（没有 `prevState` 参数），需要前后对比请在闭包里自行保存
+- 订阅数达上限时按 `subscription.onLimit` 策略处理（`evict-oldest` / `throw`）；同一监听器重复订阅按引用计数计次，退订一份不影响其他份
+- `store.isStateKeyDirty(key)` 供集成层跳过未变化的映射键（避免无意义的 `setData`）
+
+## 6. 钩子与插件
+
+```ts
+store.hooks.on('afterPatch', (patch) => console.log('patched', patch))
+```
+
+可用钩子：`beforeDispatch` / `afterDispatch` / `beforeSetState` / `afterSetState` / `beforePatch` / `afterPatch` / `beforeReplaceState` / `afterReplaceState` / `beforeGet` / `afterGet` / `onError` 等。
+
+**插件契约**：`{ name, install(store) }`，`install` 返回卸载函数；`store.use(plugin)` 返回同一个卸载函数。
+
+```ts
+import { loggerPlugin, persistencePlugin, WxStorageBackend } from '@openlide/geomstore/extras/plugins'
+
+store.use(loggerPlugin)
+store.use(persistencePlugin({
+  key: 'session',
+  storage: new WxStorageBackend(),                   // 或自封装 { getItem, setItem, removeItem }
+  filter: (state: { token: string }) => ({ token: state.token }),
+  debounce: 300,
 }))
+```
 
-// ✅ 正确：手动订阅
-Page({
-  onLoad() {
-    this.unsubscribe = store.subscribe((state) => {
-      this.setData({ userInfo: state.userInfo })
-    })
-  },
-  onUnload() {
-    this.unsubscribe?.()
-  }
+- **持久化后端必须是同步实现**（`getItem/setItem/removeItem`）——传异步后端会被显式拒绝，避免写入静默丢失
+- 卸载时会**同步补写**防抖窗口内的最后一次变更；`clearOnUninstall: true` 则改为清理存储
+- `store.use` 安装抛错会回滚入列，不留半安装插件；生产模式下安装/卸载日志静默
+- 独立函数 `usePlugin(plugin, store)` 等价且**无需断言**：泛型从 `store` 反推，`plugin` 需与其状态类型匹配（状态无关的插件写作 `Plugin<State>`，如 `loggerPlugin`）。日常也可直接用 `store.use`
+
+## 7. 快照（`extras/snapshot`）
+
+```ts
+import { createSnapshot, createSnapshotAsync } from '@openlide/geomstore/extras/snapshot'
+
+const snap = createSnapshot(store.getState())
+snap.data        // 隔离副本；快照内绝不会出现活引用
+snap.success     // 存在 cloneError 或超时即为 false
+snap.errors      // 错误账本（path / type / message）
+snap.metadata    // nodeCount / size / duration 等
+
+const async = await createSnapshotAsync(bigObject, {
+  batchSize: 100,                                  // 批间让出控制权
+  onProgress: (p) => console.log(p.percentage),
+  onError: (err) => true,                          // true=继续（丢弃该节点）/ false=中止
 })
 ```
 
-### Q: 如何在 action 中调用其他 action？
+要点：
 
-```javascript
-actions: {
-  async actionA() {
-    // 方式一：通过 this（推荐）
-    await this.actionB()
+- **隔离契约**：无法安全克隆的节点一律**丢弃**，绝不把原值兜底进快照；丢弃时对象属性不写入、数组留洞、`Set` 不添加、`Map` 跳过整条 entry
+- `maxDepth` 超限返回占位符（不是活引用）；类实例保留原型；访问器属性以 getter 求值结果克隆
+- `customCloner` 抛错的语义在同步/异步路径**完全一致**（落账 → 咨询 `onError` → 继续则丢子树 / 中止则抛 `SnapshotAbortError`）
 
-    // 方式二：通过 dispatch
-    this.dispatch('actionB')
-  },
+## 8. 选择器（`extras/selector`）
 
-  actionB() {
-    // ...
-  }
-}
+```ts
+import { createParametricSelector, createSelector } from '@openlide/geomstore/extras/selector'
+
+// 单个选择器函数 + 选项（多步计算请在函数体内完成）
+const selectPaidTotal = createSelector((state: State) =>
+  state.orders.filter((o) => o.status === 'paid').reduce((sum, o) => sum + o.amount, 0))
+
+// 参数化：按参数分别缓存，注意 ttl 与容量上限（ttl: 0 表示永不过期）
+const byOrder = createParametricSelector((state: State, id: number) => state.orders[id].amount, {
+  ttl: 5000,
+  maxEntries: 50,
+})(store.getState())
 ```
 
-### Q: 如何重置 Store 状态？
+缓存命中判定优先用**状态版本号**；状态不带版本号（如直接传入的普通对象）时回退 `equalityFn`（默认 `deepEqual`）。`SelectorComposer` 提供异步与重试形态，重试错误带不可枚举的 `attempts` 记录真实执行次数。
 
-```javascript
-// 方式一：定义 reset action
-actions: {
-  reset() {
-    // 恢复初始状态
-    this.$replaceState({
-      userInfo: null,
-      token: '',
-      isLoggedIn: false
-    })
-  }
-}
+## 9. 组合 Store
 
-// 方式二：使用 $replaceState
-store.$replaceState(initialState)
+```ts
+import { composeStore } from '@openlide/geomstore'
 
-// 方式三：使用快照
-const snapshot = store.$snapshot()
-// ... 后续可以恢复
-store.$restore(snapshot)
+const root = composeStore([userStore, cartStore], { namespace: true, strict: true })
+root.dispatch('user/updateName', 'Bob')     // 命名空间下的斜杠路径
+root.subscribe((state) => { /* 任一子 store 变化都会收到 */ })
 ```
 
-### Q: 如何处理大量数据的性能问题？
+- 命名空间模式下状态按 `name` 嵌套；`isStateKeyDirty` 精确判断子 store 是否变化，集成层据此跳过未变化的 `setData`
+- 组合层 N 个监听器只占每个子 store 一份订阅；无只读订阅者时通知走零拷贝
+- `composed.state` 顶层冻结、嵌套经子 store 保护代理，写入不会穿透
+- 需要按名字管理多个 store 时用 `StoreRegistry`
 
-```javascript
-const store = createStore({
-  // 启用缓存
-  enableCache: true,
-  cacheConfig: {
-    capacity: 100,  // 缓存容量
-    ttl: 60000      // 缓存时间
-  },
+## 10. 错误处理（`extras/error`）
 
-  // 批量更新
-  actions: {
-    batchUpdate(updates) {
-      // $patch 一次性合并更新，只触发一次通知
-      const patch = {}
-      updates.forEach(update => {
-        patch[update.key] = update.value
-      })
-      this.$patch(patch)
-    }
-  }
+```ts
+import { ErrorBoundary, ErrorMonitoring, ConsoleReporter, HttpReporter } from '@openlide/geomstore/extras/error'
+
+const boundary = new ErrorBoundary({ fallback: (error) => ({ failed: true }) })
+const state = boundary.execute(() => risky(), store)
+
+const monitoring = new ErrorMonitoring({
+  reporters: [new ConsoleReporter(), new HttpReporter({ endpoint })],
+  batchThreshold: 10,
+  maxQueueSize: 1000,        // 队列容量（默认 1000）
+  maxFlushRetries: 3,        // 全部报告器连续失败的重入队上限（默认 3）
 })
 ```
 
----
+- **`ErrorBoundary` 默认 fail-loud**：未配置 `fallback` 时错误重抛；提供 `fallback` 即声明恢复意图。`fallback` 函数自身抛错时会**重抛原始错误**（不丢失现场）
+- **`ErrorRecovery`** 策略含 `RETRY` / `FALLBACK` / `IGNORE` / `RECOVER` / `RESTART`；重试额度按**故障周期**计量（窗口 = `max(60s, 本周期退避总时长 × 2)`），并有键容量守卫防动态 operation id 导致的无界增长
+- **`ErrorMonitoring`** 批量 flush 对每个 reporter 做 `ok / fail / timeout` 三态判定——仅真正 resolve 才算成功；全部失败时按序重入队重试，连续失败超过 `maxFlushRetries` 丢弃该批并告警
+- `HttpReporter` 自动选择 `wx.request`（校验 `statusCode`）或 `fetch`（校验 `ok`），可注入自定义实现；基础库缺少 `console.group` 时 `ConsoleReporter` 自动降级为平铺输出
 
-## 下一步
+## 11. 性能与体积
 
-- 阅读 [核心概念](CONCEPTS.md) 深入理解设计原理
-- 查看 [API 参考](API.md) 了解完整 API
-- 学习 [最佳实践](BEST_PRACTICES.md) 提升开发效率
+- **只缓存热点键**：`enableCache(['visibleRows'])`；`cacheConfig.enableStats` 的统计采集有开销，按需开启
+- **按需引入 extras**：不用到的能力不要 import，小程序主包只带真正用到的代码
+- **大对象用异步快照**：`batchSize` 控制单批工作量（默认 100），批间让出控制权避免长任务卡顿
+- **独立缓存**：需要自有策略时直接用 `LRUCache`（容量淘汰 + TTL）
+- 内部定时器均做 `unref` 探测，浏览器/小程序无该 API 时自动跳过，不会阻止进程退出
+
+## 12. 排错手册
+
+| 症状 | 常见原因 | 处理 |
+| --- | --- | --- |
+| 直接改 `state.x` 报错 | 状态保护拦截非法变更 | 改用 `setState` / `$patch`；或确认是否需要 `stateProtection` |
+| 监听器没被调用 | `onlyOnChange` 下确实没改动状态；或 `notify.async` 下还在同一 tick | 检查是否真的写入了状态；必要时去掉 `notify.async` |
+| 通知次数「偏多」 | 异步 action 同步段与续段各改一次，或与 batch 交叉 | 由 action 统一合并写入，或用 `batch` 收尾 |
+| `await dispatch(...)` 拿到 `undefined` | 方法不是 `async` 语法但返回 Promise，且首次调用被节流抑制 | `withThrottle(…, { assumeAsync: true })` |
+| 持久化没有生效 | 传了异步 storage 后端（被显式拒绝） | 改用同步后端（`WxStorageBackend` 或自封装同步实现） |
+| 快照里少了字段 | 该节点克隆失败被丢弃（隔离契约） | 查看 `snapshot.errors` 的 `path` 定位；按需用 `customCloner` 接管 |
+| 缓存命中率低 | 缓存键过多或状态频繁整体替换 | 只缓存热点键；避免 `$replaceState` 整体替换 |
+| 生产环境看不到插件日志 | `NODE_ENV=production` 下静默 | 属预期行为；排查时临时切换开发模式 |
+
+## 13. 从哪里开始
+
+| 想做的事 | 参考 |
+| --- | --- |
+| 最小可运行示例 | [`examples/basic/01-simple-store.ts`](../examples/basic/01-simple-store.ts) |
+| 页面/组件/App 集成 | [`examples/weapp/`](../examples/weapp) |
+| 缓存策略 | [`examples/cache/`](../examples/cache) |
+| 组合与插件 | [`examples/advanced/`](../examples/advanced) |
+| 快照 / 选择器 / 装饰器 | [`examples/extras/`](../examples/extras) |

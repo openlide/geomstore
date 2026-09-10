@@ -1,718 +1,100 @@
-# GeomStore 核心概念与原理解析
+# 核心概念
 
-本文档深入解析 GeomStore 的核心概念、设计理念和实现原理，帮助你更好地理解和使用这个状态管理库。
+本文解释 GeomStore 的模型与设计取舍。接口细节见 [API.md](./API.md)，落地写法见 [GUIDE.md](./GUIDE.md)。
 
----
+## 1. 状态（State）
 
-## 目录
+- **状态是就地变异的活动引用**：`getState()` 返回的是内部状态的引用（或保护代理），`setState` / `$patch` / action 内的直接写入都作用在同一对象上。
+- **推荐用工厂函数声明**：`state: () => ({ ... })`。工厂在创建 Store 时执行，避免数组 / Map / Set 等引用类型被多个实例共享。
+- **需要不可变副本时用快照**：`$snapshot()` 返回递归深冻结的结构；`$restore()` 从快照恢复。
+- **就地变异带来的推论**：引用相等不等于内容相等。缓存与通知判定都不能依赖 `===`，这也是下文「版本号」与「脏计数」存在的原因。
 
-1. [核心概念](#核心概念)
-2. [设计理念](#设计理念)
-3. [实现原理](#实现原理)
-4. [状态管理机制](#状态管理机制)
-5. [响应式系统](#响应式系统)
-6. [性能优化策略](#性能优化策略)
+## 2. 通知（Notify）
 
----
+一次写入到监听器收到回调，中间有三层可配置语义：
 
-## 核心概念
+| 配置 | 作用 | 默认 |
+| --- | --- | --- |
+| `notify.clone` | 通知时是否克隆状态；关闭且状态保护关闭时，**仅当无可读写订阅者**才返回原始引用（零拷贝） | `true` |
+| `notify.async` | 微任务合并：同一 tick 内多次写入只通知一次 | `false` |
+| `notify.onlyOnChange` | 脏跟踪：dispatch / batch 期间未实际改变状态则不通知 | `false` |
 
-### Store
+- **监听器只接收新状态**：`StateListener<S> = (state: S) => void`；需要前后对比请在闭包里自行保存。
+- **只读订阅**：`subscribe(listener, { readOnly: true })` 声明不写入状态，通知路径可据此做零拷贝优化。
+- **dispatch 的通知去重**：异步 action 的同步段不单独通知（其变更会被完成时的补发覆盖），`await` 之后的变更在结算时补发一次；嵌套 dispatch 仅最外层通知；dispatch 与 batch 交叉时由 batch 收尾统一通知。
+- **订阅有上限**：达上限时可配置驱逐最旧监听器或直接抛错；同一监听器重复订阅按引用计数计次（退订一份不误删其他份）。
 
-Store 是 GeomStore 的核心概念，它是一个包含状态、操作和计算属性的容器。
+## 3. 状态保护（State Protection）
 
-```javascript
-const store = createStore({
-  name: 'my-store',     // 标识符
-  state: () => ({ ... }), // 状态（推荐工厂函数形式）
-  actions: { ... },     // 操作
-  getters: { ... }      // 计算属性
-})
-```
+`stateProtection` 开启后，状态访问经代理拦截写入、删除与 `Object.defineProperty`：
 
-**Store 的三个核心要素：**
-
-| 要素        | 说明           | 特点                 |
-| ----------- | -------------- | -------------------- |
-| **State**   | 应用状态数据   | 响应式、不可直接修改 |
-| **Actions** | 修改状态的方法 | 唯一的状态修改入口   |
-| **Getters** | 派生状态计算   | 惰性求值（每次读取即时计算，无缓存） |
-
-### State（状态）
-
-State 是应用的状态数据，具有以下特点：
+- **四种代理**：深层对象、浅层对象、数组、脏跟踪专用代理，共用同一组写陷阱；数组的索引 / symbol / 自定义属性上的对象值都经缓存包装，不存在绕过保护的裸引用
+- **非法变更抛错**：越过 `setState` / `$patch` 直接变异会抛错（开发模式给出可读路径），错误消息对 BigInt / 循环引用值安全
+- **`deep: false` 只保护顶层**：嵌套对象不再被包装（性能优先）
 
-```javascript
-state: () => ({
-  // 状态应该是普通对象
-  user: null,
-  items: [],
-  settings: {}
-})
-```
-
-**特点：**
-
-1. **响应式**：状态变化自动触发更新
-2. **保护性**：不能直接修改，必须通过 action
-3. **可观测**：可订阅状态变化
-
-**为什么不能直接修改状态？**
+## 4. 版本号（stateVersion）
 
-```javascript
-// ❌ 错误：直接修改
-store.state.count = 10
+每次状态写入都会推进一个内部版本号，`getStateVersion(state)` 可读取。
 
-// ✅ 正确：通过 action 修改
-store.dispatch('setCount', 10)
-```
+- **用途**：选择器缓存命中判定退化为 O(1) 整数比较——若改为对缓存项做全树 `deepEqual`，2000 键的状态树上单次判定即达秒级，而整数比较是亚毫秒级。
+- **回退路径**：状态不带版本号（例如直接传入的普通对象）时，选择器回退用 `equalityFn`（默认 `deepEqual`）比较。
 
-直接修改状态会导致：
-- 无法追踪变化来源
-- 无法触发订阅回调
-- 调试困难
+## 5. 缓存（Cache）
 
-### Actions（操作）
+`enableCache(keys?)` 打开 Store 内置缓存（`keys` 省略表示全部顶层键），`getCached` / `invalidateCache` / `getCacheStats` 分别用于读取、失效与观测。
 
-Actions 是修改状态的唯一途径，具有以下特点：
+- **失效时机**：对应键发生写入即失效，下次读取重新计算
+- **按需开启**：`cacheConfig.enableStats` 采集命中统计有额外开销；只缓存高频键（如长列表）收益最大
+- **LRU 工具**：核心另导出 `LRUCache`（容量淘汰 + TTL），供需要独立缓存策略的场景使用
 
-```javascript
-actions: {
-  // 同步操作（action 通过 this.state 读写状态，参数为调用时传入）
-  increment() {
-    this.state.count++
-  },
+## 6. 快照（Snapshot，`extras/snapshot`）
 
-  // 异步操作
-  async fetchData() {
-    const res = await fetch('/api/data')
-    this.state.data = res.data
-  }
-}
-```
+**隔离契约**：快照绝不会把活引用兜底进结果。任何无法安全克隆的节点都会被丢弃（同步路径不写该位置 / 数组留洞；异步路径跳过填充），并把错误记入 `errors`。
 
-**设计原则：**
+- **错误账本 + 降级策略**：每个节点失败都会落账 `cloneError`；`onError` 回调返回 `true` 继续（丢弃该节点）、`false` 中止整次快照。存在 `cloneError` 时 `success` 为 `false`。
+- **同步 / 异步**：同步实现是迭代式深克隆（不递归爆栈）；异步实现按 `batchSize` 分片、批间让出控制权，适合大对象并支持 `onProgress`。
+- **其他维度**：`maxDepth` 超限返回占位符（不返回活引用）、循环引用检测始终生效（`detectCircular` 只控制是否上报）、访问器属性以 getter 求值结果克隆、类实例保留原型。
+- **自定义克隆器**：两条路径共用同一套抛错语义（落账 → 咨询 `onError` → 继续则丢弃 / 中止则抛 `SnapshotAbortError`）。
 
-1. **单一职责**：每个 action 只做一件事
-2. **语义化命名**：`fetchUser`、`addToCart`、`removeItem`
-3. **幂等性**：相同输入产生相同输出
+## 7. 选择器（Selector，`extras/selector`）
 
-**Action 上下文：**
+- **创建形式**：`createSelector(单个选择器函数, 选项?)`；`createMemoizedSelector` 是携带自定义相等函数的便捷包装；多步计算请在函数体内完成
+- **参数化选择器**：`createParametricSelector(fn, { ttl, maxEntries })` 按参数分别缓存，注意 TTL 与容量上限（`ttl: 0` 表示永不过期）
+- **组合与重试**：`SelectorComposer` 提供异步与重试形态；重试错误带不可枚举的 `attempts`（真实执行次数）
 
-```javascript
-actions: {
-  async login(credentials) {
-    // this 指向 action 上下文
-    this.state         // 读写状态
-    this.dispatch      // 调用其他 action
-    this.setState      // 设置单个状态
-    this.$patch        // 批量更新
-    this.$replaceState // 替换整个状态
-
-    // 调用当前 store 的其他 action
-    await this.clearSession()
-  }
-}
-```
-
-### Getters（计算属性）
-
-Getters 用于派生状态，类似 Vue 的 computed：
-
-```javascript
-getters: {
-  // 基础派生（getter 接收 state 作为第一个参数）
-  doubleCount(state) {
-    return state.count * 2
-  },
-
-  // 基于其他派生值计算
-  formattedPrice(state) {
-    const totalPrice = state.items.reduce((sum, item) => sum + item.price, 0)
-    return `¥${totalPrice.toFixed(2)}`
-  },
-
-  // 返回函数（惰性计算）
-  findById(state) {
-    return (id) => state.items.find(item => item.id === id)
-  }
-}
-```
-
-**求值时机：**
-
-Getter 采用惰性求值：只在被调用时执行，不访问不计算。但 getter 结果**不会缓存**——每次调用都会重新执行函数：
-
-```javascript
-getters: {
-  expensiveGetter(state) {
-    return state.items.reduce((sum, item) => {
-      // 复杂计算...
-    }, 0)
-  }
-}
-
-// store.getter('expensiveGetter') 每次调用都会重新执行
-```
-
-需要缓存的昂贵派生计算请使用选择器 API（`createSelector` / `createMemoizedSelector` / `createParametricSelector`，见「性能优化策略」）。
-
----
-
-## 设计理念
-
-### 1. 简洁优先
-
-GeomStore 的 API 设计力求简洁，减少概念数量：
-
-```javascript
-// 创建 store - 只需一个函数
-const store = createStore({ state, actions, getters })
-
-// 使用 store - 只有几个核心方法
-store.state           // 访问状态
-store.dispatch()      // 调用 action
-store.getter()        // 获取派生值
-store.subscribe()     // 订阅变化
-```
-
-**对比其他方案：**
-
-| 库        | 核心概念数量                                    | 学习曲线 |
-| --------- | ----------------------------------------------- | -------- |
-| Redux     | Actions, Reducers, Store, Middleware, Selectors | 高       |
-| Vuex      | State, Getters, Mutations, Actions, Modules     | 中高     |
-| GeomStore | State, Actions, Getters                         | 低       |
-
-### 2. 类型优先
-
-从设计之初就考虑 TypeScript 支持：
-
-```typescript
-// 完整的类型推断
-const store = createStore({
-  state: () => ({ count: 0 }),
-  actions: {
-    add(n: number) {
-      this.state.count += n
-    }
-  }
-})
-
-// 参数类型自动推断
-store.dispatch('add', 'string')  // ❌ 类型错误
-store.dispatch('add', 10)        // ✅ 正确
-```
-
-### 3. 渐进式增强
-
-从简单用法开始，按需使用高级功能：
-
-```javascript
-// 核心 API 仍从主入口导入；高级能力按需从 extras 子路径引入
-import { createStore, composeStore } from '@openlide/geomstore'
-import { loggerPlugin } from '@openlide/geomstore/extras/plugins'
-import { withDebounce, withRetry, withTimeout } from '@openlide/geomstore/extras/action'
-import { analyzerPlugin } from '@openlide/geomstore/extras/performance'
-import { ErrorBoundary } from '@openlide/geomstore/extras/error'
-
-// Level 1: 基础用法
-const store = createStore({ state, actions })
-
-// Level 2: 添加 getters
-const store = createStore({ state, actions, getters })
-
-// Level 3: 添加插件
-store.use(loggerPlugin)
-store.use(persistencePlugin)
-
-// Level 4: 使用方法装饰器（用于类方法，需开启 experimentalDecorators）
-class DataService {
-  results: unknown[] = []
-  data: unknown = null
-
-  @withDebounce(300)
-  async search(keyword: string) {
-    this.results = await searchApi(keyword)
-  }
-
-  @withRetry({ retries: 3, delay: 1000 })
-  @withTimeout(5000)
-  async fetchData() {
-    this.data = await fetchData()
-  }
-}
-
-// Level 5: Store 组合
-const rootStore = composeStore([storeA, storeB])
-
-// Level 6: 性能监控与错误处理
-store.use(analyzerPlugin)
-const boundary = new ErrorBoundary({ fallback: recoveryFn })
-```
-
-### 4. 小程序优化
-
-针对微信小程序场景的特殊优化：
-
-```javascript
-// 一键连接页面
-Page(withPageStore(store, {
-  mapState: ['user', 'cart'],
-  mapActions: ['login', 'addToCart']
-})({
-  // 页面配置
-}))
-
-// 一键连接组件
-Component(withComponentStore(store, options)({
-  // 组件配置
-}))
-
-// 自动处理生命周期
-// 自动清理订阅
-// 自动更新 data
-```
-
----
-
-## 实现原理
-
-### 整体架构
-
-```
-┌─────────────────────────────────────────────────────────┐
-│                      Application                         │
-├─────────────────────────────────────────────────────────┤
-│                                                         │
-│  ┌─────────────────────────────────────────────────┐   │
-│  │                   Store                          │   │
-│  │  ┌─────────┐  ┌─────────┐  ┌─────────────────┐  │   │
-│  │  │  State  │  │ Actions │  │    Getters      │  │   │
-│  │  └────┬────┘  └────┬────┘  └────────┬────────┘  │   │
-│  │       │            │                │           │   │
-│  │       ▼            ▼                ▼           │   │
-│  │  ┌──────────────────────────────────────────┐  │   │
-│  │  │           Reactive System                 │  │   │
-│  │  └──────────────────────────────────────────┘  │   │
-│  │                      │                         │   │
-│  │                      ▼                         │   │
-│  │  ┌──────────────────────────────────────────┐  │   │
-│  │  │           Subscription Manager            │  │   │
-│  │  └──────────────────────────────────────────┘  │   │
-│  └─────────────────────────────────────────────────┘   │
-│                                                         │
-│  ┌─────────────────────────────────────────────────┐   │
-│  │              Plugin System                       │   │
-│  │  ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐   │   │
-│  │  │ Logger │ │Persist │ │DevTools│ │Custom  │   │   │
-│  │  └────────┘ └────────┘ └────────┘ └────────┘   │   │
-│  └─────────────────────────────────────────────────┘   │
-│                                                         │
-│  ┌─────────────────────────────────────────────────┐   │
-│  │            Integration Layer                     │   │
-│  │  ┌─────────────┐  ┌────────────────────────┐   │   │
-│  │  │withPageStore│  │withComponentStore      │   │   │
-│  │  └─────────────┘  └────────────────────────┘   │   │
-│  └─────────────────────────────────────────────────┘   │
-│                                                         │
-└─────────────────────────────────────────────────────────┘
-```
-
-### 状态存储
-
-```javascript
-class Store {
-  // 内部状态存储
-  private _state: State
-
-  // 状态代理
-  private _proxy: Proxy<State>
-
-  constructor(options) {
-    // 创建响应式状态
-    this._state = this.createReactiveState(options.state)
-  }
-
-  createReactiveState(initialState) {
-    // 使用 Proxy 实现响应式
-    return new Proxy(initialState, {
-      set(target, key, value, receiver) {
-        // 1. 设置值
-        const result = Reflect.set(target, key, value, receiver)
-
-        // 2. 触发更新
-        this.notifyChange()
-
-        return result
-      }
-    })
-  }
-}
-```
-
-### 订阅发布系统
-
-```javascript
-class Store {
-  // 监听器 → 注册次数：同一函数重复订阅 N 次会被通知 N 次，
-  // 任一份退订只减一，归零才真正移除；重复订阅不计入订阅上限
-  private _listeners = new Map<StateListener, number>()
-
-  // 订阅状态变化
-  subscribe(listener: StateListener) {
-    this._listeners.set(listener, (this._listeners.get(listener) ?? 0) + 1)
-
-    // 返回取消订阅函数（多份注册时只抵消一份）
-    return () => {
-      /* 计数减一，归零移除 */
-    }
-  }
-
-  // 通知所有订阅者
-  private notifyChange() {
-    // 默认对状态深拷贝一次（cloneOnNotify），保证监听器之间引用隔离
-    const payload = deepCloneState(this.getState())
-    this._listeners.forEach((_count, listener) => {
-      try {
-        listener(payload)
-      } catch (error) {
-        // 生产环境静默，开发模式输出 '[GeomStore] Error in state listener:'
-        console.error('[GeomStore] Error in state listener:', error)
-      }
-    })
-  }
-}
-```
-
-### 批量更新机制
-
-```javascript
-class Store {
-  private _batchDepth = 0
-  private _pendingNotify = false
-
-  // 开始批量更新
-  startBatch() {
-    this._batchDepth++
-  }
-
-  // 结束批量更新
-  endBatch() {
-    this._batchDepth--
-    if (this._batchDepth === 0 && this._pendingNotify) {
-      this._pendingNotify = false
-      this.notifyChange()
-    }
-  }
-
-  // 批量操作包装器
-  batch<T>(fn: () => T): T {
-    this.startBatch()
-    try {
-      return fn()
-    } finally {
-      this.endBatch()
-    }
-  }
-
-  // 修改 notifyChange
-  private notifyChange() {
-    if (this._batchDepth > 0) {
-      this._pendingNotify = true
-      return
-    }
-    // 实际通知...
-  }
-}
-```
-
-> 注意两个补充语义：
->
-> - action 执行体内调用 `batch()` 时，批量收尾**不提前通知**，统一由外层 dispatch 结束时补发一次，避免 action 中间态外泄；
-> - `batch(fn)` 的批保护仅覆盖同步段：开发模式下传入异步回调（返回 Promise）会收到告警，`await` 之后的变更将逐条通知。
-
----
-
-## 状态管理机制
-
-### 状态修改流程
-
-```
-用户操作
-    │
-    ▼
-dispatch(actionName, ...args)
-    │
-    ▼
-┌─────────────────┐
-│  Action 执行     │
-│  ┌───────────┐  │
-│  │  Hook:    │  │
-│  │ beforeDis │──┼──► 插件钩子
-│  │  patch    │  │
-│  └───────────┘  │
-│       │         │
-│       ▼         │
-│  修改 State     │
-│       │         │
-│       ▼         │
-│  ┌───────────┐  │
-│  │  Hook:    │  │
-│  │ afterDisp │──┼──► 插件钩子
-│  │  atch     │  │
-│  └───────────┘  │
-└─────────────────┘
-    │
-    ▼
-触发订阅回调
-    │
-    ▼
-更新视图
-```
-
-### 状态保护
-
-GeomStore 实现了状态保护机制，防止非法修改：
-
-```javascript
-class Store {
-  private _stateProtection = true
-
-  // 状态访问器
-  get state() {
-    // 返回只读代理
-    return this.createReadOnlyProxy(this._state)
-  }
-
-  createReadOnlyProxy(state) {
-    return new Proxy(state, {
-      set(target, key, value) {
-        if (!isInternalAccess()) {
-          if (isProduction()) {
-            // 生产模式由 productionHandler 配置决定：
-            // 'warn'（默认）→ 输出告警后放行写入；'silent' → 静默放行；'error' → 抛错
-            handleProduction()
-          } else {
-            // 开发模式总是抛错
-            throw new Error(
-              `[GeomStore] Direct mutation of state "${String(key)}" is prohibited. ` +
-              'Use setState() or $patch() methods instead.'
-            )
-          }
-        }
-        return Reflect.set(target, key, value)
-      },
-
-      deleteProperty(target, key) {
-        if (!isInternalAccess()) {
-          // 同上：开发模式抛错，生产模式由 productionHandler 决定
-          handleIllegalDelete(key)
-        }
-        return Reflect.deleteProperty(target, key)
-      }
-    })
-  }
-}
-```
-
----
-
-## 响应式系统
-
-### Proxy 实现
-
-GeomStore 使用 ES6 Proxy 实现响应式系统：
-
-```javascript
-function createReactiveObject(target) {
-  return new Proxy(target, {
-    get(target, key, receiver) {
-      // 无逐键依赖收集：递归代理嵌套对象，保证深层写入同样被拦截
-      const result = Reflect.get(target, key, receiver)
-      if (typeof result === 'object' && result !== null) {
-        return createReactiveObject(result)
-      }
-      return result
-    },
-
-    set(target, key, value, receiver) {
-      // 写入本身不直接触发更新：通知由 setState/$patch/dispatch 流程收尾统一发出。
-      // 默认每次变更都广播完整状态；开启 notify.onlyOnChange 后仅在实际发生写入时通知
-      return Reflect.set(target, key, value, receiver)
-    }
-  })
-}
-```
-
-### 变化检测策略
-
-```javascript
-// 基础比较使用 Object.is，按需内嵌在各处（未单独导出 hasChanged）
-// 导出的工具为 shallowEqual 与 deepEqual
-
-// 浅比较（用于数组/对象）
-function shallowEqual(objA, objB) {
-  if (Object.is(objA, objB)) return true
-
-  // 内建对象（Date/RegExp/Map/Set）自有可枚举键恒为空，只比 Object.keys
-  // 会把内容不同的实例误判为相等——按内容比较（Date/RegExp 直接比对，
-  // Map/Set 复用 deepEqual）
-  if ([Date, RegExp, Map, Set].some(
-    (T) => objA instanceof T || objB instanceof T
-  )) {
-    return deepEqual(objA, objB)
-  }
-
-  const keysA = Object.keys(objA)
-  const keysB = Object.keys(objB)
-
-  if (keysA.length !== keysB.length) return false
-
-  for (const key of keysA) {
-    // 仅靠键数相等不足以保证键集一致：b 侧同名键可能在原型上
-    // （沿原型链取值会造成假相等），必须校验自有性
-    if (!Object.prototype.hasOwnProperty.call(objB, key)) {
-      return false
-    }
-    if (!Object.is(objA[key], objB[key])) {
-      return false
-    }
-  }
-
-  return true
-}
-
-// 深比较（可选）
-function deepEqual(objA, objB) {
-  // 递归比较...
-}
-```
-
----
-
-## 性能优化策略
-
-### 1. LRU 缓存
-
-用于 Store 级缓存（`getCached` / `getCacheStats`）。注意 getter 本身**无缓存**（每次读取即时计算，仅惰性求值），计算密集型派生请用选择器 API（自带缓存）：
-
-```javascript
-class LRUCache {
-  constructor(capacity = 100) {
-    this.capacity = capacity
-    this.cache = new Map()
-  }
-
-  get(key) {
-    if (!this.cache.has(key)) return undefined
-
-    // 移动到最前面（最近使用）
-    const value = this.cache.get(key)
-    this.cache.delete(key)
-    this.cache.set(key, value)
-    return value
-  }
-
-  set(key, value) {
-    // 删除旧的
-    if (this.cache.has(key)) {
-      this.cache.delete(key)
-    }
-
-    // 添加新的
-    this.cache.set(key, value)
-
-    // 超出容量，删除最久未使用的
-    if (this.cache.size > this.capacity) {
-      const firstKey = this.cache.keys().next().value
-      this.cache.delete(firstKey)
-    }
-  }
-}
-```
-
-### 2. 批量更新
-
-```javascript
-// 多次修改只触发一次更新
-store.batch(() => {
-  store.dispatch('setA', 1)
-  store.dispatch('setB', 2)
-  store.dispatch('setC', 3)
-})
-// 只触发一次订阅回调
-```
-
-### 3. 惰性求值
-
-Getter 只在被访问时才计算：
-
-```javascript
-getters: {
-  // 这个函数只在 getter 被调用时执行
-  expensiveCalculation(state) {
-    console.log('计算中...')
-    return heavyComputation(state.data)
-  }
-}
-
-// 不调用就不会计算
-store.getter('expensiveCalculation')  // 此时才执行
-```
-
-### 4. 选择器缓存
-
-```javascript
-import { createParametricSelector } from '@openlide/geomstore/extras/selector'
-
-// 创建带参数的选择器（第二参数可配置缓存：{ ttl, maxEntries }）
-const selectUserById = createParametricSelector(
-  (state, id) => state.users.find(u => u.id === id)
-)
-
-// 先传状态，再传参数调用；结果会被缓存（默认 TTL 5 秒、maxEntries 1000）
-selectUserById(state)(1)  // 计算
-selectUserById(state)(1)  // 缓存命中
-selectUserById(newState)(1)  // 状态变化，重新计算
-```
-
-### 5. 内存管理
-
-```javascript
-class Store {
-  // 销毁时清理资源
-  destroy() {
-    // 清理订阅
-    this._listeners.clear()
-
-    // 清理缓存
-    this._cache?.clear()
-
-    // 清理插件
-    this._plugins.forEach(uninstall => uninstall?.())
-    this._plugins.clear()
-
-    // 清理代理引用
-    this._proxy = null
-  }
-}
-```
-
----
-
-## 总结
-
-GeomStore 的核心设计可以总结为：
-
-1. **单一数据源**：所有状态存储在一个 Store 中
-2. **状态只读**：不能直接修改状态，必须通过 action
-3. **响应式更新**：状态变化自动触发视图更新
-4. **插件扩展**：通过插件系统扩展功能
-5. **性能优化**：LRU 缓存、批量更新、惰性求值
-
-这种设计确保了：
-- 可预测的状态变化
-- 易于调试和追踪
-- 高性能的状态更新
-- 良好的开发体验
+## 8. 错误处理（`extras/error`）
+
+- **错误模型**：`GeomStoreError` 携带错误码与上下文，派生出 `ActionError` / `StateError` / `SelectorError` / `PluginError` / `ComposeError` / `ValidationError`，并有对应的 `is*Error` 守卫
+- **边界（ErrorBoundary）**：默认 fail-loud——未配置 `fallback` 时错误重抛；提供 `fallback` 即视为声明恢复意图，`fallback` 函数自身抛错会重抛**原始错误**（不丢失现场）
+- **恢复（ErrorRecovery）**：策略含 `RETRY` / `FALLBACK` / `IGNORE` / `RECOVER` / `RESTART`；重试额度按**故障周期**计量（时间窗 = `max(60s, 本周期退避总时长 × 2)`），并有键容量守卫防动态 operation id 导致的无界增长
+- **监控（ErrorMonitoring）**：批量 flush 对每个 reporter 做 `ok / fail / timeout` 三态判定；仅真正 resolve 才算成功；全部失败则按序重入队重试，连续失败超过 `maxFlushRetries` 丢弃该批并告警（避免永久失败批次空转）
+
+## 9. 插件（Plugin）
+
+- **契约**：`{ name, install(store) }`，`install` 返回卸载函数（`store.use(plugin)` 返回同一函数）
+- **钩子**：插件通过 `store.hooks.on/emit` 接入 `beforeDispatch` / `afterDispatch` / `beforeSetState` / `afterSetState` / `beforePatch` / `afterPatch` / `beforeReplaceState` / `afterReplaceState` / `onError` 等生命周期
+- **安装安全**：`install` 抛错时回滚入列，不会残留半安装条目；生产模式下安装/卸载日志静默
+
+## 10. 组合（Compose）
+
+- **命名空间**：`composeStore([a, b], { namespace: true })` 下子 store 按 `name` 嵌套，dispatch 使用 `'storeName/actionName'`
+- **脏追踪**：命名空间模式下 `isStateKeyDirty` 精确判断子 store 是否变化，集成层据此跳过未变化的 `setData`
+- **订阅复用**：组合层 N 个监听器只占用每个子 store 一份订阅；无只读订阅者时通知走零拷贝
+- **只读化**：`composed.state` 顶层冻结，嵌套经子 store 保护代理，写入不会穿透
+
+## 11. 批处理（Batch）
+
+`batch(fn)` / `startBatch` / `endBatch` 期间合并通知，结束时统一发一次；batch 会记录变更计数基线，`onlyOnChange` 下期间无变更则不通知。
+
+> 注意：`batch(fn)` 传入**异步回调**时，`await` 之后的变更会逐条通知（批保护边界只在同步段有效），开发模式下会显式告警。
+
+## 12. 一条写入的完整链路
+
+以 `store.setState('count', 1)` 为例：
+
+1. **保护代理**判定为合法写入（经 setState 而非直接变异）
+2. 写入状态并**推进版本号**，脏计数 +1
+3. **缓存**中 `count` 相关条目失效
+4. 触发 `beforeSetState` / `afterSetState` 钩子（插件与监控在此接入）
+5. 依据 `notify.async` 决定立即通知或合并到微任务；`notify.clone` 决定克隆或（条件性）零拷贝
+6. 监听器收到新状态；`isStateKeyDirty('count')` 为 true，集成层据此更新 `setData`

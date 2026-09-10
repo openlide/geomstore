@@ -1,381 +1,120 @@
-# 迁移指南（Migration Guide）
+# 迁移指南
 
-> 本文档面向正在使用其他小程序状态管理方案、希望迁移到 **GeomStore v0.4.0** 的开发者。
->
-> GeomStore 是零运行时依赖、TypeScript 优先、面向微信小程序（兼容 Skyline / WebView）的轻量级状态管理库。
+本文按版本倒序列出**会影响调用方**的变更。完整变更记录见 [CHANGELOG](../CHANGELOG.md)。
 
----
+> 版本约定：`0.x` 阶段的行为契约变更会显式标注「Breaking」并给出迁移代码；仅「新增可选项」之类的纯增量不在此列。
 
-## 目录
+## 升级到 0.4.x（当前开发版）
 
-- [迁移指南（Migration Guide）](#迁移指南migration-guide)
-  - [目录](#目录)
-  - [0. 从旧版 GeomStore 升级（瘦核心）](#0-从旧版-geomstore-升级瘦核心)
-  - [v0.4.0 错误子系统下沉](#v04-0-破坏性变更错误子系统下沉)
-  - [1. 迁移总览](#1-迁移总览)
-  - [2. 从原生 setData 迁移](#2-从原生-setdata-迁移)
-    - [迁移前（原生写法）](#迁移前原生写法)
-    - [迁移后（GeomStore）](#迁移后geomstore)
-  - [3. 从 globalData 全局变量迁移](#3-从-globaldata-全局变量迁移)
-    - [迁移前](#迁移前)
-    - [迁移后](#迁移后)
-  - [4. 从 MobX-MiniProgram 迁移](#4-从-mobx-miniprogram-迁移)
-    - [迁移示例](#迁移示例)
-  - [5. 从 westore / pinia / vuex 概念迁移](#5-从-westore--pinia--vuex-概念迁移)
-  - [6. 核心概念对照表](#6-核心概念对照表)
-  - [7. 迁移检查清单](#7-迁移检查清单)
-  - [相关文档](#相关文档)
+### 1. 产物格式由 CJS 切换为 ESM
 
----
-
-## 0. 从旧版 GeomStore 升级（瘦核心）
-
-> 适用于已在使用 GeomStore（v0.2.0 及更早）并希望升级到 **v0.4.0 瘦核心 + 错误下沉** 的项目。
-
-### 为什么需要迁移
-
-v0.2.1 起，主入口 `@openlide/geomstore` 改为**瘦核心**：只导出应用运行所必需的核心 API（`Store`、`createStore`、小程序集成 `withPageStore` / `withComponentStore` / `withAppStore`、`composeStore`、LRU 缓存、工具函数）。快照、选择器、性能监控、Action 增强（执行器 / 装饰器）、内置插件、企业微信集成、错误处理等**高级能力**收敛到 `./extras` 子路径，**不再从主入口导出**。v0.4.0 起，错误处理进一步从核心下沉至 `./extras/error` 子路径（详见下文「v0.4.0 破坏性变更：错误子系统下沉」）。
-
-这样做的好处：主包体积更小，未使用的可选能力不会进入小程序主包；代价是这些能力需要显式从子路径引入。
-
-### 破坏性变更
-
-| 变更 | 说明 |
-| ---- | ---- |
-| 可选能力移出主入口 | 原先从 `@openlide/geomstore` 导入的 `SnapshotManager`、`createSelector`、`PerformanceMonitor`、`ActionExecutor`、`withLog`、`loggerPlugin` 等，改为从对应 `extras` 子路径导入 |
-| `createApp` 已移除 | 原 `createApp` 不再提供，App 集成统一使用核心中的 `withAppStore`（仍从主入口导入） |
-| 核心 API 保持兼容 | `createStore`、`Store`、`getState` / `setState`、`dispatch`、小程序集成等核心接口签名不变；错误处理下沉至 `extras/error`，其接口签名保持不变 |
-
-### 迁移示例
-
-**升级前（v0.2.0）：**
-
-```javascript
-import {
-  createStore,
-  withPageStore,
-  SnapshotManager,
-  createSelector,
-  PerformanceMonitor,
-  loggerPlugin,
-} from '@openlide/geomstore'
+```diff
+- const { createStore } = require('@openlide/geomstore')
++ import { createStore } from '@openlide/geomstore'
 ```
 
-**升级后（v0.2.1 瘦核心）：**
+- 包根与 `dist/` 均为 ESM（`"type": "module"`）；入口仍为 `dist/index.js`
+- **ESM 不做目录索引回退**：直接引用内部路径时请写全 `dist/xxx/index.js`（不要依赖目录解析）
+- 复制安装场景：把 `@openlide/geomstore` 换成你的本地目录即可，但只支持 `import`
 
-```javascript
-// 核心 API 仍从主入口导入
-import { createStore, withPageStore, withAppStore } from '@openlide/geomstore'
+### 2. 可选能力的实现移入 `extras/*`
 
-// 可选能力按需从 extras 子路径导入
-import { SnapshotManager } from '@openlide/geomstore/extras/snapshot'
-import { createSelector } from '@openlide/geomstore/extras/selector'
-import { PerformanceMonitor } from '@openlide/geomstore/extras/performance'
-import { loggerPlugin } from '@openlide/geomstore/extras/plugins'
+公开子路径与各入口的导出集合**均未变化**；仅当代码**深链了内部源码路径**时才需要调整：
 
-// App 集成：使用核心 withAppStore（替代旧版 createApp）
-App(withAppStore(store, options)(config))
+| 能力 | 源码路径 | 对外引入方式（不变） |
+| --- | --- | --- |
+| 快照 | `src/extras/snapshot` | `@openlide/geomstore/extras/snapshot` |
+| 选择器 | `src/extras/selector` | `@openlide/geomstore/extras/selector` |
+| Action 增强 | `src/extras/action` | `@openlide/geomstore/extras/action` |
+
+`cache` / `hooks` / `performance` 的实现仍在 `src/core`（被 `core/store` 直接依赖），仅入口在 `extras/*`。
+
+### 3. 组件生命周期收严（Breaking）
+
+- 组件生命周期必须写在 `lifetimes`（`created` / `attached` / `ready` / `moved` / `detached` / `error`），页面级写在 `pageLifetimes`（`show` / `hide` / `resize`）
+- 两者都**不再放开索引签名**，键与微信官方一致：拼错生命周期名、或传入自定义键，现在会在编译期报错
+
+```diff
+- lifetimes: { attache() {} }              // 拼错 → 现在报错
++ lifetimes: { attached() {} }
 ```
 
-### 子路径速查
+### 4. 集成方法内的 `this` 已注入（请删除手写标注）
 
-| 能力 | 子路径 |
-| ---- | ------ |
-| 全部可选能力 | `@openlide/geomstore/extras` |
-| 快照 | `@openlide/geomstore/extras/snapshot` |
-| 选择器 | `@openlide/geomstore/extras/selector` |
-| 性能监控 | `@openlide/geomstore/extras/performance` |
-| Action 增强 | `@openlide/geomstore/extras/action` |
-| 插件 | `@openlide/geomstore/extras/plugins` |
-| 企业微信集成 | `@openlide/geomstore/extras/enterprise` |
-| 错误处理 | `@openlide/geomstore/extras/error` |
+三处集成都会把注入后的 `this`（`PageThis` / `ComponentThis` / `AppThis`）交给配置方法，手写标注会**覆盖**它，反而使类型变弱：
 
-### 升级检查清单
-
-- [ ] 全局搜索主入口导入，将 `SnapshotManager` / `createSelector` / `PerformanceMonitor` / `ActionExecutor` / `withLog` / `loggerPlugin` 等改为对应 `extras` 子路径
-- [ ] 将旧版 `createApp(...)` 替换为 `App(withAppStore(store, options)(config))`
-- [ ] 运行 `pnpm typecheck` 确认无缺失导出
-- [ ] 运行 `pnpm test` 全量测试通过
-
-### v0.4.0 破坏性变更：错误子系统下沉
-
-> 适用于已在使用 GeomStore（v0.3.0 及更早）并希望升级到 **v0.4.0** 的项目。
-
-v0.4.0 起，错误处理从核心入口进一步下沉至独立的 `./extras/error` 子路径，主入口 `@openlide/geomstore` **不再导出任何错误类**。这是破坏性变更：凡从主入口导入错误类的代码需在 v0.4.0 改为从 `@openlide/geomstore/extras/error` 引入。
-
-| 变更 | 说明 |
-| ---- | ---- |
-| 错误类移出主入口 | 原先从 `@openlide/geomstore` 导入的 `GeomStoreError`、`createError`、`ErrorCode`、`ErrorRecovery`、`RecoveryStrategy`、`ErrorMonitoring`、`ConsoleReporter`、`ErrorBoundary`、`ErrorHandler` 等，改为从 `@openlide/geomstore/extras/error` 导入 |
-| 接口签名不变 | 错误子系统的 API 形态（错误码、恢复策略、监控上报、边界捕获）与 v0.3.0 保持一致，仅导入路径变化 |
-
-**升级前（v0.3.0）：**
-
-```javascript
-import { ErrorBoundary, ErrorRecovery } from '@openlide/geomstore'
+```diff
+- onLaunch(this: { globalData: { appName: string } }) { … }   // globalData 退回字面量类型，丢掉映射状态
++ onLaunch() { … }                                            // 映射状态已在 this.globalData 上
 ```
 
-**升级后（v0.4.0）：**
+- Page：`this.data`（含 `mapState` / `mapGetters`）+ `mapActions` 注入的方法
+- Component：`methods` 内注入的方法与 `data`（微信会把 `methods` 条目提升到实例，`this.add` 与 `this.methods.add` 都可用），`lifetimes` / `pageLifetimes` 内同样是注入后的 `this`
+- App：`this.globalData`（含映射状态）+ `mapActions` 注入的方法与调试 API
 
-```javascript
-import { ErrorBoundary, ErrorRecovery } from '@openlide/geomstore/extras/error'
+### 5. 状态类型约束放宽（仅类型，无需迁移）
+
+`Selector` / `ParametricSelector` / `SelectorComposerInput`、选择器各创建函数与 `composeStore` 的 `StoreLike` 由 `Record<string, unknown>` 放宽为 `State`：**未声明索引签名的业务 `interface`** 现在可直接作为状态类型。
+
+```ts
+interface OrderState { rate: number }        // 此前会被拒之门外
+createSelector((state: OrderState) => state.rate)
+composeStore([userStore, cartStore])
 ```
 
-- [ ] 全局搜索主入口导入，将 `GeomStoreError` / `createError` / `ErrorCode` / `ErrorRecovery` / `RecoveryStrategy` / `ErrorMonitoring` / `ConsoleReporter` / `ErrorBoundary` / `ErrorHandler` 等改为从 `@openlide/geomstore/extras/error` 引入
+`Plugin` / `PluginHook` 亦已泛型化：省略类型参数（`Plugin`）与既有写法一致，新增的编译错误只出现在「插件与 Store 状态类型不匹配」这类本就错误的组合上。
 
----
+## 升级到 0.4.0
 
-## 1. 迁移总览
+**错误子系统从核心入口下沉到 `extras/error`**（Breaking）：主入口不再导出 `GeomStoreError`、`createError`、`ErrorCode`、`isGeomStoreError` 及其子类、`ErrorRecovery`、`ErrorMonitoring`、`ErrorBoundary`、`ErrorHandler` 等。
 
-无论从哪种方案迁移，核心步骤一致：
-
-1. **识别状态归属**：将散落在页面 `data`、`globalData`、全局对象中的状态，收敛为一个个 `createStore`。
-2. **把修改逻辑收敛为 action**：所有对状态的写入，从 `setData` / 直接赋值，改为 action（通过 `this.state` 访问状态）。
-3. **把派生逻辑收敛为 getter / selector**：消除重复计算与「手写同步」。
-4. **通过集成函数接入页面/组件/App**：`withPageStore` / `withComponentStore` / `withAppStore` 负责映射与订阅清理。
-
-> 提示：迁移可以**渐进式**进行——GeomStore 与原生 `setData`、`globalData` 可以共存，先迁移一个页面或一个模块，验证无误后再铺开。
-
----
-
-## 2. 从原生 setData 迁移
-
-### 迁移前（原生写法）
-
-```javascript
-Page({
-  data: {
-    userInfo: null,
-    count: 0,
-  },
-
-  onLoad() {
-    const userInfo = wx.getStorageSync('userInfo')
-    this.setData({ userInfo })
-  },
-
-  increment() {
-    this.setData({ count: this.data.count + 1 })
-  },
-
-  async login(payload) {
-    const res = await api.login(payload)
-    this.setData({ userInfo: res.user })
-  },
-})
+```diff
+- import { createError, ErrorCode, ErrorRecovery } from '@openlide/geomstore'
++ import { createError, ErrorCode, ErrorRecovery } from '@openlide/geomstore/extras/error'
 ```
 
-### 迁移后（GeomStore）
+同时移除 `TypeValidator` 模块与 `core/index` 中已废弃的零碎 barrel / 工厂函数（死代码收口）。
 
-```javascript
-// store.js —— 状态与逻辑集中到 Store
-import { createStore } from '@openlide/geomstore'
+## 升级到 0.3.0
 
-export const userStore = createStore({
-  name: 'user',
-  state: () => ({
-    userInfo: null,
-    count: 0,
-  }),
-  actions: {
-    async login(payload) {
-      const res = await api.login(payload)
-      this.state.userInfo = res.user // 通过 this.state 访问状态
-    },
-    increment() {
-      this.state.count++ // 自动触发订阅通知
-    },
-  },
-})
-```
+| 变更 | 迁移方式 |
+| --- | --- |
+| 可选能力改由 `extras/*` 子路径引入（瘦核心拆分） | `import { createSnapshot } from '@openlide/geomstore/extras/snapshot'` |
+| 构建产物目录扁平化：`dist/cjs/**` → `dist/**` | 复制安装时引用 `dist/cjs/...` 的改为 `dist/...`（NPM 安装不受影响） |
+| 转发 stub 目录改由 `prepack` 生成 / `postpack` 清理 | 需要时用 `pnpm stubs` / `pnpm stubs:clean` |
+| `withPageStore` / `withComponentStore` **只识别 `lifetimes` 写法** | 组件顶层 `attached` / `detached` 改为写在 `lifetimes: { attached, detached }` 内 |
+| `SubscriptionManager` 内部 API 重命名（`subscribe`→`add`、`unsubscribe`→`delete`、`size` 改为 getter、移除 `has`） | 使用 `store.subscribe` 公共 API 的代码不受影响 |
+| `persistencePlugin` 直接安装不再透传第二参数 | 需要 `storage` / `key` / `filter` / `validate` 时改用工厂形式 `persistencePlugin(options)` |
+| 热更新备份新增 `version` 字段 | 备份版本与库版本不一致时仅告警，仍按 `$patch` 合并语义恢复（不因版本不符丢弃用户数据） |
+| 零拷贝通知语义收紧（`notify.clone: false`） | 存在可读写订阅者时仍会克隆以保证内部状态安全 |
+| `withCache` 命中日志 `console.log` → `console.debug` | 依赖日志做断言的测试需同步 |
+| 组合 Store 订阅复用单路合并订阅 | 外部直连子 Store 的订阅不再被组合层订阅静默驱逐 |
 
-```javascript
-// page.js —— 页面只负责连接与渲染
-import { withPageStore } from '@openlide/geomstore'
-import { userStore } from './store'
+## 升级到 0.2.x
 
-Page(withPageStore(userStore, {
-  mapState: ['userInfo', 'count'],
-  mapActions: ['login', 'increment'],
-})({
-  data: { localData: '仅页面私有的数据' },
+- **`$patch` 底层 `deepMerge` 仅对纯对象递归合并**：Date/RegExp/Map/Set/数组/类实例整体替换为深拷贝
+- **`createSelector` 默认比较器 `shallowEqual` → `deepEqual`**，且缓存比较基于写入时快照（避免 `$patch` 后误命中陈旧值）
+- **`bindMappings`**：对象值始终纳入 `setData`（不做引用脏检查）；`undefined` 字段被过滤（微信 `setData` 不接受 `undefined`，清除字段请用 `null`）
+- **`HttpReporter.report/reportBatch` 失败向上抛出**：直接调用方需自行 `catch`（内部批量管线已兜底）；默认实现校验 `ok` / `statusCode`
+- **`ErrorBoundary` 的 `fallback` 计算函数抛错时重抛原始错误**
+- **`ErrorRecovery` 重试额度按故障周期计量**（时间窗 = `max(60s, 本周期退避总时长 × 2)`），达到上限仅清除当前键
+- **类型层**：`ActionExecutor` / `ActionUtils` 泛型放宽为 `Actions`，返回 `Promise<Awaited<...>>`（消除 `Promise<Promise<T>>`）；`ExtractStates` 等基例改用 `Record<never, never>`（不污染组合 Store 属性类型）；`withPageStore` 入参改为同态映射，自定义方法保留精确类型
 
-  onLoad() {
-    // 映射的 state 已在 this.data 上，映射的 action 已在 this 上
-    console.log(this.data.userInfo)
-    this.increment()
-  },
+## 升级到 0.1.3
 
-  async handleLogin() {
-    await this.login({ username: 'u', password: 'p' })
-  },
-}))
-```
+- **`StorageBackend` 收窄为纯同步接口**：`getItem/setItem/removeItem` 不接受 Promise；传异步后端会在恢复/保存路径显式报错。异步持久化请在外部自行订阅 store 实现
+- **`ErrorFallback` 泛型参数反转**：`ErrorFallback<S>` → `ErrorFallback<F, S>`
+- **`ErrorBoundary` / `withErrorBoundary` 默认 fail-loud**：未配置 `fallback` 时错误重抛；提供 `fallback` 即视为声明恢复意图
+- **`withThrottle` 默认 `{ leading: true, trailing: true }`**：窗口内被抑制的调用在窗口结束时以**最新参数**补发；`trailing: false` 回到纯 leading
+- **`clone` 选项重构**：`{ deep, safe }` → `{ mode: 'deep' | 'shallow' | 'safe' | 'json' }`；`safe` 语义为「尽力深拷贝且绝不抛错」，JSON 有损语义移至 `json`
+- **`compareSnapshots` 集合语义**：Set 按内容无序匹配；Map 键引用匹配失败后做结构匹配；`changes` 条目新增可选 `kind: 'added' | 'removed'`
+- **`createRetrySelector` 选项化**：第二参数 `maxRetries: number` → `{ retries?, shouldRetry? }`；负数创建期抛 `TypeError`；新增 `createRetrySelectorAsync`
 
-**关键差异**：
+## 升级到 0.1.1 / 0.1.2
 
-| 原生 setData                    | GeomStore                              |
-| ------------------------------- | -------------------------------------- |
-| `this.setData({ userInfo: x })` | `this.state.userInfo = x`（action 内） |
-| 读 `this.data.count`            | 读 `this.data.count`（映射后一致）     |
-| 手动管理订阅/清理               | 集成函数自动订阅 + 卸载自动清理        |
-| 无类型提示                      | 泛型推导，精确类型提示                 |
+以修复与文档对齐为主，无破坏性变更；以下行为修正值得同步确认：
 
----
-
-## 3. 从 globalData 全局变量迁移
-
-### 迁移前
-
-```javascript
-// app.js
-App({
-  globalData: {
-    userInfo: null,
-    theme: 'light',
-  },
-})
-
-// page.js —— 各页面手动读写 globalData
-const app = getApp()
-Page({
-  data: {},
-  onLoad() {
-    this.setData({ userInfo: app.globalData.userInfo })
-  },
-})
-```
-
-### 迁移后
-
-```javascript
-// app.js —— 使用 withAppStore 统一管理全局状态
-import { withAppStore } from '@openlide/geomstore'
-import { appStore } from './store'
-
-App(withAppStore(appStore, {
-  mapState: ['userInfo', 'theme'],
-  mapActions: ['initApp', 'setTheme'],
-})({
-  onLaunch() {
-    this.initApp()
-  },
-}))
-```
-
-```javascript
-// page.js —— 页面直接连接，无需再手写 globalData 同步
-Page(withPageStore(appStore, {
-  mapState: ['userInfo', 'theme'],
-})({
-  // 页面配置
-}))
-```
-
-> 如需保留 `getApp().globalData.xxx` 的访问习惯，`withAppStore` 会自动将映射的 state 同步到 `globalData`。
-
----
-
-## 4. 从 MobX-MiniProgram 迁移
-
-MobX 与 GeomStore 的映射关系最直观：
-
-| MobX-MiniProgram               | GeomStore                                                    |
-| ------------------------------ | ------------------------------------------------------------ |
-| `observable({ ... })`          | `createStore({ state: () => ({ ... }) })`                            |
-| `action` 装饰器/函数           | `createStore({ actions: { ... } })`（`this.state` 访问状态） |
-| `computed`                     | `createStore({ getters: { ... } })` 或 `createSelector`      |
-| `observer` 包装组件            | `withComponentStore` / `withPageStore`                       |
-| `store.xxx = yyy`（action 内） | `this.state.xxx = yyy`                                       |
-
-### 迁移示例
-
-```javascript
-// 迁移前（MobX）
-import { observable, action, computed } from 'mobx-miniprogram'
-
-const store = observable({
-  count: 0,
-
-  get double() {
-    return this.count * 2
-  },
-
-  increment: action(function () {
-    this.count += 1
-  }),
-})
-```
-
-```javascript
-// 迁移后（GeomStore）
-import { createStore } from '@openlide/geomstore'
-
-const store = createStore({
-  state: () => ({ count: 0 }),
-  getters: {
-    double: (state) => state.count * 2,
-  },
-  actions: {
-    increment() {
-      this.state.count += 1
-    },
-  },
-})
-```
-
----
-
-## 5. 从 westore / pinia / vuex 概念迁移
-
-| 概念     | westore               | pinia / vuex              | GeomStore                              |
-| -------- | --------------------- | ------------------------- | -------------------------------------- |
-| 状态容器 | `create({ data })`    | `defineStore` / `state`   | `createStore({ state })`               |
-| 修改状态 | 直接赋值 + `update()` | `actions` / `mutations`   | `actions`（`this.state.xxx = ...`）    |
-| 派生状态 | `computed`            | `getters`                 | `getters` / `createSelector`           |
-| 页面接入 | `use` 注入            | `mapState` / `mapActions` | `withPageStore` / `withComponentStore` |
-| 类型安全 | 弱                    | 强                        | 强（泛型推导 + 精确映射类型）          |
-
-**GeomStore 与 Vue 系的最大差异**：action 内通过 `this.state` 访问状态（而非 `this.count` 或 `state.count` 参数）。注意迁移时不要把 action 写成 `login(state, payload)`——GeomStore 中 `state` 是 getter 的参数，action 的第一参数是用户传入参数。
-
----
-
-## 6. 核心概念对照表
-
-| 需求         | GeomStore API                                           |
-| ------------ | ------------------------------------------------------- |
-| 创建 Store   | `createStore({ state, actions, getters, ... })`         |
-| 读取状态     | `store.state` / `store.getState()`                      |
-| 设置单个状态 | `store.setState(key, value)`                            |
-| 批量更新     | `store.$patch({ ... })` / `store.batch(fn)`             |
-| 替换整个状态 | `store.$replaceState(newState)`                         |
-| 调用 action  | `store.dispatch('actionName', ...args)`                 |
-| 派生状态     | `store.getter('name')` / `createSelector(...)`          |
-| 订阅变化     | `store.subscribe((state) => { ... })`                   |
-| 页面接入     | `Page(withPageStore(store, options)(config))`           |
-| 组件接入     | `Component(withComponentStore(store, options)(config))` |
-| App 接入     | `App(withAppStore(store, options)(config))`             |
-| 组合多 Store | `composeStore(...)` / `createStoreTree(...)`            |
-| 快照/回滚    | `store.$snapshot()` / `$restore()` / `timeTravelPlugin` |
-
----
-
-## 7. 迁移检查清单
-
-- [ ] 状态从页面 `data` / `globalData` 收敛到 `createStore` 的 `state`
-- [ ] 所有状态写入迁移到 `actions`，通过 `this.state` 访问（无 `state` 参数）
-- [ ] 派生值迁移到 `getters` / `createSelector`，消除重复计算
-- [ ] 页面/组件改用 `withPageStore` / `withComponentStore`（注意柯里化两段式调用）
-- [ ] 全局状态改用 `withAppStore`，移除手写 `getApp().globalData` 同步
-- [ ] 移除手动订阅与 `onUnload` 清理代码（集成函数自动管理）
-- [ ] 运行 `pnpm typecheck` / `pnpm typecheck:tests` 校验类型（享受精确映射类型）
-- [ ] 运行 `pnpm test` 全量测试通过
-
----
-
-## 相关文档
-
-- [快速上手](../README.md)
-- [使用指南](./GUIDE.md)
-- [API 参考](./API.md)
-- [最佳实践](./BEST_PRACTICES.md)
-- [常见问题](./FAQ.md)
+- `persistencePlugin` 启动恢复改用 `$patch` 合并语义（未被持久化的键保留初始值）；无 `wx` 同步存储时降级为内存存储并告警
+- `initBackgroundSync` 改为包装全局 `App` 构造器注入 `onShow` / `onHide`（修改 `App.prototype` 在微信中不生效）
+- `Store.$snapshot` 返回递归深冻结结构
+- 文档与示例统一使用 `state` 工厂函数形式 `state: () => ({ ... })`

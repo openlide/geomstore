@@ -5,6 +5,57 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`withThrottle` 新增 `assumeAsync` 选项**：对「非 `async` 语法但返回 Promise」的方法（包装函数、手写 thenable），首次调用被抑制（`leading: false`）时也返回 Promise，避免调用方 `await` 拿到 `undefined` 而与后续调用返回类型不一致。
+- **`MonitoringConfig` 新增 `maxQueueSize` / `maxFlushRetries`**：错误队列容量与「全部报告器连续失败」的重入队上限开放为可配置项（默认 1000 / 3，行为不变）。
+- **`Plugin` / `PluginHook` 泛型化**（`Plugin<S extends State = State>`）：插件作者在 `install(store)` 中可拿到精确的 `Store<S, …>`（`filter: (state) => …` 等回调随之获得类型），`usePlugin(plugin, store)` 与 `store.use(plugin)` 传具体 Store **不再需要断言**。省略类型参数即得「适用于任意 Store」的插件（`Plugin<State>`），既有写法不受影响；唯一新增的编译错误是「插件与 Store 状态类型不匹配」这种本就错误的组合。
+- **`exports` 新增 `./integrations`**：`parseMapping` / `bindMappings` / `bindActions` / `performAutoInject` / `exposeStoreAPI` / `cleanupBindings` 等底层小程序绑定工具此前仅转发子目录可达，现在 `@openlide/geomstore/integrations` 在 ESM 解析器下同样可用。
+- 覆盖率四项（语句 / 分支 / 函数 / 行）达到 **100%**；不可达的防御分支统一以 `/* istanbul ignore … */` 标注并**写明原因**。
+
+### Changed
+
+- **文档全面重写**：README 与 `docs/`（GUIDE / API / ARCHITECTURE / CONCEPTS / BEST_PRACTICES / FAQ / MIGRATION）及 CONTRIBUTING 以源码为唯一依据重写；`examples/` 同步重写并新增 `extras/` 分类（覆盖已下沉的可选能力与新增选项），全部示例纳入 `pnpm typecheck:examples` 校验。
+- **快照 / 选择器 / Action 增强的**实现**由 `src/core/**` 移至 `src/extras/**`**（此前仅入口在 `extras`）。通过公开子路径 `extras/*` 引入的代码不受影响；深链内部源码路径需同步调整（见 MIGRATION.md）。`cache` / `hooks` / `performance` 的实现保留在 `core`（被核心直接依赖），仅入口在 `extras/*`。
+- 测试按领域重组至 `tests/unit/{core,extras,store,integrations,plugins}/**`，不再使用按批次命名的文件。
+- `ErrorRecovery` 逐出循环去掉单轮淘汰上限：键数远超上限时一次调用即收敛（此前需多轮调用，且每轮重做一次 O(n) 过期扫描）。
+- 语义等价改写以消除不可达分支：`equalityFn` 在构造期归一化后恒为函数、`HttpReporter` 请求体由私有方法唯一产出、快照描述符标志两条路径统一归一化。
+- `ErrorMonitoring` 的 `batchInterval` / `batchThreshold` / `reportTimeout` 由 `||` 改为 `??`：显式传入的 `0` 不再被静默替换为默认值。
+- `SnapshotManager` 声明的默认 `batchSize` 与异步路径的实际回落值统一为 100（此前声明 1000 但永不生效）。
+
+### Fixed
+
+- 修复同步/异步快照对 `customCloner` 抛错语义不一致：同步路径此前会直接中断整次克隆，现与异步路径一致（落账 `cloneError` → 咨询 `onError` → 继续则丢弃该节点 / 中止则抛 `SnapshotAbortError`）。
+- 修复 `usePlugin` 之外的自定义克隆器抛错路径缺少错误记账的问题（`stats` / `errors` 不再漏记）。
+- **修复 `withComponentStore` / `withAppStore` 未注入方法 `this` 类型的问题**：此前这两处必须手写 `this` 标注才能访问注入的 action 与 `globalData`。现在 `withComponentStore` 把 `ThisType<ComponentThis<…>>` 挂到 `methods` / `lifetimes` / `pageLifetimes` **各命名空间本身**（`ThisType` 只作用于它所标注的那个对象字面量，挂在配置顶层不会下传），`withAppStore` 与 `withPageStore` 同款注入 `ThisType<AppThis<…>>`。
+- `ComponentThis` 将注入成员展平到顶层（微信会把 `methods` 条目提升到组件实例，故 `this.add` 与 `this.methods.add` 均可用），新增 `WithComponentThis` / `AppThis` / `HostStoreApi` 类型。
+- **最低 TypeScript 版本为 5.4**：`Store.use` / `usePlugin` 的公开签名使用 `NoInfer`（用于阻止逆变位置污染 `S` 的推断）。备选方案「独立类型参数 `P extends Plugin<S>`」已实测否决——宽插件 `Plugin<State>` 会因 `Store` 自身含 `use` 成员而在约束校验时递归比较失败。低于 5.4 的消费者在未开启 `skipLibCheck` 时会遇到 `Cannot find name 'NoInfer'`（TS2304）。
+- `createStructuredSelector` 的结果记录类型 `R` 由 `Record<string, unknown>` 放宽为 `object`，使未声明索引签名的 interface 也能作为结果形状（此前只放宽了状态类型 `S`，漏了 `R`）。
+- `ComponentOptions.pageLifetimes` 与 `lifetimes` 口径对齐：补 `resize`（微信官方支持，参数为 `{ size: { windowWidth, windowHeight } }`）并**移除** `[key: string]: unknown` 索引签名，使拼错的生命周期名在编译期报错。此项属**类型收紧**：若曾在 `pageLifetimes` 里传过自定义键，需删除。
+- `ComponentOptions.lifetimes` 补齐微信官方的 `created` / `ready` / `moved` / `error`（此前只有 `attached` / `detached` 且无索引签名，导致这些合法生命周期触发多余属性报错）；仍不放开索引签名，生命周期名拼错会在编译期报错。
+- **拆分「方法 this 类型」与「返回配置形状」**：新增 `PageConfig` / `ComponentConfig` 描述装饰器返回的配置对象；`PageThis` / `ComponentThis` 改为**只用于注入方法内的 `this`**。此前两个装饰器的返回类型直接复用了展平的 this 类型，于是声明出配置对象上并不存在的成员（例如 `withComponentStore(…)({ … }).add` 能通过编译，运行时却是 `undefined`）。
+- `AppOptions.onLaunch` 与 `ComponentOptions.lifetimes` / `pageLifetimes` 不再声明 `this`：这些声明会**覆盖**集成层注入的 `this`（表现为 `globalData` / `data` 退回可选、注入方法被索引签名吞成 `unknown`），且与「运行时传入增强后的实例」不符。
+- **修复「未声明索引签名的业务 interface」无法作为状态类型用于 `composeStore` 与选择器族的问题**：`StoreLike.state`、`Selector<S>` / `ParametricSelector<S>` / `SelectorComposerInput<S>` 及选择器各创建函数的约束此前写作 `Record<string, unknown>`，而 interface 没有隐式索引签名，会被拒之门外，与 `State = object` 的既定口径（见 types/store.ts 的说明）不一致。现统一放宽为 `State`，**默认值仍为 `Record<string, unknown>`**，既有写法行为不变。
+
+- **模块体系全面切换为 ESM**：根 `package.json` 新增 `"type": "module"`，构建产物由 CJS 改为纯 ESM（`dist/` 内额外写入 `{"type":"module"}` 标记）。
+- 构建配置 `tsconfig.cjs.json` 更名为 `tsconfig.build.json`，`module` / `moduleResolution` 统一为 `NodeNext` / `nodenext`；移除未被引用的 `tsconfig.node.json`（原 `module: commonjs`）。
+- 源码、测试、示例与 `packages/benchmark` 的相对导入 / 导出补齐 `.js` 扩展名，目录索引显式写成 `./xxx/index.js`（ESM 不做目录索引回退）。
+- 脚本与配置全部 ESM 化：`scripts/*.cjs` → `scripts/*.mjs`（改用 `import.meta.url`），`jest.config.cjs` → ESM 的 `jest.config.js`，`eslint.config.js` 改为 `export default`；`tests/setup.js` 改为 `tests/setup.ts`。
+- Jest 新增 `moduleNameMapper` 规则，把 ESM 写法中的 `.js` 后缀映射回无后缀后再交给 ts-jest 解析；需要新模块实例的测试改用 `jest.resetModules()` / `jest.isolateModulesAsync()` + `await import()`。
+- ESLint 规则 `@typescript-eslint/no-require-imports` 由 `off` 改为 `error`，禁止在源码与测试中出现 CommonJS 写法。
+- CI 产物冒烟由 CJS `require` 改为 ESM `import`（并修正 `dist/cjs/**` 这一已失效路径与 `GeomStoreError` 主入口断言）。
+
+### Breaking
+
+- 产物格式由 CJS 变为 ESM：`require('@openlide/geomstore')` 需改成 `import { createStore } from '@openlide/geomstore'`（复制安装同理，入口仍为 `dist/index.js`）。ESM 不做目录索引回退，引用内部路径时请写全 `dist/xxx/index.js`。
+
+### Removed
+
+- 移除 `require()` / `module.exports` / `tsconfig` 中的 `commonjs` 配置，以及文档示例里的全部 CommonJS 写法（改为 `import` / `export`）。
+- 移除 `packages/benchmark` 的 ESM 双产物字段 `"module"`，并修正 `types` 指向 `dist/index.d.ts`。
+
 ## [0.4.0] - 2026-09-06
 
 ### Added

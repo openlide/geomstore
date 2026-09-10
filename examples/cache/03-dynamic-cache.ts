@@ -1,41 +1,45 @@
 /**
- * GeomStore 缓存示例 - 动态控制缓存
+ * GeomStore 缓存示例 3：运行时开关缓存
  *
- * 演示如何动态启用、禁用和清除缓存
+ * 覆盖：批量写入/长循环前关闭缓存、结束后重新开启，避免中间态反复失效与重建。
  */
 
-import { createStore } from '../../src'
+import { createStore } from '../../src/index.js'
 
-console.log('=== 动态缓存控制 ===\n')
+// 先定义状态类型：空数组不必写 `as Array<…>` 断言
+interface Row {
+  id: number
+  score: number
+}
 
-// 创建主题 Store，默认不启用缓存
-const themeStore = createStore({
-  name: 'theme-store',
-  state: () => ({
-    theme: 'light',
-    primaryColor: '#007AFF',
-    fontSize: 16,
+interface ListState {
+  rows: Row[]
+  cursor: number
+}
+
+const listStore = createStore({
+  name: 'cache-dynamic',
+  cacheConfig: { enableStats: true },
+  state: (): ListState => ({
+    rows: [],
+    cursor: 0,
   }),
 })
 
-console.log('Initial cache enabled:', themeStore.getCacheStats().enabled)
+// 场景：一次性灌入大量数据 —— 期间每次都失效缓存没有意义
+listStore.disableCache()
+for (let i = 0; i < 1000; i++) {
+  listStore.setState('cursor', i)
+}
+listStore.enableCache(['rows']) // 热点键重新开启
 
-// 动态启用缓存
-themeStore.enableCache(['theme', 'primaryColor'])
-console.log('After enableCache:', themeStore.getCacheStats().enabled)
-console.log('Cache size:', themeStore.getCacheStats().size)
+listStore.setState('rows', [
+  { id: 1, score: 90 },
+  { id: 2, score: 85 },
+])
 
-// 获取值（缓存）
-themeStore.getCached('theme')
-themeStore.getCached('primaryColor')
-console.log('Cache hits:', themeStore.getCacheStats().hits)
+console.log('行数:', listStore.getState().rows.length)
+console.log('游标:', listStore.getState().cursor)
+console.log('缓存统计:', listStore.getCacheStats())
 
-// 清除特定缓存
-themeStore.invalidateCache('theme')
-console.log('After invalidate theme, cache size:', themeStore.getCacheStats().size)
-
-// 禁用缓存
-themeStore.disableCache()
-console.log('After disableCache:', themeStore.getCacheStats().enabled)
-
-console.log('\n✅ Dynamic cache example completed')
+console.log('\n✅ 缓存示例 3 完成')

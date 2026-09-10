@@ -1,57 +1,72 @@
 /**
- * GeomStore Actions 示例
+ * GeomStore 基础示例 2：Action
  *
- * 演示如何定义和使用 Actions
+ * 覆盖：同步/异步 action、action 上下文（this.state / this.setState / this.$patch）、
+ * dispatch 的返回值与失败传播。
  */
 
-import { createStore } from '../../src'
+import { createStore } from '../../src/index.js'
 
-// 创建带有 Actions 的 Store
+interface Todo {
+  id: number
+  text: string
+  done: boolean
+}
+
+// 先定义状态类型：空数组 / 空串不再需要 `as` 断言，action 的 this 形状也由它推导
+interface TodoState {
+  items: Todo[]
+  loading: boolean
+  error: string
+}
+
 const todoStore = createStore({
   name: 'todos',
-  state: () => ({
-    items: [] as Array<{ id: number; text: string; done: boolean }>,
-    filter: 'all' as 'all' | 'active' | 'completed',
+  state: (): TodoState => ({
+    items: [],
+    loading: false,
+    error: '',
   }),
   actions: {
-    addTodo(text: string) {
-      const newItem = {
-        id: this.state.items.length + 1,
-        text,
-        done: false,
+    // 同步 action：this 为 action 上下文（类型由 state 自动推导，无需手写）
+    add(text: string): Todo {
+      const todo: Todo = { id: Date.now(), text, done: false }
+      this.$patch({ items: [...this.state.items, todo] })
+      return todo
+    },
+
+    toggle(id: number): void {
+      this.$patch({
+        items: this.state.items.map((item) => (item.id === id ? { ...item, done: !item.done } : item)),
+      })
+    },
+
+    // 异步 action：返回值是 Promise，dispatch 会原样透传
+    async load(): Promise<number> {
+      this.$patch({ loading: true })
+      try {
+        const items = await Promise.resolve([{ id: 1, text: '示例待办', done: false }])
+        this.$patch({ items, loading: false })
+        return items.length
+      } catch (error) {
+        this.$patch({ loading: false, error: String(error) })
+        throw error
       }
-      this.setState('items', [...this.state.items, newItem])
-    },
-    toggleTodo(id: number) {
-      const items = this.state.items.map((item) => (item.id === id ? { ...item, done: !item.done } : item))
-      this.setState('items', items)
-    },
-    setFilter(filter: 'all' | 'active' | 'completed') {
-      this.setState('filter', filter)
-    },
-    clearCompleted() {
-      const activeItems = this.state.items.filter((item) => !item.done)
-      this.setState('items', activeItems)
     },
   },
 })
 
-// 使用 Actions
-console.log('Initial todos:', todoStore.getState().items)
+// dispatch 透传 action 的返回值（同步 action 返回其返回值）
+const created = todoStore.dispatch('add', '写文档')
+console.log('新增:', created)
 
-todoStore.dispatch('addTodo', 'Learn GeomStore')
-todoStore.dispatch('addTodo', 'Build an app')
-todoStore.dispatch('addTodo', 'Deploy to production')
+todoStore.dispatch('toggle', created.id)
+console.log('切换完成状态:', todoStore.getState().items[0].done)
 
-console.log('After adding todos:', todoStore.getState().items)
+// 异步 action：dispatch 返回 Promise
+todoStore
+  .dispatch('load')
+  .then((count) => console.log('异步加载条数:', count))
+  .catch((error) => console.error('加载失败:', error))
 
-todoStore.dispatch('toggleTodo', 1)
-console.log('After toggling todo 1:', todoStore.getState().items)
-
-todoStore.dispatch('setFilter', 'active')
-console.log('Current filter:', todoStore.getState().filter)
-
-todoStore.dispatch('clearCompleted')
-console.log('After clearing completed:', todoStore.getState().items)
-
-console.log('\n✅ Actions example completed')
+console.log('\n✅ 基础示例 2 完成')

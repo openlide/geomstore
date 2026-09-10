@@ -1,214 +1,87 @@
-# 贡献指南（Contributing Guide）
+# 参与贡献
 
-感谢你对 GeomStore 的关注！本文档介绍如何搭建开发环境、提交代码与发布版本。
+感谢参与。本文说明环境、门禁与约定；提交前请确保**与 CI 完全一致**的门禁在本地全绿。
 
----
+## 环境
 
-## 目录
-
-1. [行为准则](#1-行为准则)
-2. [开发环境](#2-开发环境)
-3. [快速开始](#3-快速开始)
-4. [项目结构](#4-项目结构)
-5. [开发工作流](#5-开发工作流)
-6. [代码规范](#6-代码规范)
-7. [测试规范](#7-测试规范)
-8. [提交信息规范](#8-提交信息规范)
-9. [发布流程](#9-发布流程)
-
----
-
-## 1. 行为准则
-
-- 尊重他人，保持友好、专业的交流。
-- 提交前请确保代码通过全部质量门禁（见 [§5](#5-开发工作流)）。
-- 新增功能请同步补充文档与测试。
-
----
-
-## 2. 开发环境
-
-| 工具       | 版本要求                                |
-| ---------- | --------------------------------------- |
-| Node.js    | >= 22.0.0（CI 矩阵 22 / 24）            |
-| pnpm       | 11.21.0（项目 `packageManager` 已锁定） |
-| TypeScript | ^6.0.3                                  |
-
-> 建议启用 pnpm 的 `corepack`：`corepack enable`，确保使用锁定的 pnpm 版本。
-
----
-
-## 3. 快速开始
+- **Node.js ≥ 22**（CI 在 22 / 24 上双跑），包管理器用 **pnpm**
+- 仓库为纯 ESM：源码、测试、脚本一律 `import` / `export`（ESLint 的 `@typescript-eslint/no-require-imports` 已设为 `error`）
 
 ```bash
-# 安装依赖
 pnpm install
-
-# 全量测试（含覆盖率）
-pnpm test:coverage
-
-# 类型检查（源码 / 测试 / 示例）
-pnpm typecheck
-pnpm typecheck:tests
-pnpm typecheck:examples
-
-# 代码规范检查
-pnpm lint
-
-# 构建（CJS 产物）
-pnpm build
+pnpm test          # 全量测试
 ```
 
----
-
-## 4. 项目结构
+## 目录结构
 
 ```
 src/
-├── core/                    # 核心模块
-│   ├── store/              # Store 核心（Store/StateProxy/ActionManager/BatchManager/StoreCache/SubscriptionManager）
-│   ├── action/             # Action 系统 + 装饰器（debounce/throttle/cache/retry/timeout/log）
-│   ├── cache/              # LRU 缓存
-│   ├── snapshot/           # 快照管理
-│   ├── selector/           # 选择器
-│   ├── error/              # 错误处理（边界/监控/恢复）
-│   ├── performance/        # 性能工具（指纹/批量通知/监控）
-│   ├── compose/            # Store 组合
-│   ├── hooks/              # 生命周期钩子
-│   └── utils/              # 工具函数 + 类型校验
-├── plugins/                # 插件系统
-├── integrations/           # 小程序集成（with-store/with-app-store/enterprise）
-├── types/                  # 类型定义
-└── index.ts                # 主入口
-
-tests/                      # 单元 + 集成 + 回归测试
-examples/                   # 示例代码（basic/advanced/cache/weapp）
-docs/                       # 文档
+  core/            核心：store / cache(LRUCache) / hooks / compose / performance / utils
+  extras/          可选能力：snapshot / selector / action / error / performance / plugins / enterprise
+  integrations/    微信小程序集成（withPageStore / withComponentStore / withAppStore）
+  plugins/         插件实现（builtin / devtools / performance）
+  types/           公共类型契约
+tests/             unit / integration（按领域分目录）
+examples/          可运行示例（分类目录 + 索引）
+docs/              文档
+scripts/           clean-dist / postbuild-dist / minify-dist / generate-subpath-stubs（均为 .mjs）
+packages/benchmark 性能基准
 ```
 
----
+**分层原则**：`extras/*` 的实现不得被核心反向依赖；核心只保留运行必需 API。若某能力只有部分用户需要，它就应该出现在 `extras`。
 
-## 5. 开发工作流
-
-提交 PR 前，请确保以下门禁**全部通过**（与 CI 一致，见 `.github/workflows/ci.yml`）：
+## 门禁（与 CI 一致，必须全绿）
 
 ```bash
-pnpm lint:ci              # ESLint（CI 门禁：--max-warnings 70 警告预算）
-pnpm typecheck            # tsc --noEmit（src，strict）
-pnpm typecheck:examples   # 示例类型检查（CI 门禁）
-pnpm test:ci              # Jest --ci --coverage（覆盖率阈值门禁）
-pnpm build                # 构建 + 产物冒烟
+pnpm lint:ci          # ESLint（带 --max-warnings 上限）
+pnpm typecheck        # 源码
+pnpm typecheck:examples
+pnpm test:ci          # jest --ci --coverage
+pnpm build            # clean-dist → tsc → postbuild（写 module-type 标记、移除 sourcemap）
 ```
 
-> 本地开发建议额外跑 `pnpm lint`（0 警告标准，严于 CI）与 `pnpm typecheck:tests`（源码 + 测试）。
+CI 在 `build` 之后还会跑一段 **ESM + 子路径冒烟**（`import dist/index.js`、`dist/extras/error/index.js`、`dist/extras/plugins.js`），改动构建或 exports 时请本地复现：
 
-### 脚本速查
-
-| 命令                      | 说明                |
-| ------------------------- | ------------------- |
-| `pnpm test`               | 全量测试            |
-| `pnpm test:unit`          | 仅单元测试          |
-| `pnpm test:integration`   | 仅集成测试          |
-| `pnpm test:coverage`      | 测试 + 覆盖率       |
-| `pnpm lint`               | ESLint 检查         |
-| `pnpm lint:fix`           | ESLint 自动修复     |
-| `pnpm format`             | Prettier 格式化     |
-| `pnpm typecheck`          | 源码类型检查        |
-| `pnpm typecheck:tests`    | 源码 + 测试类型检查 |
-| `pnpm typecheck:examples` | 示例类型检查        |
-| `pnpm build`              | 构建 CJS 产物       |
-
----
-
-## 6. 代码规范
-
-### 6.1 TypeScript
-
-- **严格模式**：`tsconfig.json` 启用 `strict`、`noUnusedLocals`、`noUnusedParameters`、`noImplicitReturns`、`noFallthroughCasesInSwitch`。
-- **禁止 `any`**：`@typescript-eslint/no-explicit-any` 为 warn 门禁；确需兜底时须加 `// eslint-disable-next-line` 并说明原因。
-- **类型收敛**：对外 API 优先用泛型推导而非 `any`。集成层的映射类型已收敛为精确签名（见 `src/types/integration.ts`），新增映射类型请遵循同样标准。
-
-### 6.2 命名约定
-
-| 对象            | 约定                                                    |
-| --------------- | ------------------------------------------------------- |
-| Store 名称      | `lowerCamelCase`（如 `userStore`）                      |
-| action / getter | `lowerCamelCase`（如 `fetchUser`、`displayName`）       |
-| 类型 / 接口     | `UpperCamelCase`（如 `StoreOptions`、`ConnectOptions`） |
-| 未使用变量      | 前缀 `_`（ESLint `varsIgnorePattern: '^_'`）            |
-
-### 6.3 安全红线
-
-- 禁止引入运行时依赖（保持「零运行时依赖」承诺）。
-- 禁止 `eval` / `new Function` 等动态代码执行。
-- 深合并/路径写入须防护原型污染（`__proto__` / `constructor` / `prototype`）。
-- 错误上报须脱敏，不得泄露 token 等敏感信息。
-
----
-
-## 7. 测试规范
-
-### 7.1 覆盖率阈值
-
-| 范围                 | branches | functions | lines | statements |
-| -------------------- | -------- | --------- | ----- | ---------- |
-| 全局                 | 95%      | 98%       | 98%   | 98%        |
-| `src/core/**` 单文件 | 85%      | 98%       | 98%   | 98%        |
-
-### 7.2 测试命名
-
-回归测试按「系列编号」组织，便于追踪：
-
-- `HELPERS-*`：工具函数
-- `PERF-*`：性能工具
-- `SNAP-*`：快照系统
-- `STORE-*`：Store 核心
-- `PROTECT-*`：安全防护类用例（原型污染 / 路径写入 / 变异拦截）
-- `REGR-*`：针对已修复缺陷的回归用例
-
-新增 bug 修复时，请补充对应 `REGR-*` 用例；新增功能时补充覆盖主路径与边界分支的用例（补覆盖变体使用 `*-COV` 后缀，如 `STORE-COV`、`HELPERS-COV`）。
-
-### 7.3 类型级测试
-
-纯类型断言（如集成层精确映射类型）放在 `tests/types/*.typecheck.ts`：
-
-- 文件名**不以** `.test` / `.spec` 结尾，避免被 jest 收集执行。
-- 通过 `@ts-expect-error` 锁定「应报错」的类型行为，由 `pnpm typecheck:tests` 校验。
-- 示例：`tests/types/integration-types.typecheck.ts`。
-
----
-
-## 8. 提交信息规范
-
-遵循 [Conventional Commits](https://www.conventionalcommits.org/zh-hans/)：
-
-```
-<type>(<scope>): <subject>
-
-type: feat | fix | docs | style | refactor | perf | test | build | ci | chore
-scope: 可选，如 store、action、integration、docs
+```bash
+node --input-type=module -e 'const s = await import("./dist/index.js"); console.log(typeof s.createStore)'
 ```
 
-示例：
+## 测试约定
 
-```
-fix(store): 修复 dispatch 后缓存与状态不一致
-feat(integration): 集成层映射类型收敛为精确签名
-docs: 重写生产可行性评审报告
-```
+- **按领域放置**：新测试放到对应模块的目录（`tests/unit/extras/snapshot/…`），不要新建按时间/批次命名的文件
+- **覆盖率即契约**：语句 / 分支 / 函数 / 行保持 **100%**；确实不可达的防御分支请加 `/* istanbul ignore … */`，并**必须在注释里写明为什么不可达**（不接受无理由标注）
+- **不要靠私有状态通吃**：优先使用公开 API 或测试缝；确需触碰内部（如构造越界状态）时，用 `as unknown as { … }` 并写明成因
+- **全局对象要真还原**：备份为 `undefined` 时用 `Reflect.deleteProperty`，否则会留下 `{ wx: undefined }` 这类残键，影响 `'wx' in globalThis` 判断
+- **定时器**：打桩 `setTimeout`/`setInterval` 时若底层仍创建真实定时器，必须留存真实句柄以便清理，否则 jest worker 无法优雅退出
+- 避免恒真断言（`toBeDefined()`、`isFinite(...)`）：要么断言具体字段，要么在用例名中声明「仅冒烟」
 
----
+## 代码约定
 
-## 9. 发布流程
+- TypeScript `strict`；**避免 `any`**（测试里也不滥用），类型收窄优先于断言
+- 注释解释**为什么**，而不是复述代码在做什么；对不直观的兜底、上限、复杂度处理尤其要写清楚
+- 生产代码里避免为了覆盖率而改写表达式结构；确需改写时保持**语义等价**并在提交说明中标注
+- 公共 API 的类型一旦发布即视为契约：放宽（如泛型变宽、参数变可选）是非破坏性改动，收紧或重命名需要在 CHANGELOG 标注 **Breaking**
+- 行为变更（错误语义、通知时机、默认值）必须在 CHANGELOG 中说明影响面与迁移方式
 
-1. 确认 `CHANGELOG.md` 已记录本次变更。
-2. 确认全部质量门禁通过（见 [§5](#5-开发工作流)）。
-3. 更新 `package.json` 版本号。
-4. 运行 `pnpm build`，确认 `dist/` 产物完整（子路径转发 stub 由 `prepack` 在发布打包时自动生成，本地构建不产出）。
-5. 打 tag 并发布：`git tag vX.Y.Z && git push --tags`。
+## 构建与发布
 
----
+- 子路径转发目录（`store/`、`hooks/`、`plugins/`、`integrations/` 等）由 `prepack` 生成、`postpack` 清理；手动入口为 `pnpm stubs` / `pnpm stubs:clean`
+- 发布走 `prepublishOnly`：`pnpm test && pnpm run build:release`。`build:release` 使用**严格压缩**——无可用压缩器时以退出码 1 中止，杜绝静默发出未压缩包
+- 改动 `package.json` 的 `exports` / `files` 后，请用 `pnpm stubs` + `pnpm build` 验证一次真实解析
 
-## 相关文档
+## 文档
 
-- [迁移指南](./docs/MIGRATION.md)
+- 文档以**源码为唯一依据**；示例代码请与 `examples/` 保持同源，使其可通过 `pnpm typecheck:examples` 校验
+- 易错点（写文档时特别容易写错，均有测试兜底）：
+  - `store.subscribe(listener, options?)` 的监听器是 **`(state: S) => void`**，没有 `prevState`
+  - `createSelector(单个选择器函数, 选项?)`，没有「输入函数 + 结果函数」的双函数重载
+  - `withThrottle(interval, options)` 的间隔是**第一个位置参数**
+  - 装饰器选项为 `withRetry({ retries, delay, shouldRetry })`
+  - 持久化后端必须是**同步**实现
+- 新增/变更 API 时同步更新：[docs/API.md](./docs/API.md)、相关指南，以及（若涉及行为变更）[CHANGELOG.md](./CHANGELOG.md) 与 [docs/MIGRATION.md](./docs/MIGRATION.md)
+
+## 提交与 PR
+
+- 提交信息说明「改了什么 + 为什么」，行为变更请附前后对比
+- PR 描述中列出本地已跑的门禁命令与结果
+- 涉及 Breaking 的改动请单独成 PR，或在描述中显著标注

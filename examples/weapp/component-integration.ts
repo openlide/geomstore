@@ -1,79 +1,64 @@
 /**
- * GeomStore 微信小程序集成示例 - Component 集成
+ * GeomStore 微信小程序集成示例：Component
  *
- * 演示如何在微信小程序 Component 中使用 GeomStore
+ * 覆盖：withComponentStore 把 Store 状态/action 注入自定义组件，
+ * 组件销毁时自动退订，避免 detached 后仍触发 setData。
  */
 
-import { createStore } from '../../src'
-import { withComponentStore } from '../../src/integrations'
+import { createStore } from '../../src/index.js'
+import { withComponentStore } from '../../src/integrations/index.js'
 
-// 创建购物车 Store
-const cartStore = createStore({
-  name: 'cart-store',
-  state: () => ({
-    items: [] as Array<{ id: number; name: string; price: number; quantity: number }>,
-    totalCount: 0,
+// 先定义状态类型：state / getter / action 共用一份
+interface CounterState {
+  count: number
+}
+
+const counterStore = createStore({
+  name: 'counter',
+  state: (): CounterState => ({
+    count: 0,
   }),
-  actions: {
-    addItem(item: { id: number; name: string; price: number }) {
-      const existingItem = this.state.items.find((i) => i.id === item.id)
-      if (existingItem) {
-        const items = this.state.items.map((i) => (i.id === item.id ? { ...i, quantity: i.quantity + 1 } : i))
-        this.setState('items', items)
-      } else {
-        this.setState('items', [...this.state.items, { ...item, quantity: 1 }])
-      }
-      this.setState('totalCount', this.state.totalCount + 1)
-    },
-    removeItem(id: number) {
-      const item = this.state.items.find((i) => i.id === id)
-      if (item) {
-        const items = this.state.items.filter((i) => i.id !== id)
-        this.setState('items', items)
-        this.setState('totalCount', this.state.totalCount - item.quantity)
-      }
-    },
-  },
   getters: {
-    totalPrice: (state) => state.items.reduce((sum, item) => sum + item.price * item.quantity, 0),
+    doubled: (state: CounterState) => state.count * 2,
+  },
+  actions: {
+    // action 的 this 由 Store 自动注入，无需手写标注
+    increment(): void {
+      this.$patch({ count: 0 })
+    },
+    add(step: number): void {
+      this.$patch({ count: this.state.count + step })
+    },
   },
 })
 
-// ==================== Component 集成示例 ====================
-
-// 购物车商品列表组件
+// 自定义组件：状态与 action 一并注入
 Component(
-  withComponentStore(cartStore, {
-    mapState: ['items', 'totalCount'],
-    mapGetters: ['totalPrice'],
-    mapActions: ['addItem', 'removeItem'],
+  withComponentStore(counterStore, {
+    mapState: ['count'],
+    mapGetters: ['doubled'],
+    mapActions: ['add'],
   })({
     data: {
-      componentName: 'cart-list',
+      label: '计数器',
     },
     methods: {
-      onAddItem(this: any, e: { currentTarget: { dataset: { item: { id: number; name: string; price: number } } } }) {
-        const item = e.currentTarget.dataset.item
-        this.addItem(item)
-      },
-      onRemoveItem(this: any, e: { currentTarget: { dataset: { id: number } } }) {
-        const id = e.currentTarget.dataset.id
-        this.removeItem(id)
+      // this 由集成层注入（含 mapActions 的 add 与 this.data），无需手写标注
+      onTapPlus() {
+        this.add(1)
       },
     },
     lifetimes: {
-      attached(this: any) {
-        console.log('Cart component attached')
-        console.log('Cart items:', this.data.items)
-        console.log('Total count:', this.data.totalCount)
-        console.log('Total price:', this.data.totalPrice)
+      attached() {
+        // 组件生命周期内的 this 同样是注入后的实例类型，可直接访问 this.data
+        console.log('组件挂载，当前计数:', this.data.count)
       },
       detached() {
-        console.log('Cart component detached, subscriptions cleaned up automatically')
+        // 集成层在 detached 时自动退订
+        console.log('组件销毁，订阅已自动清理')
       },
     },
   }),
 )
 
-console.log('✅ Component integration examples defined')
-console.log('Note: These examples are for demonstration. Run in WeChat Mini Program environment.')
+console.log('✅ Component 集成示例已定义（需在微信小程序环境中运行）')

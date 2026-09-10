@@ -1,73 +1,95 @@
 /**
- * GeomStore 高级示例 - 插件使用
+ * 高级示例：插件（内置 + 自定义）
  *
- * 演示如何使用和创建插件
+ * 覆盖：loggerPlugin / devtoolsPlugin 直接安装、persistencePlugin 的同步后端与 filter、
+ * builtinPlugins 批量安装，以及自定义插件的 install/清理契约。
+ *
+ * 发布包等价导入：`@openlide/geomstore/extras/plugins`
  */
 
-import { createStore, usePlugin, loggerPlugin, persistencePlugin } from '../../src'
+import { createStore } from '../../src/index.js'
+import { builtinPlugins, loggerPlugin, persistencePlugin } from '../../src/extras/plugins.js'
 
-// ==================== 使用内置插件 ====================
+// 先定义状态类型：filter 等回调直接引用它
+interface DemoState {
+  count: number
+  message: string
+}
 
-console.log('=== 插件示例 ===\n')
-
-// 创建带有插件的 Store
 const store = createStore({
-  name: 'plugin-demo-store',
-  state: () => ({
+  name: 'plugin-demo',
+  state: (): DemoState => ({
     count: 0,
     message: '',
   }),
   actions: {
-    increment() {
-      this.setState('count', this.state.count + 1)
+    // action 的 this 由 Store 自动注入，无需手写标注
+    increment(): void {
+      this.$patch({ count: this.state.count + 1 })
     },
-    setMessage(msg: string) {
-      this.setState('message', msg)
+    setMessage(message: string): void {
+      this.$patch({ message })
     },
   },
 })
 
-// 使用日志插件（loggerPlugin 为内置 Plugin 实例，直接安装）
+// ==================== 内置插件 ====================
+
+// 日志插件：打印每次 action 的名称、参数与耗时
 store.use(loggerPlugin)
 
-// 使用持久化插件（filter 指定需要持久化的状态键）
-// filter 的 state 显式标注为 store 状态子集，避免使用默认的 object 类型
+/**
+ * 持久化后端：**必须同步**（异步实现会被显式拒绝，避免写入静默丢失）。
+ *
+ * - 小程序：`WxStorageBackend`（或自行封装 `wx.getStorageSync`/`wx.setStorageSync`）
+ * - 浏览器：可直接传 `localStorage`
+ */
+const memoryBackend = {
+  getItem: (_key: string): string | null => null,
+  setItem: (_key: string, _value: string): void => {},
+  removeItem: (_key: string): void => {},
+}
+
+// 持久化插件：filter 指定落盘的状态子集，debounce 控制写入频率
 store.use(
-  persistencePlugin({
+  persistencePlugin<DemoState>({
     key: 'demo-store',
-    storage: localStorage,
-    filter: (state: { count: number }) => ({ count: state.count }),
+    storage: memoryBackend,
+    filter: (state) => ({ count: state.count }),
+    debounce: 300,
   }),
 )
 
-// 触发 Action
-store.setState('count', 10)
 store.dispatch('increment')
 store.dispatch('setMessage', 'Hello from plugin!')
+console.log('状态:', store.getState())
 
-// ==================== 创建自定义插件 ====================
+// 批量安装：logger → persistence → devtools 顺序注册
+const another = createStore({ name: 'plugin-batch', state: () => ({ n: 0 }) })
+builtinPlugins.forEach((plugin) => another.use(plugin))
 
-// 简单的日志插件：install 返回卸载函数（cleanup），符合 Plugin 契约
-// 自定义插件：install 接收 store，返回卸载函数（符合 Plugin 契约）
+// ==================== 自定义插件 ====================
+
+// 插件契约：name + install(store) → 返回卸载函数
+// 泛型化后可标注精确的状态类型（`Plugin<DemoState>`），install 的 store 参数随之精确
 const myLoggerPlugin = {
   name: 'my-logger',
-  install(store: any) {
-    console.log('\n[MyLogger] Plugin installed')
-
-    // 监听状态变化
-    store.subscribe((state: any) => {
-      console.log('[MyLogger] State changed:', state)
-    })
-
-    // 返回清理函数（卸载时调用）
+  install(target: { subscribe: (fn: (state: DemoState) => void) => () => void }) {
+    console.log('\n[MyLogger] 插件已安装')
+    const unsubscribe = target.subscribe((state) => console.log('[MyLogger] 状态变化:', state))
     return () => {
-      console.log('[MyLogger] Plugin uninstalled')
+      unsubscribe()
+      console.log('[MyLogger] 插件已卸载')
     }
   },
 }
 
-// 使用自定义插件（usePlugin 需要同时传入目标 store）
-// usePlugin 默认将 store 推成 Store<object>，此处显式断言以兼容具体 store 类型
-usePlugin(myLoggerPlugin, store as any)
+// 安装方式一：Store 方法（推荐，返回值即卸载函数）
+const uninstall = store.use(myLoggerPlugin)
+store.dispatch('increment')
+uninstall() // 手动卸载：触发订阅清理
 
-console.log('\n✅ Plugins example completed')
+// 安装方式二：独立函数 `usePlugin(plugin, store)` 等价；泛型从 store 反推，无需断言
+// （插件需与 store 的状态类型匹配；状态无关的插件写作 `Plugin<State>`）
+
+console.log('\n✅ 插件示例完成')

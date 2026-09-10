@@ -1,47 +1,55 @@
 /**
- * GeomStore Getters 示例
+ * GeomStore 基础示例 3：Getter（派生状态）
  *
- * 演示如何使用计算属性 (Getters)
+ * 覆盖：getter 定义、经 store.getter(name) 读取、依赖未变时复用缓存。
  */
 
-import { createStore } from '../../src'
+import { createStore } from '../../src/index.js'
 
-// getter 只接收 state 一个参数；需要复用计算逻辑时可提取辅助函数
-const calcSubtotal = (items: Array<{ price: number; quantity: number }>) => items.reduce((sum, item) => sum + item.price * item.quantity, 0)
+// 先定义状态类型：getter 直接引用命名类型，不必重复书写同一份字面量
+interface CartItem {
+  name: string
+  price: number
+  count: number
+}
 
-// 创建带有 Getters 的 Store
+interface CartState {
+  items: CartItem[]
+  coupon: number
+}
+
 const cartStore = createStore({
-  name: 'shopping-cart',
-  state: () => ({
+  name: 'cart',
+  state: (): CartState => ({
     items: [
-      { id: 1, name: 'Apple', price: 1.5, quantity: 3 },
-      { id: 2, name: 'Banana', price: 0.8, quantity: 5 },
-      { id: 3, name: 'Orange', price: 2.0, quantity: 2 },
-    ] as Array<{ id: number; name: string; price: number; quantity: number }>,
-    taxRate: 0.08,
+      { name: '键盘', price: 399, count: 1 },
+      { name: '鼠标', price: 199, count: 2 },
+    ],
+    coupon: 50,
   }),
   getters: {
-    itemCount: (state) => state.items.reduce((sum, item) => sum + item.quantity, 0),
-    subtotal: (state) => calcSubtotal(state.items),
-    tax: (state) => calcSubtotal(state.items) * state.taxRate,
-    total: (state) => calcSubtotal(state.items) * (1 + state.taxRate),
-    isEmpty: (state) => state.items.length === 0,
+    // 只读派生值：建议保持纯函数，便于缓存命中与调试
+    subtotal: (state: CartState) => state.items.reduce((sum, item) => sum + item.price * item.count, 0),
+    // getter 只接收 state（需要组合时在函数内自行计算，保持纯函数便于缓存）
+    total(state: CartState) {
+      const subtotal = state.items.reduce((sum, item) => sum + item.price * item.count, 0)
+      return Math.max(0, subtotal - state.coupon)
+    },
+  },
+  actions: {
+    // action 的 this 由 Store 自动注入，无需手写标注
+    addCoupon(amount: number): void {
+      this.$patch({ coupon: amount })
+    },
   },
 })
 
-// 使用 Getters
-console.log('Shopping Cart:')
-console.log('  Item count:', cartStore.getter('itemCount'))
-console.log('  Subtotal: $', cartStore.getter('subtotal').toFixed(2))
-console.log('  Tax: $', cartStore.getter('tax').toFixed(2))
-console.log('  Total: $', cartStore.getter('total').toFixed(2))
-console.log('  Is empty?', cartStore.getter('isEmpty'))
+// 读取 getter（泛型签名会推导出返回类型）
+console.log('小计:', cartStore.getter('subtotal'))
+console.log('应付:', cartStore.getter('total'))
 
-// 添加商品后重新计算
-cartStore.setState('items', [...cartStore.getState().items, { id: 4, name: 'Grapes', price: 3.5, quantity: 1 }])
+// 修改依赖后重新计算
+cartStore.dispatch('addCoupon', 100)
+console.log('改券后应付:', cartStore.getter('total'))
 
-console.log('\nAfter adding grapes:')
-console.log('  Item count:', cartStore.getter('itemCount'))
-console.log('  Total: $', cartStore.getter('total').toFixed(2))
-
-console.log('\n✅ Getters example completed')
+console.log('\n✅ 基础示例 3 完成')

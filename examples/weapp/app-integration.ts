@@ -1,85 +1,59 @@
 /**
- * GeomStore 微信小程序集成示例 - App 集成
+ * GeomStore 微信小程序集成示例：App
  *
- * 演示如何在微信小程序 App 中使用 GeomStore
+ * 覆盖：withAppStore 包装 App 配置——启动时初始化状态、全局数据挂载、
+ * 前后台生命周期与错误回调。
+ *
+ * 更完整的账号隔离/离线队列/热更新场景见 `@openlide/geomstore/extras/enterprise`。
  */
 
-import { createStore } from '../../src'
-import { withAppStore } from '../../src/integrations'
+import { createStore } from '../../src/index.js'
+import { withAppStore } from '../../src/integrations/index.js'
 
-// 创建应用级 Store
+// 先定义状态类型：空串等初始值不再需要 `as` 断言
+interface AppState {
+  launchedAt: number
+  scene: string
+  cartCount: number
+}
+
 const appStore = createStore({
-  name: 'app-store',
-  state: () => ({
-    userInfo: null as { id: number; name: string; role: string } | null,
-    appConfig: {
-      theme: 'light',
-      language: 'zh-CN',
-      version: '1.0.0',
-    },
-    isReady: false,
+  name: 'app',
+  state: (): AppState => ({
+    launchedAt: 0,
+    scene: '',
+    cartCount: 0,
   }),
   actions: {
-    async initApp() {
-      // 模拟异步初始化
-      await new Promise((resolve) => setTimeout(resolve, 100))
-
-      this.setState('userInfo', { id: 1, name: 'Admin', role: 'admin' })
-      this.setState('isReady', true)
-
-      console.log('App initialized')
-    },
-    setTheme(theme: string) {
-      const config = { ...this.state.appConfig, theme }
-      this.setState('appConfig', config)
-    },
-    updateUserInfo(userInfo: { name?: string; role?: string }) {
-      const current = this.state.userInfo
-      if (current) {
-        this.setState('userInfo', { ...current, ...userInfo })
-      }
+    // action 的 this 由 Store 自动注入，无需手写标注
+    markLaunched(scene: string): void {
+      this.$patch({ launchedAt: Date.now(), scene })
     },
   },
 })
 
-// ==================== App 集成示例 ====================
-
 App(
-  withAppStore(appStore, {
-    mapState: ['userInfo', 'appConfig', 'isReady'],
-    mapActions: ['initApp', 'setTheme', 'updateUserInfo'],
-  })({
+  withAppStore(appStore)({
     globalData: {
-      appName: 'My Mini Program',
+      appName: 'GeomStore Demo',
     },
-    onLaunch(this: any) {
-      console.log('App launched')
-
-      // 初始化应用（mapActions 注入的方法在真机运行时可用）
-      this.initApp().then(() => {
-        console.log('User info:', this.globalData.userInfo)
-        console.log('App config:', this.globalData.appConfig)
-      })
+    // this 由集成层注入（含 globalData 的映射状态与 mapActions 的 markLaunched），无需手写标注
+    onLaunch(options?: { scene?: string }) {
+      // 启动时把启动场景写回 Store
+      appStore.dispatch('markLaunched', String(options?.scene ?? ''))
+      console.log('App launched:', this.globalData.appName, appStore.getState().scene)
     },
     onShow() {
-      console.log('App shown')
+      console.log('App 进入前台')
     },
     onHide() {
-      console.log('App hidden')
+      console.log('App 进入后台')
     },
-    onError(error: Error) {
+    onError(error: unknown) {
+      // 全局错误回调：可在此接入错误上报
       console.error('App error:', error)
     },
   }),
 )
 
-// 使用说明：
-// 在其他 Page 或 Component 中可以通过以下方式访问：
-// const app = getApp()
-// app.getStore()                      // 获取 store 实例
-// app.getState()                     // 获取状态
-// app.dispatch('setTheme', 'dark')   // dispatch action
-// app.subscribe(callback)            // 订阅状态变化
-
-console.log('✅ App integration example defined')
-console.log('Note: These examples are for demonstration. Run in WeChat Mini Program environment.')
+console.log('✅ App 集成示例已定义（需在微信小程序环境中运行）')

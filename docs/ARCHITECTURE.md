@@ -1,752 +1,245 @@
-# GeomStore 架构设计文档
+# 架构设计
 
-本文档详细描述 GeomStore 的系统架构、模块设计和实现细节。
+## 1. 设计目标与约束
 
----
+| 目标 | 约束下的做法 |
+| --- | --- |
+| **小程序优先**：主包体积是第一约束 | 核心只保留运行必需 API（约 49 行的 `extras/index.ts` 之外，可选能力全部走 `extras/*` 子路径按需引入） |
+| **视图层开销可控** | 脏追踪（`isStateKeyDirty`）让集成层跳过未变化的 `setData`；通知可合并（`notify.async`） |
+| **行为可观测** | 统一的错误账本（`errors` + `onError` 降级）、性能指标采集、快照隔离 |
+| **类型完备** | 公共契约集中在 `src/types`，实现层引用契约；`PageThis` / `ComponentThis` 等集成类型保证 `this` 精确 |
+| **纯 ESM** | 源码/测试/脚本一律 `import`，构建产物为 ESM 并写入 module-type 标记 |
 
-## 目录
-
-1. [整体架构](#整体架构)
-2. [核心模块](#核心模块)
-3. [数据流设计](#数据流设计)
-4. [插件架构](#插件架构)
-5. [集成层设计](#集成层设计)
-6. [错误处理架构](#错误处理架构)
-7. [性能监控架构](#性能监控架构)
-
----
-
-## 整体架构
-
-### 分层架构
+## 2. 分层与依赖方向
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    Application Layer                         │
-│                    (应用层 - 用户代码)                         │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│  ┌─────────────────────────────────────────────────────┐   │
-│  │              Integration Layer                        │   │
-│  │              (集成层)                                  │   │
-│  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  │   │
-│  │  │withPageStore│  │withComponent│  │withAppStore │  │   │
-│  │  │             │  │   Store     │  │             │  │   │
-│  │  └─────────────┘  └─────────────┘  └─────────────┘  │   │
-│  └─────────────────────────────────────────────────────┘   │
-│                                                             │
-│  ┌─────────────────────────────────────────────────────┐   │
-│  │               Core Layer (核心层 · 始终打包)           │   │
-│  │  Store · Compose · Cache(LRU) · Error · Hooks · Integration  │   │
-│  └─────────────────────────────────────────────────────┘   │
-│                                                             │
-│  ┌─────────────────────────────────────────────────────┐   │
-│  │    Optional Layer (可选能力层 · 经 /extras/* 引入)      │   │
-│  │  Selector · Snapshot · Performance · Action增强 · Plugins · Enterprise │   │
-│  └─────────────────────────────────────────────────────┘   │
-│                                                             │
-│  ┌─────────────────────────────────────────────────────┐   │
-│  │              Foundation Layer (基础层)                │   │
-│  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  │   │
-│  │  │   Types     │  │   Utils     │  │   Hooks     │  │   │
-│  │  └─────────────┘  └─────────────┘  └─────────────┘  │   │
-│  └─────────────────────────────────────────────────────┘   │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
+             ┌────────────────────────────────────────────┐
+ 入口层      │ src/index.ts → core/index.ts                │
+             │ extras/*（snapshot|selector|action|…）       │
+             └───────────────┬────────────────────────────┘
+                             │ 只能向下依赖
+             ┌───────────────▼────────────────────────────┐
+ 能力层      │ core/store   core/cache   core/compose      │
+             │ core/hooks   core/performance  core/utils   │
+             └───────────────┬────────────────────────────┘
+                             │
+             ┌───────────────▼────────────────────────────┐
+ 集成/插件层 │ integrations/*（withPageStore / enterprise） │
+             │ plugins/*（builtin / devtools / performance）│
+             └───────────────┬────────────────────────────┘
+                             │
+             ┌───────────────▼────────────────────────────┐
+ 契约层      │ types/*（store|action|selector|error|…）     │
+             └────────────────────────────────────────────┘
 ```
 
-### 目录结构
+**强制规则**：
+
+- `core` **不得**反向依赖 `extras` / `plugins`（钩子与插件运行时的契约放在 `core/hooks` + `types/plugin.ts`，plugin 实现只依赖契约）
+- `extras` 可以依赖 `core`；`extras/*` 之间尽量不互相依赖
+- 契约统一放 `src/types`，实现层不重复定义公共类型
+
+## 3. 目录结构与职责
 
 ```
 src/
-├── index.ts                 # 瘦核心入口：export * from './core'（仅核心 API）
-├── core/                    # 核心实现（始终随主入口打包）
-│   ├── index.ts             # 仅导出运行必需 API
-│   ├── store/               # Store 类与工厂
-│   │   ├── Store.ts
-│   │   ├── factory.ts
-│   │   ├── ActionManager.ts
-│   │   ├── BatchManager.ts
-│   │   ├── StateProxy.ts
-│   │   ├── StoreCache.ts
-│   │   ├── SubscriptionManager.ts
-│   │   ├── types.ts
-│   │   ├── utils.ts
-│   │   └── index.ts
-│   ├── hooks/               # 插件钩子核心（HookSystem / usePlugin）
-│   │   ├── HookSystem.ts
-│   │   └── index.ts
-│   ├── cache/               # LRU 缓存
-│   │   ├── LRUCache.ts
-│   │   └── index.ts
-│   ├── utils/               # 工具函数
-│   │   ├── helpers.ts
-│   │   └── index.ts
-│   ├── compose/             # Store 组合
-│   │   ├── composeStore.ts
-│   │   ├── StoreRegistry.ts
-│   │   └── index.ts
-│   ├── selector/            # 选择器实现（源码在 core，经 extras/selector 引入）
-│   │   ├── createSelector.ts
-│   │   ├── selectorComposer.ts
-│   │   └── index.ts
-│   ├── snapshot/            # 快照实现（经 extras/snapshot 引入）
-│   │   ├── SnapshotManager.ts
-│   │   └── index.ts
-│   ├── performance/         # 性能监控实现（经 extras/performance 引入）
-│   │   ├── PerformanceMonitor.ts
-│   │   ├── Optimizations.ts
-│   │   ├── metrics.ts
-│   │   └── index.ts
-│   └── action/              # Action 增强实现（经 extras/action 引入）
-│       ├── ActionLoader.ts
-│       ├── ActionUtils.ts
-│       ├── AsyncActionSupport.ts
-│       ├── decorators/
-│       └── index.ts
-├── plugins/                 # 插件实现（经 extras/plugins 引入）
-│   ├── builtin.ts           # loggerPlugin / persistencePlugin / devtoolsPlugin
-│   ├── devtools/
-│   │   ├── timeTravelPlugin.ts
-│   │   └── index.ts
-│   └── performance/
-│       ├── analyzerPlugin.ts
-│       └── index.ts
-├── integrations/            # 集成层
-│   ├── with-store.ts        # withPageStore / withComponentStore（核心）
-│   ├── with-app-store.ts    # withAppStore（核心）
-│   ├── utils.ts
-│   └── enterprise/          # 企业微信集成（经 extras/enterprise 引入）
-│       ├── wechat-enterprise.ts
-│       └── index.ts
-├── extras/                  # 可选能力聚合与子入口
-│   ├── index.ts             # 一次性引入全部可选能力
-│   ├── error.ts             # → ../extras/error（v0.4.0 起从核心下沉）
-│   ├── snapshot.ts          # → ../core/snapshot
-│   ├── selector.ts          # → ../core/selector
-│   ├── performance.ts       # → ../core/performance
-│   ├── action.ts            # → ../core/action
-│   ├── plugins.ts           # → ../plugins
-│   └── enterprise.ts        # → ../integrations/enterprise
-└── types/                   # 类型定义
-    ├── store.ts
-    ├── action.ts
-    ├── compose.ts
-    ├── error.ts
-    ├── integration.ts
-    ├── performance.ts
-    ├── persistence.ts
-    ├── selector.ts
-    ├── plugin.ts
-    ├── global.ts
-    └── index.ts
+  index.ts                      11 行：re-export core（主入口 = 核心）
+  core/
+    index.ts                    核心 API 汇总（Store/工厂/工具/钩子/集成/组合/LRU）
+    store/       13 文件        Store 门面与运行时职责拆分
+    cache/        3 文件        LRUCache（容量淘汰 + TTL + 统计）
+    compose/      5 文件        composeStore / StoreRegistry / 合并与辅助
+    hooks/        2 文件        HookSystem 与 usePlugin
+    performance/  4 文件        PerformanceMonitor / AsyncBatchNotifier / metrics
+    utils/        3 文件        helpers（深合并/相等/克隆/ID）与 equality
+    errors/       1 文件        核心层错误基础设施
+  extras/
+    index.ts                   49 行：可选能力聚合入口（体积最大，仅调试用）
+    snapshot.ts / selector.ts / action.ts / performance.ts / plugins.ts / enterprise.ts
+                                ← 逐能力的公开子路径入口
+    snapshot/     6 文件        同步 + 异步克隆引擎、diff、管理器
+    selector/     5 文件        SelectorFactory / 组合器 / 重试
+    action/       7 文件        ActionLoader / withLoading / ActionUtils / ActionExecutor
+      decorators/ 8 文件        withLog|Debounce|Throttle|Cache|Retry|Timeout + common
+    error/        7 文件        ErrorBoundary / ErrorRecovery / ErrorMonitoring / 类族
+      reporters/  2 文件        ConsoleReporter / HttpReporter
+  integrations/   4 文件        withPageStore / withComponentStore / withAppStore / utils
+    enterprise/   8 文件        账号态、离线队列、后台同步、热更新
+  plugins/        3 文件        builtin（logger/persistence/devtools）/ globalRegistry
+    devtools/     2 文件        timeTravelPlugin
+    performance/  2 文件        analyzerPlugin
+  types/         10 文件        公共契约（store/action/selector/error/…）
 ```
 
----
+## 4. 核心模块
 
-## 核心模块
+### 4.1 `core/store`：门面 + 运行时职责拆分
 
-> 注：下文中的「选择器 / 快照 / 性能监控 / Action 增强 / 插件 / 企业微信集成 / 错误处理」等模块**不属于主入口自动导出的核心 API**，其源码位于 `src/core` 或 `src/plugins` / `src/integrations` / `src/extras`，但仅通过 `@openlide/geomstore/extras/*` 子路径按需引入（详见上方目录结构）。核心 API 仅包含 Store、小程序集成、组合、LRU 缓存与工具函数；错误处理位于 `src/extras/error`，通过 `@openlide/geomstore/extras/error` 引入。
+`Store` 是**门面**，把运行时关注点拆给专职对象（都通过构造期装配，运行期无动态创建）：
 
-### Store 模块
+| 文件 | 职责 |
+| --- | --- |
+| `Store.ts` | 公开 API 门面：状态读写、快照/恢复、缓存开关、订阅、批量、插件安装、销毁守卫 |
+| `factory.ts` | `createStore`：选项归一化（默认值、状态工厂求值、缓存配置） |
+| `StateProxy.ts` | 状态保护：深/浅/数组/脏跟踪四类代理，共用一组写陷阱；路径拼接统一走 `_joinPath` |
+| `dirtyTracking.ts` | `onlyOnChange` 的脏跟踪代理与变更计数 |
+| `ActionManager.ts` | dispatch 生命周期：深度计数、action 上下文、仅最外层通知、异步结算补发、`onError` 钩子 |
+| `SubscriptionManager.ts` | 订阅注册/退订/上限策略（引用计数；重复订阅计次） |
+| `BatchManager.ts` | 批开始/结束与嵌套；批内变更基线 |
+| `StoreCache.ts` | 缓存开关、按键失效与统计（`enableCache` / `invalidateCache` / `getCacheStats`） |
+| `stateVersion.ts` | 状态版本号：为选择器与缓存提供 O(1) 变更判定 |
+| `pluginSupport.ts` | 插件安装与回滚、钩子接线 |
+| `types.ts` / `utils.ts` / `index.ts` | 局部类型、内部工具与出口 |
 
-Store 是整个架构的核心，负责状态管理：
+**关键不变量**：所有写路径（`setState` / `$patch` / `$replaceState` / action 上下文）最终都经过同一处「写入 → 推进版本号 → 失效缓存 → 触发钩子 → 调度通知」，因此钩子与缓存不会漏事件。
 
-```typescript
-// src/core/store/Store.ts（模块化重构版）
+### 4.2 `core/cache`：LRUCache
 
-class Store<S extends State = State, A extends Actions = Actions, G extends Getters<S> = Getters<S>> implements StoreInterface<S, A, G> {
-  // ==================== 核心属性 ====================
+容量淘汰 + TTL + 统计（`hits` / `misses` / `avgAccessTime` / `missRate`）。构造与 `resize` 对 NaN/Infinity 回退默认值；`forEach` 先取后继再回调，遍历中删除当前项安全。Store 的键级缓存建立在其上。
 
-  readonly name: string
-  private _state!: S
-  public actions!: A
+### 4.3 `core/compose`：组合 Store
 
-  // ==================== 子模块实例 ====================
+- `composeStore(stores, { namespace, strict })`：命名空间模式下子 store 按 `name` 嵌套，dispatch 支持 `'store/action'`
+- 组合层 N 个监听器只占用每个子 store **一份**订阅（避免成倍挤占外部直连订阅的额度）
+- 无只读订阅者时通知走零拷贝；`isStateKeyDirty` 在命名空间模式下精确追踪脏子 store
+- `StoreRegistry` / `globalRegistry` 提供按名字管理
 
-  private _proxyCache: ProxyCache
-  private _stateProxyManager: StateProxyManager<S>
-  private _subscriptionManager: SubscriptionManager<S>
-  private _cacheManager: StoreCacheManager<S>
-  private _actionManager: ActionManager<S, A>
-  private _getterManager: GetterManager<S, G>
-  private _batchManager: BatchManager
-  public readonly hooks: HookSystem          // 实例级钩子系统
+### 4.4 `core/hooks`：钩子与插件运行时
 
-  // ==================== 公开API ====================
+`HookSystem` 提供 `on` / `emit` / `size` / `listenerCount`；`usePlugin` 是独立于 Store 方法的安装入口。契约来自 `types/plugin.ts`，因此插件实现（`plugins/*`）与核心之间是**依赖契约而非依赖实现**。
 
-  get state(): S                              // 只读 getter（受保护Proxy）
-  getState(): S                                // 获取原始状态引用（⚠️ 内部使用）
-  setState<K extends keyof S>(key, value): void
-  $patch(partialState: Partial<S>): void
-  $replaceState(newState: S): void
-  $snapshot(): Readonly<S>
-  $restore(snapshot: Readonly<S>): void
+### 4.5 `core/performance`
 
-  dispatch<K extends keyof A>(...args): unknown
-  getter<K extends keyof G>(): unknown
-  get getters(): G                          // getter 集合（直接访问派生值）
-  getGetterNames(): string[]
-  subscribe(listener): () => void
-  use<T extends PluginType>(plugin): () => void
-  batch<T>(fn): T
-  startBatch(): void
-  endBatch(): void
-  destroy(): void
-  get destroyed(): boolean
-}
-```
+`PerformanceMonitor`（`record` 时会顺手清理超时未结束的计时条目）、`MetricsCollector`、`AsyncBatchNotifier`。**实现保留在 core**（被 store 与插件共用），对外入口在 `extras/performance`。
 
-### LRU 缓存模块
+## 5. 可选能力层（extras）
 
-提供高效的缓存实现：
+### 实现位置与入口的关系
 
-```typescript
-// src/core/cache/LRUCache.ts
+可选能力的**实现**位于 `extras/*`，**入口**是同目录的 barrel（`extras/xxx.ts`）。这样安排有两点收益：
 
-class LRUCache<K, V> {
-  // ==================== 核心属性 ====================
+1. 依赖方向诚实：核心不「物理包含」只有少数用户需要的能力，`core` 的引用图即可证明主包不含它们
+2. 深链内部路径的行为可预测：`src/extras/snapshot/...` 与公开入口同目录，不会出现「入口在 extras、实现在 core」的错位
 
-  /** 缓存容量 */
-  private capacity: number
+**例外**：`cache` / `hooks` / `performance` 的实现保留在 `core`（`core/store` 直接依赖 `LRUCache`、`HookSystem`、`AsyncBatchNotifier`），仅入口在 `extras/*`。
 
-  /** 缓存存储 (Map 提供 O(1) 查找) */
-  private cache: Map<K, LRUNode<K, V>>
-
-  /** 双向链表头节点 */
-  private head: LRUNode<K, V>
-
-  /** 双向链表尾节点 */
-  private tail: LRUNode<K, V>
-
-  /** 当前大小 */
-  private _size: number
-
-  // ==================== 统计数据 ====================
-
-  /** 命中次数 */
-  private hitCount: number
-
-  /** 未命中次数 */
-  private missCount: number
-
-  /** 淘汰次数 */
-  private evictionCount: number
-
-  // ==================== 核心方法 ====================
-
-  /** 获取缓存值 */
-  get(key: K): V | undefined
-
-  /** 设置缓存值 */
-  set(key: K, value: V): this
-
-  /** 检查是否存在 */
-  has(key: K): boolean
-
-  /** 查看值（不更新顺序） */
-  peek(key: K): V | undefined
-
-  /** 删除缓存 */
-  delete(key: K): boolean
-
-  /** 清空缓存 */
-  clear(): this
-
-  /** 获取统计信息 */
-  getStats(): LRUCacheStats
-}
-```
-
-### 错误处理模块
-
-完整的错误处理体系：
+### 体积模型
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                   Error Handling                          │
-├─────────────────────────────────────────────────────────┤
-│                                                         │
-│  ┌─────────────────┐    ┌─────────────────┐            │
-│  │ Error Monitoring│◄───│ Error Aggregator│            │
-│  │                 │    │                 │            │
-│  └────────┬────────┘    └─────────────────┘            │
-│           │                                             │
-│           ▼                                             │
-│  ┌─────────────────┐    ┌─────────────────┐            │
-│  │ Error Reporters │    │ Error Boundary  │            │
-│  │ ┌─────┐ ┌─────┐ │    │                 │            │
-│  │ │Cons.│ │HTTP │ │    └─────────────────┘            │
-│  │ └─────┘ └─────┘ │                                    │
-│  └─────────────────┘    ┌─────────────────┐            │
-│                         │ Error Recovery  │            │
-│                         │ ┌─────┐ ┌─────┐ │            │
-│                         │ │Retry│ │Fallb│ │            │
-│                         │ └─────┘ └─────┘ │            │
-│                         └─────────────────┘            │
-│                                                         │
-└─────────────────────────────────────────────────────────┘
+主入口（core）            常驻：Store / 集成 / 组合 / LRU / 工具 / 钩子
+extras/snapshot           需要快照时引入
+extras/selector           需要选择器缓存时引入
+extras/action             需要 ActionLoader / 装饰器时引入
+extras/performance        需要指标采集时引入
+extras/plugins            需要内置插件实现时引入
+extras/error              需要错误边界 / 恢复 / 上报时引入
+extras/enterprise         需要账号态 / 离线 / 热更新时引入
+extras（聚合）            仅调试或全都要用；会把以上全部拉入产物
 ```
 
-### Action 装饰器模块
+## 6. 集成层（integrations）
 
-Action 装饰器系统用于增强 Action 的行为：
+`with-store.ts` / `with-app-store.ts` 共用 `resolveMappings`（解析 `mapState` / `mapGetters` / `mapActions` / `inject` 的数组与对象两种写法），差异只在生命周期接线：
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                   Action Decorators                       │
-├─────────────────────────────────────────────────────────┤
-│                                                         │
-│  ┌─────────────────────────────────────────────────────┐│
-│  │                  Built-in Decorators                ││
-│  │  ┌───────────┐ ┌───────────┐ ┌───────────┐        ││
-│  │  │ withLog   │ │withDebounce│ │withThrottle│        ││
-│  │  └───────────┘ └───────────┘ └───────────┘        ││
-│  │  ┌───────────┐ ┌───────────┐ ┌───────────┐        ││
-│  │  │ withCache │ │ withRetry │ │withTimeout│        ││
-│  │  └───────────┘ └───────────┘ └───────────┘        ││
-│  └─────────────────────────────────────────────────────┘│
-│                         │                               │
-│                         ▼                               │
-│  ┌─────────────────────────────────────────────────────┐│
-│  │                 createDecorator                     ││
-│  │              (自定义装饰器工厂)                      ││
-│  └─────────────────────────────────────────────────────┘│
-│                         │                               │
-│                         ▼                               │
-│  ┌─────────────────────────────────────────────────────┐│
-│  │                   Action 执行                        ││
-│  └─────────────────────────────────────────────────────┘│
-│                                                         │
-└─────────────────────────────────────────────────────────┘
-```
+| 集成 | 订阅建立 | 订阅清理 |
+| --- | --- | --- |
+| `withPageStore` | `onLoad` | `onUnload` |
+| `withComponentStore` | `lifetimes.attached` | `lifetimes.detached` |
+| `withAppStore` | 包装全局 `App` 构造器 | 不做清理（生命周期贯穿运行期，仅防重复绑定） |
 
-**装饰器组合示例：**
+**只识别 `lifetimes` 写法**（基础库 3.15.0+）；组件 methods 上的运行时注入改为实例级拷贝，多实例挂载不互相覆盖。
 
-```typescript
-// 多个装饰器可以叠加在同一个类方法上（需开启 experimentalDecorators）
-class DataService {
-  data: unknown = null
+`enterprise/` 提供账号态 Store、离线队列、后台同步与热更新；`initBackgroundSync` 包装 `App` 构造器注入 `onShow` / `onHide`（改 `App.prototype` 在微信中不生效）。
 
-  // 重试 + 超时
-  @withRetry({ retries: 3, delay: 1000 })
-  @withTimeout(5000)
-  async safeFetch(url: string) {
-    this.data = await fetchData(url)
-  }
-}
-```
+## 7. 插件层（plugins）
 
----
+| 插件 | 说明 |
+| --- | --- |
+| `loggerPlugin` | 打印 dispatch 名称、参数、耗时 |
+| `persistencePlugin(options)` | 状态持久化；**后端必须同步**；卸载时同步补写防抖窗口内容 |
+| `devtoolsPlugin` / `timeTravelPlugin` | 调试与时间旅行（卸载带身份守卫，只清理属于本实例的全局项） |
+| `analyzerPlugin` | 接入 dispatch / setState / getter 计时；`onError` 精确清理配对栈 |
 
-## 数据流设计
+插件在 `NODE_ENV=production` 下的安装/卸载日志静默；安装抛错会回滚入列。
 
-### 单向数据流
+## 8. 关键数据流
 
-GeomStore 采用单向数据流设计：
+### 8.1 一次 `setState`
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                                                         │
-│     ┌──────────┐      ┌──────────┐      ┌──────────┐   │
-│     │   View   │─────►│  Action  │─────►│   Store  │   │
-│     │  (UI)    │      │          │      │  (State) │   │
-│     └──────────┘      └──────────┘      └──────────┘   │
-│          ▲                                     │        │
-│          │                                     │        │
-│          │              ┌──────────┐          │        │
-│          └──────────────│  Update  │◄─────────┘        │
-│                         │ (Notify) │                   │
-│                         └──────────┘                   │
-│                                                         │
-└─────────────────────────────────────────────────────────┘
+setState('count', 1)
+  → 销毁守卫 → 保护代理判定合法
+  → 写入状态 + 推进版本号 + 脏计数 +1
+  → 失效 count 相关缓存
+  → beforeSetState / afterSetState 钩子（插件、监控在此接入）
+  → 通知调度：notify.async 决定立即或微任务合并；notify.clone 决定克隆或（条件性）零拷贝
+  → 监听器收到新状态；isStateKeyDirty('count') 为 true → 集成层更新 setData
 ```
 
-### Action 执行流程
+### 8.2 一次 `dispatch`
 
 ```
-dispatch(actionName, payload)
-        │
-        ▼
-┌───────────────────┐
-│  查找 Action       │
-│  store.actions    │
-└─────────┬─────────┘
-          │
-          ▼
-┌───────────────────┐
-│  执行前置钩子      │
-│  hooks.emit       │
-│  'beforeDispatch' │
-└─────────┬─────────┘
-          │
-          ▼
-┌───────────────────┐
-│  执行 Action       │
-│  action.call(ctx, │
-│    ...args)       │
-└─────────┬─────────┘
-          │
-          ▼
-┌───────────────────┐
-│  状态变化         │
-│  state 检测变更    │
-└─────────┬─────────┘
-          │
-          ▼
-┌───────────────────┐
-│  执行后置钩子      │
-│  hooks.emit       │
-│  'afterDispatch'  │
-└─────────┬─────────┘
-          │
-          ▼
-┌───────────────────┐
-│  通知订阅者        │
-│ notifyListeners() │
-└─────────┬─────────┘
-          │
-          ▼
-┌───────────────────┐
-│  触发 UI 更新      │
-│  setData()        │
-└───────────────────┘
+dispatch('load', id)
+  → _enterDispatch()（深度 +1，用于「仅最外层通知」判定）
+  → 记录 onlyOnChange 基线计数
+  → 执行 action（this = action 上下文）
+      ├─ 同步返回：深度归零且非 batch 时通知（onlyOnChange 下比对计数）
+      └─ 返回 Promise：注册 onSettled（结算补发），失败同时补发 onError 钩子
+  → finally 深度 -1
 ```
 
----
-
-## 插件架构
-
-### 插件接口
-
-```typescript
-interface Plugin {
-  /** 插件名称 */
-  name: string
-
-  /** 安装函数 */
-  install: (store: Store) => void | (() => void)
-}
-```
-
-### 钩子系统
-
-```typescript
-type HookName =
-  | 'beforeSetState'    // setState 前
-  | 'afterSetState'     // setState 后
-  | 'beforePatch'       // $patch 前
-  | 'afterPatch'        // $patch 后
-  | 'beforeDispatch'    // dispatch 前
-  | 'afterDispatch'     // dispatch 后
-  | 'beforeReplaceState' // $replaceState 前
-  | 'afterReplaceState'  // $replaceState 后
-  | 'onError'           // 错误发生时
-
-class HookSystem {
-  /** 注册钩子 */
-  on(name: HookName, handler: HookHandler): () => void
-
-  /** 触发钩子（内部先快照 handler 列表，迭代期间取消订阅不影响当前触发） */
-  emit(name: HookName, ...args: unknown[]): unknown
-
-  /** 清除钩子 */
-  clear(name?: HookName): void
-}
-```
-
-### 插件执行流程
+### 8.3 一次异步快照
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                     Plugin System                         │
-├─────────────────────────────────────────────────────────┤
-│                                                         │
-│  ┌─────────────────────────────────────────────────┐   │
-│  │                 Hook System                      │   │
-│  │                                                 │   │
-│  │  ┌─────────┐  ┌─────────┐  ┌─────────┐        │   │
-│  │  │ before* │  │ after*  │  │ onError │        │   │
-│  │  └─────────┘  └─────────┘  └─────────┘        │   │
-│  └─────────────────────────────────────────────────┘   │
-│                         │                              │
-│                         ▼                              │
-│  ┌─────────────────────────────────────────────────┐   │
-│  │               Plugin Manager                     │   │
-│  │                                                 │   │
-│  │  ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐   │   │
-│  │  │Plugin A│ │Plugin B│ │Plugin C│ │Plugin D│   │   │
-│  │  │        │ │        │ │        │ │        │   │   │
-│  │  │install │ │install │ │install │ │install │   │   │
-│  │  └────────┘ └────────┘ └────────┘ └────────┘   │   │
-│  │                                                 │   │
-│  │  按安装顺序执行                                 │   │
-│  └─────────────────────────────────────────────────┘   │
-│                                                         │
-└─────────────────────────────────────────────────────────┘
+createSnapshotAsync(data, options)
+  → 根治任务入队（队列 + queueHead 游标，避免 Array#shift 的 O(n²)）
+  → 按 batchSize 分片处理，批间 await 让出控制权；推进 processedCount 并回调 onProgress
+  → 单节点失败：落账 cloneError → 咨询 onError
+        ├─ 继续 → 返回丢弃哨兵；processQueue 跳过填充（prop 占位一并删除）
+        └─ 中止 → 抛 SnapshotAbortError
+  → 超时：置 hasTimedOut，外层循环退出（不再入队新任务）
+  → 汇总 metadata / stats / errors，success = 无 cloneError 且未超时
 ```
 
----
-
-## 集成层设计
-
-### 页面集成
-
-```typescript
-// withPageStore 实现
-function withPageStore<S extends State, A extends Actions, G extends Getters, O extends ConnectOptions<S, A, G>>(
-  store: Store<S, A, G>,
-  options: O
-) {
-  return function<C extends PageOptions>(
-    // WithPageThis 是同态映射类型，作为入参类型为 C 提供推断位点：
-    // 配置字面量（含自定义方法 / data）反向推断出 C，返回类型据此保留精确成员
-    PageConfig: WithPageThis<C, PageThis<S, A, G, O>> & { data: object } & ThisType<PageThis<S, A, G, O>>
-  ): PageThis<S, A, G, O, PageOwnMethods<C>> & Omit<C, 'data'> & { data: (C extends { data: infer D } ? D : object) & ExtractPageData<S, O, G> } {
-    const enhancedConfig = { ...PageConfig }
-
-    // 扩展 onLoad：bindMappings 绑定映射（对象值免脏检查、过滤 undefined）并订阅状态变化
-    enhancedConfig.onLoad = function(this: any, ...args) {
-      // 订阅状态变化
-      store.subscribe((state) => {
-        this.setData(extractMappedState(state, options.mapState))
-        this.setData(extractMappedGetters(store, options.mapGetters))
-      })
-
-      // 调用原始 onLoad
-      PageConfig.onLoad?.apply(this, args)
-    }
-
-    // 注入映射的 actions 到实例
-    for (const [localName, actionName] of Object.entries(options.mapActions || {})) {
-      enhancedConfig[localName] = (...args) => store.dispatch(actionName, ...args)
-    }
-
-    // 方法 this 由同态映射 + ThisType 在编译期注入为 PageThis（自定义方法保留自身精确 this）
-    return enhancedConfig as any
-  }
-}
-```
-
-### 组件集成
-
-```typescript
-// withComponentStore 实现
-function withComponentStore<S extends State, A extends Actions, G extends Getters, O extends ConnectOptions<S, A, G>>(
-  store: Store<S, A, G>,
-  options: O
-) {
-  return function<C extends ComponentOptions>(ComponentConfig: C): ComponentThis<S, A, G, O, ComponentOwnMethods<C>> & Omit<C, 'data' | 'methods'> & { data: (C extends { data: infer D } ? D : object) & ExtractPageData<S, O, G> } {
-    const enhancedConfig = { ...ComponentConfig }
-    const boundMethods = createMappedActions(store, options.mapActions)
-
-    // 配置级 methods 合并映射的 actions
-    enhancedConfig.methods = { ...ComponentConfig.methods, ...boundMethods }
-
-    // 扩展 lifetimes.attached：绑定映射、实例级合并 methods
-    enhancedConfig.lifetimes = {
-      ...ComponentConfig.lifetimes,
-      attached() {
-        // 订阅清理列表挂在组件实例上（同一配置可能存在多个实例，如列表项组件）
-        this.__geomUnbinds = []
-
-        // 实例级浅拷贝后再合并：this.methods 可能引用配置级共享对象，
-        // 直接写入会污染所有实例共用的 methods 定义
-        if (this.methods) {
-          this.methods = { ...this.methods, ...boundMethods }
-        }
-
-        // bindMappings 绑定 state / getters（对象值免脏检查、过滤 undefined）
-        this.__geomUnbinds.push(...bindStateAndGetters(this, store, options))
-
-        ComponentConfig.lifetimes?.attached?.call(this)
-      },
-      detached() {
-        // 清理当前实例的订阅
-        cleanupBindings(this.__geomUnbinds || [])
-        // 实例级拷贝后再删除绑定的 action 方法，避免误删共享 methods 上其他实例仍在用的成员
-        if (this.methods) {
-          this.methods = { ...this.methods }
-          Object.keys(actionsMapping).forEach((localName) => delete this.methods[localName])
-        }
-        ComponentConfig.lifetimes?.detached?.call(this)
-      }
-    }
-
-    // 方法 this 由 ComponentThis 在编译期注入
-    return enhancedConfig as any
-  }
-}
-```
-
----
-
-## 错误处理架构
-
-### 错误分类
-
-```typescript
-enum ErrorCode {
-  // Action 错误
-  ACTION_NOT_FOUND = 'ACTION_NOT_FOUND',
-  ACTION_EXECUTION_ERROR = 'ACTION_EXECUTION_ERROR',
-  ACTION_TIMEOUT = 'ACTION_TIMEOUT',
-  ACTION_CANCELLED = 'ACTION_CANCELLED',
-
-  // 状态错误
-  STATE_KEY_NOT_FOUND = 'STATE_KEY_NOT_FOUND',
-  STATE_UPDATE_ERROR = 'STATE_UPDATE_ERROR',
-  STATE_TYPE_ERROR = 'STATE_TYPE_ERROR',
-
-  // 选择器错误
-  SELECTOR_NOT_FOUND = 'SELECTOR_NOT_FOUND',
-  SELECTOR_EXECUTION_ERROR = 'SELECTOR_EXECUTION_ERROR',
-  SELECTOR_CACHE_ERROR = 'SELECTOR_CACHE_ERROR',
-
-  // 插件错误
-  PLUGIN_NOT_FOUND = 'PLUGIN_NOT_FOUND',
-  PLUGIN_INSTALLATION_ERROR = 'PLUGIN_INSTALLATION_ERROR',
-  PLUGIN_EXECUTION_ERROR = 'PLUGIN_EXECUTION_ERROR',
-
-  // 组合错误
-  STORE_NAME_CONFLICT = 'STORE_NAME_CONFLICT',
-  STORE_DEPENDENCY_ERROR = 'STORE_DEPENDENCY_ERROR',
-  STORE_COMPOSE_ERROR = 'STORE_COMPOSE_ERROR',
-
-  // 验证错误
-  VALIDATION_ERROR = 'VALIDATION_ERROR',
-  TYPE_ERROR = 'TYPE_ERROR',
-  PARAMETER_ERROR = 'PARAMETER_ERROR',
-
-  // 通用错误
-  UNKNOWN_ERROR = 'UNKNOWN_ERROR',
-  INTERNAL_ERROR = 'INTERNAL_ERROR'
-}
-```
-
-### 错误恢复策略
-
-```typescript
-enum RecoveryStrategy {
-  RETRY = 'retry',       // 重试
-  FALLBACK = 'fallback', // 回退
-  IGNORE = 'ignore',     // 忽略
-  RESTART = 'restart',   // 重启
-  RECOVER = 'recover'    // 恢复
-}
-```
-
-**关键行为语义：**
-
-- `RETRY` 的重试额度按**故障周期**计量，周期以时间窗判定（窗口 = `max(60s, 本周期全部退避总时长 × 2)`）：窗口内额度持续累计（与错误实例身份无关，`maxRetries` 防重试风暴保护始终生效），超窗视为新周期重置额度；达到上限仅清除当前键（`code:storeName:operation`），不按错误码级联全清。`recover` 仅接受 `GeomStoreError` 实例。
-- `HttpReporter.report / reportBatch` 失败时**向上抛出**（内部批量管线兜底重入队）；默认请求实现校验 `response.ok`，4xx/5xx 视为上报失败。
-- 批量 flush 按 `ok / fail / timeout` 三态判定，仅 resolve 算成功；超时不算成功，批次重入队等待下次 flush。
-- `ErrorBoundary` 的 `fallback` 计算函数自身抛错时，记录后**重抛原始错误**（避免 fallback 异常顶替原错误丢失现场）。
-
-### 错误处理流程
+### 8.4 一次小程序 `setData`
 
 ```
-错误发生
-    │
-    ▼
-┌─────────────────┐
-│ 捕获错误        │
-│ try-catch       │
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│ 创建错误上下文   │
-│ ErrorContext    │
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│ 错误处理        │
-│ ErrorHandler    │
-└────────┬────────┘
-         │
-         ├──────────────────┐
-         │                  │
-         ▼                  ▼
-┌─────────────────┐ ┌─────────────────┐
-│ 日志记录        │ │ 错误上报        │
-│ ConsoleReporter │ │ HttpReporter    │
-└─────────────────┘ └─────────────────┘
-         │
-         ▼
-┌─────────────────┐
-│ 尝试恢复        │
-│ ErrorRecovery   │
-└────────┬────────┘
-         │
-         ├─────┬─────┬─────┐
-         ▼     ▼     ▼     ▼
-      Retry Fallback Ignore Recover
+Store 通知 → 集成层合并订阅回调
+  → 对每个映射键判断 isStateKeyDirty(key)
+      ├─ false → 跳过（视图层零开销）
+      └─ true  → 组装 setData 补丁（对象值不做引用脏检查、undefined 字段被过滤）
+  → 调用页面/组件实例的 setData
 ```
 
----
+## 9. 构建与产物
 
-## 性能监控架构
+| 环节 | 脚本 | 作用 |
+| --- | --- | --- |
+| 清理 | `prebuild` → `clean-dist.mjs` | 删除旧 `dist`（避免残留过期产物） |
+| 编译 | `build` → `tsc -p tsconfig.build.json` | 产出 `dist/**`（结构保留，供子路径导出） |
+| 收尾 | `postbuild-dist.mjs` | 写入 `dist/package.json` 的 `{"type":"module"}` 标记并移除 sourcemap |
+| 压缩 | `minify-dist.mjs`（`build:min` / `build:release`） | `build:release` 为**严格模式**：无可用压缩器时以退出码 1 中止 |
+| 子路径转发 | `generate-subpath-stubs.mjs`（`prepack` / `postpack`） | 生成/清理 `store/`、`hooks/`、`plugins/`、`integrations/` 等转发目录，供微信「构建 npm」使用 |
 
-### 性能指标收集
+`exports` 映射是运行时的唯一权威（`.` / `./core` / `./extras` / `./extras/*`）；转发子目录只是为不支持 `exports` 子路径的环境兜底。
 
-```typescript
-interface PerformanceMetrics {
-  operation: string       // 操作名称
-  type: MetricType        // 操作类型
-  duration: number        // 执行时长
-  timestamp: number       // 时间戳
-  payloadSize?: number    // 负载大小
-  memoryUsage?: number    // 内存使用
-  exceedThreshold?: boolean // 是否超阈值
-}
-```
+## 10. 质量门禁
 
-### 性能监控流程
+| 层次 | 机制 |
+| --- | --- |
+| 类型 | 多套 tsconfig：源码 / Jest / 测试 / 构建 / 类型检查 / 示例，全部零错误 |
+| 测试 | `tests/unit`（按领域分目录） + `tests/integration`；62+ 套件、2300+ 用例 |
+| 覆盖率 | 语句 / 分支 / 函数 / 行 **四项 100%**；确实不可达的防御分支用 `/* istanbul ignore … */` 标注并**写明原因** |
+| 静态检查 | ESLint（`lint:ci` 带警告上限）；禁止 CJS 写法 |
+| CI | lint → typecheck（src/examples）→ test:ci → build → **ESM + 子路径冒烟** → 覆盖率产物上传；Node 22/24 双跑 |
 
-```
-操作执行
-    │
-    ▼
-┌─────────────────┐
-│ 开始计时        │
-│ monitor.start() │
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│ 执行操作        │
-│ operation()     │
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│ 结束计时        │
-│ stop()          │
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│ 记录指标        │
-│ monitor.record()│
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│ 分析统计        │
-│ getStats()      │
-└─────────────────┘
-```
+## 11. 刻意保留的取舍
 
----
-
-## 总结
-
-GeomStore 的架构设计遵循以下原则：
-
-1. **模块化**：各模块职责清晰，松耦合
-2. **可扩展**：通过插件系统扩展功能
-3. **可观测**：完善的错误处理和性能监控
-4. **高性能**：缓存、批量更新等优化策略
-5. **易集成**：针对微信小程序的专门优化
+| 取舍 | 原因 |
+| --- | --- |
+| 就地变异状态（非不可变） | 小程序场景看重性能与写法简洁；用 `$snapshot()` / `createSnapshot()` 提供隔离副本 |
+| 钩子/插件的错误被隔离处理 | 监控插件不得因自身异常影响主流程；`onError` 是唯一观察点 |
+| 持久化后端强制同步 | 微信同步存储是主流；异步后端会因竞态导致写入静默丢失 |
+| 生产模式日志静默 | 减少发布包日志噪声；排查时切开发模式 |
+| `customCloner` 抛错不降级为「原值兜底」 | 宁可丢弃节点也不能让活引用穿透隔离契约 |
+| 覆盖率为 100% 但不为数字改写语义 | 等价改写须可证明；不可达分支用带原因的标注，而非删除防御 |
