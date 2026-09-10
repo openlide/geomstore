@@ -21,8 +21,8 @@ import {
   GeomStoreError,
   ErrorCode,
   createError,
-} from '@/extras/error'
-import type { ErrorContext } from '@/types/error'
+} from '@/extras/error/index.js'
+import type { ErrorContext } from '@/types/error.js'
 
 describe('ConsoleReporter', () => {
   beforeEach(() => {

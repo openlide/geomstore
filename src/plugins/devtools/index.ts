@@ -23,5 +23,5 @@
  * ```
  */
 
-export { timeTravelPlugin } from './timeTravelPlugin'
-export type { TimeTravelOptions } from './timeTravelPlugin'
+export { timeTravelPlugin } from './timeTravelPlugin.js'
+export type { TimeTravelOptions } from './timeTravelPlugin.js'

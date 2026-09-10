@@ -3,8 +3,8 @@
  * @file tests/unit/hooks/hooks.test.ts
  */
 
-import { HookSystem, usePlugin, type Plugin } from '@/core/hooks'
-import { createStore } from '@/index'
+import { HookSystem, usePlugin, type Plugin } from '@/core/hooks/index.js'
+import { createStore } from '@/index.js'
 
 describe('HookSystem - 钩子系统', () => {
   // 创建独立的钩子实例用于测试
@@ -366,7 +366,7 @@ describe('usePlugin - 插件安装函数', () => {
       install,
     }
 
-    const uninstall = usePlugin(plugin, store as any)
+    const uninstall = usePlugin(plugin, store)
 
     expect(install).toHaveBeenCalledWith(store)
     expect(typeof uninstall).toBe('function')
@@ -383,7 +383,7 @@ describe('usePlugin - 插件安装函数', () => {
       },
     }
 
-    const uninstall = usePlugin(plugin, store as any)
+    const uninstall = usePlugin(plugin, store)
 
     expect(consoleSpy).toHaveBeenCalled()
     // install 失败时返回安全的空卸载函数
@@ -402,7 +402,7 @@ describe('usePlugin - 插件安装函数', () => {
       },
     }
 
-    const uninstall = usePlugin(plugin, store as any)
+    const uninstall = usePlugin(plugin, store)
     uninstall()
 
     expect(uninstallPlugin).toHaveBeenCalled()
@@ -418,7 +418,7 @@ describe('usePlugin - 插件安装函数', () => {
       },
     }
 
-    const uninstall = usePlugin(plugin, store as any)
+    const uninstall = usePlugin(plugin, store)
 
     expect(() => {
       uninstall()
@@ -435,7 +435,7 @@ describe('usePlugin - 插件安装函数', () => {
       },
     }
 
-    const uninstall = usePlugin(plugin, store as any)
+    const uninstall = usePlugin(plugin, store)
 
     expect(() => {
       uninstall()

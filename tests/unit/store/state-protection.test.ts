@@ -9,7 +9,7 @@
  * - 配置选项
  */
 
-import { createStore } from '../../../src/index'
+import { createStore } from '../../../src/index.js'
 
 describe('状态保护机制', () => {
   describe('基本保护', () => {
@@ -594,20 +594,24 @@ describe('BUG 回归：变异报错消息的序列化兜底', () => {
 })
 
 // ==================== 生产模式处理器行为 ====================
-// StateProxy 以命名空间属性访问方式调用 isProduction（ts-jest CJS 编译），
-// 通过 spyOn 模块导出即可模拟生产环境，无需重载整个模块树
+// isProduction 的结果在模块内缓存（见 src/core/store/utils.ts），因此改为
+// resetModules + 动态 import 重载整棵模块树，让生产环境判定重新计算。
 describe('生产模式处理器', () => {
+  const originalEnv = process.env.NODE_ENV
+
   afterEach(() => {
+    process.env.NODE_ENV = originalEnv
     jest.restoreAllMocks()
   })
 
-  it('PROTECT-PROD-001: warn 处理器放行修改并告警（含 defineProperty 路径）', () => {
-     
-    const utilsModule = require('../../../src/core/store/utils')
-    jest.spyOn(utilsModule, 'isProduction').mockReturnValue(true)
+  it('PROTECT-PROD-001: warn 处理器放行修改并告警（含 defineProperty 路径）', async () => {
+    jest.resetModules()
+    process.env.NODE_ENV = 'production'
+    const { createStore: createProdStore } = await import('../../../src/index.js')
+
     const warnSpy = jest.spyOn(console, 'warn').mockImplementation()
 
-    const store = createStore({
+    const store = createProdStore({
       name: 'prod-warn-store',
       state: { count: 0, items: [1, 2] },
       stateProtection: { productionHandler: 'warn' },
@@ -633,13 +637,14 @@ describe('生产模式处理器', () => {
     expect(store.getState().items[0]).toBe(9)
   })
 
-  it('PROTECT-PROD-002: silent 处理器静默放行且不告警', () => {
-     
-    const utilsModule = require('../../../src/core/store/utils')
-    jest.spyOn(utilsModule, 'isProduction').mockReturnValue(true)
+  it('PROTECT-PROD-002: silent 处理器静默放行且不告警', async () => {
+    jest.resetModules()
+    process.env.NODE_ENV = 'production'
+    const { createStore: createProdStore } = await import('../../../src/index.js')
+
     const warnSpy = jest.spyOn(console, 'warn').mockImplementation()
 
-    const store = createStore({
+    const store = createProdStore({
       name: 'prod-silent-store',
       state: { count: 0 },
       stateProtection: { productionHandler: 'silent' },

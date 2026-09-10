@@ -2,7 +2,7 @@
  * GeomStore - 持久化类型定义
  */
 
-import type { State } from './store'
+import type { State } from './store.js'
 
 /**
  * 存储后端接口

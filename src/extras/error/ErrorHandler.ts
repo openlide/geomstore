@@ -5,7 +5,7 @@
  *
  */
 
-import { createErrorContext, defaultErrorHandler, type ErrorContext, type ErrorHandler, type ErrorLevel, type OperationType } from '../../types/error'
+import { createErrorContext, defaultErrorHandler, type ErrorContext, type ErrorHandler, type ErrorLevel, type OperationType } from '../../types/error.js'
 
 /**
  * 错误处理器类
@@ -314,4 +314,4 @@ export class ErrorHandlerImpl {
  * 默认导出
  */
 export { defaultErrorHandler, createErrorContext }
-export type { ErrorContext, ErrorHandler, ErrorLevel, OperationType } from '../../types/error'
+export type { ErrorContext, ErrorHandler, ErrorLevel, OperationType } from '../../types/error.js'

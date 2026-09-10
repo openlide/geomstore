@@ -5,7 +5,7 @@
  *
  */
 
-import type { ErrorBoundaryOptions, ErrorFallback } from '../../types/error'
+import type { ErrorBoundaryOptions, ErrorFallback } from '../../types/error.js'
 
 /**
  * 错误边界类
@@ -375,4 +375,4 @@ export function withErrorBoundary(options?: ErrorBoundaryOptions) {
 /**
  * 默认导出
  */
-export type { ErrorBoundaryOptions } from '../../types/error'
+export type { ErrorBoundaryOptions } from '../../types/error.js'

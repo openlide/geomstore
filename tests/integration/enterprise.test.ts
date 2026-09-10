@@ -9,7 +9,7 @@
  * - 后台/前台状态同步
  */
 
-import { createStore } from '../../src/index'
+import { createStore } from '../../src/index.js'
 import {
   createUserStore,
   storeManager,
@@ -21,7 +21,7 @@ import {
   unregisterBackgroundSync,
   createEnterpriseApp,
   OfflineAction,
-} from '../../src/integrations/enterprise/wechat-enterprise'
+} from '../../src/integrations/enterprise/wechat-enterprise.js'
 
 // ==================== Mock 微信小程序 API ====================
 

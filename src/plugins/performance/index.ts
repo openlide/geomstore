@@ -26,4 +26,4 @@
  * ```
  */
 
-export { analyzerPlugin, createAnalyzerPlugin } from './analyzerPlugin'
+export { analyzerPlugin, createAnalyzerPlugin } from './analyzerPlugin.js'

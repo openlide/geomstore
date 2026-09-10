@@ -2,7 +2,7 @@
  * StoreRegistry 测试
  */
 
-import { StoreRegistry, globalRegistry } from '@/core/compose'
+import { StoreRegistry, globalRegistry } from '@/core/compose/index.js'
 
 describe('StoreRegistry', () => {
   let registry: StoreRegistry

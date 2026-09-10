@@ -2,7 +2,7 @@
  * GeomStore - Action类型定义
  */
 
-import type { Actions } from './store'
+import type { Actions } from './store.js'
 
 /**
  * 异步Actions类型（继承Actions）

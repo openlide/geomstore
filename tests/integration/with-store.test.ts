@@ -3,7 +3,7 @@
  * @file tests/integration/with-store.test.ts
  */
 
-import { createStore, withPageStore, withComponentStore } from '@/index'
+import { createStore, withPageStore, withComponentStore } from '@/index.js'
 
 // Mock 微信小程序 setData
 const mockSetData = jest.fn()

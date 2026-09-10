@@ -2,9 +2,9 @@
  * GeomStore v1.0 - analyzerPlugin测试
  */
 
-import { createStore } from '../../../../src'
-import { analyzerPlugin, createAnalyzerPlugin } from '../../../../src/plugins/performance'
-import { PerformanceAnalyzer } from '../../../../src/core/performance/metrics'
+import { createStore } from '../../../../src/index.js'
+import { analyzerPlugin, createAnalyzerPlugin } from '../../../../src/plugins/performance/index.js'
+import { PerformanceAnalyzer } from '../../../../src/core/performance/metrics.js'
 
 describe('analyzerPlugin', () => {
   afterEach(() => {
@@ -458,16 +458,16 @@ describe('analyzerPlugin - production environment', () => {
     jest.resetModules()
   })
 
-  it('should not expose global API in production environment', () => {
+  it('should not expose global API in production environment', async () => {
     // 模拟生产环境
     const originalNodeEnv = process.env.NODE_ENV
     process.env.NODE_ENV = 'production'
 
-    // 需要重新 require 以清除 isProduction 缓存
-    jest.isolateModules(() => {
-      // 重新 require 以触发 isProduction 重新计算
-      const { analyzerPlugin: prodAnalyzerPlugin } = require('../../../../src/plugins/performance/analyzerPlugin')
-      const { createStore: createProdStore } = require('../../../../src')
+    // 需要重新导入以清除 isProduction 缓存
+    await jest.isolateModulesAsync(async () => {
+      // 重新导入以触发 isProduction 重新计算
+      const { analyzerPlugin: prodAnalyzerPlugin } = await import('../../../../src/plugins/performance/analyzerPlugin.js')
+      const { createStore: createProdStore } = await import('../../../../src/index.js')
 
       const store = createProdStore({
         name: 'prod-store',
@@ -483,13 +483,13 @@ describe('analyzerPlugin - production environment', () => {
     process.env.NODE_ENV = originalNodeEnv
   })
 
-  it('should still work functionally in production (hooks + getter wrap)', () => {
+  it('should still work functionally in production (hooks + getter wrap)', async () => {
     const originalNodeEnv = process.env.NODE_ENV
     process.env.NODE_ENV = 'production'
 
-    jest.isolateModules(() => {
-      const { analyzerPlugin: prodAnalyzerPlugin } = require('../../../../src/plugins/performance/analyzerPlugin')
-      const { createStore: createProdStore } = require('../../../../src')
+    await jest.isolateModulesAsync(async () => {
+      const { analyzerPlugin: prodAnalyzerPlugin } = await import('../../../../src/plugins/performance/analyzerPlugin.js')
+      const { createStore: createProdStore } = await import('../../../../src/index.js')
 
       const store = createProdStore({
         name: 'prod-func-store',

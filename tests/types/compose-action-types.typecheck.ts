@@ -12,7 +12,8 @@
  * @file tests/types/compose-action-types.typecheck.ts
  */
 
-import { composeStore, createStore, ActionExecutor, ActionUtils } from '@/index'
+import { composeStore, createStore } from '@/index.js'
+import { ActionExecutor, ActionUtils } from '@/extras/index.js'
 
 // ==================== ExtractStates 基例不被索引签名污染 ====================
 

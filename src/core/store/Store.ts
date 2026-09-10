@@ -33,42 +33,38 @@ import type {
   InferActionReturn,
   InferGetterReturn,
   ActionContextBase,
-} from '../../types/store'
-import type { Plugin as PluginType } from '../../types/plugin'
-import { HookSystem } from '../hooks/index'
-import { deepMerge } from '../utils/helpers'
-import { LRUCache } from '../cache/LRUCache'
+} from '../../types/store.js'
+import type { Plugin as PluginType } from '../../types/plugin.js'
+import { HookSystem } from '../hooks/index.js'
+import { deepMerge } from '../utils/helpers.js'
+import { LRUCache } from '../cache/LRUCache.js'
 
 // 子模块导入
-import { StateProxyManager, createProxyCache, isBuiltinObject } from './StateProxy'
-import { SubscriptionManager, createSubscribeFunction } from './SubscriptionManager'
-import { StoreCacheManager } from './StoreCache'
-import { ActionManager, GetterManager } from './ActionManager'
-import { BatchManager } from './BatchManager'
-import type { ProxyCache, InternalStateProtectionConfig } from './types'
-import { deepCloneState, deepFreezeState, isProduction } from './utils'
-import { defineStateVersion } from './stateVersion'
-import { AsyncBatchNotifier } from '../performance/Optimizations'
+import { StateProxyManager, createProxyCache } from './StateProxy.js'
+import { SubscriptionManager, createSubscribeFunction } from './SubscriptionManager.js'
+import { StoreCacheManager } from './StoreCache.js'
+import { ActionManager, GetterManager } from './ActionManager.js'
+import { BatchManager } from './BatchManager.js'
+import type { ProxyCache, InternalStateProtectionConfig } from './types.js'
+import { deepCloneState, deepFreezeState, isProduction } from './utils.js'
+import { defineStateVersion } from './stateVersion.js'
+import { createDirtyTrackingProxy } from './dirtyTracking.js'
+import { GEOMSTORE_BRAND, createPluginUninstaller } from './pluginSupport.js'
+import { AsyncBatchNotifier } from '../performance/AsyncBatchNotifier.js'
 
-// Plugin类型别名
-type Plugin = PluginType
+/** 单个 Store 的默认最大订阅者数量 */
+const DEFAULT_MAX_SUBSCRIBERS = 50
+
+/** 自动生成 Store 名称时使用的前缀 */
+const STORE_NAME_PREFIX = 'store-'
 
 /**
- * Store实现类（模块化重构版）
+ * Store 实现类（模块化重构版）
  *
  * @class Store
  * @template S - 状态类型
- * @implements Store<S>
+ * @implements StoreInterface<S, A, G>
  */
-/** Default maximum number of subscribers per store */
-const DEFAULT_MAX_SUBSCRIBERS = 50
-
-/** Store name prefix for auto-generated names */
-const STORE_NAME_PREFIX = 'store-'
-
-/** GeomStore 品牌标识，用于精确识别 Store 实例，避免鸭子类型误判 */
-const GEOMSTORE_BRAND = Symbol.for('__geomstore_brand__')
-
 export class Store<S extends State = State, A extends Actions = Actions, G extends Getters<S> = Getters<S>> implements StoreInterface<S, A, G> {
   // ==================== 核心属性 ====================
 
@@ -114,11 +110,11 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
   /** Actions集合（公开） */
   public actions!: A
 
-  /** 插件集合 */
-  private _plugins: Plugin[] = []
+  /** 插件集合（按本 Store 的状态类型约束，状态无关插件以 Plugin<State> 兼容） */
+  private _plugins: PluginType<S>[] = []
 
   /** 插件卸载函数集合 */
-  private _pluginUninstallFns: Map<Plugin, (() => void) | undefined> = new Map()
+  private _pluginUninstallFns: Map<PluginType<S>, (() => void) | undefined> = new Map()
 
   /** dispatch跟踪标记 */
   private _dispatching = false
@@ -134,11 +130,11 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
 
   // ==================== 子模块实例 ====================
 
-  /** Proxy缓存 */
-  private _proxyCache: ProxyCache
+  /** Proxy缓存（构造/重建时赋值，见 _rebuildStateProxyManager） */
+  private _proxyCache!: ProxyCache
 
-  /** 状态保护代理管理器 */
-  private _stateProxyManager: StateProxyManager<S>
+  /** 状态保护代理管理器（构造/重建时赋值，见 _rebuildStateProxyManager） */
+  private _stateProxyManager!: StateProxyManager<S>
 
   /** 订阅管理器 */
   private _subscriptionManager: SubscriptionManager<S>
@@ -187,19 +183,13 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
     this._notifyOnlyOnChange = options.notify?.onlyOnChange ?? false
 
     // 初始化 Proxy 缓存和管理器
-    this._proxyCache = createProxyCache()
-    this._stateProxyManager = new StateProxyManager<S>({
-      protection: this._stateProtection,
-      proxyCache: this._proxyCache,
-      isInternalAccess: () => this._isInternalAccess,
-    })
+    this._rebuildStateProxyManager()
 
     // 初始化订阅管理器
     this._subscriptionManager = new SubscriptionManager<S>({
       storeName: this.name,
       maxSubscribers: options.subscription?.maxSubscribers ?? DEFAULT_MAX_SUBSCRIBERS,
       onLimit: options.subscription?.onLimit,
-      cloneOnNotify: this._notifyClone,
     })
 
     // 初始化异步通知合并器（仅启用时）：将同一 tick 内的多次 notify 合并为一次微任务通知，
@@ -397,19 +387,14 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
       }
     })
 
-    // 清除所有 Proxy 缓存
-    this._proxyCache = createProxyCache()
+    // 清除所有 Proxy 缓存（状态保护 + 脏跟踪均需重建）
+    this._rebuildStateProxyManager()
     // 脏跟踪代理缓存指向旧状态对象树，一并重建
     this._dirtyProxyCache = new WeakMap()
     this._mutationCount++
     // 整树替换：所有键均视为已变更
     Object.keys(this._state).forEach((key) => {
       this._dirtyKeys.add(key as keyof S)
-    })
-    this._stateProxyManager = new StateProxyManager<S>({
-      protection: this._stateProtection,
-      proxyCache: this._proxyCache,
-      isInternalAccess: () => this._isInternalAccess,
     })
 
     // 与 setState/$patch 一致：dispatch 或批量更新期间跳过通知，
@@ -454,7 +439,8 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
     if (this._destroyed) {
       throw new Error('[GeomStore] Cannot call $restore on a destroyed Store')
     }
-    this.$replaceState(deepCloneState(snapshot) as S)
+    // 克隆职责收敛到 $replaceState（其内部已 deepCloneState）：此处不再重复深拷贝整树
+    this.$replaceState(snapshot as S)
   }
 
   // ==================== Action 和 Getter 方法 ====================
@@ -532,7 +518,7 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
    * @returns 卸载插件的函数
    * @throws 如果 Store 已销毁
    */
-  use<T extends PluginType = PluginType>(plugin: T): () => void {
+  use(plugin: PluginType<NoInfer<S>>): () => void {
     if (this._destroyed) {
       throw new Error('[GeomStore] Cannot call use on a destroyed Store')
     }
@@ -561,8 +547,7 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
 
     let uninstall: unknown
     try {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      uninstall = this._withInternalAccess(() => plugin.install?.(this as any))
+      uninstall = this._withInternalAccess(() => plugin.install?.(this))
     } catch (error) {
       // 安装失败回滚入列：否则半安装插件常驻列表，捕获后重试 use() 会累积重复条目
       const index = this._plugins.indexOf(plugin)
@@ -577,29 +562,9 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
     return this._createPluginUninstaller(plugin)
   }
 
-  /**
-   * 创建插件卸载句柄
-   *
-   * 幂等：重复调用只在首次生效（移出 _plugins、调用插件自身的卸载函数、清除映射），
-   * 之后再调为安全 no-op。首次安装与重复安装返回的都是由本工厂生成的等价句柄，
-   * 因此重复 use() 拿到的 token 与首个 token 行为一致。
-   *
-   * @private
-   */
-  private _createPluginUninstaller(plugin: PluginType): () => void {
-    return () => {
-      const index = this._plugins.indexOf(plugin)
-      if (index !== -1) {
-        this._plugins.splice(index, 1)
-      }
-
-      const uninstallFn = this._pluginUninstallFns.get(plugin)
-      if (typeof uninstallFn === 'function') {
-        uninstallFn()
-      }
-
-      this._pluginUninstallFns.delete(plugin)
-    }
+  /** 创建插件卸载句柄（实现已拆至 ./pluginSupport.js） */
+  private _createPluginUninstaller(plugin: PluginType<S>): () => void {
+    return createPluginUninstaller(plugin, this._plugins, this._pluginUninstallFns)
   }
 
   // ==================== 生命周期管理 ====================
@@ -746,12 +711,7 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
     this._stateProtection.enabled = enabled
     this._stateProtectionEnabled = enabled
     if (!enabled) {
-      this._proxyCache = createProxyCache()
-      this._stateProxyManager = new StateProxyManager<S>({
-        protection: this._stateProtection,
-        proxyCache: this._proxyCache,
-        isInternalAccess: () => this._isInternalAccess,
-      })
+      this._rebuildStateProxyManager()
     }
   }
 
@@ -886,49 +846,26 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
     return this._createDirtyTrackingProxy(this._state) as S
   }
 
-  /** 创建允许写入的脏跟踪代理（递归包装嵌套对象，WeakMap 缓存保证引用稳定） */
-  private _createDirtyTrackingProxy(target: object): object {
-    const cached = this._dirtyProxyCache.get(target)
-    if (cached) {
-      return cached
-    }
-
-    const self = this
-    const proxy = new Proxy(target, {
-      get(obj: object, key: string | symbol): unknown {
-        const value = (obj as Record<string | symbol, unknown>)[key]
-        if (typeof value !== 'object' || value === null) {
-          return value
-        }
-        // 内建对象（Date/Map/Set 等）不包装：其方法以内部槽位为 receiver，
-        // 经 Proxy 调用会抛 "this is not a Date/Map object"（与 StateProxy 同契约：
-        // 内建对象内部的变异不计入 mutationCount）
-        if (isBuiltinObject(value)) {
-          return value
-        }
-        return self._createDirtyTrackingProxy(value)
-      },
-      set(obj: object, key: string | symbol, value: unknown): boolean {
-        ;(obj as Record<string | symbol, unknown>)[key] = value
-        self._mutationCount++
-        return true
-      },
-      deleteProperty(obj: object, key: string | symbol): boolean {
-        delete (obj as Record<string | symbol, unknown>)[key]
-        self._mutationCount++
-        return true
-      },
-      defineProperty(obj: object, key: string | symbol, descriptor: PropertyDescriptor): boolean {
-        // defineProperty 不经过 set 陷阱：缺此陷阱时 action 内经
-        // Object.defineProperty 的写入不递增计数，onlyOnChange 模式漏通知
-        Object.defineProperty(obj, key, descriptor)
-        self._mutationCount++
-        return true
-      },
+  /**
+   * 重建状态保护 Proxy 管理器（构造、$replaceState、setStateProtection 共用）。
+   *
+   * 强制新建 proxyCache：旧缓存中的 Proxy 闭包绑定旧状态对象树/旧 path，
+   * 复用会让保护层指向已过期对象。
+   */
+  private _rebuildStateProxyManager(): void {
+    this._proxyCache = createProxyCache()
+    this._stateProxyManager = new StateProxyManager<S>({
+      protection: this._stateProtection,
+      proxyCache: this._proxyCache,
+      isInternalAccess: () => this._isInternalAccess,
     })
+  }
 
-    this._dirtyProxyCache.set(target, proxy)
-    return proxy
+  /** 创建允许写入的脏跟踪代理（实现已拆至 ./dirtyTracking.js） */
+  private _createDirtyTrackingProxy(target: object): object {
+    return createDirtyTrackingProxy(target, this._dirtyProxyCache, () => {
+      this._mutationCount++
+    })
   }
 
   /** 批量结束通知：onlyOnChange 模式下批量期间无任何变更则跳过（与 dispatch 收尾语义一致） */

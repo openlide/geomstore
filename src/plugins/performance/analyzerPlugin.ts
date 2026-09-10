@@ -9,12 +9,13 @@
  *
  */
 
-import type { Store } from '../../types/store'
-import type { Plugin } from '../../types/plugin'
-import type { PerformanceOptions } from '../../types/performance'
-import { PerformanceMonitor } from '../../core/performance/PerformanceMonitor'
-import { PerformanceAnalyzer } from '../../core/performance/metrics'
-import { isProduction } from '../../core/store/utils'
+import type { Store } from '../../types/store.js'
+import type { Plugin } from '../../types/plugin.js'
+import type { PerformanceOptions } from '../../types/performance.js'
+import { PerformanceMonitor } from '../../core/performance/PerformanceMonitor.js'
+import { PerformanceAnalyzer } from '../../core/performance/metrics.js'
+import { registerGlobalEntry } from '../globalRegistry.js'
+import { isProduction } from '../../core/store/utils.js'
 
 /**
  * 性能分析插件
@@ -109,14 +110,6 @@ import { isProduction } from '../../core/store/utils'
  * // globalThis.__GEOMSTORE_ANALYZER__['user'].getStats()
  * ```
  */
-/**
- * 创建带自定义配置的性能分析插件
- *
- * @example
- * ```typescript
- * store.use(createAnalyzerPlugin({ sampleRate: 1.0, threshold: 16 }))
- * ```
- */
 export function createAnalyzerPlugin(options: PerformanceOptions = {}): Plugin {
   return {
     name: 'analyzer',
@@ -126,6 +119,12 @@ export function createAnalyzerPlugin(options: PerformanceOptions = {}): Plugin {
   }
 }
 
+/**
+ * 性能分析插件（默认配置）
+ *
+ * 等价于 `createAnalyzerPlugin()`；需要自定义采样率、阈值等请改用
+ * `createAnalyzerPlugin(options)`。
+ */
 export const analyzerPlugin: Plugin = {
   name: 'analyzer',
 
@@ -240,21 +239,17 @@ function installAnalyzer(store: Store, options: PerformanceOptions): (() => void
   storeProxy.__performanceMonitor__ = monitor
 
   // 设置全局访问（生产环境不暴露，防止内部结构泄露）
-  // 注册条目提升到块外：卸载时按身份守卫清理，避免同 store.name 后装的第二实例
-  // 覆盖该条目后，卸载第一实例把第二实例的接口误删（与下方 __performanceMonitor__
-  // 的守卫同模式，此前全局表漏了）
-  let registeredAnalyzerAPI: unknown
-  if (typeof globalThis !== 'undefined' && !isProduction()) {
-    const globalObj = globalThis as unknown as Record<string, Record<string, unknown>>
-    globalObj.__GEOMSTORE_ANALYZER__ = globalObj.__GEOMSTORE_ANALYZER__ || {}
-    registeredAnalyzerAPI = {
+  // 卸载按身份守卫清理（registerGlobalEntry 内实现，避免误删后装实例的接口）
+  let unregisterAnalyzerGlobal: () => void = () => {}
+  if (!isProduction()) {
+    const analyzerAPI = {
       monitor,
       getMetrics: () => monitor.getMetrics(),
       getStats: () => monitor.getStats(),
       analyzeBottlenecks: (threshold?: number) => PerformanceAnalyzer.analyzeBottlenecks(monitor.getMetrics(), threshold),
       clear: () => monitor.clear(),
     }
-    globalObj.__GEOMSTORE_ANALYZER__[store.name] = registeredAnalyzerAPI
+    unregisterAnalyzerGlobal = registerGlobalEntry('__GEOMSTORE_ANALYZER__', store.name, analyzerAPI)
 
     console.log(`[GeomStore][analyzer] Performance monitoring enabled for store "${store.name}"`)
     console.log(`[GeomStore][analyzer] Access at: globalThis.__GEOMSTORE_ANALYZER__["${store.name}"]`)
@@ -286,12 +281,7 @@ function installAnalyzer(store: Store, options: PerformanceOptions): (() => void
     }
 
     // 清理全局引用（身份守卫：仅当条目仍属于本实例时才删除）
-    if (typeof globalThis !== 'undefined') {
-      const globalObj = globalThis as unknown as Record<string, Record<string, unknown>>
-      if (registeredAnalyzerAPI !== undefined && globalObj.__GEOMSTORE_ANALYZER__?.[store.name] === registeredAnalyzerAPI) {
-        delete globalObj.__GEOMSTORE_ANALYZER__[store.name]
-      }
-    }
+    unregisterAnalyzerGlobal()
 
     monitor.clear()
     // 清理实例上的 monitor 引用（与 timeTravel 插件的 __timeTravel__ 清理对齐）。

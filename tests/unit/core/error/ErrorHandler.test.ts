@@ -2,8 +2,8 @@
  * GeomStore v1.0 - ErrorHandler 测试
  */
 
-import { ErrorHandlerImpl, createErrorContext, defaultErrorHandler } from '@/extras/error/ErrorHandler'
-import type { ErrorContext, ErrorLevel, OperationType } from '@/types/error'
+import { ErrorHandlerImpl, createErrorContext, defaultErrorHandler } from '@/extras/error/ErrorHandler.js'
+import type { ErrorContext, ErrorLevel, OperationType } from '@/types/error.js'
 
 describe('ErrorHandlerImpl', () => {
   let errorHandler: ErrorHandlerImpl

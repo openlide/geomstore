@@ -2,11 +2,12 @@
  * GeomStore - 内置插件
  */
 
-import type { Store, State } from '../types/store'
-import type { Plugin } from '../types/plugin'
-import type { PersistenceOptions, StorageBackend } from '../types/persistence'
-import { isPlainObject } from '../core/utils/helpers'
-import { isProduction } from '../core/store/utils'
+import type { Store, State } from '../types/store.js'
+import type { Plugin } from '../types/plugin.js'
+import type { PersistenceOptions, StorageBackend } from '../types/persistence.js'
+import { isPlainObject } from '../core/utils/helpers.js'
+import { isProduction } from '../core/store/utils.js'
+import { registerGlobalEntry } from './globalRegistry.js'
 
 /**
  * 运行时检测异步存储后端。
@@ -24,6 +25,9 @@ function assertSyncStorageResult(result: unknown, method: string): void {
   }
 }
 
+/**
+ * 日志插件：将 Action 调用（名称、参数、耗时、异常）输出到控制台
+ */
 export const loggerPlugin: Plugin = {
   name: 'logger',
 
@@ -100,6 +104,15 @@ Object.defineProperty(_persistencePluginFactory, 'name', {
 ;(_persistencePluginFactory as unknown as Plugin).install = <S extends State>(store: Store<S>, pluginOptions?: PersistenceOptions<S>) =>
   installPersistence(store, pluginOptions)
 
+/**
+ * 持久化插件（可作工厂直接调用）
+ *
+ * - 直接使用：`store.use(persistencePlugin)` 采用默认配置
+ * - 配置使用：`store.use(persistencePlugin({ key, filter, debounce }))`
+ *
+ * 仅支持**同步**存储后端（如 `wx.getStorageSync` 或 `WxStorageBackend`）：
+ * 后端方法返回 Promise 时会显式抛错，避免异步写入静默丢数据。
+ */
 export const persistencePlugin: Plugin & {
   <S extends State = State>(options?: PersistenceOptions<S>): Plugin
 } = _persistencePluginFactory as Plugin & {
@@ -273,19 +286,12 @@ export const devtoolsPlugin: Plugin = {
 
     console.log(`[GeomStore] Plugin "devtools" installed`)
 
-    // 记录本实例注册进全局表的条目，供卸载时按身份守卫清理：
-    // 同一 store.name 后装的第二实例会覆盖这些条目，卸载第一实例时若无条件 delete
-    // 会误删第二实例的接口（与 timeTravelPlugin/analyzerPlugin 的守卫模式对齐）
-    let registeredDevtoolsAPI: unknown
+    // 全局调试入口：STORES 注册 store 实例、DEVTOOLS 注册 API；
+    // 卸载按身份守卫清理（registerGlobalEntry 内实现，与 timeTravel/analyzer 共用）
+    const unregisterStores = registerGlobalEntry('__GEOMSTORE_STORES__', store.name, store)
+    console.log(`[GeomStore] DevTools enabled. Access store at:`, `globalThis.__GEOMSTORE_STORES__["${store.name}"]`)
 
-    if (typeof globalThis !== 'undefined') {
-      const globalObj = globalThis as unknown as Record<string, Record<string, unknown>>
-      globalObj.__GEOMSTORE_STORES__ = globalObj.__GEOMSTORE_STORES__ || {}
-      globalObj.__GEOMSTORE_STORES__[store.name] = store
-
-      console.log(`[GeomStore] DevTools enabled. Access store at:`, `globalThis.__GEOMSTORE_STORES__["${store.name}"]`)
-
-      const devtoolsAPI = {
+    const devtoolsAPI = {
         getStoreInfo: () => ({
           name: store.name,
           state: store.getState(),
@@ -325,29 +331,26 @@ export const devtoolsPlugin: Plugin = {
         destroy: () => store.destroy(),
       }
 
-      globalObj.__GEOMSTORE_DEVTOOLS__ = globalObj.__GEOMSTORE_DEVTOOLS__ || {}
-      globalObj.__GEOMSTORE_DEVTOOLS__[store.name] = devtoolsAPI
-      registeredDevtoolsAPI = devtoolsAPI
-
-      console.log(`[GeomStore][devtools] Access API at: globalThis.__GEOMSTORE_DEVTOOLS__["${store.name}"]`)
-    }
+    const unregisterDevtools = registerGlobalEntry('__GEOMSTORE_DEVTOOLS__', store.name, devtoolsAPI)
+    console.log(`[GeomStore][devtools] Access API at: globalThis.__GEOMSTORE_DEVTOOLS__["${store.name}"]`)
 
     return () => {
-      if (typeof globalThis !== 'undefined') {
-        const globalObj = globalThis as unknown as Record<string, Record<string, unknown>>
-        // 身份守卫：同 store.name 后装的第二实例会覆盖这两个条目，
-        // 无条件 delete 会在卸载第一实例时误删第二实例的接口
-        if (globalObj.__GEOMSTORE_STORES__?.[store.name] === store) {
-          delete globalObj.__GEOMSTORE_STORES__[store.name]
-        }
-        if (registeredDevtoolsAPI !== undefined && globalObj.__GEOMSTORE_DEVTOOLS__?.[store.name] === registeredDevtoolsAPI) {
-          delete globalObj.__GEOMSTORE_DEVTOOLS__[store.name]
-        }
-      }
+      unregisterStores()
+      unregisterDevtools()
     }
   },
 }
 
+/**
+ * 内置插件集合（按 logger → persistence → devtools 顺序注册）
+ *
+ * @example
+ * ```ts
+ * import { builtinPlugins } from '@openlide/geomstore/extras/plugins'
+ *
+ * builtinPlugins.forEach((plugin) => store.use(plugin))
+ * ```
+ */
 export const builtinPlugins = [loggerPlugin, persistencePlugin, devtoolsPlugin]
 
-export type { PersistenceOptions } from '../types/persistence'
+export type { PersistenceOptions } from '../types/persistence.js'

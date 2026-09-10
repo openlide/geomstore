@@ -3,9 +3,9 @@
  * 目标覆盖率: 95%+
  */
 
-import { StoreCacheManager } from '@/core/store/StoreCache'
-import { LRUCache } from '@/core/cache/LRUCache'
-import type { State } from '@/types/store'
+import { StoreCacheManager } from '@/core/store/StoreCache.js'
+import { LRUCache } from '@/core/cache/LRUCache.js'
+import type { State } from '@/types/store.js'
 
 describe('StoreCacheManager', () => {
   const createCacheManager = (ttl = 0) => {
@@ -179,17 +179,6 @@ describe('StoreCacheManager', () => {
       expect(manager.get('count', () => 0)).toBe(0)
     })
 
-    it('应该正确删除缓存值', () => {
-      const manager = createCacheManager()
-      manager.enable(undefined, () => 1, ['count'])
-
-      manager.set('count', 5)
-      expect(manager.get('count', () => 0)).toBe(5)
-
-      manager.delete('count')
-      // 删除后应该返回新获取的值
-      expect(manager.get('count', () => 10)).toBe(10)
-    })
   })
 
   describe('invalidate', () => {
@@ -339,10 +328,14 @@ describe('StoreCacheManager', () => {
       const state = { count: 1, name: 'test' }
       const stateKeys: Array<'count' | 'name'> = ['count', 'name']
 
-      // 传入 keys 时走 keys.forEach 分支，不走 else if (stateKeys) 分支
+      // 传入 keys 时走 keys.forEach 分支，不走 else if (stateKeys) 分支：
+      // 仅 'count' 被纳入缓存，'name' 的读取应回落 getter
       manager.enable(['count'], (key) => state[key], stateKeys)
-      expect(manager.cacheKeys).toBeDefined()
-      expect(manager.cacheKeys!.has('count')).toBe(true)
+      expect(manager.get('count', () => 0)).toBe(1)
+
+      const nameGetter = jest.fn(() => state.name)
+      expect(manager.get('name', nameGetter)).toBe('test')
+      expect(nameGetter).toHaveBeenCalled()
     })
 
     it('enable 不传 keys 但传 stateKeys 时应初始化所有状态键', () => {
@@ -386,23 +379,11 @@ describe('StoreCacheManager', () => {
       expect(getter).toHaveBeenCalled()
     })
 
-    it('cacheKeys getter 应返回 undefined 当未启用缓存键过滤时', () => {
-      const manager = createCacheManager()
-      // 未调用 enable 前，cacheKeys 应为 undefined
-      expect(manager.cacheKeys).toBeUndefined()
-
-      // enable 不传 keys
-      manager.enable(undefined, () => 0, ['count'])
-      expect(manager.cacheKeys).toBeUndefined()
-    })
-
-    it('disable 后 cacheKeys 应为 undefined', () => {
+    it('disable 后缓存应被禁用', () => {
       const manager = createCacheManager()
       manager.enable(['count'], () => 1)
-      expect(manager.cacheKeys).toBeDefined()
 
       manager.disable()
-      expect(manager.cacheKeys).toBeUndefined()
       expect(manager.enabled).toBe(false)
     })
 

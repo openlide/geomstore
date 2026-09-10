@@ -10,12 +10,12 @@
  * @module StateProxy
  */
 
-import type { State } from '../../types/store'
-import type { InternalStateProtectionConfig, ProxyCache } from './types'
-import { isProduction, createMutationErrorMessage } from './utils'
+import type { State } from '../../types/store.js'
+import type { InternalStateProtectionConfig, ProxyCache } from './types.js'
+import { isProduction, createMutationErrorMessage } from './utils.js'
 
-/** 需要拦截的数组变异方法（模块级常量，避免在 Proxy get 陷阱中重复分配） */
-const ARRAY_MUTATING_METHODS = ['push', 'pop', 'shift', 'unshift', 'splice', 'sort', 'reverse', 'fill', 'copyWithin']
+/** 需要拦截的数组变异方法（模块级 Set：get 陷阱 O(1) 命中，避免 includes 线性扫描） */
+const ARRAY_MUTATING_METHODS = new Set(['push', 'pop', 'shift', 'unshift', 'splice', 'sort', 'reverse', 'fill', 'copyWithin'])
 
 /**
  * 内建对象判定：这些对象经 Proxy 包装后内部槽位语义被破坏——
@@ -81,14 +81,44 @@ export class StateProxyManager<S extends State = State> {
   }
 
   /**
-   * 使 Proxy 缓存失效
+   * 生成一组写保护陷阱（set / deleteProperty / defineProperty）。
    *
-   * 同一对象被重新挂到状态树其他位置时，缓存 Proxy 闭包中的 path 可能保持旧值，
-   * 仅影响直接变异报错消息中的路径展示，读写语义不受影响。
+   * deep / shallow / array 三种代理的写语义完全一致（内部访问放行；外部访问经
+   * _handleIllegalMutation 校验后抛错或放行），仅「非法写路径」的拼接格式不同，
+   * 故以 formatPath 参数化，三处复用同一组陷阱而非各写 9 份。
+   *
+   * 路径仅在「外部访问」分支内拼接：绝大多数写入是内部访问（setState / $patch /
+   * $replaceState），避免每次写入都做无谓的字符串分配。
    */
-  invalidateCache(obj?: object): void {
-    if (obj) {
-      this._proxyCache.delete(obj)
+  private _makeWriteTraps<T extends object>(
+    formatPath: (key: string | symbol) => string,
+  ): Pick<ProxyHandler<T>, 'set' | 'deleteProperty' | 'defineProperty'> {
+    const self = this
+    return {
+      set(obj: T, key: string | symbol, value: unknown): boolean {
+        if (!self._isInternalAccess()) {
+          // 拒绝路径总是抛错；生产 warn/silent 处理后放行写入
+          self._handleIllegalMutation(formatPath(key), value)
+        }
+        (obj as unknown as Record<string | symbol, unknown>)[key] = value
+        return true
+      },
+      deleteProperty(obj: T, key: string | symbol): boolean {
+        if (!self._isInternalAccess()) {
+          // 拒绝路径总是抛错；生产 warn/silent 处理后放行删除
+          self._handleIllegalMutation(formatPath(key), undefined, 'delete')
+        }
+        delete (obj as unknown as Record<string | symbol, unknown>)[key]
+        return true
+      },
+      defineProperty(obj: T, key: string | symbol, descriptor: PropertyDescriptor): boolean {
+        if (!self._isInternalAccess()) {
+          // 拒绝路径总是抛错；生产 warn/silent 处理后放行定义
+          self._handleIllegalMutation(formatPath(key), descriptor.value, 'defineProperty')
+        }
+        Object.defineProperty(obj, key, descriptor)
+        return true
+      },
     }
   }
 
@@ -119,7 +149,7 @@ export class StateProxyManager<S extends State = State> {
         }
 
         // 仅在需要递归保护时才拼接路径，避免原语访问的字符串分配开销
-        const currentPath = path ? `${path}.${String(key)}` : String(key)
+        const currentPath = self._joinPath(path, key)
 
         // 数组特殊处理（带缓存，避免每次访问创建新 Proxy）
         if (Array.isArray(value)) {
@@ -144,47 +174,21 @@ export class StateProxyManager<S extends State = State> {
         return nestedProxy
       },
 
-      /** 写入拦截：阻止外部修改 */
-      set(obj: T, key: string | symbol, value: unknown): boolean {
-        const fullPath = path ? `${path}.${String(key)}` : String(key)
-
-        if (!self._isInternalAccess()) {
-          // 拒绝路径总是抛错；生产 warn/silent 处理后放行写入
-          self._handleIllegalMutation(fullPath, value)
-        }
-
-        ;(obj as Record<string | symbol, unknown>)[key] = value
-        return true
-      },
-
-      /** 删除拦截：阻止外部删除 */
-      deleteProperty(obj: T, key: string | symbol): boolean {
-        const fullPath = path ? `${path}.${String(key)}` : String(key)
-
-        if (!self._isInternalAccess()) {
-          // 拒绝路径总是抛错；生产 warn/silent 处理后放行删除
-          self._handleIllegalMutation(fullPath, undefined, 'delete')
-        }
-
-        delete (obj as Record<string | symbol, unknown>)[key]
-        return true
-      },
-
-      /** 属性描述符拦截 */
-      defineProperty(obj: T, key: string | symbol, descriptor: PropertyDescriptor): boolean {
-        const fullPath = path ? `${path}.${String(key)}` : String(key)
-
-        if (!self._isInternalAccess()) {
-          // 拒绝路径总是抛错；生产 warn/silent 处理后放行定义
-          self._handleIllegalMutation(fullPath, descriptor.value, 'defineProperty')
-        }
-
-        Object.defineProperty(obj, key, descriptor)
-        return true
-      },
+      // 写入/删除/描述符拦截：与浅/数组代理共用同一组陷阱，仅路径拼接格式不同（点号路径）
+      ...self._makeWriteTraps<T>((key) => self._joinPath(path, key)),
     })
 
     return proxy
+  }
+
+  /**
+   * 拼接保护代理的路径（根路径为空串，不产生前导点）
+   *
+   * 深代理的 get 与写入陷阱总以非空 path 调用；浅代理只用于状态根、以空串调用。
+   * 抽为共用方法既消除三处重复的字面量，也让两侧分支都被真实调用覆盖。
+   */
+  private _joinPath(path: string, key: string | symbol): string {
+    return path === '' ? String(key) : `${path}.${String(key)}`
   }
 
   /**
@@ -197,43 +201,8 @@ export class StateProxyManager<S extends State = State> {
       get(obj: T, key: string | symbol): unknown {
         return (obj as Record<string | symbol, unknown>)[key]
       },
-
-      set(obj: T, key: string | symbol, value: unknown): boolean {
-        const fullPath = path ? `${path}.${String(key)}` : String(key)
-
-        if (!self._isInternalAccess()) {
-          // 拒绝路径总是抛错；生产 warn/silent 处理后放行写入
-          self._handleIllegalMutation(fullPath, value)
-        }
-
-        ;(obj as Record<string | symbol, unknown>)[key] = value
-        return true
-      },
-
-      deleteProperty(obj: T, key: string | symbol): boolean {
-        const fullPath = path ? `${path}.${String(key)}` : String(key)
-
-        if (!self._isInternalAccess()) {
-          // 拒绝路径总是抛错；生产 warn/silent 处理后放行删除
-          self._handleIllegalMutation(fullPath, undefined, 'delete')
-        }
-
-        delete (obj as Record<string | symbol, unknown>)[key]
-        return true
-      },
-
-      /** 属性描述符拦截：defineProperty 可绕过 set 陷阱写入，必须同等拦截 */
-      defineProperty(obj: T, key: string | symbol, descriptor: PropertyDescriptor): boolean {
-        const fullPath = path ? `${path}.${String(key)}` : String(key)
-
-        if (!self._isInternalAccess()) {
-          // 拒绝路径总是抛错；生产 warn/silent 处理后放行定义
-          self._handleIllegalMutation(fullPath, descriptor.value, 'defineProperty')
-        }
-
-        Object.defineProperty(obj, key, descriptor)
-        return true
-      },
+      // 写入/删除/描述符拦截：与深/数组代理共用同一组陷阱（点号路径）
+      ...self._makeWriteTraps<T>((key) => self._joinPath(path, key)),
     })
   }
 
@@ -287,7 +256,7 @@ export class StateProxyManager<S extends State = State> {
         }
 
         // 数组方法代理
-        if (typeof key === 'string' && ARRAY_MUTATING_METHODS.includes(key)) {
+        if (typeof key === 'string' && ARRAY_MUTATING_METHODS.has(key)) {
           return function (...args: unknown[]) {
             if (!self._isInternalAccess()) {
               // 拒绝路径总是抛错；生产 warn/silent 处理后放行执行
@@ -302,43 +271,8 @@ export class StateProxyManager<S extends State = State> {
         return self._wrapArrayChild((arr as unknown as Record<string | symbol, unknown>)[key], path, `.${String(key)}`)
       },
 
-      set(arr: T, key: string | symbol, value: unknown): boolean {
-        const fullPath = `${path}[${String(key)}]`
-
-        if (!self._isInternalAccess()) {
-          // 拒绝路径总是抛错；生产 warn/silent 处理后放行写入
-          self._handleIllegalMutation(fullPath, value)
-        }
-
-        ;(arr as unknown as Record<string | symbol, unknown>)[key] = value
-        return true
-      },
-
-      deleteProperty(arr: T, key: string | symbol): boolean {
-        const fullPath = `${path}[${String(key)}]`
-
-        if (!self._isInternalAccess()) {
-          // 拒绝路径总是抛错；生产 warn/silent 处理后放行删除
-          self._handleIllegalMutation(fullPath, undefined, 'delete')
-        }
-
-        delete (arr as unknown as Record<string | symbol, unknown>)[key]
-        return true
-      },
-
-      /** 属性描述符拦截：Object.defineProperty(arr, 0, {...}) 不经过 set 陷阱，
-       *  缺失该陷阱时数组写保护可被直接绕过 */
-      defineProperty(arr: T, key: string | symbol, descriptor: PropertyDescriptor): boolean {
-        const fullPath = `${path}[${String(key)}]`
-
-        if (!self._isInternalAccess()) {
-          // 拒绝路径总是抛错；生产 warn/silent 处理后放行定义
-          self._handleIllegalMutation(fullPath, descriptor.value, 'defineProperty')
-        }
-
-        Object.defineProperty(arr, key, descriptor)
-        return true
-      },
+      // 写入/删除/描述符拦截：与深/浅代理共用同一组陷阱（数组路径格式 path[key]）
+      ...self._makeWriteTraps<T>((key) => `${path}[${String(key)}]`),
     })
   }
 

@@ -2,6 +2,8 @@
  * GeomStore - 组合类型定义
  */
 
+import type { State } from './store.js'
+
 /**
  * 组合选项
  */
@@ -53,7 +55,13 @@ export type ComposedStore<S = Record<string, unknown>> = {
  */
 export interface StoreLike {
   name: string
-  state: Record<string, unknown>
+  /**
+   * 状态约束用 `State`（即 `object`）而非 `Record<string, unknown>`：后者只接受带索引签名的类型，
+   * 会把未声明索引签名的业务 interface（`interface UserState { … }`）拒之门外，
+   * 与 Store 自身 `State = object` 的口径不一致（见 types/store.ts 的说明）。
+   * 状态的具体类型仍由 ExtractStates 从传入的 Store 元组精确提取，此处放宽不损失精度。
+   */
+  state: State
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   actions: Record<string, (...args: any[]) => any>
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

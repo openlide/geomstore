@@ -5,8 +5,8 @@
  *
  */
 
-import type { Store, State } from '../../types/store'
-import { deepCloneState } from '../utils/clone'
+import type { Store, State } from '../../types/store.js'
+import { deepCloneState } from '../utils/clone.js'
 
 /**
  * Store注册表类

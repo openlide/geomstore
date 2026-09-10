@@ -2,7 +2,7 @@
  * GeomStore v1.0 - PerformanceMonitor测试
  */
 
-import { PerformanceMonitor } from '@/core/performance/PerformanceMonitor'
+import { PerformanceMonitor } from '@/core/performance/PerformanceMonitor.js'
 
 describe('PerformanceMonitor', () => {
   it('should create performance monitor', () => {

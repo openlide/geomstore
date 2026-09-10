@@ -2,10 +2,10 @@
  * GeomStore v1.0 - composeStore 测试
  */
 
-import { createStore, type Store } from '@/index'
-import type { State } from '@/types/store'
-import { composeStore, createStoreTree } from '@/core/compose/composeStore'
-import * as storeUtils from '@/core/store/utils'
+import { createStore, type Store } from '@/index.js'
+import type { State } from '@/types/store.js'
+import { composeStore, createStoreTree } from '@/core/compose/composeStore.js'
+import * as storeUtils from '@/core/store/utils.js'
 
 describe('composeStore', () => {
   let store1: any
@@ -879,7 +879,7 @@ describe('composeStore', () => {
       expect(() => composed.destroy()).not.toThrow()
     })
 
-    test('subscribe 单路复用：句柄随最后一个监听器退订而清空', () => {
+    test('subscribe 单路复用：子 store 订阅随之建立，且不随监听器退订撤销（仅 destroy 释放）', () => {
       const composed = composeStore([store1, store2])
 
       const unsubscribe1 = composed.subscribe(() => {})
@@ -893,8 +893,36 @@ describe('composeStore', () => {
       expect((composed as any)._storeUnsubscribers.length).toBe(2)
 
       unsubscribe2()
-      // 最后一个监听器退订：句柄记录同步清空，释放子 store 订阅额度
+      // 子 store 订阅同时承担「合并缓存失效」职责，退订监听器后必须保留，
+      // 否则 getState() 会返回陈旧缓存、且重新订阅无法重建通知
+      expect((composed as any)._storeUnsubscribers.length).toBe(2)
+
+      composed.destroy()
+      // 唯一释放点：destroy()
       expect((composed as any)._storeUnsubscribers.length).toBe(0)
+    })
+
+    test('REGR-COMP-002: 退订最后一个监听器后，子 store 变更仍反映在 getState（缓存不陈旧）', () => {
+      const composed = composeStore([store1, store2])
+      const unsubscribe = composed.subscribe(() => {})
+      unsubscribe()
+
+      expect(composed.getState()).toHaveProperty('name', 'Alice')
+      // 子 store 变更后合并缓存必须失效，否则返回陈旧状态
+      store1.setState('name', 'Bob')
+      expect(composed.getState()).toHaveProperty('name', 'Bob')
+    })
+
+    test('REGR-COMP-003: 退订后重新订阅，仍能收到后续子 store 通知', async () => {
+      const composed = composeStore([store1, store2])
+      const unsubscribe = composed.subscribe(() => {})
+      unsubscribe()
+
+      const listener = jest.fn()
+      composed.subscribe(listener)
+      store1.setState('age', 26)
+      await Promise.resolve()
+      expect(listener).toHaveBeenCalled()
     })
 
     test('REGR-COMP-001: destroy 后调用 _notifyListeners 应静默返回', () => {
@@ -1679,8 +1707,8 @@ describe('composeStore', () => {
   })
 
   describe('覆盖率补全 - ComposedStore 构造函数 options 缺省', () => {
-    it('COV-022: 不传options参数时应该使用默认值', () => {
-      const { ComposedStore } = require('@/core/compose/composeStore')
+    it('COV-022: 不传options参数时应该使用默认值', async () => {
+      const { ComposedStore } = await import('@/core/compose/composeStore.js')
       const composed = new ComposedStore([store1, store2])
 
       expect(composed.name).toBe('composed')
@@ -2403,7 +2431,7 @@ describe('R5 回归：ComposedStore 订阅计数语义与 Store 对齐', () => {
     composed.destroy()
   })
 
-  it('全部份数退订后才撤销对子 store 的订阅', async () => {
+  it('全部份数退订后组合层不再通知，但子 store 订阅保留至 destroy', async () => {
     const s1 = createStore({ name: 'r5-sub-c', state: { v: 0 } })
     const composed = composeStore([s1])
     const listener = jest.fn()
@@ -2418,10 +2446,11 @@ describe('R5 回归：ComposedStore 订阅计数语义与 Store 对齐', () => {
     await Promise.resolve()
 
     expect(listener).toHaveBeenCalledTimes(0)
-    // 组合层已无监听器：子 store 的订阅额度应被释放
-    expect((s1 as unknown as { _subscriptionManager: { size: number } })._subscriptionManager.size).toBe(0)
+    // 子 store 订阅承担合并缓存失效职责，保留至 destroy（而非随监听器退订释放）
+    expect((s1 as unknown as { _subscriptionManager: { size: number } })._subscriptionManager.size).toBe(1)
 
     composed.destroy()
+    expect((s1 as unknown as { _subscriptionManager: { size: number } })._subscriptionManager.size).toBe(0)
   })
 
   it('对照：普通 Store 的计数语义（注册两次通知两次，退订一次仍通知）', () => {

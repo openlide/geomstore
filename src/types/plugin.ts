@@ -6,7 +6,7 @@
  * - 依赖方向：plugins → core → types，禁止反向依赖
  */
 
-import type { Store } from './store'
+import type { Actions, Getters, State, Store } from './store.js'
 
 /**
  * 钩子名称枚举
@@ -46,13 +46,30 @@ export interface IHookSystem {
 
 /**
  * 插件安装钩子 - 返回可选的卸载函数
+ *
+ * 泛型只开放**状态类型 S**：插件实现几乎只需要精确的 state 形状（如 `filter: (state) => …`），
+ * actions / getters 使用其默认约束即可。若把 A / G 也开放，调用方传具体 Store 时会因
+ * 参数逆变而在每个使用点被迫断言。
+ *
+ * 省略类型参数即得「适用于任意 Store」的插件（`Plugin` = `Plugin<State>`），
+ * 例如 logger / analyzer 这类与状态形状无关的插件。
  */
-export type PluginHook = (store: Store) => void | (() => void)
+export type PluginHook<S extends State = State> = (store: Store<S, Actions, Getters<S>>) => void | (() => void)
 
 /**
  * 插件接口
+ *
+ * ```ts
+ * const plugin: Plugin<UserState> = {
+ *   name: 'user-analytics',
+ *   install(store) {            // store: Store<UserState, …>，getState() 类型精确
+ *     store.subscribe((state) => track(state.userInfo))
+ *   },
+ * }
+ * const uninstall = store.use(plugin)   // 无需断言
+ * ```
  */
-export interface Plugin {
+export interface Plugin<S extends State = State> {
   name: string
-  install: PluginHook
+  install: PluginHook<S>
 }

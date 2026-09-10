@@ -17,7 +17,8 @@ import type {
   PerformanceOptions,
   PerformanceStats,
   MetricType,
-} from '../../types/performance'
+} from '../../types/performance.js'
+import { computePerformanceStats } from './metrics.js'
 
 /**
  * 性能监控器实现类
@@ -330,71 +331,7 @@ export class PerformanceMonitor implements PerformanceMonitorInterface {
    * ```
    */
   getStats(): PerformanceStats {
-    if (this.metrics.length === 0) {
-      return {
-        avgDuration: 0,
-        maxDuration: 0,
-        minDuration: 0,
-        totalCount: 0,
-        thresholdExceeded: 0,
-        byOperation: {},
-      }
-    }
-
-    // 循环累计而非 Math.max(...durations)：大样本下 spread 栈溢出
-    let maxDuration = -Infinity
-    let minDuration = Infinity
-    let totalDuration = 0
-    for (const m of this.metrics) {
-      totalDuration += m.duration
-      if (m.duration > maxDuration) maxDuration = m.duration
-      if (m.duration < minDuration) minDuration = m.duration
-    }
-    const avgDuration = totalDuration / this.metrics.length
-    const thresholdExceeded = this.metrics.filter((m) => m.exceedThreshold).length
-
-    // 按操作分组统计（单次遍历，避免 O(n×k) 的重复 filter）
-    const byOperation: Record<
-      string,
-      {
-        count: number
-        avgDuration: number
-        maxDuration: number
-      }
-    > = {}
-
-    // 累加器：记录每个操作的总时长
-    const opSums: Record<string, number> = {}
-
-    for (const metric of this.metrics) {
-      const op = metric.operation
-      if (!byOperation[op]) {
-        byOperation[op] = {
-          count: 0,
-          avgDuration: 0,
-          maxDuration: 0,
-        }
-        opSums[op] = 0
-      }
-
-      byOperation[op].count++
-      byOperation[op].maxDuration = Math.max(byOperation[op].maxDuration, metric.duration)
-      opSums[op] += metric.duration
-    }
-
-    // 计算平均值
-    for (const op in byOperation) {
-      byOperation[op].avgDuration = opSums[op] / byOperation[op].count
-    }
-
-    return {
-      avgDuration,
-      maxDuration,
-      minDuration,
-      totalCount: this.metrics.length,
-      thresholdExceeded,
-      byOperation,
-    }
+    return computePerformanceStats(this.metrics)
   }
 
   /**
@@ -579,4 +516,4 @@ export class PerformanceMonitor implements PerformanceMonitorInterface {
 /**
  * 默认导出
  */
-export type { PerformanceMetrics, PerformanceOptions, PerformanceStats, MetricType } from '../../types/performance'
+export type { PerformanceMetrics, PerformanceOptions, PerformanceStats, MetricType } from '../../types/performance.js'

@@ -3,8 +3,8 @@
  * @file tests/unit/plugins/builtin.test.ts
  */
 
-import { createStore } from '@/index'
-import { loggerPlugin, persistencePlugin, devtoolsPlugin } from '@/extras/plugins'
+import { createStore } from '@/index.js'
+import { loggerPlugin, persistencePlugin, devtoolsPlugin } from '@/extras/plugins.js'
 
 describe('Builtin Plugins - 内置插件', () => {
   describe('loggerPlugin', () => {
@@ -444,7 +444,6 @@ describe('Builtin Plugins - 内置插件', () => {
       mockGetStorageSync.mockReturnValue(null)
 
       // 直接测试 storageAdapter 的 removeItem
-      const { StorageBackend: _StorageBackend } = require('@/plugins/builtin')
 
       // 创建 wx 适配器 storage
       const wxStorage = {
@@ -1231,10 +1230,10 @@ describe('Builtin Plugins 补充覆盖', () => {
       process.env.NODE_ENV = originalEnv
     })
 
-    it('DEVTOOLS-COVER-001: 生产环境应该打印警告并返回空卸载函数', () => {
+    it('DEVTOOLS-COVER-001: 生产环境应该打印警告并返回空卸载函数', async () => {
       // 重新加载模块以清除 isProduction 缓存
-      const { createStore: _createStore } = require('@/index')
-      const { devtoolsPlugin: _devtoolsPlugin } = require('@/extras/plugins')
+      const { createStore: _createStore } = await import('@/index.js')
+      const { devtoolsPlugin: _devtoolsPlugin } = await import('@/extras/plugins.js')
 
       const store = _createStore({ name: 'prod-store', state: { count: 0 } })
       const consoleWarnSpy = jest.spyOn(console, 'warn').mockImplementation()
@@ -1266,9 +1265,9 @@ describe('Builtin Plugins 补充覆盖', () => {
       process.env.NODE_ENV = originalEnv
     })
 
-    it('LOGGER-COVER-001: 生产环境应该返回空卸载函数且不订阅任何钩子', () => {
-      const { createStore: _createStore } = require('@/index')
-      const { loggerPlugin: _loggerPlugin } = require('@/extras/plugins')
+    it('LOGGER-COVER-001: 生产环境应该返回空卸载函数且不订阅任何钩子', async () => {
+      const { createStore: _createStore } = await import('@/index.js')
+      const { loggerPlugin: _loggerPlugin } = await import('@/extras/plugins.js')
 
       const store = _createStore({ name: 'prod-logger-store', state: { count: 0 } })
       const consoleLogSpy = jest.spyOn(console, 'log').mockImplementation()

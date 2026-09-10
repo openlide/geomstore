@@ -8,20 +8,24 @@
 /**
  * 状态版本号标记键。
  *
- * 使用 Symbol.for 全局注册：core/store 与 core/selector 分处不同模块，
+ * 使用 Symbol.for 全局注册：core/store 与 extras/selector 分处不同模块，
  * 需保证取到同一个键。
  *
  * 该属性定义为不可枚举，因此 Object.keys / JSON.stringify / deepCloneState
  * 都不会感知它——不会污染状态快照、序列化结果与 setData 下发数据。
  */
-export const STATE_VERSION = Symbol.for('geomstore.stateVersion')
+const STATE_VERSION = Symbol.for('geomstore.stateVersion')
 
 /**
  * 在状态对象上定义版本号 getter。
  *
  * 用 getter 而非普通值：Store 的变更计数在 setState / $patch / $replaceState
- * 以及状态保护 Proxy 的写入陷阱中递增，用 getter 动态读取可免去在每条写入
- * 路径上同步更新，也不会因遗漏某条路径而返回陈旧版本号。
+ * 以及 action 上下文的可写视图（this.state 脏跟踪 Proxy）写入陷阱中递增，
+ * 用 getter 动态读取可免去在每条写入路径上同步更新。
+ *
+ * 注意：对外只读视图 `store.state` 的保护 Proxy 仅拦截外部写入，其「放行」分支
+ * （生产 warn/silent）不递增计数——此类直写属被保护机制明确劝退的反模式，
+ * 版本号不反映它；请始终通过 setState/$patch/$replaceState 修改状态。
  *
  * 定义失败（状态对象被冻结或不可扩展）时静默忽略：
  * 消费者会自动回退到 deepEqual 比较，仅损失优化而不影响正确性。

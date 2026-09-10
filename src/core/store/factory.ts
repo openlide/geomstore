@@ -1,5 +1,5 @@
-import { Store } from './Store'
-import type { StoreConfig, State, Actions, Getters } from '../../types/store'
+import { Store } from './Store.js'
+import type { StoreConfig, State, Actions, Getters } from '../../types/store.js'
 
 /**
  * 创建 Store 实例，支持完整的类型推断

@@ -1,4 +1,4 @@
-import type { Plugin, IHookSystem } from './plugin'
+import type { Plugin, IHookSystem } from './plugin.js'
 
 /**
  * GeomStore - Store类型定义
@@ -71,7 +71,7 @@ export type Actions = Record<string, (...args: any[]) => any>
  * 创建带 ThisType 的 Actions 类型
  * 这是方案3的核心：通过 ThisType 注入 this 类型
  */
-export type ActionsWithThis<S extends State, A extends Actions> = A & ThisType<ActionContext<S, A>>
+type ActionsWithThis<S extends State, A extends Actions> = A & ThisType<ActionContext<S, A>>
 
 /**
  * Getters类型 - 支持类型推断
@@ -102,27 +102,6 @@ export type InferGetterReturn<G extends Record<string, (state: any) => any>, K e
  * 从 Actions 类型提取所有 action 名称
  */
 export type ActionNames<A extends Actions> = keyof A & string
-
-/**
- * 从 Getters 类型提取所有 getter 名称
- */
-export type GetterNames<G extends Getters> = keyof G & string
-
-/**
- * 创建类型安全的 Actions 映射
- * 用于 mapActions 的类型推断
- */
-export type MappedActions<A extends Actions, M extends (keyof A)[]> = {
-  [K in M[number] as K extends string ? K : never]: (...args: InferActionArgs<A, K>) => InferActionReturn<A, K>
-}
-
-/**
- * 创建类型安全的 Getters 映射
- * 用于 mapGetters 的类型推断
- */
-export type MappedGetters<S extends State, G extends Getters<S>, M extends (keyof G)[]> = {
-  [K in M[number] as K extends string ? K : never]: InferGetterReturn<G, K>
-}
 
 // ==================== 免泛型自动推导支持 ====================
 
@@ -167,7 +146,7 @@ export type SubscriberLimitPolicy = 'evict-oldest' | 'throw'
 /**
  * 订阅配置选项
  */
-export interface SubscriptionOptions {
+interface SubscriptionOptions {
   /** 最大订阅者数量（默认 50） */
   maxSubscribers?: number
   /** 订阅者达到上限时的策略（默认 'evict-oldest'） */
@@ -177,7 +156,7 @@ export interface SubscriptionOptions {
 /**
  * 通知行为配置选项
  */
-export interface NotifyOptions {
+interface NotifyOptions {
   /**
    * 通知监听器前是否深拷贝状态（默认 true）。
    * 设为 false 进入零拷贝模式：监听器收到只读保护 Proxy（状态保护关闭时为原始引用，
@@ -343,8 +322,20 @@ export interface Store<S extends State = State, A extends Actions = Actions, G e
   /** 在批量更新上下文中执行操作 */
   batch<T>(fn: () => T): T
 
-  /** 安装插件 */
-  use(plugin: Plugin): () => void
+  /**
+   * 安装插件
+   *
+   * 接受的插件需与自身状态类型匹配：`Plugin<S>`；状态无关的插件（`Plugin<State>`，
+   * 如 logger / analyzer）同样满足。返回卸载函数。
+   *
+   * 用 `NoInfer` 包住 S：该参数处于逆变位置，若参与推断，`withPageStore(store, …)`
+   * 这类调用在收集 S 的候选时会同时拿到协变与逆变候选而退回默认约束（`object`）。
+   *
+   * 为什么不改成「独立类型参数 `P extends Plugin<S>`」：那样只是把逆变比较搬进约束校验，
+   * 而 `Store` 自身含 `use` 成员 ⇒ 递归比较后失败——实测宽插件 `Plugin<State>` 会无法
+   * 赋给 `Plugin<ConcreteState>`。故保留 `NoInfer`，并把最低 TS 版本写进文档。
+   */
+  use(plugin: Plugin<NoInfer<S>>): () => void
 
   /** 销毁Store */
   destroy(): void

@@ -2,7 +2,7 @@
  * with-app-store 集成测试
  */
 
-import { createStore, withAppStore } from '@/index'
+import { createStore, withAppStore } from '@/index.js'
 
 describe('withAppStore', () => {
   type AppState = {

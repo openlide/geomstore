@@ -11,9 +11,9 @@
  * @module HookSystem
  */
 
-import type { Store } from '../../types/store'
-import type { HookName, HookHandler, IHookSystem, Plugin } from '../../types/plugin'
-import { isProduction } from '../store/utils'
+import type { Actions, Getters, State, Store } from '../../types/store.js'
+import type { HookName, HookHandler, IHookSystem, Plugin } from '../../types/plugin.js'
+import { isProduction } from '../store/utils.js'
 
 /** 钩子系统实现类，每个 Store 实例独立拥有一个 HookSystem 实例 */
 export class HookSystem implements IHookSystem {
@@ -83,8 +83,21 @@ export class HookSystem implements IHookSystem {
 
 /**
  * 安装插件到 Store（带日志与错误兜底）
+ *
+ * 泛型**只从 store 参数反推**（`plugin` 上的 S 用 `NoInfer` 排除）：该位置处于逆变，
+ * 若参与推断会把 S 拉回约束 `State`，导致具体 Store 被判为不可赋值。
+ *
+ * 备选方案「独立类型参数 `P extends Plugin<S>`」已实测否决：宽插件（`Plugin<State>`）
+ * 会在约束校验时因 `Store` 自身含 `use` 成员而递归比较失败。故保留 `NoInfer`，
+ * 其最低 TS 版本要求（≥ 5.4）已在 README 与 CHANGELOG 中声明。
+ *
+ * `plugin` 需与 store 的状态类型匹配；状态无关的插件写作 `Plugin<State>`（如 `loggerPlugin`），
+ * 对任意 Store 都适用。
  */
-export function usePlugin(plugin: Plugin, store: Store): () => void {
+export function usePlugin<S extends State, A extends Actions, G extends Getters<S>>(
+  plugin: Plugin<NoInfer<S>>,
+  store: Store<S, A, G>,
+): () => void {
   try {
     const uninstall = plugin.install(store)
     if (!isProduction()) {

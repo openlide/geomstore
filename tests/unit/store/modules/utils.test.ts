@@ -3,16 +3,16 @@
  * 目标覆盖率: 99%+
  */
 
-import { isProduction, createMutationErrorMessage, deepCloneState } from '@/core/store/utils'
+import { isProduction, createMutationErrorMessage, deepCloneState } from '@/core/store/utils.js'
 
 // 重新导入以清除模块缓存
 let _isProduction: typeof isProduction
 
 describe('store/utils', () => {
-  beforeEach(() => {
-    // 清除缓存 - 重新 require 模块
+  beforeEach(async () => {
+    // 清除缓存 - 重新导入模块（isProduction 在模块内缓存判定结果）
     jest.resetModules()
-    ;({ isProduction: _isProduction } = require('@/core/store/utils'))
+    ;({ isProduction: _isProduction } = await import('@/core/store/utils.js'))
   })
 
   describe('isProduction', () => {

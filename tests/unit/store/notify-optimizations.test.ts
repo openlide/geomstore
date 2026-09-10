@@ -10,8 +10,8 @@
  * - deepCloneState 兜底克隆：循环引用 / Date / undefined 保留
  */
 
-import { createStore } from '@/index'
-import { deepCloneState } from '@/core/store/utils'
+import { createStore } from '@/index.js'
+import { deepCloneState } from '@/core/store/utils.js'
 
 describe('通知行为优化', () => {
   describe('notify.clone（零拷贝模式）', () => {

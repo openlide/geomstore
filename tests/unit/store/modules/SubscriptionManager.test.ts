@@ -3,8 +3,8 @@
  * 目标覆盖率: 95%+
  */
 
-import { SubscriptionManager, createSubscribeFunction } from '@/core/store/SubscriptionManager'
-import type { State } from '@/types/store'
+import { SubscriptionManager, createSubscribeFunction } from '@/core/store/SubscriptionManager.js'
+import type { State } from '@/types/store.js'
 
 describe('SubscriptionManager', () => {
   const createManager = (maxSubscribers = 50) => {
@@ -191,6 +191,9 @@ describe('SubscriptionManager', () => {
         delete: () => true,
       }
       ;(manager as any)._listeners = mockMap
+      // size 现由 O(1) 计数字段 _totalCount 提供（不再遍历 _listeners 求和），
+      // 需同步设置计数，才能让 size(2) >= maxSubscribers(1) 进入驱逐分支
+      ;(manager as any)._totalCount = 2
 
       // 驱逐循环遇到 undefined firstListener 必须跳过而不是抛错
       expect(() => manager.add(jest.fn())).not.toThrow()

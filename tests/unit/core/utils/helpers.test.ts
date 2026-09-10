@@ -3,7 +3,7 @@
  * @file tests/unit/helpers/helpers.test.ts
  */
 
-import { isObject, isPlainObject, isFunction, isArray, isPromise, shallowEqual, deepEqual, deepMerge, get, set, noop, identity, uniqueId, clone } from '@/index'
+import { isObject, isPlainObject, isFunction, isArray, isPromise, shallowEqual, deepEqual, deepMerge, get, set, noop, identity, uniqueId, clone } from '@/index.js'
 
 describe('Helpers - 工具函数', () => {
   describe('类型判断函数', () => {
@@ -520,7 +520,7 @@ describe('Helpers - 工具函数', () => {
       })
 
       it('HELPERS-063d: 旧选项 deep/safe 仍兼容不抛错', () => {
-        const cloned = clone({ a: 1 }, { deep: true })
+        const cloned = clone({ a: 1 }, { mode: 'deep' })
         expect(cloned).toEqual({ a: 1 })
       })
 

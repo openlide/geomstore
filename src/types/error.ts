@@ -28,8 +28,6 @@ export interface ErrorContext {
   payload?: unknown
   /** 时间戳（缺省时由采集器使用当前时间） */
   timestamp?: number
-  /** 错误堆栈 */
-  stack?: string
 }
 
 /**
@@ -94,7 +92,6 @@ export function createErrorContext(storeName: string, operation: OperationType, 
     level,
     payload,
     timestamp: Date.now(),
-    stack: error.stack,
   }
 }
 
@@ -169,6 +166,21 @@ export interface MonitoringConfig {
 
   /** 错误上报超时（毫秒） */
   reportTimeout?: number
+
+  /**
+   * 队列容量上限（默认 1000）
+   *
+   * 超容量后按「最旧优先」淘汰：入队路径 shift 丢弃最旧错误，重入队路径裁剪队列头部。
+   * 调大可容纳突发流量，调小可约束内存占用。
+   */
+  maxQueueSize?: number
+
+  /**
+   * 「全部报告器连续失败」的重入队上限（默认 3）
+   *
+   * 超过后丢弃该批并告警，避免永久失败的批次随 batchInterval 无限空转
+   */
+  maxFlushRetries?: number
 }
 
 /**

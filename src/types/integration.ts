@@ -2,10 +2,10 @@
  * GeomStore - 集成类型定义
  */
 
-import type { State, Actions, Getters, InferActionArgs, InferActionReturn } from './store'
+import type { State, Actions, Getters, Store, InferActionArgs, InferActionReturn } from './store.js'
 
 // 重新导出供集成模块使用
-export type { Actions } from './store'
+export type { Actions } from './store.js'
 
 /**
  * 连接选项
@@ -36,7 +36,7 @@ export interface ConnectOptions<S extends State = State, A extends Actions = Act
  * 数组形式：`mapState: ['count', 'name']` → `{ count: number, name: string }`
  * 对象形式（别名映射）：`mapState: { myCount: 'count' }` → `{ myCount: number }`（值受 keyof S 约束，类型精确）
  */
-export type ExtractMappedState<
+type ExtractMappedState<
   S extends State = State,
   M extends { mapState?: readonly (keyof S)[] | Record<string, keyof S> } = { mapState?: readonly (keyof S)[] | Record<string, keyof S> },
 > =
@@ -58,7 +58,7 @@ export type ExtractMappedState<
  * 可选传入 `G`（Getters 类型）以获得精确返回值类型；
  * 未传时（默认 `Getters`）映射值收敛为 `unknown`
  */
-export type ExtractMappedGetters<
+type ExtractMappedGetters<
   M extends { mapGetters?: readonly PropertyKey[] | Record<string, PropertyKey> } = { mapGetters?: readonly PropertyKey[] | Record<string, PropertyKey> },
   G extends { [K: string]: (state: never) => unknown } = { [K: string]: (state: never) => unknown },
 > =
@@ -143,12 +143,6 @@ export type PageReservedKeys =
   | '__geomUnbinds'
 
 /**
- * Component 保留键（框架生命周期 + 内部字段），不参与自定义方法提取
- */
-export type ComponentReservedKeys =
-  'data' | 'setData' | 'methods' | 'properties' | 'lifetimes' | 'pageLifetimes' | 'observers' | 'relations' | 'externalClasses' | 'options' | '__geomUnbinds'
-
-/**
  * 从 Page 配置提取用户自定义方法（排除保留键，方法 this 不检查以避免循环兼容性）
  */
 export type PageOwnMethods<C> = {
@@ -197,12 +191,58 @@ export type PageThis<
   }
 
 /**
+ * 页面增强配置的形状（`withPageStore` 的返回类型）
+ *
+ * 与 `PageThis` 的分工：`PageThis` 描述**方法内的 `this`**（含映射 action，注入于页面实例），
+ * 本类型描述**装饰器返回的配置对象**——注入的 action 运行时绑定在实例上、并不存在于配置对象，
+ * 故这里只含 data 与框架成员。
+ *
+ * 之所以拆开：把「实例视角」直接当作「配置视角」会让返回类型声明出运行时并不存在的成员
+ * （例如 `config.increment()` 能通过编译却在运行时失败）。
+ */
+export type PageConfig<
+  S extends State,
+  M extends { mapState?: readonly (keyof S)[] | Record<string, keyof S>; mapGetters?: readonly PropertyKey[] | Record<string, PropertyKey> } = ConnectOptions<S, Actions, Getters<S>>,
+  G extends Getters<S> = Getters<S>,
+> = {
+  data: ExtractPageData<S, M, G>
+  setData: (data: Record<string, unknown>, callback?: () => void) => void
+  getTabBar?: () => { syncSelectedTab?: () => void } | undefined
+}
+
+/**
  * 组件方法 this 类型（原生精确推导）
  *
- * 与 PageThis 语义一致，由 withComponentStore 装饰器自动构造并注入。
- * Component 的自定义方法与 actions 均在 methods 命名空间内（与微信官方 Component API 一致）。
+ * **仅用于注入方法内的 `this`**（由 `WithComponentThis` 挂到 methods / lifetimes /
+ * pageLifetimes 各命名空间）。描述装饰器返回的配置形状请用 `ComponentConfig`。
+ *
+ * 关于「展平」：微信会把 `methods` 的条目提升到组件实例，所以运行时
+ * `this.add(...)` 与 `this.methods.add(...)` **都可用**；若类型只在 `methods` 下提供注入成员，
+ * 方法内就必须手写 `this` 标注。故此处把注入成员展平到顶层，同时保留 `methods` 命名空间。
  */
 export type ComponentThis<
+  S extends State,
+  A extends Actions,
+  G extends Getters<S> = Getters<S>,
+  M extends ConnectOptions<S, A, G> = ConnectOptions<S, A, G>,
+  ExtraMethods extends object = object,
+> = {
+  data: ExtractPageData<S, M, G>
+} & ExtraMethods &
+  ExtractMappedActions<A, M> & {
+    /** 配置对象上的 methods 命名空间（微信 Component 写法）；实例上这些条目被提升为顶层方法 */
+    methods: ExtraMethods & ExtractMappedActions<A, M>
+    setData: (data: Record<string, unknown>, callback?: () => void) => void
+  }
+
+/**
+ * 组件增强配置的形状（`withComponentStore` 的返回类型）
+ *
+ * 与 `ComponentThis` 的分工：配置对象上的注入 action 位于 `methods` 内（集成层确实把它们
+ * 合并进 `config.methods`，再由微信提升到实例），故这里不在顶层重复声明——否则返回类型会
+ * 声明出配置对象上并不存在的顶层方法（`config.add()` 能编译却在运行时失败）。
+ */
+export type ComponentConfig<
   S extends State,
   A extends Actions,
   G extends Getters<S> = Getters<S>,
@@ -214,3 +254,52 @@ export type ComponentThis<
 } & {
   setData: (data: Record<string, unknown>, callback?: () => void) => void
 }
+
+/**
+ * Component 配置的 this 注入类型
+ *
+ * 与 WithPageThis 的差别：Component 的用户方法与生命周期嵌套在 `methods` / `lifetimes` /
+ * `pageLifetimes` 命名空间内，而 `ThisType<T>` 只作用于**它所标注的那个对象字面量**——
+ * 挂在配置顶层不会下传到嵌套字面量。因此这里把标记挂到各命名空间本身。
+ *
+ * 用「与 `C` 交叉」而不是把 `C` 映射一遍：映射写法会让 `C` 的推断退化
+ * （`lifetimes` 等成员丢失，调用方拿到的增强配置类型不再保留原成员）。
+ */
+export type WithComponentThis<C, T> = C & {
+  methods?: ThisType<T>
+  lifetimes?: ThisType<T>
+  pageLifetimes?: ThisType<T>
+}
+
+/**
+ * 集成层挂到宿主实例上的 Store 调试 API
+ *
+ * 由 integrations/utils.ts 的 exposeStoreAPI 注入（App 集成中使用）。
+ */
+export interface HostStoreApi<S extends State = State> {
+  /** Store 实例 */
+  store: Store<S>
+  getStore(): Store<S>
+  getState(): S
+  getCached<K extends keyof S>(key: K): S[K]
+  dispatch(actionName: string, ...args: unknown[]): unknown
+  subscribe(callback: (state: S) => void): () => void
+}
+
+/**
+ * App 方法 this 类型（原生精确推导）
+ *
+ * 运行时注入（见 with-app-store.ts）：映射的 state / getters 写入 `this.globalData`，
+ * 映射的 action（bindActions）与 exposeStoreAPI 的调试方法直接挂在 App 实例上。
+ * 交叉 `Extra`（调用处传入用户配置类型 C）以保留 `globalData` 的自定义字段。
+ */
+export type AppThis<
+  S extends State,
+  A extends Actions,
+  G extends Getters<S> = Getters<S>,
+  M extends ConnectOptions<S, A, G> = ConnectOptions<S, A, G>,
+  Extra extends object = object,
+> = Extra & {
+  globalData: ExtractPageData<S, M, G>
+} & ExtractMappedActions<A, M> &
+  HostStoreApi<S>

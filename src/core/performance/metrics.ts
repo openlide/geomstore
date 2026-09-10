@@ -5,7 +5,69 @@
  *
  */
 
-import type { PerformanceMetrics, PerformanceStats } from '../../types/performance'
+import type { PerformanceMetrics, PerformanceStats } from '../../types/performance.js'
+
+/**
+ * 由指标数组计算性能统计（平均/最大/最小耗时、总次数、超阈值次数、按操作分组）。
+ *
+ * 抽为纯函数以消除 PerformanceMonitor.getStats 与 MetricsCollector.calculateStats
+ * 的重复实现（同一算法的两份拷贝）。
+ *
+ * @param metrics - 性能指标数组
+ * @returns {PerformanceStats} 性能统计对象
+ */
+export function computePerformanceStats(metrics: PerformanceMetrics[]): PerformanceStats {
+  if (metrics.length === 0) {
+    return {
+      avgDuration: 0,
+      maxDuration: 0,
+      minDuration: 0,
+      totalCount: 0,
+      thresholdExceeded: 0,
+      byOperation: {},
+    }
+  }
+
+  // 循环累计而非 Math.max(...durations)：大样本下 spread 栈溢出
+  let maxDuration = -Infinity
+  let minDuration = Infinity
+  let totalDuration = 0
+  for (const m of metrics) {
+    totalDuration += m.duration
+    if (m.duration > maxDuration) maxDuration = m.duration
+    if (m.duration < minDuration) minDuration = m.duration
+  }
+  const avgDuration = totalDuration / metrics.length
+  const thresholdExceeded = metrics.filter((m) => m.exceedThreshold).length
+
+  // 按操作分组（单次遍历，避免 O(n×k) 的重复 filter）
+  const byOperation: Record<string, { count: number; avgDuration: number; maxDuration: number }> = {}
+  // 累加器：记录每个操作的总时长
+  const opSums: Record<string, number> = {}
+  for (const metric of metrics) {
+    const op = metric.operation
+    if (!byOperation[op]) {
+      byOperation[op] = { count: 0, avgDuration: 0, maxDuration: 0 }
+      opSums[op] = 0
+    }
+    byOperation[op].count++
+    byOperation[op].maxDuration = Math.max(byOperation[op].maxDuration, metric.duration)
+    opSums[op] += metric.duration
+  }
+  // 计算平均值
+  for (const op in byOperation) {
+    byOperation[op].avgDuration = opSums[op] / byOperation[op].count
+  }
+
+  return {
+    avgDuration,
+    maxDuration,
+    minDuration,
+    totalCount: metrics.length,
+    thresholdExceeded,
+    byOperation,
+  }
+}
 
 /**
  * 性能指标采集器
@@ -101,71 +163,7 @@ export class MetricsCollector {
    * @returns {PerformanceStats} 性能统计对象
    */
   calculateStats(): PerformanceStats {
-    if (this.metrics.length === 0) {
-      return {
-        avgDuration: 0,
-        maxDuration: 0,
-        minDuration: 0,
-        totalCount: 0,
-        thresholdExceeded: 0,
-        byOperation: {},
-      }
-    }
-
-    // reduce 累计而非 Math.max(...durations)：大样本下 spread 同样栈溢出
-    let maxDuration = -Infinity
-    let minDuration = Infinity
-    let totalDuration = 0
-    for (const d of this.metrics) {
-      totalDuration += d.duration
-      if (d.duration > maxDuration) maxDuration = d.duration
-      if (d.duration < minDuration) minDuration = d.duration
-    }
-    const avgDuration = totalDuration / this.metrics.length
-    const thresholdExceeded = this.metrics.filter((m) => m.exceedThreshold).length
-
-    // 按操作分组（单次遍历，避免 O(n×k) 的重复 filter）
-    const byOperation: Record<
-      string,
-      {
-        count: number
-        avgDuration: number
-        maxDuration: number
-      }
-    > = {}
-
-    // 累加器：记录每个操作的总时长
-    const opSums: Record<string, number> = {}
-
-    for (const metric of this.metrics) {
-      const op = metric.operation
-      if (!byOperation[op]) {
-        byOperation[op] = {
-          count: 0,
-          avgDuration: 0,
-          maxDuration: 0,
-        }
-        opSums[op] = 0
-      }
-
-      byOperation[op].count++
-      byOperation[op].maxDuration = Math.max(byOperation[op].maxDuration, metric.duration)
-      opSums[op] += metric.duration
-    }
-
-    // 计算平均值
-    for (const op in byOperation) {
-      byOperation[op].avgDuration = opSums[op] / byOperation[op].count
-    }
-
-    return {
-      avgDuration,
-      maxDuration,
-      minDuration,
-      totalCount: this.metrics.length,
-      thresholdExceeded,
-      byOperation,
-    }
+    return computePerformanceStats(this.metrics)
   }
 
   /**
@@ -421,4 +419,4 @@ export class PerformanceAnalyzer {
 }
 
 /** 默认导出 */
-export type { PerformanceMetrics, PerformanceStats } from '../../types/performance'
+export type { PerformanceMetrics, PerformanceStats } from '../../types/performance.js'

@@ -2,7 +2,7 @@
  * GeomStore v1.0 - LRU缓存单元测试
  */
 
-import { LRUCache, LRUCacheStats } from '../../../src/core/cache/LRUCache'
+import { LRUCache, LRUCacheStats } from '../../../src/core/cache/LRUCache.js'
 
 describe('LRUCache', () => {
   describe('基本操作', () => {

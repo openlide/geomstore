@@ -5,26 +5,22 @@
  */
 
 // 主类导出
-export { Store, isGeomStore } from './Store'
+export { Store, isGeomStore } from './Store.js'
 
 // 工厂函数
-export { createStore } from './factory'
+export { createStore } from './factory.js'
 
 // 子模块导出（供高级用户使用）
-export { StateProxyManager, createProxyCache } from './StateProxy'
-export type { StateProxyOptions } from './StateProxy'
+export { StateProxyManager, createProxyCache } from './StateProxy.js'
 
-export { SubscriptionManager, createSubscribeFunction } from './SubscriptionManager'
-export type { SubscriptionManagerOptions } from './SubscriptionManager'
+export { SubscriptionManager, createSubscribeFunction } from './SubscriptionManager.js'
 
-export { StoreCacheManager } from './StoreCache'
-export type { StoreCacheOptions } from './StoreCache'
-export type { CacheStats } from '../../types/store'
+export { StoreCacheManager } from './StoreCache.js'
+export type { CacheStats } from '../../types/store.js'
 
-export { ActionManager, GetterManager } from './ActionManager'
-export type { ActionManagerOptions } from './ActionManager'
+export { ActionManager, GetterManager } from './ActionManager.js'
 
-export { BatchManager } from './BatchManager'
+export { BatchManager } from './BatchManager.js'
 
 // 内部类型导出
 export type {
@@ -32,9 +28,7 @@ export type {
   ProxyCache,
   SubscriptionManagerInterface,
   BatchManagerInterface,
-  ActionExecutorInterface,
-  GetterExecutorInterface,
-} from './types'
+} from './types.js'
 
 // 工具导出
-export { isProduction, createMutationErrorMessage, deepCloneState } from './utils'
+export { isProduction, createMutationErrorMessage, deepCloneState } from './utils.js'

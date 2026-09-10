@@ -8,105 +8,18 @@
  * - 错误重试机制
  */
 
-import { GeomStoreError, isGeomStoreError, ErrorCode } from './GeomStoreError'
+import { GeomStoreError, isGeomStoreError, ErrorCode } from '../../core/errors/GeomStoreError.js'
+import {
+  MAX_RETRY_KEYS,
+  RecoveryStrategy,
+  type RecoveryConfig,
+  type RecoveryContext,
+  type RecoveryStrategyMap,
+} from './recoveryTypes.js'
 
-/** retryWindowStart / retryCount 的容量上限：防止动态 operation id 场景下的无界增长 */
-const MAX_RETRY_KEYS = 1000
-
-/**
- * 错误恢复策略类型
- *
- * @enum {string}
- * @description
- * 定义不同的错误恢复策略：
- * - RETRY: 延迟后重抛原错误，由调用方重试（库内无原操作引用，无法自动重试）
- * - FALLBACK: 使用回退值
- * - IGNORE: 忽略错误
- * - RESTART: 重启相关组件
- * - RECOVER: 执行自定义恢复逻辑
- */
-export enum RecoveryStrategy {
-  RETRY = 'retry',
-  FALLBACK = 'fallback',
-  IGNORE = 'ignore',
-  RESTART = 'restart',
-  RECOVER = 'recover',
-}
-
-/**
- * 错误恢复配置
- *
- * @interface RecoveryConfig
- * @description
- * 定义错误恢复的配置选项
- */
-export interface RecoveryConfig {
-  /** 恢复策略 */
-  strategy: RecoveryStrategy
-
-  /** 最大重试次数（仅RETRY策略） */
-  maxRetries?: number
-
-  /** 重试延迟（毫秒）（仅RETRY策略） */
-  retryDelay?: number
-
-  /** 是否使用指数退避（仅RETRY策略） */
-  exponentialBackoff?: boolean
-
-  /** 回退值（仅FALLBACK策略） */
-  fallback?: unknown
-
-  /** 回退函数（仅FALLBACK策略） */
-  fallbackFn?: (error: GeomStoreError) => unknown
-
-  /** 恢复函数（仅RECOVER策略） */
-  recoverFn?: (error: GeomStoreError) => unknown
-
-  /** 是否需要恢复的条件函数 */
-  shouldRecover?: (error: GeomStoreError) => boolean
-
-  /** 重试前的回调 */
-  onRetry?: (error: GeomStoreError, attempt: number) => void
-
-  /** 恢复成功的回调 */
-  onRecovery?: (error: GeomStoreError, result: unknown) => void
-
-  /** 恢复失败的回调 */
-  onRecoveryFailed?: (error: GeomStoreError, recoveryError: Error) => void
-}
-
-/**
- * 错误恢复策略映射
- *
- * @type {RecoveryStrategyMap}
- * @description
- * 将错误代码映射到恢复配置
- */
-export type RecoveryStrategyMap = Record<string, RecoveryConfig>
-
-/**
- * 恢复上下文
- *
- * @interface RecoveryContext
- * @description
- * 提供错误恢复过程中的上下文信息
- */
-export interface RecoveryContext {
-  /** 原始错误 */
-  error: GeomStoreError
-
-  /** 恢复配置 */
-  config: RecoveryConfig
-
-  /** 当前重试次数 */
-  attempt: number
-
-  /** Store名称（如果适用） */
-  storeName?: string
-
-  /** 操作名称（如果适用） */
-  operation?: string
-}
+// 类型与常量已拆至 ./recoveryTypes.js；此处再导出以保持既有导入路径（extras/error/ErrorRecovery.js）不变
+export { RecoveryStrategy } from './recoveryTypes.js'
+export type { RecoveryConfig, RecoveryContext, RecoveryStrategyMap } from './recoveryTypes.js'
 
 /**
  * 错误恢复器类
@@ -346,9 +259,12 @@ export class ErrorRecovery {
           this.retryCount.delete(k)
         }
       }
-      let guard = 0
-      while (this.retryWindowStart.size > MAX_RETRY_KEYS && guard++ < MAX_RETRY_KEYS) {
+      // 一次性清到上限内：每次 delete 都令 size 严格递减，配合循环条件必然终止
+      // （此前用 `guard++ < MAX_RETRY_KEYS` 限制单轮淘汰量，键数远超上限时需多轮调用
+      // 才收敛，且每轮都要重做一次 O(n) 的过期扫描）
+      while (this.retryWindowStart.size > MAX_RETRY_KEYS) {
         const oldest = this.retryWindowStart.keys().next().value as string | undefined
+        /* istanbul ignore if -- 循环条件已保证 size > MAX_RETRY_KEYS（非空），keys().next() 必有值 */
         if (oldest === undefined) break
         this.retryWindowStart.delete(oldest)
         this.retryCount.delete(oldest)

@@ -10,7 +10,7 @@
  * - 性能对比
  */
 
-import { Store } from '../../../src/core/store/Store'
+import { Store } from '../../../src/core/store/Store.js'
 
 describe('Store Cache 功能', () => {
   describe('基础缓存功能', () => {

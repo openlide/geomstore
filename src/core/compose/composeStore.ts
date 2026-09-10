@@ -6,184 +6,13 @@
  * - 订阅通知使用防抖机制，避免短时间内多次触发
  */
 
-import type { Store, State, Actions, Getters, StateListener, CacheStats, InferGetterReturn } from '../../types/store'
-import type { Plugin, HookName } from '../../types/plugin'
-import type { ComposeOptions, StoreTreeNode, StoreLike, ExtractStates, ExtractActions, ExtractGetters } from '../../types/compose'
-import { HookSystem } from '../hooks/index'
-import { isProduction } from '../store/utils'
-
-/** 全部生命周期钩子名：组合层桥接子 Store 钩子时逐个转发 */
-const ALL_HOOK_NAMES: HookName[] = [
-  'beforeSetState',
-  'afterSetState',
-  'beforePatch',
-  'afterPatch',
-  'beforeDispatch',
-  'afterDispatch',
-  'beforeReplaceState',
-  'afterReplaceState',
-  'onError',
-]
-
-/**
- * 对子 store 应用写入，跳过已被独立销毁的子 store
- *
- * 子 store 可在组合之外被独立销毁，此时 $patch/$replaceState 会抛
- * "Cannot call … on a destroyed Store"。此前该异常直接冒泡使循环中断在中间：
- * 已处理的 store 写入了、之后的 store 永不写入——既没保住一致性又抛了错，
- * 交付的是调用方无法解释的半更新状态。
- *
- * 跳过口径与 _startBatchOnStores / _endBatchOnStores / 企业版 runForegroundChecks
- * 三处一致（均为「子 store 可被独立销毁 → 跳过」）。不受 strict 影响：
- * strict 的既有语义是「访问不存在的 Store 报错」，而「存在但已销毁」是另一种故障，
- * 混进去会让 strict 模式重新产生半更新。
- *
- * @private
- */
-function applyToStore<T>(store: Store, value: T, handler: (store: Store, value: T) => void): void {
-  if (store.destroyed) {
-    if (!isProduction()) {
-      console.warn(`[composeStore] 子 store "${store.name}" 已销毁，跳过对它的写入（其余 store 不受影响）`)
-    }
-    return
-  }
-  try {
-    handler(store, value)
-  } catch (error) {
-    // 只吞「判断之后才被销毁」的竞态；其他异常照常冒泡，不掩盖真实故障
-    if (store.destroyed) {
-      if (!isProduction()) {
-        console.warn(`[composeStore] 子 store "${store.name}" 在写入期间被销毁，已跳过`)
-      }
-      return
-    }
-    throw error
-  }
-}
-
-/**
- * 根据命名空间分发操作到对应 store
- * @private
- */
-function dispatchByNamespace<T>(
-  stores: Store[],
-  namespace: string | boolean | undefined,
-  data: Record<string, T>,
-  strict: boolean,
-  handler: (store: Store, value: T) => void,
-  options?: { warnMissingKeys?: boolean },
-): void {
-  if (namespace) {
-    // 命名空间模式：每个顶层键是一个 store
-    for (const key in data) {
-      const value = data[key]
-      const targetStore = stores.find((s) => s.name === key)
-      if (targetStore) {
-        applyToStore(targetStore, value as T, handler)
-      } else if (strict) {
-        throw new Error(`[composeStore] Cannot find store for key: ${key}`)
-      }
-    }
-  } else {
-    // 非命名空间模式：需要先分组
-    const storeGroups = new Map<Store, Record<string, T>>()
-
-    for (const key in data) {
-      const value = data[key]
-      const targetStore = findTargetStore(key, stores, namespace)
-      if (targetStore) {
-        let group = storeGroups.get(targetStore)
-        if (!group) {
-          group = {}
-          storeGroups.set(targetStore, group)
-        }
-        group[key] = value
-      } else if (strict) {
-        throw new Error(`[composeStore] Cannot find store for key: ${key}`)
-      }
-    }
-
-    // 一次性调用每个 store
-    for (const [store, groupData] of storeGroups) {
-      // $replaceState 整体替换语义下，分组数据缺失会丢失 store 中的既有键，
-      // 开发模式下告警提示（保留替换语义不变，避免破坏既有行为）。
-      // 已销毁的子 store 会被 applyToStore 跳过，为它输出该告警是误导性噪音
-      if (!store.destroyed && options?.warnMissingKeys) {
-        const stateKeys = Object.keys(store.getState())
-        const providedKeys = Object.keys(groupData)
-        const missing = stateKeys.filter((k) => !providedKeys.includes(k))
-        if (missing.length > 0) {
-          console.warn(`[composeStore] $replaceState 未包含 store "${store.name}" 的键 [${missing.join(', ')}]，整体替换后这些键将丢失；如需保留请使用 $patch`)
-        }
-      }
-      applyToStore(store, groupData as T, handler)
-    }
-  }
-}
-
-/**
- * 查找目标store并提取实际的键
- *
- * 修复：非命名空间模式下，如果多个 store 包含相同的 key，
- * 抛出错误以避免非确定性行为
- */
-function findTargetStoreWithKey(key: string, stores: Store[], namespace?: string | boolean): [Store | undefined, string] {
-  if (namespace) {
-    // 命名空间模式：key = storeName/actualKey
-    const parts = key.split('/')
-    const storeName = parts[0]
-    const actualKey = parts.slice(1).join('/') // 支持多级路径
-    // key 不含 "/" 时视为未找到目标（由调用方按 strict 抛错或忽略），
-    // 避免在子 store 上写入空字符串键
-    if (!actualKey) {
-      return [undefined, key]
-    }
-    const targetStore = stores.find((s) => s.name === storeName)
-    return [targetStore, actualKey]
-  } else {
-    // 非命名空间模式：直接查找
-    // 修复：检查是否有多个 store 包含相同的 key，避免非确定性行为
-    const matchingStores = stores.filter((s) => {
-      const state = s.getState()
-      // own property 判定：`in` 会命中 Object 原型链（'toString'/'constructor' 等），
-      // 导致原型链属性名被误判为所有 store 都匹配并写入第一个 store
-      return Object.prototype.hasOwnProperty.call(state, key)
-    })
-
-    if (matchingStores.length > 1) {
-      console.warn(
-        `[composeStore] Ambiguous key "${key}" found in multiple stores: ${matchingStores.map((s) => s.name).join(', ')}. ` +
-          `Consider using namespaced mode for disambiguation.`,
-      )
-    }
-
-    return [matchingStores[0], key]
-  }
-}
-
-/**
- * 查找目标store
- */
-function findTargetStore(key: string, stores: Store[], namespace?: string | boolean): Store | undefined {
-  const [store] = findTargetStoreWithKey(key, stores, namespace)
-  return store
-}
-
-/**
- * 解析action名称
- */
-function parseActionName(fullName: string, namespace?: string | boolean): [string, string] {
-  if (namespace) {
-    const parts = fullName.split('/')
-    // 支持多级路径（如 store/a/b）：首段为 store 名，其余段合并为成员名，
-    // 避免三级及以上路径静默落入裸名查找而失败
-    if (parts.length >= 2) {
-      return [parts[0], parts.slice(1).join('/')]
-    }
-  }
-  // 如果没有命名空间，尝试从stores中查找
-  return ['', fullName]
-}
+import type { Store, State, Actions, Getters, StateListener, CacheStats, InferGetterReturn } from '../../types/store.js'
+import type { Plugin } from '../../types/plugin.js'
+import type { ComposeOptions, StoreTreeNode, StoreLike, ExtractStates, ExtractActions, ExtractGetters } from '../../types/compose.js'
+import { HookSystem } from '../hooks/index.js'
+import { isProduction } from '../store/utils.js'
+import { ALL_HOOK_NAMES, dispatchByNamespace, findTargetStoreWithKey, parseActionName } from './helpers.js'
+import { mergeNamespaced, mergeStateMaps } from './merge.js'
 
 /**
  * ComposedStore 类
@@ -233,8 +62,6 @@ class ComposedStore<S extends State = State> implements Store<S> {
   private _mergedCacheFrozen: Record<string, unknown> | null = null
   /** 合并缓存是否启用：子 store 订阅失效回调建立失败时降级为每次读取重合并，保证不返回陈旧状态 */
   private _mergedCacheEnabled: boolean = true
-  /** 合并缓存失效订阅句柄（构造期对子 store 建立，destroy 时统一退订） */
-  private _cacheInvalidateUnsubscribers: Array<() => void> = []
 
   constructor(stores: Store[], options: ComposeOptions = {}) {
     this._stores = stores
@@ -363,22 +190,23 @@ class ComposedStore<S extends State = State> implements Store<S> {
     this._mergedCacheFrozen = null
   }
 
+  /**
+   * 命名空间模式：按 store.name 归并各子 store 视图，语义与 getState/state/$snapshot 共用。
+   *
+   * 合并策略已拆至 ./merge.js
+   */
+  private _mergeNamespaced(pick: (store: Store) => Record<string, unknown>, freeze: boolean = false): Record<string, unknown> {
+    return mergeNamespaced(this._stores, pick, freeze)
+  }
+
   getState(): S {
     this._ensureAlive('getState')
     if (this._namespace) {
       if (!this._mergedCacheEnabled) {
-        const result: Record<string, unknown> = {}
-        for (const store of this._stores) {
-          result[store.name] = store.getState()
-        }
-        return result as S
+        return this._mergeNamespaced((store) => store.getState() as Record<string, unknown>) as S
       }
       if (!this._mergedCache) {
-        const result: Record<string, unknown> = {}
-        for (const store of this._stores) {
-          result[store.name] = store.getState()
-        }
-        this._mergedCache = result
+        this._mergedCache = this._mergeNamespaced((store) => store.getState() as Record<string, unknown>)
       }
       return this._mergedCache as S
     }
@@ -394,56 +222,20 @@ class ComposedStore<S extends State = State> implements Store<S> {
   /**
    * 非命名空间模式下平铺合并各 store 的 state 键。
    *
-   * 同名键后者覆盖前者，与 action/getter 冲突的处理一致（取第一个/最后一个并提示）：
-   * 至少在开发模式下给出冲突告警，避免覆盖关系静默发生、排查困难。
-   *
-   * @private
+   * 合并策略与冲突告警已拆至 ./merge.js（warnedStateKeyConflicts 由实例持有以跨调用去重）
    */
   private _mergeStateMaps(pick: (store: Store) => Record<string, unknown>): Record<string, unknown> {
-    const result: Record<string, unknown> = {}
-    const keyOwners = isProduction() ? undefined : new Map<string, string>()
-    for (const store of this._stores) {
-      const source = pick(store)
-      for (const key of Object.keys(source)) {
-        if (keyOwners) {
-          const previousOwner = keyOwners.get(key)
-          if (previousOwner !== undefined && previousOwner !== store.name) {
-            // 每个冲突组合只告警一次：getState/state 高频读取（渲染/computed）下
-            // 重复告警会刷屏并带来每次调用的 Map 构建开销
-            const conflictKey = `${key}(${previousOwner},${store.name})`
-            if (!this._warnedStateKeyConflicts.has(conflictKey)) {
-              this._warnedStateKeyConflicts.add(conflictKey)
-              console.warn(
-                `[composeStore] State key "${key}" exists in multiple stores (${previousOwner}, ${store.name}); ` +
-                  `"${store.name}" wins in merged state/snapshot. Consider using namespaced mode for disambiguation.`,
-              )
-            }
-          } else {
-            keyOwners.set(key, store.name)
-          }
-        }
-        result[key] = source[key]
-      }
-    }
-    return result
+    return mergeStateMaps(this._stores, pick, this._warnedStateKeyConflicts)
   }
 
   get state(): S {
     this._ensureAlive('state')
     if (this._namespace) {
       if (!this._mergedCacheEnabled) {
-        const result: Record<string, unknown> = {}
-        for (const store of this._stores) {
-          result[store.name] = store.state
-        }
-        return Object.freeze(result) as S
+        return this._mergeNamespaced((store) => store.state as unknown as Record<string, unknown>, true) as S
       }
       if (!this._mergedCacheFrozen) {
-        const result: Record<string, unknown> = {}
-        for (const store of this._stores) {
-          result[store.name] = store.state
-        }
-        this._mergedCacheFrozen = Object.freeze(result)
+        this._mergedCacheFrozen = this._mergeNamespaced((store) => store.state as unknown as Record<string, unknown>, true)
       }
       return this._mergedCacheFrozen as S
     }
@@ -714,7 +506,13 @@ class ComposedStore<S extends State = State> implements Store<S> {
     return true
   }
 
-  /** 释放一份监听器注册：减到 0 才移除，并在无剩余监听器时撤销子 store 订阅 */
+  /** 释放一份监听器注册：同一监听器减到 0 才真正移除。
+   *
+   *  注意：不再随「最后一个组合层监听器退订」撤销子 store 订阅——该订阅同时承担
+   *  合并缓存失效（_invalidateMergedCache）职责，撤销后 getState() 会返回陈旧缓存，
+   *  且 _childSubscriptionsReady 保持 true 使重新订阅无法重建通知（静默失效）。
+   *  子 store 订阅与构造期建立对称，统一在 destroy() 释放。
+   */
   private _releaseListener(listener: StateListener<S>): void {
     const count = this._composedListeners.get(listener)
     if (count === undefined) {
@@ -725,13 +523,6 @@ class ComposedStore<S extends State = State> implements Store<S> {
       return
     }
     this._composedListeners.delete(listener)
-    // 最后一个监听器退订时撤销对子 store 的订阅，释放子 store 的订阅额度
-    if (this._composedListeners.size === 0 && this._storeUnsubscribers.length > 0) {
-      for (const unsubscribe of this._storeUnsubscribers) {
-        unsubscribe()
-      }
-      this._storeUnsubscribers = []
-    }
   }
 
   // ==================== 插件管理 ====================
@@ -787,10 +578,6 @@ class ComposedStore<S extends State = State> implements Store<S> {
       off()
     }
     this._hookUnsubscribers = []
-    for (const off of this._cacheInvalidateUnsubscribers) {
-      off()
-    }
-    this._cacheInvalidateUnsubscribers = []
     if (destroyStores) {
       for (const store of this._stores) {
         store.destroy()
@@ -928,11 +715,7 @@ class ComposedStore<S extends State = State> implements Store<S> {
   $snapshot(): Readonly<S> {
     this._ensureAlive('$snapshot')
     if (this._namespace) {
-      const result: Record<string, unknown> = {}
-      for (const store of this._stores) {
-        result[store.name] = store.$snapshot()
-      }
-      return result as Readonly<S>
+      return this._mergeNamespaced((store) => store.$snapshot() as Record<string, unknown>) as Readonly<S>
     }
     // 非命名空间模式：与 getState 相同的冲突告警语义
     return this._mergeStateMaps((store) => store.$snapshot() as Record<string, unknown>) as Readonly<S>
@@ -1005,4 +788,4 @@ export { ComposedStore }
 /**
  * 默认导出
  */
-export type { ComposeOptions, StoreTreeNode, NamespaceConfig } from '../../types/compose'
+export type { ComposeOptions, StoreTreeNode, NamespaceConfig } from '../../types/compose.js'

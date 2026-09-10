@@ -17,7 +17,7 @@ export {
   initBackgroundSync,
   unregisterBackgroundSync,
   createEnterpriseApp,
-} from './wechat-enterprise'
+} from './wechat-enterprise.js'
 
 export type {
   UserInfo,
@@ -29,4 +29,4 @@ export type {
   OfflineAction,
   BackgroundSyncConfig,
   EnterpriseAppConfig,
-} from './wechat-enterprise'
+} from './wechat-enterprise.js'

@@ -10,20 +10,37 @@
  *
  */
 
-import type { Store, State, Actions, Getters } from '../types/store'
-import type { ConnectOptions } from '../types/integration'
-import { parseMapping, bindMappings, cleanupBindings, exposeStoreAPI, performAutoInject } from './utils'
+import type { Store, State, Actions, Getters } from '../types/store.js'
+import type { AppThis, ConnectOptions, WithPageThis } from '../types/integration.js'
+import { resolveMappings, createStoreSubscriber, bindMappings, bindActions, cleanupBindings, exposeStoreAPI, performAutoInject } from './utils.js'
 
-export type { ConnectOptions } from '../types/integration'
+export type { ConnectOptions } from '../types/integration.js'
 
 // ==================== 类型定义 ====================
 
+/**
+ * `withAppStore` 处理的 App 配置对象
+ *
+ * 保留微信原生 App 生命周期与自定义字段，集成层在此基础上注入 store 相关能力。
+ */
 export interface AppOptions {
+  /** 全局数据对象（微信原生字段） */
   globalData?: Record<string, unknown>
-  onLaunch?(this: AppOptions, ...args: unknown[]): void
+  /**
+   * 应用启动生命周期
+   *
+   * 这里**刻意不声明 `this`**：运行时传入的是增强后的 App 实例（globalData 上的映射状态、
+   * 绑定的 action、调试 API），精确类型由 withAppStore 注入的 `AppThis` 提供。
+   * 若在此写成 `this: AppOptions`，会覆盖注入结果，并使 `this.globalData` 退回可选。
+   */
+  onLaunch?(...args: unknown[]): void
+  /** 应用切前台生命周期 */
   onShow?(...args: unknown[]): void
+  /** 应用切后台生命周期 */
   onHide?(): void
+  /** 全局错误回调 */
   onError?(error: unknown): void
+  /** 允许业务扩展自定义字段 */
   [key: string]: unknown
 }
 
@@ -36,14 +53,17 @@ export interface AppOptions {
  *
  * 类型推断：`S` / `A` / `G` 均从 store 参数自动推断，
  * mapState / mapGetters / mapActions 的键与值拼错时会在编译期报错；
- * 返回的装饰器保持传入 App 配置的原始类型（不擦除自定义方法/生命周期类型）
+ * 返回的装饰器保持传入 App 配置的原始类型（不擦除自定义方法/生命周期类型）。
+ *
+ * 生命周期内的 `this` 自动获得注入后的实例类型（`AppThis`）：映射的 state/getters
+ * 出现在 `globalData` 上、映射的 action 与调试 API 直接挂在实例上，**无需手写 this 标注**。
  *
  * @template S - 状态类型
  * @template A - Actions 类型
  * @template G - Getters 类型
  * @param {Store<S, A, G>} store - Store 实例
  * @param {ConnectOptions<S, A, G>} [options={}] - 连接选项
- * @returns {(AppConfig: C) => C} App 装饰器（保持配置类型）
+ * @returns App 装饰器（保持配置类型，并注入方法 this）
  *
  * @example
  * ```typescript
@@ -64,7 +84,7 @@ export interface AppOptions {
  *   }
  * })
  *
- * // 简写：数组形式
+ * // 简写：数组形式（this.globalData / 注入的 action 均有类型，无需手写 this）
  * App(withAppStore(store, {
  *   mapState: ['userInfo', 'config', 'theme'],
  *   mapActions: ['initApp', 'setTheme']
@@ -110,19 +130,22 @@ export function withAppStore<S extends State = State, A extends Actions = Action
   store: Store<S, A, G>,
   options: ConnectOptions<S, A, G> = {},
 ) {
-  // 解析映射配置
-  const stateMapping: Record<string, string> = options.mapState ? parseMapping(options.mapState) : {}
-  const gettersMapping = options.mapGetters ? parseMapping(options.mapGetters) : {}
-  const actionsMapping = options.mapActions ? parseMapping(options.mapActions) : {}
+  // 解析映射与注入配置（与 Page/Component 集成共用 resolveMappings）
+  const { stateMapping, gettersMapping, actionsMapping, injectMapping } = resolveMappings(options)
 
-  // 解析注入映射配置
-  const injectMapping = options.injectMapping || {}
-
-  return function <C extends AppOptions>(AppConfig: C): C {
+  // 与 withPageStore 同款注入：WithPageThis 既为 C 提供推断位点（传入的字面量反向推断出 C，
+  // 返回类型据此保留自定义生命周期/字段），又把顶层方法的 this 重写为注入后的实例类型；
+  // AppThis 交叉 C，从而保留 globalData 的自定义字段
+  return function <C extends AppOptions>(
+    AppConfig: WithPageThis<C, AppThis<S, A, G, ConnectOptions<S, A, G>, C>> &
+      ThisType<AppThis<S, A, G, ConnectOptions<S, A, G>, C>>,
+  ): C {
     // 订阅清理列表：App 生命周期贯穿整个小程序运行期，
     // 仅在订阅建立前重置（防止重复绑定），不在 onHide 等生命周期中清理
     const unbindFunctions: Array<() => void> = []
-    const enhancedConfig: AppOptions = { ...AppConfig }
+    // 入参类型已被 WithPageThis 重写（方法 this 为注入后的实例类型），
+    // 运行时取值与原配置一致，故此处显式收窄回 AppOptions
+    const enhancedConfig = { ...AppConfig } as unknown as AppOptions
 
     // 扩展 onLaunch
     const originalOnLaunch = enhancedConfig.onLaunch
@@ -137,8 +160,8 @@ export function withAppStore<S extends State = State, A extends Actions = Action
         this.globalData = {}
       }
 
-      // 辅助函数：订阅 store 变化
-      const subscribeStore = (callback: () => void, subscribeOptions?: { readOnly?: boolean }) => store.subscribe(callback, subscribeOptions)
+      // 辅助函数：订阅 store 变化（共用 createStoreSubscriber）
+      const subscribeStore = createStoreSubscriber(store)
 
       // 绑定 state 到 globalData
       if (options.mapState) {
@@ -169,13 +192,9 @@ export function withAppStore<S extends State = State, A extends Actions = Action
         unbindFunctions.push(...unbindGetters)
       }
 
-      // 绑定 actions 到 App 实例方法
+      // 绑定 actions 到 App 实例方法（复用 bindActions；App 生命周期贯穿整包，不登记退订）
       if (options.mapActions) {
-        Object.entries(actionsMapping).forEach(([localName, actionName]) => {
-          this[localName] = (...args: unknown[]) => {
-            return store.dispatch(actionName, ...args)
-          }
-        })
+        bindActions(this, actionsMapping, store)
       }
 
       // 自动注入（使用getCached）
@@ -200,4 +219,3 @@ export function withAppStore<S extends State = State, A extends Actions = Action
     return enhancedConfig as C
   }
 }
-

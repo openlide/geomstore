@@ -2,6 +2,7 @@
   "extends": "../tsconfig.jest.json",
   "compilerOptions": {
     "noEmit": true,
+    "strict": true,
     "noUnusedLocals": false,
     "noUnusedParameters": false
   },

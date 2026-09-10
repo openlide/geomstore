@@ -10,12 +10,22 @@
  *
  */
 
-import type { Store, State, Actions, Getters } from '../types/store'
-import type { ConnectOptions, PageThis, PageOwnMethods, ComponentThis, ComponentOwnMethods, ExtractPageData, WithPageThis } from '../types/integration'
-import { parseMapping, bindMappings, cleanupBindings, performAutoInject } from './utils'
+import type { Store, State, Actions, Getters } from '../types/store.js'
+import type {
+  ConnectOptions,
+  PageThis,
+  PageConfig,
+  ComponentThis,
+  ComponentConfig,
+  ComponentOwnMethods,
+  ExtractPageData,
+  WithPageThis,
+  WithComponentThis,
+} from '../types/integration.js'
+import { resolveMappings, createStoreSubscriber, bindMappings, bindActions, cleanupBindings, performAutoInject } from './utils.js'
 
-export type { ConnectOptions } from '../types/integration'
-export type { Actions } from '../types/store'
+export type { ConnectOptions } from '../types/integration.js'
+export type { Actions } from '../types/store.js'
 
 // ==================== 类型定义 ====================
 
@@ -41,14 +51,36 @@ type PageInstance = PageOptions & {
 interface ComponentOptions {
   data?: Record<string, unknown>
   methods?: Record<string, unknown>
+  /**
+   * 组件生命周期（对应微信 Component 的 `lifetimes` 字段）
+   *
+   * 这里**刻意不声明 `this`**：运行时传入的是组件实例（其 `data` 含映射状态），
+   * 精确类型由 withComponentStore 注入的 `ThisType<ComponentThis<…>>` 提供。
+   * 若在此写成 `this: ComponentInstance`，会覆盖注入结果——`this.data` 退回可选
+   * （`ComponentInstance.data?`），注入的方法被索引签名吞成 `unknown`。
+   *
+   * 键与微信官方一致（created / attached / ready / moved / detached / error）；
+   * 不额外放开索引签名，以便生命周期名拼错时在编译期报错。
+   */
   lifetimes?: {
-    attached?(this: ComponentInstance): void
-    detached?(this: ComponentInstance): void
+    created?(): void
+    attached?(): void
+    ready?(): void
+    moved?(): void
+    detached?(): void
+    error?(error: Error): void
   }
+  /**
+   * 组件所在页面的生命周期（对应微信 Component 的 `pageLifetimes` 字段）
+   *
+   * 与 `lifetimes` 同口径：不声明 `this`（由注入提供），并按微信官方键收严
+   * （show / hide / resize），不再放开索引签名——此前写成 `[key: string]: unknown`
+   * 会放过拼错的生命周期名，与 `lifetimes` 的处理也不一致。
+   */
   pageLifetimes?: {
-    show?(this: ComponentInstance): void
-    hide?(this: ComponentInstance): void
-    [key: string]: unknown
+    show?(): void
+    hide?(): void
+    resize?(res: { size: { windowWidth: number; windowHeight: number } }): void
   }
   setData?: (data: Record<string, unknown>, callback?: () => void) => void
   onShow?(...args: unknown[]): void
@@ -83,7 +115,7 @@ type ComponentInstance = ComponentOptions & {
  * @template O - ConnectOptions 字面量类型（自动推断）
  * @param {Store<S, A, G>} store - Store 实例
  * @param {ConnectOptions<S, A, G>} [options={}] - 连接选项
- * @returns {(PageConfig: C) => WithPageThis<C, PageThis<...>>} Page 装饰器（方法 this 重写为精确类型）
+ * @returns Page 装饰器：入参为「方法 `this` 已注入」（`ThisType<PageThis>`）的配置，返回增强后的配置（形状见 `PageConfig`）
  *
  * @example
  * ```typescript
@@ -107,18 +139,12 @@ type ComponentInstance = ComponentOptions & {
  * }))
  * ```
  */
-
 export function withPageStore<S extends State, A extends Actions, G extends Getters<S>, O extends ConnectOptions<S, A, G>>(
   store: Store<S, A, G>,
   options: O = {} as O,
 ) {
-  // 解析映射配置
-  const stateMapping = options.mapState ? parseMapping(options.mapState) : {}
-  const gettersMapping = options.mapGetters ? parseMapping(options.mapGetters) : {}
-  const actionsMapping = options.mapActions ? parseMapping(options.mapActions) : {}
-
-  // 解析注入映射配置
-  const injectMapping = options.injectMapping || {}
+  // 解析映射与注入配置（与 Component/App 集成共用 resolveMappings）
+  const { stateMapping, gettersMapping, actionsMapping, injectMapping } = resolveMappings(options)
 
   return function <C extends PageOptions>(
     // WithPageThis 是同态映射类型，作为入参类型为 C 提供推断位点：
@@ -126,7 +152,7 @@ export function withPageStore<S extends State, A extends Actions, G extends Gett
     // 修复前入参为具体类型（不含 C），C 只能回退到约束 PageOptions，
     // 自定义方法在返回值上退化为 unknown（编译期即报错）
     PageConfig: WithPageThis<C, PageThis<S, A, G, O>> & { data: object } & ThisType<PageThis<S, A, G, O>>,
-  ): PageThis<S, A, G, O, PageOwnMethods<C>> & Omit<C, 'data'> & { data: (C extends { data: infer D } ? D : object) & ExtractPageData<S, O, G> } {
+  ): PageConfig<S, O, G> & Omit<C, 'data'> & { data: (C extends { data: infer D } ? D : object) & ExtractPageData<S, O, G> } {
     const enhancedConfig = { ...PageConfig } as PageOptions
 
     // 扩展 onLoad
@@ -139,8 +165,8 @@ export function withPageStore<S extends State, A extends Actions, G extends Gett
       }
       const unbindFunctions = this.__geomUnbinds
 
-      // 辅助函数：订阅 store 变化
-      const subscribeStore = (callback: () => void, subscribeOptions?: { readOnly?: boolean }) => store.subscribe(callback, subscribeOptions)
+      // 辅助函数：订阅 store 变化（共用 createStoreSubscriber）
+      const subscribeStore = createStoreSubscriber(store)
 
       // 绑定 state
       if (options.mapState) {
@@ -167,16 +193,9 @@ export function withPageStore<S extends State, A extends Actions, G extends Gett
         unbindFunctions.push(...unbindGetters)
       }
 
-      // 绑定 actions
+      // 绑定 actions（复用 integrations/utils 的 bindActions，与 App 集成同一实现）
       if (options.mapActions) {
-        Object.entries(actionsMapping).forEach(([localName, actionName]) => {
-          this[localName] = (...args: unknown[]) => {
-            return store.dispatch(actionName, ...args)
-          }
-          unbindFunctions.push(() => {
-            delete this[localName]
-          })
-        })
+        unbindFunctions.push(...bindActions(this, actionsMapping, store))
       }
 
       // 自动注入（使用getCached）
@@ -207,7 +226,7 @@ export function withPageStore<S extends State, A extends Actions, G extends Gett
       originalOnUnload?.call(this)
     }
 
-    return enhancedConfig as unknown as PageThis<S, A, G, O, PageOwnMethods<C>> &
+    return enhancedConfig as unknown as PageConfig<S, O, G> &
       Omit<C, 'data'> & { data: (C extends { data: infer D } ? D : object) & ExtractPageData<S, O, G> }
   }
 }
@@ -230,7 +249,7 @@ export function withPageStore<S extends State, A extends Actions, G extends Gett
  * @template O - ConnectOptions 字面量类型（自动推断）
  * @param {Store<S, A, G>} store - Store 实例
  * @param {ConnectOptions<S, A, G>} [options={}] - 连接选项
- * @returns {(ComponentConfig: C) => WithPageThis<C, ComponentThis<...>>} Component 装饰器（方法 this 重写为精确类型）
+ * @returns Component 装饰器：入参为「各命名空间内方法 `this` 已注入」（`WithComponentThis`）的配置，返回增强后的配置（形状见 `ComponentConfig`）
  *
  * @example
  * ```typescript
@@ -259,16 +278,13 @@ export function withComponentStore<S extends State, A extends Actions, G extends
   store: Store<S, A, G>,
   options: O = {} as O,
 ): <C extends ComponentOptions>(
-  ComponentConfig: C,
-) => ComponentThis<S, A, G, O, ComponentOwnMethods<C>> &
+  // 外层声明必须与实现签名一致：否则调用方看到的仍是 `ComponentConfig: C`，
+  // 命名空间级的 ThisType 不会生效（方法内 this 推导会落回配置字面量）
+  ComponentConfig: WithComponentThis<C, ComponentThis<S, A, G, O, ComponentOwnMethods<C>>>,
+) => ComponentConfig<S, A, G, O, ComponentOwnMethods<C>> &
   Omit<C, 'data' | 'methods'> & { data: (C extends { data: infer D } ? D : object) & ExtractPageData<S, O, G> } {
-  // 解析映射配置
-  const stateMapping = options.mapState ? parseMapping(options.mapState) : {}
-  const gettersMapping = options.mapGetters ? parseMapping(options.mapGetters) : {}
-  const actionsMapping = options.mapActions ? parseMapping(options.mapActions) : {}
-
-  // 解析注入映射配置
-  const injectMapping = options.injectMapping || {}
+  // 解析映射与注入配置（与 Component/App 集成共用 resolveMappings）
+  const { stateMapping, gettersMapping, actionsMapping, injectMapping } = resolveMappings(options)
 
   // 创建绑定后的 actions（作为 methods）
   const boundMethods: Record<string, (...args: unknown[]) => unknown> = {}
@@ -279,8 +295,11 @@ export function withComponentStore<S extends State, A extends Actions, G extends
   })
 
   return function <C extends ComponentOptions>(
-    ComponentConfig: C,
-  ): ComponentThis<S, A, G, O, ComponentOwnMethods<C>> &
+    // 与 withPageStore 同理注入 this 类型；差别在于 Component 的方法与生命周期嵌套在
+    // methods / lifetimes / pageLifetimes 命名空间内，故用 WithComponentThis 把 ThisType
+    // 挂到各命名空间本身（ThisType 只作用于所标注的那个对象字面量，顶层挂载不会下传）
+    ComponentConfig: WithComponentThis<C, ComponentThis<S, A, G, O, ComponentOwnMethods<C>>>,
+  ): ComponentConfig<S, A, G, O, ComponentOwnMethods<C>> &
     Omit<C, 'data' | 'methods'> & { data: (C extends { data: infer D } ? D : object) & ExtractPageData<S, O, G> } {
     const enhancedConfig: ComponentOptions = { ...ComponentConfig }
 
@@ -307,8 +326,8 @@ export function withComponentStore<S extends State, A extends Actions, G extends
           this.methods = { ...this.methods, ...boundMethods }
         }
 
-        // 辅助函数：订阅 store 变化
-        const subscribeStore = (callback: () => void, subscribeOptions?: { readOnly?: boolean }) => store.subscribe(callback, subscribeOptions)
+        // 辅助函数：订阅 store 变化（共用 createStoreSubscriber）
+        const subscribeStore = createStoreSubscriber(store)
 
         // 绑定 state
         if (options.mapState) {
@@ -381,7 +400,7 @@ export function withComponentStore<S extends State, A extends Actions, G extends
     }
 
     // 返回增强后的配置（lifetimes/pageLifetimes 结构已按微信组件 API 重写）
-    return enhancedConfig as unknown as ComponentThis<S, A, G, O, ComponentOwnMethods<C>> &
+    return enhancedConfig as unknown as ComponentConfig<S, A, G, O, ComponentOwnMethods<C>> &
       Omit<C, 'data' | 'methods'> & { data: (C extends { data: infer D } ? D : object) & ExtractPageData<S, O, G> }
   }
 }

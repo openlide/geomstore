@@ -4,8 +4,8 @@
  * 测试覆盖率目标: 95%+
  */
 
-import { ErrorRecovery, RecoveryStrategy, createDefaultErrorRecovery, defaultErrorRecovery } from '@/extras/error/ErrorRecovery'
-import { GeomStoreError, ActionError, StateError, ErrorCode, isGeomStoreError, createError } from '@/extras/error/GeomStoreError'
+import { ErrorRecovery, RecoveryStrategy, createDefaultErrorRecovery, defaultErrorRecovery } from '@/extras/error/ErrorRecovery.js'
+import { GeomStoreError, ActionError, StateError, ErrorCode, isGeomStoreError, createError } from '@/core/errors/GeomStoreError.js'
 
 describe('ErrorRecovery 模块', () => {
   let recovery: ErrorRecovery
@@ -1480,6 +1480,16 @@ describe('RETRY 额度按故障周期计量（BUG 回归）', () => {
 describe('ErrorRecovery 内存守卫（RECOVERY-LEAK）', () => {
   it('RECOVERY-LEAK-001: 动态 operation id 场景 retryWindowStart 不无界增长', async () => {
     const recovery = new ErrorRecovery()
+    // 恢复策略须经 configure 注册：recover 的第二个参数只承载 RecoveryContext 上下文，
+    // 不接受 strategy/maxRetries/retryDelay；未注册时 recover 会在取配置阶段即抛错，
+    // 绕开重试计数，使本用例失去验证意义。
+    recovery.configure({
+      [ErrorCode.ACTION_EXECUTION_ERROR]: {
+        strategy: RecoveryStrategy.RETRY,
+        maxRetries: 100,
+        retryDelay: 0,
+      },
+    })
     // 跳过真实退避等待，避免 1200 次重试的累计延迟
     ;(recovery as unknown as { delay: () => Promise<void> }).delay = async () => {}
 
@@ -1493,11 +1503,7 @@ describe('ErrorRecovery 内存守卫（RECOVERY-LEAK）', () => {
     // 使 retryWindowStart 持续累积，验证容量守卫将其限制在阈值附近而非无限增长
     for (let i = 0; i < 1200; i++) {
       try {
-        await recovery.recover(makeErr(i), {
-          strategy: RecoveryStrategy.RETRY,
-          maxRetries: 100,
-          retryDelay: 0,
-        })
+        await recovery.recover(makeErr(i))
       } catch {
         // RETRY 策略重抛原错误，属预期
       }

@@ -5,7 +5,7 @@
  *
  */
 
-import type { Store, State } from '../types/store'
+import type { Store, State } from '../types/store.js'
 
 /**
  * 解析映射配置，返回统一的键值对映射
@@ -35,6 +35,39 @@ export function parseMapping(mapping: ReadonlyArray<PropertyKey> | Record<string
     return mapping.reduce<Record<string, string>>((acc, key) => ({ ...acc, [String(key)]: String(key) }), {})
   }
   return mapping as Record<string, string>
+}
+
+/** ConnectOptions 中参与解析的四类映射字段（结构类型，避免耦合具体泛型） */
+interface MappableOptions {
+  mapState?: ReadonlyArray<PropertyKey> | Record<string, PropertyKey>
+  mapGetters?: ReadonlyArray<PropertyKey> | Record<string, PropertyKey>
+  mapActions?: ReadonlyArray<PropertyKey> | Record<string, PropertyKey>
+  injectMapping?: Record<string, string>
+}
+
+/**
+ * 解析 ConnectOptions 的四类映射（未提供则为空对象）。
+ *
+ * withPageStore / withComponentStore / withAppStore 三个集成入口共用，
+ * 避免同一「mapState/mapGetters/mapActions/injectMapping 解析」块各写一遍。
+ */
+export function resolveMappings(options: MappableOptions): {
+  stateMapping: Record<string, string>
+  gettersMapping: Record<string, string>
+  actionsMapping: Record<string, string>
+  injectMapping: Record<string, string>
+} {
+  return {
+    stateMapping: options.mapState ? parseMapping(options.mapState) : {},
+    gettersMapping: options.mapGetters ? parseMapping(options.mapGetters) : {},
+    actionsMapping: options.mapActions ? parseMapping(options.mapActions) : {},
+    injectMapping: options.injectMapping || {},
+  }
+}
+
+/** 生成绑定到 store 的订阅函数（readOnly 透传），供 Page/Component/App 集成共用 */
+export function createStoreSubscriber<S extends State>(store: Store<S>): (callback: () => void, subscribeOptions?: { readOnly?: boolean }) => () => void {
+  return (callback: () => void, subscribeOptions?: { readOnly?: boolean }) => store.subscribe(callback, subscribeOptions)
 }
 
 /**
@@ -305,14 +338,5 @@ export function cleanupBindings(unbinds: Array<() => void>): void {
   unbinds.length = 0
 }
 
-/**
- * 默认导出
- */
-export default {
-  parseMapping,
-  bindMappings,
-  bindActions,
-  performAutoInject,
-  exposeStoreAPI,
-  cleanupBindings,
-}
+// 原先的默认导出对象（parseMapping/bindMappings/…）全仓 0 使用，已删除；
+// 需要的入口请使用具名导入（见 integrations/index.js）

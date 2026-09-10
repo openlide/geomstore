@@ -2,7 +2,7 @@
  * GeomStore v1.0 - metrics 测试
  */
 
-import { MetricsCollector, PerformanceAnalyzer, PerformanceMetrics } from '@/core/performance/metrics'
+import { MetricsCollector, PerformanceAnalyzer, PerformanceMetrics } from '@/core/performance/metrics.js'
 
 describe('MetricsCollector', () => {
   let collector: MetricsCollector

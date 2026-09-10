@@ -3,7 +3,7 @@
  * 目标覆盖率: 95%+
  */
 
-import { BatchManager } from '@/core/store/BatchManager'
+import { BatchManager } from '@/core/store/BatchManager.js'
 
 describe('BatchManager', () => {
   describe('基本功能', () => {
@@ -12,26 +12,22 @@ describe('BatchManager', () => {
       const manager = new BatchManager(onEnd)
 
       expect(manager.isInBatch).toBe(false)
-      expect(manager.depth).toBe(0)
     })
 
-    it('应该正确追踪批量更新深度', () => {
+    it('应该正确追踪批量更新状态', () => {
       const onEnd = jest.fn()
       const manager = new BatchManager(onEnd)
 
       manager.start()
-      expect(manager.depth).toBe(1)
       expect(manager.isInBatch).toBe(true)
 
       manager.start()
-      expect(manager.depth).toBe(2)
-
-      manager.end()
-      expect(manager.depth).toBe(1)
       expect(manager.isInBatch).toBe(true)
 
       manager.end()
-      expect(manager.depth).toBe(0)
+      expect(manager.isInBatch).toBe(true)
+
+      manager.end()
       expect(manager.isInBatch).toBe(false)
     })
 
@@ -80,10 +76,9 @@ describe('BatchManager', () => {
 
       manager.start()
       manager.start()
-      expect(manager.depth).toBe(2)
+      expect(manager.isInBatch).toBe(true)
 
       manager.reset()
-      expect(manager.depth).toBe(0)
       expect(manager.isInBatch).toBe(false)
     })
   })
@@ -116,11 +111,11 @@ describe('BatchManager 生产环境静默行为', () => {
     process.env.NODE_ENV = originalEnv
   })
 
-  it('NODE_ENV=production 时 end() 无匹配 start() 应静默返回', () => {
+  it('NODE_ENV=production 时 end() 无匹配 start() 应静默返回', async () => {
     // 重置模块并模拟生产环境，使 isProduction 缓存为 true
     jest.resetModules()
     process.env.NODE_ENV = 'production'
-    const { BatchManager: ProductionBatchManager } = require('@/core/store/BatchManager')
+    const { BatchManager: ProductionBatchManager } = await import('@/core/store/BatchManager.js')
     const manager = new ProductionBatchManager(jest.fn())
 
     const consoleSpy = jest.spyOn(console, 'warn').mockImplementation()

@@ -2,8 +2,8 @@
  * GeomStore v1.0 - timeTravelPlugin测试
  */
 
-import { createStore } from '@/index'
-import { timeTravelPlugin } from '@/plugins/devtools'
+import { createStore } from '@/index.js'
+import { timeTravelPlugin } from '@/plugins/devtools/index.js'
 
 describe('timeTravelPlugin', () => {
   afterEach(() => {

@@ -3,8 +3,8 @@
  * @file tests/unit/store/store.test.ts
  */
 
-import { createStore, isGeomStore } from '@/index'
-import { createTestStore } from '../../utils/createTestStore'
+import { createStore, isGeomStore } from '@/index.js'
+import { createTestStore } from '../../utils/createTestStore.js'
 
 describe('Store - 核心功能', () => {
   describe('创建和初始化', () => {
@@ -1203,24 +1203,6 @@ describe('Store - 核心功能', () => {
       expect(store.name).toBe('custom-store')
     })
 
-    it('STORE-081: _cacheKeySet 应该提供 O(1) 查找性能', () => {
-      const store = createTestStore({
-        state: { a: 1, b: 2, c: 3, d: 4, e: 5 },
-        enableCache: true,
-        cacheKeys: ['a', 'b', 'c'],
-      })
-      const storeAny = store as any
-
-      // 验证 _cacheManager 存在且 cacheKeys 为 Set 类型
-      expect(storeAny._cacheManager).toBeDefined()
-      expect(storeAny._cacheManager.cacheKeys).toBeInstanceOf(Set)
-      expect(storeAny._cacheManager.cacheKeys.size).toBe(3)
-
-      // 验证 O(1) 查找
-      expect(storeAny._cacheManager.cacheKeys.has('a')).toBe(true)
-      expect(storeAny._cacheManager.cacheKeys.has('d')).toBe(false)
-    })
-
     it('STORE-082: $patch 应该跳过 undefined 值的缓存更新', () => {
       const store = createTestStore({
         state: { count: 0, name: 'test' },
@@ -1526,11 +1508,12 @@ describe('Store - 核心功能', () => {
       expect(storeAny._pluginUninstallFns.has(plugin)).toBe(false)
     })
 
-    it('STORE-092: subscribe 应该在超过最大订阅者时打印警告', () => {
+    it('STORE-092: subscribe 应该在超过最大订阅者时打印警告', async () => {
       // 创建一个最大订阅者为 2 的 store
       const store = createTestStore({ state: { count: 0 } }) as any
       // 通过内部管理器设置最大订阅者
-      store._subscriptionManager = new (require('@/core/store/SubscriptionManager').SubscriptionManager)({
+      const { SubscriptionManager } = await import('@/core/store/SubscriptionManager.js')
+      store._subscriptionManager = new SubscriptionManager({
         storeName: store.name,
         maxSubscribers: 2,
       })
@@ -1578,10 +1561,11 @@ describe('Store - 核心功能', () => {
       expect(() => uninstall()).not.toThrow()
     })
 
-    it('STORE-094: subscribe 应该正确处理订阅者数量达到上限的情况', () => {
+    it('STORE-094: subscribe 应该正确处理订阅者数量达到上限的情况', async () => {
       const store = createTestStore({ state: { count: 0 } }) as any
       // 通过内部管理器设置最大订阅者
-      store._subscriptionManager = new (require('@/core/store/SubscriptionManager').SubscriptionManager)({
+      const { SubscriptionManager } = await import('@/core/store/SubscriptionManager.js')
+      store._subscriptionManager = new SubscriptionManager({
         storeName: store.name,
         maxSubscribers: 1,
       })
@@ -1602,9 +1586,9 @@ describe('Store - 核心功能', () => {
       consoleSpy.mockRestore()
     })
 
-    it('STORE-095: constructor 直接调用测试覆盖声明行', () => {
+    it('STORE-095: constructor 直接调用测试覆盖声明行', async () => {
       // 直接访问 Store 类并实例化，不使用 createStore 辅助函数
-      const { Store } = require('@/core/store')
+      const { Store } = await import('@/core/store/index.js')
 
       // 不传递任何参数（使用默认值）
       const store = new Store()

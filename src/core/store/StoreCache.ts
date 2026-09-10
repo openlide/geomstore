@@ -9,8 +9,8 @@
  * @module StoreCache
  */
 
-import type { State, CacheStats } from '../../types/store'
-import type { LRUCache } from '../cache/LRUCache'
+import type { State, CacheStats } from '../../types/store.js'
+import type { LRUCache } from '../cache/LRUCache.js'
 
 /**
  * 缓存管理器配置
@@ -18,8 +18,6 @@ import type { LRUCache } from '../cache/LRUCache'
 export interface StoreCacheOptions<S extends State = State> {
   /** LRU 缓存实例 */
   cache: LRUCache<keyof S, S[keyof S]>
-  /** 缓存容量 */
-  capacity?: number
   /** TTL（毫秒，0 表示不过期） */
   ttl?: number
 }
@@ -124,14 +122,6 @@ export class StoreCacheManager<S extends State = State> {
         }
       }
     }
-  }
-
-  /**
-   * 删除缓存值
-   */
-  delete<K extends keyof S>(key: K): void {
-    this._cache.delete(key)
-    this._timestamps.delete(key)
   }
 
   /**
@@ -264,10 +254,4 @@ export class StoreCacheManager<S extends State = State> {
     }
   }
 
-  /**
-   * 获取缓存键集合
-   */
-  get cacheKeys(): Set<keyof S> | undefined {
-    return this._cacheKeys
-  }
 }

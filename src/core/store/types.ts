@@ -4,7 +4,7 @@
  * 此模块定义 Store 内部使用的类型，不对外暴露
  */
 
-import type { State, StateListener, StateProtectionOptions } from '../../types/store'
+import type { State, StateListener, StateProtectionOptions } from '../../types/store.js'
 
 /**
  * 状态保护配置（内部使用，包含所有默认值）
@@ -45,7 +45,6 @@ export interface SubscriptionManagerInterface<S extends State = State> {
 /**
  * 批量更新管理器接口
  */
-
 export interface BatchManagerInterface<_S extends State = State> {
   /** 开始批量更新 */
   start(): void
@@ -55,63 +54,3 @@ export interface BatchManagerInterface<_S extends State = State> {
   readonly isInBatch: boolean
 }
 
-/**
- * Action 执行器接口
- */
-
-export interface ActionExecutorInterface<
-  _S extends State = State,
-  A extends Record<string, (...args: unknown[]) => unknown> = Record<string, (...args: unknown[]) => unknown>,
-> {
-  /** 执行 action */
-  execute(actionName: string, ...args: unknown[]): unknown
-  /** 初始化 actions */
-  initialize(actions: A, withInternalAccess: <T>(fn: () => T) => T): void
-}
-
-/**
- * Getter 执行器接口
- */
-export interface GetterExecutorInterface<S extends State = State, G extends Record<string, (state: S) => unknown> = Record<string, (state: S) => unknown>> {
-  /** 执行 getter */
-  execute(getterName: string): unknown
-  /** 初始化 getters */
-  initialize(getters: G): void
-}
-
-/**
- * StateProxy 上下文接口
- * 用于在 StateProxy 模块中访问 Store 的必要方法
- */
-export interface StateProxyContext {
-  /** 检查是否内部访问 */
-  isInternalAccess: boolean
-  /** 状态保护配置 */
-  stateProtection: InternalStateProtectionConfig
-  /** 状态保护启用标志 */
-  stateProtectionEnabled: boolean
-  /** 处理非法修改 */
-  handleIllegalMutation(path: string, value: unknown, operation?: string): boolean
-  /** 使 Proxy 缓存失效 */
-  invalidateProxyCache(obj?: object): void
-}
-
-/**
- * 状态管理器上下文接口
- */
-export interface StateManagerContext<S extends State = State> {
-  /** 获取内部状态 */
-  getInternalState(): S
-  /** 设置内部状态 */
-  setInternalState(state: S): void
-  /** 内部访问执行 */
-  withInternalAccess<T>(fn: () => T): T
-  /** 通知监听器 */
-  notifyListeners(): void
-  /** 更新缓存 */
-  updateCache<K extends keyof S>(key: K, value: S[K]): void
-  /** 检查是否在 dispatch 中 */
-  readonly isDispatching: boolean
-  /** 获取 Proxy 缓存 */
-  getProxyCache(): ProxyCache
-}

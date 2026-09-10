@@ -5,8 +5,8 @@
  * @description 测试 integrations/utils.ts 中的所有工具函数
  */
 
-import { parseMapping, bindMappings, bindActions, performAutoInject, exposeStoreAPI, cleanupBindings } from '@/integrations/utils'
-import { createStore } from '@/index'
+import { parseMapping, bindMappings, bindActions, performAutoInject, exposeStoreAPI, cleanupBindings } from '@/integrations/utils.js'
+import { createStore } from '@/index.js'
 
 describe('integrations/utils', () => {
   describe('parseMapping', () => {

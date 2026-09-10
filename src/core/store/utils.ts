@@ -2,7 +2,7 @@
  * Store 内部工具函数
  */
 
-import { deepCloneState } from '../utils/clone'
+import { deepCloneState } from '../utils/clone.js'
 
 /** 缓存的生产环境检测结果 */
 let cachedProductionState: boolean | undefined

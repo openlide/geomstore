@@ -9,9 +9,9 @@
  * @module SubscriptionManager
  */
 
-import type { State, StateListener, SubscriberLimitPolicy } from '../../types/store'
-import type { SubscriptionManagerInterface } from './types'
-import { deepCloneState, isProduction } from './utils'
+import type { State, StateListener, SubscriberLimitPolicy } from '../../types/store.js'
+import type { SubscriptionManagerInterface } from './types.js'
+import { deepCloneState, isProduction } from './utils.js'
 
 /**
  * 订阅管理器配置
@@ -21,8 +21,6 @@ export interface SubscriptionManagerOptions {
   maxSubscribers?: number
   /** Store 名称（用于日志） */
   storeName: string
-  /** 通知时是否深拷贝状态（默认 true；关闭时由调用方传入只读保护后的状态） */
-  cloneOnNotify?: boolean
   /** 订阅者达到上限时的策略（默认 'evict-oldest'） */
   onLimit?: SubscriberLimitPolicy
 }
@@ -39,13 +37,13 @@ export class SubscriptionManager<S extends State = State> implements Subscriptio
   private _writableCount = 0
   private readonly _maxSubscribers: number
   private readonly _storeName: string
-  private readonly _cloneOnNotify: boolean
   private readonly _onLimit: SubscriberLimitPolicy
+  /** 监听器注册总次数（按注册次数计）：O(1) 维护，避免 size getter 每次遍历整表求和 */
+  private _totalCount = 0
 
   constructor(options: SubscriptionManagerOptions) {
     this._maxSubscribers = options.maxSubscribers ?? 50
     this._storeName = options.storeName
-    this._cloneOnNotify = options.cloneOnNotify ?? true
     this._onLimit = options.onLimit ?? 'evict-oldest'
   }
 
@@ -53,11 +51,7 @@ export class SubscriptionManager<S extends State = State> implements Subscriptio
    * 获取监听器数量（按注册次数计）
    */
   get size(): number {
-    let total = 0
-    this._listeners.forEach((entry) => {
-      total += entry.count
-    })
-    return total
+    return this._totalCount
   }
 
   /**
@@ -84,6 +78,7 @@ export class SubscriptionManager<S extends State = State> implements Subscriptio
     const existing = this._listeners.get(listener)
     if (existing !== undefined) {
       existing.count += 1
+      this._totalCount += 1
       return
     }
     if (this.size >= this._maxSubscribers) {
@@ -107,6 +102,7 @@ export class SubscriptionManager<S extends State = State> implements Subscriptio
 
     const readOnly = options?.readOnly ?? false
     this._listeners.set(listener, { count: 1, readOnly })
+    this._totalCount += 1
     if (!readOnly) {
       this._writableCount += 1
     }
@@ -120,6 +116,7 @@ export class SubscriptionManager<S extends State = State> implements Subscriptio
     if (entry === undefined) {
       return false
     }
+    this._totalCount -= 1
     if (entry.count <= 1) {
       this._listeners.delete(listener)
       if (!entry.readOnly) {
@@ -137,6 +134,7 @@ export class SubscriptionManager<S extends State = State> implements Subscriptio
   clear(): void {
     this._listeners.clear()
     this._writableCount = 0
+    this._totalCount = 0
   }
 
   /**
@@ -147,9 +145,9 @@ export class SubscriptionManager<S extends State = State> implements Subscriptio
    * - cloneOnNotify=true（默认）：创建状态深拷贝避免引用共享问题
    * - cloneOnNotify=false：零拷贝模式，调用方（Store）负责传入只读保护后的状态
    *
-   * @param cloneOnNotify 可选覆盖，缺省沿用构造配置。Store 据此在「仅只读订阅」场景下跳过深拷贝
+   * @param cloneOnNotify 是否深拷贝载荷。Store 据此在「仅只读订阅」场景下传 false 跳过深拷贝
    */
-  notify(state: S, cloneOnNotify: boolean = this._cloneOnNotify): void {
+  notify(state: S, cloneOnNotify: boolean = true): void {
     // 无订阅者时直接返回：避免高频 setState 下零订阅场景仍执行深拷贝（cloneOnNotify=true 时尤为明显）
     if (this._listeners.size === 0) {
       return

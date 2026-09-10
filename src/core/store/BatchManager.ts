@@ -9,8 +9,8 @@
  * @module BatchManager
  */
 
-import type { BatchManagerInterface } from './types'
-import { isProduction } from './utils'
+import type { BatchManagerInterface } from './types.js'
+import { isProduction } from './utils.js'
 
 /**
  * 批量更新管理器
@@ -34,13 +34,6 @@ export class BatchManager implements BatchManagerInterface {
    */
   get isInBatch(): boolean {
     return this._depth > 0
-  }
-
-  /**
-   * 获取批量更新深度
-   */
-  get depth(): number {
-    return this._depth
   }
 
   /**

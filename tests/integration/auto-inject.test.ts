@@ -9,9 +9,9 @@
  * - 缓存集成
  */
 
-import { Store } from '../../src/core/store/Store'
-import { withPageStore, withComponentStore } from '../../src/integrations/with-store'
-import { withAppStore } from '../../src/integrations/with-app-store'
+import { Store } from '../../src/core/store/Store.js'
+import { withPageStore, withComponentStore } from '../../src/integrations/with-store.js'
+import { withAppStore } from '../../src/integrations/with-app-store.js'
 
 // 模拟微信小程序环境（App 类型由 src/types/global.ts 全局声明提供）
 declare global {

@@ -3,8 +3,8 @@
  * 目标覆盖率: 95%+
  */
 
-import { StateProxyManager, createProxyCache } from '@/core/store/StateProxy'
-import type { InternalStateProtectionConfig } from '@/core/store/types'
+import { StateProxyManager, createProxyCache } from '@/core/store/StateProxy.js'
+import type { InternalStateProtectionConfig } from '@/core/store/types.js'
 
 describe('StateProxyManager', () => {
   // 默认配置
@@ -278,11 +278,14 @@ describe('StateProxyManager', () => {
 
   describe('生产环境处理', () => {
     const originalEnv = process.env.NODE_ENV
+    // isProduction 结果在模块内缓存，需重载模块后取用新实例的导出
+    let prodStateProxy: typeof import('@/core/store/StateProxy.js')
 
-    beforeEach(() => {
+    beforeEach(async () => {
       // 重新加载模块以清除 isProduction 缓存
       jest.resetModules()
       process.env.NODE_ENV = 'production'
+      prodStateProxy = await import('@/core/store/StateProxy.js')
     })
 
     afterEach(() => {
@@ -291,12 +294,12 @@ describe('StateProxyManager', () => {
 
     // 生产模式下创建 manager 的辅助函数
     const createProductionManager = (protection: Partial<InternalStateProtectionConfig> = {}) => {
-      const { StateProxyManager, createProxyCache } = require('@/core/store/StateProxy')
+      const { StateProxyManager, createProxyCache } = prodStateProxy
       const proxyCache = createProxyCache()
       let isInternal = false
       return {
         manager: new StateProxyManager({
-          protection: { enabled: true, deep: true, ...protection },
+          protection: { enabled: true, deep: true, productionHandler: 'warn', ...protection },
           proxyCache,
           isInternalAccess: () => isInternal,
         }),
@@ -474,22 +477,6 @@ describe('StateProxyManager', () => {
     })
   })
 
-  describe('invalidateCache', () => {
-    it('应该删除指定对象的 Proxy 缓存', () => {
-      const { manager, proxyCache } = createManager()
-      const state = { count: 0 }
-      const proxy = manager.createStateProxy(state, '')
-
-      // 缓存应该存在
-      expect(proxyCache.get(state)).toBeDefined()
-
-      // 使缓存失效
-      manager.invalidateCache(state)
-
-      // 缓存应该被删除
-      expect(proxyCache.get(state)).toBeUndefined()
-    })
-  })
 })
 
 describe('createProxyCache', () => {
@@ -541,13 +528,6 @@ describe('StateProxyManager 补充覆盖', () => {
       proxyCache,
     }
   }
-
-  describe('invalidateCache 无参数调用', () => {
-    it('应该支持无参数调用 invalidateCache', () => {
-      const { manager } = createManager()
-      expect(() => manager.invalidateCache()).not.toThrow()
-    })
-  })
 
   describe('非法修改的拒绝与放行语义（_handleIllegalMutation 返回 void）', () => {
     // 新语义（v1.0 起）：_handleIllegalMutation 拒绝路径总是抛错（开发模式与生产 'error'），
@@ -892,10 +872,12 @@ describe('StateProxyManager 补充覆盖', () => {
 
   describe('生产环境补充覆盖', () => {
     const originalEnv = process.env.NODE_ENV
+    let prodStateProxy: typeof import('@/core/store/StateProxy.js')
 
-    beforeEach(() => {
+    beforeEach(async () => {
       jest.resetModules()
       process.env.NODE_ENV = 'production'
+      prodStateProxy = await import('@/core/store/StateProxy.js')
     })
 
     afterEach(() => {
@@ -903,12 +885,12 @@ describe('StateProxyManager 补充覆盖', () => {
     })
 
     const createProductionManager = (protection: Partial<InternalStateProtectionConfig> = {}) => {
-      const { StateProxyManager, createProxyCache } = require('@/core/store/StateProxy')
+      const { StateProxyManager, createProxyCache } = prodStateProxy
       const proxyCache = createProxyCache()
       let isInternal = false
       return {
         manager: new StateProxyManager({
-          protection: { enabled: true, deep: true, ...protection },
+          protection: { enabled: true, deep: true, productionHandler: 'warn', ...protection },
           proxyCache,
           isInternalAccess: () => isInternal,
         }),

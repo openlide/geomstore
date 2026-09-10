@@ -3,9 +3,9 @@
  * 目标覆盖率: 95%+
  */
 
-import { ActionManager, GetterManager } from '@/core/store/ActionManager'
-import { HookSystem } from '@/core/hooks'
-import type { State, ActionContextBase, Actions, Getters } from '@/types/store'
+import { ActionManager, GetterManager } from '@/core/store/ActionManager.js'
+import { HookSystem } from '@/core/hooks/index.js'
+import type { State, ActionContextBase, Actions, Getters } from '@/types/store.js'
 
 describe('ActionManager', () => {
   const createActionManager = () => {
@@ -53,6 +53,82 @@ describe('ActionManager', () => {
     getState: () => ({ count: 0 }),
     dispatch: jest.fn(),
   })
+
+  describe('异步 action 结算时的通知抑制', () => {
+    const createContext = (): ActionContextBase<{ count: number }> => ({
+      name: 'am-settle',
+      get state() {
+        return { count: 0 }
+      },
+      setState: jest.fn(),
+      $patch: jest.fn(),
+      $replaceState: jest.fn(),
+      getState: () => ({ count: 0 }),
+      dispatch: jest.fn(),
+    })
+
+    it('batch 进行中结算：跳过自重通知（由其收尾统一通知）', async () => {
+      const notifyListeners = jest.fn()
+      const manager = new ActionManager<{ count: number }, { ping: () => Promise<string> }>({
+        storeName: 'am-settle-in-batch',
+        withInternalAccess: <T,>(fn: () => T): T => fn(),
+        setDispatching: () => {},
+        notifyListeners,
+        hooks: new HookSystem(),
+        // 模拟外层 batch 仍在进行：结算时必须早退，避免中途泄漏中间状态
+        isInBatch: () => true,
+      })
+      manager.initialize({ ping: async () => 'pong' }, createContext())
+
+      await manager.execute('ping')
+      await new Promise((resolve) => setTimeout(resolve, 0))
+
+      expect(notifyListeners).not.toHaveBeenCalled()
+    })
+
+    it('onlyOnChange 且变更计数超过已通知基线时补发通知', async () => {
+      const notifyListeners = jest.fn()
+      const manager = new ActionManager<{ count: number }, { ping: () => Promise<string> }>({
+        storeName: 'am-settle-only-change',
+        withInternalAccess: <T,>(fn: () => T): T => fn(),
+        setDispatching: () => {},
+        notifyListeners,
+        hooks: new HookSystem(),
+        notifyOnlyOnChange: true,
+        // 计数 5 > 已通知 1 → 精确补发
+        getMutationCount: () => 5,
+        getLastNotifiedMutationCount: () => 1,
+        isInBatch: () => false,
+        })
+        manager.initialize({ ping: async () => 'pong' }, createContext())
+
+        await manager.execute('ping')
+        await new Promise((resolve) => setTimeout(resolve, 0))
+
+        expect(notifyListeners).toHaveBeenCalled()
+        })
+
+        it('onlyOnChange 未提供「已通知基线」提供者时按 -1 兜底比较', async () => {
+        const notifyListeners = jest.fn()
+        const manager = new ActionManager<{ count: number }, { ping: () => Promise<string> }>({
+        storeName: 'am-settle-baseline-fallback',
+        withInternalAccess: <T,>(fn: () => T): T => fn(),
+        setDispatching: () => {},
+        notifyListeners,
+        hooks: new HookSystem(),
+        notifyOnlyOnChange: true,
+        getMutationCount: () => 5,
+        // 不提供 getLastNotifiedMutationCount：基线兜底为 -1，任何正计数都应补发
+        isInBatch: () => false,
+        })
+        manager.initialize({ ping: async () => 'pong' }, createContext())
+
+        await manager.execute('ping')
+        await new Promise((resolve) => setTimeout(resolve, 0))
+
+        expect(notifyListeners).toHaveBeenCalled()
+        })
+        })
 
   describe('initialize', () => {
     it('AM-OPT-001: 未提供 getMutationCount 时默认计数函数安全生效', () => {

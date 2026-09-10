@@ -12,12 +12,11 @@
  * @file tests/types/integration-types.typecheck.ts
  */
 
-import type { ExtractMappedActions } from '@/types/integration'
+import type { ExtractMappedActions } from '@/types/integration.js'
 import {
   withPageStore,
   withComponentStore,
   withAppStore,
-  createApp,
   createStore,
   type State,
   type Actions,
@@ -25,7 +24,7 @@ import {
   type PageThis,
   type ComponentThis,
   type ExtractPageData,
-} from '@/index'
+} from '@/index.js'
 
 // ==================== 示例类型 ====================
 
@@ -170,7 +169,7 @@ withAppStore(typedStore, {
   mapGetters: ['double'],
   mapActions: ['setCount'],
 })
-createApp(typedStore, { mapActions: { doLogin: 'login' } })
+withAppStore(typedStore, { mapActions: { doLogin: 'login' } })
 
 // 反例：拼错 state 键应报错
 // @ts-expect-error 'cont' 不是状态键
@@ -186,7 +185,7 @@ withAppStore(typedStore, { mapActions: ['logn'] })
 
 // 反例：createApp 对象形式值拼错应报错
 // @ts-expect-error 'logn' 不是 action 名
-createApp(typedStore, { mapActions: { doLogin: 'logn' } })
+withAppStore(typedStore, { mapActions: { doLogin: 'logn' } })
 
 // 装饰器保持配置类型
 const enhanceApp = withAppStore(typedStore, { mapState: ['count'] })

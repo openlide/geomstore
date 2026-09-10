@@ -2,10 +2,17 @@
  * GeomStore - 选择器类型定义
  */
 
+import type { State } from './store.js'
+
 /**
  * 选择器函数类型
+ *
+ * 约束用 `State`（即 `object`）而非 `Record<string, unknown>`：与 Store 的状态约束口径保持一致，
+ * 使**未声明索引签名的业务 interface**（如 `interface OrderState { … }`）可直接作为状态类型；
+ * 后者只接受带索引签名的类型，会把这类 interface 拒之门外。
+ * 默认值仍为 `Record<string, unknown>`，既有写法行为不变。
  */
-export type Selector<S extends Record<string, unknown> = Record<string, unknown>, R = unknown> = (state: S) => R
+export type Selector<S extends State = Record<string, unknown>, R = unknown> = (state: S) => R
 
 /**
  * 选择器选项
@@ -43,7 +50,7 @@ export interface SelectorCacheItem<R> {
  * 组合选择器参数
  */
 export interface SelectorComposerInput<
-  S extends Record<string, unknown> = Record<string, unknown>,
+  S extends State = Record<string, unknown>,
   T extends readonly Selector<S, unknown>[] = readonly Selector<S, unknown>[],
 > {
   /** 选择器数组 */
@@ -61,7 +68,7 @@ export interface SelectorComposerInput<
 /**
  * 参数化选择器
  */
-export type ParametricSelector<S extends Record<string, unknown>, P, R> = (state: S, params: P) => R
+export type ParametricSelector<S extends State, P, R> = (state: S, params: P) => R
 
 /**
  * 选择器结果类型

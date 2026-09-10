@@ -9,9 +9,9 @@
  * @module ActionManager
  */
 
-import { type State, type Actions, type InferActionArgs, type InferActionReturn, type ActionContextBase } from '../../types/store'
-import { createError, ErrorCode } from '../../extras/error/GeomStoreError'
-import type { IHookSystem } from '../../types/plugin'
+import { type State, type Actions, type InferActionArgs, type InferActionReturn, type ActionContextBase } from '../../types/store.js'
+import { createError, ErrorCode } from '../errors/GeomStoreError.js'
+import type { IHookSystem } from '../../types/plugin.js'
 
 /**
  * Action 执行器配置

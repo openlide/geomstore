@@ -9,9 +9,10 @@
  *
  */
 
-import type { Store, State } from '../../types/store'
-import type { Plugin } from '../../types/plugin'
-import { isProduction, deepCloneState } from '../../core/store/utils'
+import type { Store, State } from '../../types/store.js'
+import type { Plugin } from '../../types/plugin.js'
+import { isProduction, deepCloneState } from '../../core/store/utils.js'
+import { registerGlobalEntry } from '../globalRegistry.js'
 
 /**
  * 循环引用安全的 JSON 序列化
@@ -347,15 +348,12 @@ export const timeTravelPlugin = <S extends State = State>(options: TimeTravelOpt
 
       // 暴露API（实例挂载字段为非正式接口，用交叉类型收敛，避免 any 断言）
       type TimeTravelStore = Store & { __timeTravel__?: unknown }
-      type TimeTravelGlobal = typeof globalThis & { __GEOMSTORE_TIME_TRAVEL__?: Record<string, typeof api> }
       ;(store as TimeTravelStore).__timeTravel__ = api
 
       // 设置全局访问（生产环境不暴露，防止内部结构泄露）
-      if (typeof globalThis !== 'undefined' && !isProduction()) {
-        const g = globalThis as TimeTravelGlobal
-        g.__GEOMSTORE_TIME_TRAVEL__ = g.__GEOMSTORE_TIME_TRAVEL__ || {}
-        g.__GEOMSTORE_TIME_TRAVEL__[store.name] = api
-
+      let unregisterGlobal: () => void = () => {}
+      if (!isProduction()) {
+        unregisterGlobal = registerGlobalEntry('__GEOMSTORE_TIME_TRAVEL__', store.name, api)
         console.log(`[GeomStore][timeTravel] Time travel enabled for store "${store.name}"`)
         console.log(`[GeomStore][timeTravel] Access at: globalThis.__GEOMSTORE_TIME_TRAVEL__["${store.name}"]`)
       }
@@ -370,12 +368,7 @@ export const timeTravelPlugin = <S extends State = State>(options: TimeTravelOpt
         }
 
         // 清理全局引用（同样仅限仍是本实例注册的条目）
-        if (typeof globalThis !== 'undefined') {
-          const g = globalThis as TimeTravelGlobal
-          if (g.__GEOMSTORE_TIME_TRAVEL__?.[store.name] === api) {
-            delete g.__GEOMSTORE_TIME_TRAVEL__[store.name]
-          }
-        }
+        unregisterGlobal()
 
         snapshots.length = 0
         currentIndex = -1
