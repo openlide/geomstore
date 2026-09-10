@@ -45,23 +45,27 @@ jobs:
       - name: Build
         run: pnpm run build
 
-      - name: Smoke test dist bundles (CJS + subpath)
+      - name: Smoke test dist bundles (ESM + subpath)
         run: |
-          node -e '
-            const s = require("./dist/cjs/index.js")
+          node --input-type=module -e '
+            const s = await import("./dist/index.js")
             const store = s.createStore({
               name: "ci-smoke",
               state: { count: 1 },
               actions: { inc() { this.setState("count", this.state.count + 1) } },
             })
             store.dispatch("inc")
-            if (store.getState().count !== 2) throw new Error("cjs smoke failed")
-            if (typeof s.GeomStoreError !== "function") throw new Error("GeomStoreError missing")
-            const err = require("./dist/cjs/core/error/index.js")
+            if (store.getState().count !== 2) throw new Error("esm smoke failed")
+            if (typeof s.composeStore !== "function") throw new Error("composeStore missing")
+            const err = await import("./dist/extras/error/index.js")
             if (typeof err.GeomStoreError !== "function") throw new Error("error subpath failed")
-            const plugins = require("./dist/cjs/plugins/index.js")
+            const plugins = await import("./dist/extras/plugins.js")
             if (!plugins.loggerPlugin) throw new Error("plugins subpath failed")
-            console.log("CJS SMOKE OK")
+            const selector = await import("./dist/extras/selector/index.js")
+            if (typeof selector.createSelector !== "function") throw new Error("selector subpath failed")
+            const integrations = await import("./dist/integrations/index.js")
+            if (typeof integrations.bindMappings !== "function") throw new Error("integrations subpath failed")
+            console.log("ESM SMOKE OK")
           '
 
       - name: Upload coverage report

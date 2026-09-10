@@ -2,8 +2,8 @@
  * @geomstore/benchmark - 结果构建器
  */
 
-import type { BenchmarkResult, DatasetSize, CacheStats } from './types'
-import { DATASET_SIZE_THRESHOLDS } from './constants'
+import type { BenchmarkResult, DatasetSize, CacheStats } from './types/index.js'
+import { DATASET_SIZE_THRESHOLDS } from './constants.js'
 
 export interface TimeStats {
   total: number

@@ -10,17 +10,24 @@
  * postpack 钩子在打包完成后清理，故本地 `pnpm build` 不再在仓库根目录留下 stub。
  *
  * 用法：
- *   node scripts/generate-subpath-stubs.cjs          生成（pnpm stubs）
- *   node scripts/generate-subpath-stubs.cjs --clean  清理（pnpm stubs:clean）
+ *   node scripts/generate-subpath-stubs.mjs          生成（pnpm stubs）
+ *   node scripts/generate-subpath-stubs.mjs --clean  清理（pnpm stubs:clean）
  */
 
-const fs = require('fs')
-const path = require('path')
+import fs from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-const pkgRoot = path.join(__dirname, '..')
+const pkgRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
 const distDir = path.join(pkgRoot, 'dist')
 
-/** 子路径 -> dist 内相对目录（与 package.json exports 字段一一对应） */
+/**
+ * 子路径 -> dist 内相对目录。
+ *
+ * 这是**老式解析器的兼容别名集合**，不要求与 package.json exports 完全一致：
+ * 其中部分是历次版本保留的旧路径别名（如 selectors / actions / snapshot / performance），
+ * 新代码请优先使用 exports 已声明的 `extras/*` 子路径。
+ */
 const subpathEntries = {
   store: 'core/store',
   hooks: 'core/hooks',
@@ -31,10 +38,10 @@ const subpathEntries = {
   'integrations/enterprise': 'integrations/enterprise',
   error: 'extras/error',
   compose: 'core/compose',
-  selectors: 'core/selector',
-  snapshot: 'core/snapshot',
+  selectors: 'extras/selector',
+  snapshot: 'extras/snapshot',
   performance: 'core/performance',
-  actions: 'core/action',
+  actions: 'extras/action',
   cache: 'core/cache',
 }
 

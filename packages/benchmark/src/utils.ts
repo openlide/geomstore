@@ -8,7 +8,7 @@ declare const process: {
   memoryUsage(): { heapTotal: number; heapUsed: number; external: number }
 }
 
-import type { MemorySnapshot, BenchmarkUtils as IBenchmarkUtils } from './types'
+import type { MemorySnapshot, BenchmarkUtils as IBenchmarkUtils } from './types/index.js'
 
 /**
  * 基准测试工具类实现

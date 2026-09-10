@@ -2,6 +2,7 @@
   "name": "@openlide/geomstore",
   "version": "0.4.0",
   "description": "原生微信小程序状态管理库 - 简洁、高效、易用",
+  "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "sideEffects": false,
@@ -13,6 +14,10 @@
     "./core": {
       "types": "./dist/core/index.d.ts",
       "default": "./dist/core/index.js"
+    },
+    "./integrations": {
+      "types": "./dist/integrations/index.d.ts",
+      "default": "./dist/integrations/index.js"
     },
     "./extras": {
       "types": "./dist/extras/index.d.ts",
@@ -60,13 +65,16 @@
     "snapshot",
     "performance",
     "actions",
-    "cache"
+    "cache",
+    "error"
   ],
   "publishConfig": {
     "access": "public",
     "registry": "https://registry.npmjs.org/"
   },
-  "workspaces": ["packages/*"],
+  "workspaces": [
+    "packages/*"
+  ],
   "scripts": {
     "test": "jest",
     "test:watch": "jest --watch",
@@ -74,12 +82,15 @@
     "test:unit": "jest tests/unit",
     "test:integration": "jest tests/integration",
     "test:ci": "jest --ci --coverage --maxWorkers=2",
-    "build": "tsc -p tsconfig.cjs.json && node scripts/postbuild-dist.cjs",
-    "stubs": "node scripts/generate-subpath-stubs.cjs",
-    "stubs:clean": "node scripts/generate-subpath-stubs.cjs --clean",
-    "prepack": "node scripts/generate-subpath-stubs.cjs",
-    "postpack": "node scripts/generate-subpath-stubs.cjs --clean",
-    "prepublishOnly": "pnpm test && pnpm build",
+    "prebuild": "node scripts/clean-dist.mjs",
+    "build": "tsc -p tsconfig.build.json && node scripts/postbuild-dist.mjs",
+    "build:min": "pnpm build && node scripts/minify-dist.mjs",
+    "build:release": "pnpm build && node scripts/minify-dist.mjs --strict",
+    "stubs": "node scripts/generate-subpath-stubs.mjs",
+    "stubs:clean": "node scripts/generate-subpath-stubs.mjs --clean",
+    "prepack": "node scripts/generate-subpath-stubs.mjs",
+    "postpack": "node scripts/generate-subpath-stubs.mjs --clean",
+    "prepublishOnly": "pnpm test && pnpm run build:release",
     "lint": "eslint src tests --ext .ts",
     "lint:ci": "eslint src tests --ext .ts --max-warnings 70",
     "lint:fix": "eslint src tests --ext .ts --fix",
@@ -89,7 +100,16 @@
     "typecheck:examples": "tsc --noEmit -p tools/tsconfig.examples.json",
     "typecheck:src": "tsc --noEmit"
   },
-  "keywords": ["state-management", "miniprogram", "wechat", "weixin", "skyline", "typescript", "store", "lightweight"],
+  "keywords": [
+    "state-management",
+    "miniprogram",
+    "wechat",
+    "weixin",
+    "skyline",
+    "typescript",
+    "store",
+    "lightweight"
+  ],
   "author": "openlide",
   "license": "MIT",
   "packageManager": "pnpm@12.3.4+sha512.961aa41fb077da3a04a441d9f8e15ebc0c96da8ef710b2eb67bf9ee7cb0610eabd48f1fd85f51cffe73846785fa0f87c56a3a872a1d893f8446741b5cce45457",
@@ -109,6 +129,7 @@
     "eslint": "^9.39.2",
     "jest": "^30.4.2",
     "prettier": "^3.8.1",
+    "terser": "^5.51.2",
     "ts-jest": "^29.4.12",
     "ts-node": "^10.9.2",
     "typescript": "^6.0.3"

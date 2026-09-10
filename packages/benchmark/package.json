@@ -2,9 +2,17 @@
   "name": "@openlide/geomstore-benchmark",
   "version": "1.0.0",
   "description": "GeomStore 基准测试工具包 - 提供全面的性能基准测试功能",
+  "type": "module",
   "main": "dist/index.js",
-  "module": "dist/index.esm.js",
-  "types": "dist/d.ts",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "private": true,
   "files": ["dist", "src"],
   "scripts": {
     "build": "tsc",
@@ -24,7 +32,7 @@
     "directory": "packages/benchmark"
   },
   "peerDependencies": {
-    "@openlide/geomstore": "^1.0.0"
+    "@openlide/geomstore": "^0.4.0"
   },
   "devDependencies": {
     "typescript": "^5.0.0"

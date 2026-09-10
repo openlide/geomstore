@@ -1,10 +1,15 @@
 /**
  * 测试环境全局设置
  * @file tests/setup.ts
+ *
+ * 与源码一致使用 ESM 语法；由 ts-jest 按 tsconfig.jest.json 转译为 CommonJS
+ * 后在 Jest 运行时中执行（Jest 的 .ts 文件默认按 CJS 加载）。
  */
 
+const g = globalThis as any
+
 // Mock 微信小程序 API
-wx = {
+g.wx = {
   request: jest.fn(),
   setStorageSync: jest.fn(),
   getStorageSync: jest.fn(),
@@ -33,9 +38,9 @@ const mockGetApp = jest.fn(() => ({
   globalData: {}
 }))
 
-Page = mockPage
-Component = mockComponent
-getApp = mockGetApp
+g.Page = mockPage
+g.Component = mockComponent
+g.getApp = mockGetApp
 
 // 设置测试超时
 jest.setTimeout(10000)
@@ -65,4 +70,4 @@ console.log('[Test Setup] Node version:', process.version)
 console.log('[Test Setup] Platform:', process.platform)
 
 // 定义 __DEV__ 全局常量（用于 isProduction 检测）
-globalThis.__DEV__ = process.env.NODE_ENV !== 'production'
+g.__DEV__ = process.env.NODE_ENV !== 'production'

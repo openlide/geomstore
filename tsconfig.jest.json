@@ -1,24 +1,22 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": {
-    "module": "Node16",
-    "target": "ES2020",
+    // 测试类型检查配置：与 tsconfig.json 统一采用 NodeNext 解析（不再使用已废弃的
+    // node10，故无需 ignoreDeprecations）。
+    // 注意：Jest 的 CJS 转译参数不在此处，而由 jest.config.js 中 ts-jest 的内联
+    // compilerOptions 提供——否则 module: CommonJS 会强制 node10 解析。
     "declaration": false,
     "declarationMap": false,
     "sourceMap": true,
-    "outDir": "./dist",
     "rootDir": ".",
     "types": ["jest", "node"],
-    "esModuleInterop": true,
-    "allowSyntheticDefaultImports": true,
     "noEmit": true,
-    "skipLibCheck": true,
     "noImplicitAny": false,
-    "strict": false,
-    "isolatedModules": true,
-    "verbatimModuleSyntax": false,
-    "experimentalDecorators": true,
-    "emitDecoratorMetadata": true,
+    "strict": true,
+    // tsconfig.json 面向 src 开启未使用变量检查；测试侧存在大量仅作断言/占位的变量与
+    // 参数，关闭以对齐 tsconfig.tests.json 的测试语义。
+    "noUnusedLocals": false,
+    "noUnusedParameters": false,
     "paths": {
       "@/*": ["./src/*"],
       "@tests/*": ["./tests/*"]

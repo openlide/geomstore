@@ -1,24 +1,25 @@
 /**
  * 构建后处理脚本（build 阶段，作用于 dist 本身）：
- * 1. 为 dist 写入模块类型标记（{"type":"commonjs"}）
+ * 1. 为 dist 写入模块类型标记（{"type":"module"}）
  * 2. 删除 dist 下的全部 sourcemap（.js.map / .d.ts.map）：
  *    包仅发布 dist（类型由 .d.ts 提供），map 文件指向未随包发布的
  *    src 目录会成为死链，仅徒增发布体积，故发布产物中剔除。
  *
- * 根 package.json 未声明 "type"（默认 commonjs）。CJS 产物目录显式写入
- * {"type":"commonjs"} 标记。
+ * 根 package.json 已声明 "type": "module"，产物为纯 ESM；dist 目录内仍显式
+ * 写入 {"type":"module"} 标记，便于产物被单独拷贝使用（如复制安装）时保持语义。
  *
- * 子路径转发 stub 不在此生成：见 scripts/generate-subpath-stubs.cjs，
+ * 子路径转发 stub 不在此生成：见 scripts/generate-subpath-stubs.mjs，
  * 由 prepack / postpack 钩子在打包发布时生成与清理，避免污染仓库根目录。
  */
 
-const fs = require('fs')
-const path = require('path')
+import fs from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-const distDir = path.join(__dirname, '..', 'dist')
+const distDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'dist')
 
 fs.mkdirSync(distDir, { recursive: true })
-fs.writeFileSync(path.join(distDir, 'package.json'), JSON.stringify({ type: 'commonjs' }, null, 2) + '\n')
+fs.writeFileSync(path.join(distDir, 'package.json'), JSON.stringify({ type: 'module' }, null, 2) + '\n')
 
 // ==================== 剔除 sourcemap ====================
 

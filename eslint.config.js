@@ -1,27 +1,11 @@
-const js = require('@eslint/js')
-const tseslint = require('@typescript-eslint/eslint-plugin')
-const tsparser = require('@typescript-eslint/parser')
+import js from '@eslint/js'
+import tseslint from '@typescript-eslint/eslint-plugin'
+import tsparser from '@typescript-eslint/parser'
 
-module.exports = [
-  // ESLint 配置文件本身的规则（CommonJS）
-  {
-    files: ['eslint.config.js'],
-    languageOptions: {
-      globals: {
-        require: 'readonly',
-        module: 'readonly',
-        __dirname: 'readonly',
-        __filename: 'readonly',
-      },
-    },
-    rules: {
-      'no-undef': 'off',
-    },
-  },
-  
+export default [
   // 基础 JavaScript 推荐规则
   js.configs.recommended,
-  
+
   // TypeScript 文件配置
   {
     files: ['**/*.ts'],
@@ -35,11 +19,6 @@ module.exports = [
         console: 'readonly',
         process: 'readonly',
         Buffer: 'readonly',
-        __dirname: 'readonly',
-        __filename: 'readonly',
-        module: 'readonly',
-        require: 'readonly',
-        exports: 'writable',
         setTimeout: 'readonly',
         clearTimeout: 'readonly',
         setInterval: 'readonly',
@@ -59,7 +38,7 @@ module.exports = [
     rules: {
       // TypeScript 推荐规则
       ...tseslint.configs.recommended.rules,
-      
+
       // 自定义规则
       '@typescript-eslint/no-unused-vars': ['warn', { 
         argsIgnorePattern: '^_',
@@ -72,16 +51,17 @@ module.exports = [
       '@typescript-eslint/explicit-module-boundary-types': 'off',
       '@typescript-eslint/no-non-null-assertion': 'warn',
       '@typescript-eslint/no-inferrable-types': 'off',
-      '@typescript-eslint/no-require-imports': 'off',
+      // ESM-only 仓库：禁止 `require()` / `module.exports` 等 CommonJS 写法
+      '@typescript-eslint/no-require-imports': 'error',
       '@typescript-eslint/no-unsafe-function-type': 'off',
       '@typescript-eslint/no-namespace': 'off',
       '@typescript-eslint/no-this-alias': 'off',
-      
+
       // 关闭 JS 规则，使用 TS 规则替代
       'no-unused-vars': 'off',
       'no-undef': 'off',
       'no-redeclare': 'off',  // 使用 TypeScript 的函数重载
-      
+
       // 通用规则
       'no-console': 'off',
       'prefer-const': 'warn',
@@ -92,7 +72,7 @@ module.exports = [
       '@typescript-eslint/no-unused-expressions': 'warn',
     },
   },
-  
+
   // 测试文件配置
   {
     files: ['tests/**/*.ts'],
@@ -123,28 +103,16 @@ module.exports = [
       'no-empty': 'off',
     },
   },
-  
-  // 测试 setup 文件配置
+
+  // 测试 setup 文件配置（注入小程序全局对象，需写 globalThis）
   {
-    files: ['tests/setup.js'],
-    languageOptions: {
-      globals: {
-        wx: 'writable',
-        jest: 'readonly',
-        Page: 'writable',
-        Component: 'writable',
-        getApp: 'writable',
-        console: 'readonly',
-        process: 'readonly',
-        setTimeout: 'readonly',
-      },
-    },
+    files: ['tests/setup.ts'],
     rules: {
       'no-undef': 'off',
       'no-global-assign': 'off',
     },
   },
-  
+
   // 示例文件配置
   {
     files: ['examples/**/*.ts', 'src/**/*.example.ts', 'src/**/*.example/**/*.ts'],
@@ -156,16 +124,15 @@ module.exports = [
       'no-console': 'off',
     },
   },
-  
+
   // 忽略文件
   {
     ignores: [
       'dist/**',
       'node_modules/**',
       'coverage/**',
-      // 忽略构建和脚本文件，但保留配置文件
-      'scripts/**/*.js',
-      'jest.config.cjs',
+      'scripts/**',
+      'jest.config.js',
     ],
   },
 ]

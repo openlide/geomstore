@@ -2,7 +2,7 @@
  * @geomstore/benchmark - 基准测试配置
  */
 
-import type { DatasetSize, BenchmarkScenario, BenchmarkConfig } from './types'
+import type { DatasetSize, BenchmarkScenario, BenchmarkConfig } from './types/index.js'
 
 export type { DatasetSize, BenchmarkScenario, BenchmarkConfig }
 

@@ -2,7 +2,7 @@
  * @geomstore/benchmark - 基准测试类型定义
  */
 
-export type { State, CacheStats, BenchmarkStore, StoreConfig, StoreFactory, ComposeStoreFn } from './store'
+export type { State, CacheStats, BenchmarkStore, StoreConfig, StoreFactory, ComposeStoreFn } from './store.js'
 
 /**
  * 数据集规模

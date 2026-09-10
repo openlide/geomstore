@@ -2,8 +2,8 @@
  * @geomstore/benchmark - 报告生成器
  */
 
-import type { BenchmarkReport, BenchmarkResult } from './types'
-import { benchmarkUtils } from './utils'
+import type { BenchmarkReport, BenchmarkResult } from './types/index.js'
+import { benchmarkUtils } from './utils.js'
 
 /**
  * 报告格式

@@ -5,15 +5,15 @@
  */
 
 // 类型定义
-export type * from './types'
+export type * from './types/index.js'
 
 // 核心类
-export { BenchmarkRunner } from './runner'
-export { BenchmarkReporter, benchmarkReporter } from './reporter'
-export type { ReportFormat } from './reporter'
+export { BenchmarkRunner } from './runner.js'
+export { BenchmarkReporter, benchmarkReporter } from './reporter.js'
+export type { ReportFormat } from './reporter.js'
 
 // 配置
-export { defaultBenchmarkConfig, relaxedBenchmarkConfig, mergeConfig } from './config'
+export { defaultBenchmarkConfig, relaxedBenchmarkConfig, mergeConfig } from './config.js'
 
 // 常量
 export {
@@ -26,10 +26,10 @@ export {
   DATASET_SIZE_THRESHOLDS,
   SAMPLING_CONFIG,
   SCENARIO_NAMES,
-} from './constants'
+} from './constants.js'
 
 // 工具函数
-export { benchmarkUtils, BenchmarkUtils } from './utils'
+export { benchmarkUtils, BenchmarkUtils } from './utils.js'
 
 // 辅助函数
 export {
@@ -39,8 +39,8 @@ export {
   emptyCacheResult,
   executeWarmup,
   warmupCache,
-} from './helpers'
-export type { TimeStats, MemoryStats, ResultBuilderOptions } from './helpers'
+} from './helpers.js'
+export type { TimeStats, MemoryStats, ResultBuilderOptions } from './helpers.js'
 
 /**
  * 创建适配器 - 将 GeomStore Store 适配为 BenchmarkStore
@@ -58,7 +58,7 @@ export function createBenchmarkAdapter<S extends Record<string, unknown>>(
     getCacheStats: () => { enabled: boolean; hits: number; misses: number; evictions?: number }
     destroy: () => void
   }
-): import('./types').BenchmarkStore<S> {
+): import('./types/index.js').BenchmarkStore<S> {
   return {
     getState: () => store.getState(),
     setState: (key, value) => store.setState(key, value),

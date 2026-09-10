@@ -2,13 +2,14 @@
  * @geomstore/benchmark - 基准测试运行器
  */
 
-declare const process: { version: string; platform: string; arch: string }
-declare const require: (module: string) => unknown
+import os from 'node:os'
 
-import type { BenchmarkResult, BenchmarkReport, BenchmarkScenario, BenchmarkConfig, MemorySnapshot, State, BenchmarkStore } from './types'
-import { benchmarkUtils } from './utils'
-import { defaultBenchmarkConfig, mergeConfig } from './config'
-import { ResultBuilder } from './helpers'
+declare const process: { version: string; platform: string; arch: string }
+
+import type { BenchmarkResult, BenchmarkReport, BenchmarkScenario, BenchmarkConfig, MemorySnapshot, State, BenchmarkStore } from './types/index.js'
+import { benchmarkUtils } from './utils.js'
+import { defaultBenchmarkConfig, mergeConfig } from './config.js'
+import { ResultBuilder } from './helpers.js'
 
 /**
  * 基准测试运行器
@@ -320,10 +321,10 @@ export class BenchmarkRunner {
         platform: process.platform,
         cpu: {
           model: process.arch,
-          cores: (require('os') as { cpus: () => { speed: number }[] }).cpus().length,
-          speed: (require('os') as { cpus: () => { speed: number }[] }).cpus()[0]?.speed || 0,
+          cores: os.cpus().length,
+          speed: os.cpus()[0]?.speed || 0,
         },
-        totalMemory: (require('os') as { totalmem: () => number }).totalmem(),
+        totalMemory: os.totalmem(),
       },
       config: this.config,
       results: this.results,
