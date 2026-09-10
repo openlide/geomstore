@@ -49,10 +49,7 @@ export interface SelectorCacheItem<R> {
 /**
  * 组合选择器参数
  */
-export interface SelectorComposerInput<
-  S extends State = Record<string, unknown>,
-  T extends readonly Selector<S, unknown>[] = readonly Selector<S, unknown>[],
-> {
+export interface SelectorComposerInput<S extends State = Record<string, unknown>, T extends readonly Selector<S, unknown>[] = readonly Selector<S, unknown>[]> {
   /** 选择器数组 */
   selectors: [...T]
   /**

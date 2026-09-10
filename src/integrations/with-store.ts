@@ -226,8 +226,7 @@ export function withPageStore<S extends State, A extends Actions, G extends Gett
       originalOnUnload?.call(this)
     }
 
-    return enhancedConfig as unknown as PageConfig<S, O, G> &
-      Omit<C, 'data'> & { data: (C extends { data: infer D } ? D : object) & ExtractPageData<S, O, G> }
+    return enhancedConfig as unknown as PageConfig<S, O, G> & Omit<C, 'data'> & { data: (C extends { data: infer D } ? D : object) & ExtractPageData<S, O, G> }
   }
 }
 

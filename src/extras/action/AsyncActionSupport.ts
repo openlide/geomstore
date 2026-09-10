@@ -202,7 +202,10 @@ export class ActionExecutor<A extends Actions = AsyncActions> {
    * }
    * ```
    */
-  async executeSequential<K extends keyof A>(actions: A, tasks: Array<{ action: K; args: Parameters<A[K]> }>): Promise<Array<Awaited<ReturnType<A[K]>> | Error>> {
+  async executeSequential<K extends keyof A>(
+    actions: A,
+    tasks: Array<{ action: K; args: Parameters<A[K]> }>,
+  ): Promise<Array<Awaited<ReturnType<A[K]>> | Error>> {
     const results: Array<Awaited<ReturnType<A[K]>> | Error> = []
 
     for (const task of tasks) {

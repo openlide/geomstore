@@ -23,12 +23,7 @@ export { ActionManager, GetterManager } from './ActionManager.js'
 export { BatchManager } from './BatchManager.js'
 
 // 内部类型导出
-export type {
-  InternalStateProtectionConfig,
-  ProxyCache,
-  SubscriptionManagerInterface,
-  BatchManagerInterface,
-} from './types.js'
+export type { InternalStateProtectionConfig, ProxyCache, SubscriptionManagerInterface, BatchManagerInterface } from './types.js'
 
 // 工具导出
 export { isProduction, createMutationErrorMessage, deepCloneState } from './utils.js'

@@ -140,10 +140,7 @@ function throwRetryExhausted(lastError: Error | undefined, attemptCount: number)
  * )
  * ```
  */
-export function createRetrySelectorAsync<S extends State, R>(
-  selector: Selector<S, R>,
-  options: AsyncRetrySelectorOptions = {},
-): (state: S) => Promise<R> {
+export function createRetrySelectorAsync<S extends State, R>(selector: Selector<S, R>, options: AsyncRetrySelectorOptions = {}): (state: S) => Promise<R> {
   const { retries = 3, delay = 0, shouldRetry } = options
   if (!Number.isInteger(retries) || retries < 0) {
     throw new TypeError(`[SelectorComposer] retries 必须是非负整数，收到: ${retries}`)

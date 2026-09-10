@@ -94,10 +94,7 @@ export class HookSystem implements IHookSystem {
  * `plugin` 需与 store 的状态类型匹配；状态无关的插件写作 `Plugin<State>`（如 `loggerPlugin`），
  * 对任意 Store 都适用。
  */
-export function usePlugin<S extends State, A extends Actions, G extends Getters<S>>(
-  plugin: Plugin<NoInfer<S>>,
-  store: Store<S, A, G>,
-): () => void {
+export function usePlugin<S extends State, A extends Actions, G extends Getters<S>>(plugin: Plugin<NoInfer<S>>, store: Store<S, A, G>): () => void {
   try {
     const uninstall = plugin.install(store)
     if (!isProduction()) {

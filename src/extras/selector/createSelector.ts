@@ -377,10 +377,7 @@ export function createSelector<S extends State, R>(selectorFn: Selector<S, R>, o
  * memoizedSelector(state) // 使用缓存
  * ```
  */
-export function createMemoizedSelector<S extends State, R>(
-  selectorFn: Selector<S, R>,
-  equalityFn?: (a: unknown, b: unknown) => boolean,
-): Selector<S, R> {
+export function createMemoizedSelector<S extends State, R>(selectorFn: Selector<S, R>, equalityFn?: (a: unknown, b: unknown) => boolean): Selector<S, R> {
   return createSelector(selectorFn, {
     cache: true,
     equalityFn,

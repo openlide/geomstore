@@ -53,4 +53,3 @@ export interface BatchManagerInterface<_S extends State = State> {
   /** 是否在批量更新中 */
   readonly isInBatch: boolean
 }
-

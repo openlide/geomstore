@@ -41,12 +41,5 @@ export { ErrorRecovery, RecoveryStrategy, createDefaultErrorRecovery, defaultErr
 export type { RecoveryConfig, RecoveryContext, RecoveryStrategyMap } from './ErrorRecovery.js'
 
 // 错误监控和报警系统
-export {
-  ErrorMonitoring,
-  ErrorAggregator,
-  ConsoleReporter,
-  HttpReporter,
-  createDefaultMonitoring,
-  getDefaultMonitoring,
-} from './ErrorMonitoring.js'
+export { ErrorMonitoring, ErrorAggregator, ConsoleReporter, HttpReporter, createDefaultMonitoring, getDefaultMonitoring } from './ErrorMonitoring.js'
 export type { ErrorReporter, ErrorGroup, ErrorReport, MonitoringConfig } from '../../types/error.js'

@@ -9,6 +9,7 @@
  */
 
 import { deepCloneState } from './clone.js'
+import { deepEqual } from './equality.js'
 
 // ==================== 类型判断 ====================
 
@@ -102,10 +103,8 @@ export function shallowEqual(a: unknown, b: unknown): boolean {
   return true
 }
 
-// 深度相等比较已拆至 ./equality.js；此处导入（本文件内仍需使用）并再导出，
-// 以保持既有导入路径（core/utils/helpers.js）不变
-import { deepEqual } from './equality.js'
-
+// 深度相等比较已拆至 ./equality.js；此处再导出以保持既有导入路径
+// （core/utils/helpers.js）不变；deepEqual 的 import 已移至文件顶部
 export { deepEqual } from './equality.js'
 
 /**

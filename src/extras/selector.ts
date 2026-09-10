@@ -1,7 +1,7 @@
 /**
  * 状态选择器（可选能力，按需动态引入）
  *
- * 实现位于同层 `./selector/`（v0.5.0 起由 `src/core/selector` 物理下沉至 extras）：
+ * 实现位于同层 `./selector/`（v0.4.0 起由 `src/core/selector` 物理下沉至 extras）：
  * - `createSelector` / `createMemoizedSelector` / `createStructuredSelector`
  * - `createParametricSelector`：带参数选择器
  * - `SelectorComposer`：异步、重试等组合形态

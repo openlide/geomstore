@@ -23,7 +23,6 @@ import {
   safeReadProperty,
 } from './clone.js'
 
-
 /**
  * 异步克隆任务
  *

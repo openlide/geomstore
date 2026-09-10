@@ -17,11 +17,7 @@ import { isProduction } from '../store/utils.js'
  * @param pick - 从子 store 取值的方法（getState / state / $snapshot）
  * @param freeze - 是否冻结合并结果（state getter 需冻结以阻止顶层写入）
  */
-export function mergeNamespaced(
-  stores: readonly Store[],
-  pick: (store: Store) => Record<string, unknown>,
-  freeze: boolean = false,
-): Record<string, unknown> {
+export function mergeNamespaced(stores: readonly Store[], pick: (store: Store) => Record<string, unknown>, freeze: boolean = false): Record<string, unknown> {
   const result: Record<string, unknown> = {}
   for (const store of stores) {
     result[store.name] = pick(store)

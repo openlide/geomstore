@@ -101,16 +101,20 @@ export type ExtractMappedActions<
 /**
  * 从 ConnectOptions 提取完整的页面 data 类型
  *
- * 类型契约（有意宽松）：交叉 `S` 使方法内可访问全部状态键，覆盖
- * autoInject 注入、页面 data 手动声明同名初始值等场景；仅按需映射时，
- * 未映射键运行时并不一定存在于 data 中，直接访问得到 undefined。
- * 需要「仅映射键」的严格类型请改用 ExtractMappedState。
+ * 类型契约（严格）：
+ * - `Partial<S>`：全部状态键均可访问，但未映射的键运行时不一定存在，故其类型为
+ *   `T | undefined`，强制调用方判空，避免静默拿到 undefined。
+ * - 已映射键（`ExtractMappedState` / `ExtractMappedGetters`）经交集收窄仍保持精确类型：
+ *   `Partial<T> & T` 等于 `T`，故 Partial 不会削弱映射键。
+ * - 不提供索引签名：拼错的键会直接编译报错，而非静默返回 `unknown`。
+ *   data 上的动态键请在页面/应用的 `data`（或 `globalData`）字面量中显式声明；
+ *   运行时的动态写入走 `setData`，它本来就接受 `Record<string, unknown>`。
  */
 export type ExtractPageData<
   S extends State,
   M extends { mapState?: readonly (keyof S)[] | Record<string, keyof S>; mapGetters?: readonly PropertyKey[] | Record<string, PropertyKey> },
   G extends Getters<S> = Getters<S>,
-> = (S & ExtractMappedState<S, M> & ExtractMappedGetters<M, G>) & Record<string, unknown>
+> = Partial<S> & ExtractMappedState<S, M> & ExtractMappedGetters<M, G>
 
 /**
  * 方法 this 重写映射类型
@@ -202,7 +206,11 @@ export type PageThis<
  */
 export type PageConfig<
   S extends State,
-  M extends { mapState?: readonly (keyof S)[] | Record<string, keyof S>; mapGetters?: readonly PropertyKey[] | Record<string, PropertyKey> } = ConnectOptions<S, Actions, Getters<S>>,
+  M extends { mapState?: readonly (keyof S)[] | Record<string, keyof S>; mapGetters?: readonly PropertyKey[] | Record<string, PropertyKey> } = ConnectOptions<
+    S,
+    Actions,
+    Getters<S>
+  >,
   G extends Getters<S> = Getters<S>,
 > = {
   data: ExtractPageData<S, M, G>

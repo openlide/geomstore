@@ -292,44 +292,44 @@ export const devtoolsPlugin: Plugin = {
     console.log(`[GeomStore] DevTools enabled. Access store at:`, `globalThis.__GEOMSTORE_STORES__["${store.name}"]`)
 
     const devtoolsAPI = {
-        getStoreInfo: () => ({
-          name: store.name,
-          state: store.getState(),
-          actions: Object.keys(store.actions),
-          getters: store.getGetterNames ? store.getGetterNames() : [],
-        }),
+      getStoreInfo: () => ({
+        name: store.name,
+        state: store.getState(),
+        actions: Object.keys(store.actions),
+        getters: store.getGetterNames ? store.getGetterNames() : [],
+      }),
 
-        dispatch: (actionName: string, ...args: unknown[]) => {
-          return store.dispatch(actionName, ...args)
-        },
+      dispatch: (actionName: string, ...args: unknown[]) => {
+        return store.dispatch(actionName, ...args)
+      },
 
-        getter: (getterName: string) => {
-          return store.getter(getterName)
-        },
+      getter: (getterName: string) => {
+        return store.getter(getterName)
+      },
 
-        getState: () => store.state,
-        // 注意：状态保护开启时 store.state 为保护 Proxy，读取语义等价；
-        // devtools 消费方如需序列化（JSON.stringify 可穿透），请自行拷贝副本
-        setState: (key: string, value: unknown) => {
-          store.setState(key as never, value as never)
-        },
-        $patch: (partialState: unknown) => {
-          store.$patch(partialState as never)
-        },
-        $replaceState: (newState: unknown) => {
-          store.$replaceState(newState as never)
-        },
+      getState: () => store.state,
+      // 注意：状态保护开启时 store.state 为保护 Proxy，读取语义等价；
+      // devtools 消费方如需序列化（JSON.stringify 可穿透），请自行拷贝副本
+      setState: (key: string, value: unknown) => {
+        store.setState(key as never, value as never)
+      },
+      $patch: (partialState: unknown) => {
+        store.$patch(partialState as never)
+      },
+      $replaceState: (newState: unknown) => {
+        store.$replaceState(newState as never)
+      },
 
-        subscribe: (callback: (state: unknown) => void) => {
-          return store.subscribe(callback)
-        },
+      subscribe: (callback: (state: unknown) => void) => {
+        return store.subscribe(callback)
+      },
 
-        use: (plugin: unknown) => {
-          return store.use(plugin as never)
-        },
+      use: (plugin: unknown) => {
+        return store.use(plugin as never)
+      },
 
-        destroy: () => store.destroy(),
-      }
+      destroy: () => store.destroy(),
+    }
 
     const unregisterDevtools = registerGlobalEntry('__GEOMSTORE_DEVTOOLS__', store.name, devtoolsAPI)
     console.log(`[GeomStore][devtools] Access API at: globalThis.__GEOMSTORE_DEVTOOLS__["${store.name}"]`)

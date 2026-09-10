@@ -8,12 +8,7 @@
 import type { Selector, SelectorComposerInput } from '../../types/selector.js'
 import type { State } from '../../types/store.js'
 
-import {
-  createRetrySelector,
-  createRetrySelectorAsync,
-  type AsyncRetrySelectorOptions,
-  type RetrySelectorOptions,
-} from './retrySelector.js'
+import { createRetrySelector, createRetrySelectorAsync, type AsyncRetrySelectorOptions, type RetrySelectorOptions } from './retrySelector.js'
 
 // 重试选择器与其选项类型已拆至 ./retrySelector.js；此处再导出以保持既有导入路径不变
 export type { AsyncRetrySelectorOptions, RetrySelectorOptions } from './retrySelector.js'
@@ -111,11 +106,7 @@ export class SelectorComposer {
     selector3: (input: T2) => T3,
     selector4: (input: T3) => T4,
   ): Selector<S, T4>
-  static pipe<S extends State, T1, T2, T3>(
-    selector1: Selector<S, T1>,
-    selector2: (input: T1) => T2,
-    selector3: (input: T2) => T3,
-  ): Selector<S, T3>
+  static pipe<S extends State, T1, T2, T3>(selector1: Selector<S, T1>, selector2: (input: T1) => T2, selector3: (input: T2) => T3): Selector<S, T3>
   static pipe<S extends State, T1, T2>(selector1: Selector<S, T1>, selector2: (input: T1) => T2): Selector<S, T2>
   static pipe<S extends State, T1>(selector1: Selector<S, T1>): Selector<S, T1>
   // 重载实现签名：对外类型安全由各重载保证，此处放宽为通用函数类型
@@ -153,11 +144,7 @@ export class SelectorComposer {
    * // 计算活跃项目数量
    * ```
    */
-  static createDerived<S extends State, R1, R2, R3>(
-    selector1: Selector<S, R1>,
-    selector2: (input: R1) => R2,
-    selector3: (input: R2) => R3,
-  ): Selector<S, R3>
+  static createDerived<S extends State, R1, R2, R3>(selector1: Selector<S, R1>, selector2: (input: R1) => R2, selector3: (input: R2) => R3): Selector<S, R3>
   static createDerived<S extends State, R1, R2>(selector1: Selector<S, R1>, selector2: (input: R1) => R2): Selector<S, R2>
   // 重载实现签名：对外类型安全由各重载保证，此处放宽为通用函数类型
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -309,10 +296,7 @@ export class SelectorComposer {
     return createRetrySelector(selector, options)
   }
 
-  static createRetrySelectorAsync<S extends State, R>(
-    selector: Selector<S, R>,
-    options: AsyncRetrySelectorOptions = {},
-  ): (state: S) => Promise<R> {
+  static createRetrySelectorAsync<S extends State, R>(selector: Selector<S, R>, options: AsyncRetrySelectorOptions = {}): (state: S) => Promise<R> {
     return createRetrySelectorAsync(selector, options)
   }
 

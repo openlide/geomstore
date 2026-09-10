@@ -70,5 +70,3 @@ export class BatchManager implements BatchManagerInterface {
     this._depth = 0
   }
 }
-
-

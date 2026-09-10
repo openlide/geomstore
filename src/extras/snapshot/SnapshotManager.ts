@@ -13,14 +13,7 @@
 import { SKIP_CLONE_NODE, SnapshotAbortError, cloneDeep } from './clone.js'
 import { processNodeAsync, type AsyncCloneTask } from './clone-async.js'
 import { compareSnapshots as compareSnapshotsImpl, type SnapshotDiff } from './diff.js'
-import type {
-  AsyncSnapshotOptions,
-  SnapshotError,
-  SnapshotMetadata,
-  SnapshotOptions,
-  SnapshotResult,
-  SnapshotStats,
-} from './types.js'
+import type { AsyncSnapshotOptions, SnapshotError, SnapshotMetadata, SnapshotOptions, SnapshotResult, SnapshotStats } from './types.js'
 
 // ==================== 类型定义 ====================
 // 类型已拆至 ./types.js：此处再导出以保持既有导入路径（SnapshotManager.js）不变

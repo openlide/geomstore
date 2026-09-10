@@ -137,8 +137,7 @@ export function withAppStore<S extends State = State, A extends Actions = Action
   // 返回类型据此保留自定义生命周期/字段），又把顶层方法的 this 重写为注入后的实例类型；
   // AppThis 交叉 C，从而保留 globalData 的自定义字段
   return function <C extends AppOptions>(
-    AppConfig: WithPageThis<C, AppThis<S, A, G, ConnectOptions<S, A, G>, C>> &
-      ThisType<AppThis<S, A, G, ConnectOptions<S, A, G>, C>>,
+    AppConfig: WithPageThis<C, AppThis<S, A, G, ConnectOptions<S, A, G>, C>> & ThisType<AppThis<S, A, G, ConnectOptions<S, A, G>, C>>,
   ): C {
     // 订阅清理列表：App 生命周期贯穿整个小程序运行期，
     // 仅在订阅建立前重置（防止重复绑定），不在 onHide 等生命周期中清理

@@ -253,5 +253,4 @@ export class StoreCacheManager<S extends State = State> {
       evictions: stats.evictions,
     }
   }
-
 }

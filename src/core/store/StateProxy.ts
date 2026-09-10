@@ -90,9 +90,7 @@ export class StateProxyManager<S extends State = State> {
    * 路径仅在「外部访问」分支内拼接：绝大多数写入是内部访问（setState / $patch /
    * $replaceState），避免每次写入都做无谓的字符串分配。
    */
-  private _makeWriteTraps<T extends object>(
-    formatPath: (key: string | symbol) => string,
-  ): Pick<ProxyHandler<T>, 'set' | 'deleteProperty' | 'defineProperty'> {
+  private _makeWriteTraps<T extends object>(formatPath: (key: string | symbol) => string): Pick<ProxyHandler<T>, 'set' | 'deleteProperty' | 'defineProperty'> {
     const self = this
     return {
       set(obj: T, key: string | symbol, value: unknown): boolean {

@@ -180,7 +180,9 @@ export class SubscriptionManager<S extends State = State> implements Subscriptio
  * 创建订阅函数返回值
  * 返回一个取消订阅的函数
  */
-export function createSubscribeFunction<S extends State>(manager: SubscriptionManager<S>): (listener: StateListener<S>, options?: { readOnly?: boolean }) => () => void {
+export function createSubscribeFunction<S extends State>(
+  manager: SubscriptionManager<S>,
+): (listener: StateListener<S>, options?: { readOnly?: boolean }) => () => void {
   return (listener: StateListener<S>, options?: { readOnly?: boolean }): (() => void) => {
     manager.add(listener, options)
     return () => {

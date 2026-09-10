@@ -276,9 +276,7 @@ export class OfflineManager<S extends State = State> {
    * 进程在同步窗口内被杀会让未处理旧操作永久丢失（at-least-once）
    */
   private saveQueue(): void {
-    const view = this.syncing
-      ? [...this.syncFailed, ...this.syncPending.slice(this.syncNextIndex), ...this.actionQueue]
-      : this.actionQueue
+    const view = this.syncing ? [...this.syncFailed, ...this.syncPending.slice(this.syncNextIndex), ...this.actionQueue] : this.actionQueue
     storage.set(this.queueKey, view)
   }
 

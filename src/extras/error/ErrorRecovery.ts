@@ -9,13 +9,7 @@
  */
 
 import { GeomStoreError, isGeomStoreError, ErrorCode } from '../../core/errors/GeomStoreError.js'
-import {
-  MAX_RETRY_KEYS,
-  RecoveryStrategy,
-  type RecoveryConfig,
-  type RecoveryContext,
-  type RecoveryStrategyMap,
-} from './recoveryTypes.js'
+import { MAX_RETRY_KEYS, RecoveryStrategy, type RecoveryConfig, type RecoveryContext, type RecoveryStrategyMap } from './recoveryTypes.js'
 
 // 类型与常量已拆至 ./recoveryTypes.js；此处再导出以保持既有导入路径（extras/error/ErrorRecovery.js）不变
 export { RecoveryStrategy } from './recoveryTypes.js'
