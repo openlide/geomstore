@@ -36,7 +36,7 @@ function collectEntries() {
     entries.push({ sub, types: value.types })
   }
   // '.' 置顶，其余按子路径字典序（extras/* 自然聚在一起）
-  entries.sort((a, b) => (a.sub === '.' ? -1 : b.sub === '.' ? 1 : a.sub.localeCompare(b.sub)))
+  entries.sort((a, b) => (a.sub === '.' ? -1 : b.sub === '.' ? 1 : a.sub < b.sub ? -1 : a.sub > b.sub ? 1 : 0))
   return entries
 }
 
@@ -96,7 +96,7 @@ function main() {
     const resolved = symbols
       .map((symbol) => ({ name: symbol.getName(), declaration: getDeclaration(symbol) }))
       .filter((item) => item.declaration)
-      .sort((a, b) => a.name.localeCompare(b.name))
+      .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
     totalSymbols += resolved.length
 
     const lines = [`## \`${entry.sub}\``, '', `> 类型声明：\`${entry.types}\``, '']

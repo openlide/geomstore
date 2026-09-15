@@ -125,28 +125,6 @@ export interface CacheStats {
 }
 ```
 
-### `clone`
-
-```ts
-/**
- * 统一的克隆函数
- *
- * @param obj 要克隆的对象
- * @param options.mode 克隆模式（默认 'deep'）：
- * - `deep`：递归深拷贝，支持 Date/RegExp/Map/Set 与循环引用（复用 deepCloneState）
- * - `shallow`：仅复制一层（数组/Map/Set 展开复制，对象浅拷贝）
- * - `safe`：尽力深拷贝且绝不抛错——结构保真与 deep 相同（Date/Map/Set 正确克隆），
- *   仅在克隆器真正失败时降级返回原引用并告警。旧版 safe 的 JSON 序列化语义
- *   （Date 变字符串、Map/Set 变 `{}`、丢 undefined/函数）已移至显式命名的 `json` 模式
- * - `json`：JSON 序列化往返，产出可结构化克隆的纯数据副本（有损），
- *   序列化失败（循环引用等）时返回原引用
- * @returns 克隆后的对象
- */
-export declare function clone<T>(obj: T, options?: {
-    mode?: CloneMode;
-}): T;
-```
-
 ### `CloneMode`
 
 ```ts
@@ -204,6 +182,24 @@ export type ComponentThis<S extends State, A extends Actions, G extends Getters<
     methods: ExtraMethods & ExtractMappedActions<A, M>;
     setData: (data: Record<string, unknown>, callback?: () => void) => void;
 };
+```
+
+### `ComposeOptions`
+
+```ts
+/**
+ * 组合选项
+ */
+export interface ComposeOptions {
+    /** 命名空间模式：true 启用（默认分隔符 /），或指定前缀字符串 */
+    namespace?: string | boolean;
+    /** 延迟初始化 */
+    lazy?: boolean;
+    /** 严格模式（访问不存在的Store报错） */
+    strict?: boolean;
+    /** Store树结构 */
+    tree?: boolean;
+}
 ```
 
 ### `ComposedStore`
@@ -360,34 +356,6 @@ declare class ComposedStore<S extends State = State> implements Store<S> {
 }
 ```
 
-### `ComposeOptions`
-
-```ts
-/**
- * 组合选项
- */
-export interface ComposeOptions {
-    /** 命名空间模式：true 启用（默认分隔符 /），或指定前缀字符串 */
-    namespace?: string | boolean;
-    /** 延迟初始化 */
-    lazy?: boolean;
-    /** 严格模式（访问不存在的Store报错） */
-    strict?: boolean;
-    /** Store树结构 */
-    tree?: boolean;
-}
-```
-
-### `composeStore`
-
-```ts
-/**
- * Store组合函数 - 类型安全重载
- * 支持完整的类型推断，保留原始 Store 的类型信息
- */
-declare function composeStore<Stores extends readonly StoreLike[]>(stores: [...Stores], options?: ComposeOptions): Store<ExtractStates<Stores>, ExtractActions<Stores>, ExtractGetters<Stores>>;
-```
-
 ### `ConnectOptions`
 
 ```ts
@@ -415,59 +383,6 @@ export interface ConnectOptions<S extends State = State, A extends Actions = Act
 }
 ```
 
-### `createStore`
-
-```ts
-export declare function createStore<S extends State, A extends Actions = Actions, G extends Getters<S> = Getters<S>>(options: FactoryStoreConfig<S, A, G>): Store<S, A, G>;
-```
-
-### `createStoreTree`
-
-```ts
-/**
- * 创建Store树
- */
-export declare function createStoreTree(stores: Store[], options?: ComposeOptions): StoreTreeNode;
-```
-
-### `deepEqual`
-
-```ts
-/**
- * GeomStore - 深度相等比较
- *
- * 自 helpers.ts 拆出：深度比较两个值（迭代实现，含循环引用与 Set 无序语义）。
- *
- * @module utils/equality
- */
-/**
- * 深度比较两个值（使用迭代实现避免栈溢出）
- *
- * 注意：超过 maxDepth 时本函数直接返回 false（并告警），而非抛错或视为相等。
- * 这是保守语义——深度未知/超限的结构按「不相等」处理，
- * 以避免误报相等导致缓存误命中。调用方如需比较超深结构，
- * 请显式传入更大的 maxDepth。
- *
- * @param a - 第一个值
- * @param b - 第二个值
- * @param maxDepth - 最大递归深度（默认1000），超限时返回 false
- * @returns 是否相等
- */
-export declare function deepEqual(a: unknown, b: unknown, maxDepth?: number): boolean;
-```
-
-### `deepMerge`
-
-```ts
-/**
- * 深度合并对象
- *
- * 注意：此函数会修改 target 对象。对于非纯对象值（如数组），
- * 会进行深拷贝以防止 source 和 target 之间共享引用。
- */
-export declare function deepMerge<T extends Record<string, unknown>>(target: T, ...sources: Partial<T>[]): T;
-```
-
 ### `ExtractPageData`
 
 ```ts
@@ -489,15 +404,6 @@ export type ExtractPageData<S extends State, M extends {
 }, G extends Getters<S> = Getters<S>> = Partial<S> & ExtractMappedState<S, M> & ExtractMappedGetters<M, G>;
 ```
 
-### `get`
-
-```ts
-/**
- * 通过路径获取对象值
- */
-export declare function get<T = unknown>(obj: T, path: string, defaultValue?: unknown): unknown;
-```
-
 ### `Getters`
 
 ```ts
@@ -507,12 +413,6 @@ export declare function get<T = unknown>(obj: T, path: string, defaultValue?: un
 export type Getters<S extends State = State> = {
     [K: string]: (state: S) => unknown;
 };
-```
-
-### `globalRegistry`
-
-```ts
-globalRegistry: StoreRegistry
 ```
 
 ### `HookHandler`
@@ -556,15 +456,6 @@ export declare class HookSystem implements IHookSystem {
      */
     listenerCount(hookName: HookName): number;
 }
-```
-
-### `identity`
-
-```ts
-/**
- * 返回参数的函数
- */
-export declare function identity<T>(value: T): T;
 ```
 
 ### `IHookSystem`
@@ -613,75 +504,6 @@ export type InferActionReturn<A extends Actions, K extends keyof A> = A[K] exten
  * 推断Getter返回类型
  */
 export type InferGetterReturn<G extends Record<string, (state: any) => any>, K extends keyof G> = G[K] extends (...args: never[]) => infer R ? R : never;
-```
-
-### `isArray`
-
-```ts
-/**
- * 判断是否是数组
- */
-export declare function isArray(value: unknown): value is unknown[];
-```
-
-### `isFunction`
-
-```ts
-/**
- * 判断是否是函数
- */
-export declare function isFunction(value: unknown): value is (...args: unknown[]) => unknown;
-```
-
-### `isGeomStore`
-
-```ts
-/**
- * 检查是否是 GeomStore 实例
- *
- * 通过品牌 Symbol 精确识别，避免仅通过鸭子类型（属性存在性）误判。
- * @param value - 待检查的值
- */
-export declare function isGeomStore<S extends State = State>(value: unknown): value is Store<S>;
-```
-
-### `isObject`
-
-```ts
-/**
- * GeomStore - 工具函数集合
- *
- * 提供常用的工具函数：
- * - 类型判断函数
- * - 对象操作函数
- * - 路径操作函数
- * - 克隆操作函数
- */
-/**
- * 判断是否是对象
- *
- * 注意：Map/Set 不是普通对象，深合并/克隆场景需单独处理，
- * 否则会被展开成空普通对象导致静默数据损坏。
- */
-export declare function isObject(value: unknown): value is Record<string, unknown>;
-```
-
-### `isPlainObject`
-
-```ts
-/**
- * 判断是否是纯对象（plain object）
- */
-export declare function isPlainObject(value: unknown): boolean;
-```
-
-### `isPromise`
-
-```ts
-/**
- * 判断是否是Promise
- */
-export declare function isPromise(value: unknown): value is Promise<unknown>;
 ```
 
 ### `LRUCache`
@@ -999,15 +821,6 @@ export interface NamespaceConfig {
 }
 ```
 
-### `noop`
-
-```ts
-/**
- * 空函数
- */
-export declare function noop(): void;
-```
-
 ### `PageConfig`
 
 ```ts
@@ -1123,24 +936,6 @@ export interface Plugin<S extends State = State> {
  * 例如 logger / analyzer 这类与状态形状无关的插件。
  */
 export type PluginHook<S extends State = State> = (store: Store<S, Actions, Getters<S>>) => void | (() => void);
-```
-
-### `set`
-
-```ts
-/**
- * 通过路径设置对象值
- */
-export declare function set<T = unknown>(obj: T, path: string, value: unknown): void;
-```
-
-### `shallowEqual`
-
-```ts
-/**
- * 浅比较两个值
- */
-export declare function shallowEqual(a: unknown, b: unknown): boolean;
 ```
 
 ### `State`
@@ -1783,6 +1578,226 @@ export interface StoreTreeNode {
 }
 ```
 
+### `WithPageThis`
+
+```ts
+/**
+ * 方法 this 重写映射类型
+ *
+ * 将配置对象中所有函数属性的 this 参数重写为 T，非函数属性（含 data）保持原样不变。
+ * 仅用于装饰器入参，使方法内 this 自动获得精确类型推导（含 data、actions、自定义方法），
+ * 且不改变对象结构类型，从而仍满足 PageOptions / ComponentOptions 约束。
+ */
+export type WithPageThis<C, T> = {
+    [K in keyof C]: C[K] extends (...args: infer P) => infer R ? (this: T, ...args: P) => R : C[K];
+};
+```
+
+### `clone`
+
+```ts
+/**
+ * 统一的克隆函数
+ *
+ * @param obj 要克隆的对象
+ * @param options.mode 克隆模式（默认 'deep'）：
+ * - `deep`：递归深拷贝，支持 Date/RegExp/Map/Set 与循环引用（复用 deepCloneState）
+ * - `shallow`：仅复制一层（数组/Map/Set 展开复制，对象浅拷贝）
+ * - `safe`：尽力深拷贝且绝不抛错——结构保真与 deep 相同（Date/Map/Set 正确克隆），
+ *   仅在克隆器真正失败时降级返回原引用并告警。旧版 safe 的 JSON 序列化语义
+ *   （Date 变字符串、Map/Set 变 `{}`、丢 undefined/函数）已移至显式命名的 `json` 模式
+ * - `json`：JSON 序列化往返，产出可结构化克隆的纯数据副本（有损），
+ *   序列化失败（循环引用等）时返回原引用
+ * @returns 克隆后的对象
+ */
+export declare function clone<T>(obj: T, options?: {
+    mode?: CloneMode;
+}): T;
+```
+
+### `composeStore`
+
+```ts
+/**
+ * Store组合函数 - 类型安全重载
+ * 支持完整的类型推断，保留原始 Store 的类型信息
+ */
+declare function composeStore<Stores extends readonly StoreLike[]>(stores: [...Stores], options?: ComposeOptions): Store<ExtractStates<Stores>, ExtractActions<Stores>, ExtractGetters<Stores>>;
+```
+
+### `createStore`
+
+```ts
+export declare function createStore<S extends State, A extends Actions = Actions, G extends Getters<S> = Getters<S>>(options: FactoryStoreConfig<S, A, G>): Store<S, A, G>;
+```
+
+### `createStoreTree`
+
+```ts
+/**
+ * 创建Store树
+ */
+export declare function createStoreTree(stores: Store[], options?: ComposeOptions): StoreTreeNode;
+```
+
+### `deepEqual`
+
+```ts
+/**
+ * GeomStore - 深度相等比较
+ *
+ * 自 helpers.ts 拆出：深度比较两个值（迭代实现，含循环引用与 Set 无序语义）。
+ *
+ * @module utils/equality
+ */
+/**
+ * 深度比较两个值（使用迭代实现避免栈溢出）
+ *
+ * 注意：超过 maxDepth 时本函数直接返回 false（并告警），而非抛错或视为相等。
+ * 这是保守语义——深度未知/超限的结构按「不相等」处理，
+ * 以避免误报相等导致缓存误命中。调用方如需比较超深结构，
+ * 请显式传入更大的 maxDepth。
+ *
+ * @param a - 第一个值
+ * @param b - 第二个值
+ * @param maxDepth - 最大递归深度（默认1000），超限时返回 false
+ * @returns 是否相等
+ */
+export declare function deepEqual(a: unknown, b: unknown, maxDepth?: number): boolean;
+```
+
+### `deepMerge`
+
+```ts
+/**
+ * 深度合并对象
+ *
+ * 注意：此函数会修改 target 对象。对于非纯对象值（如数组），
+ * 会进行深拷贝以防止 source 和 target 之间共享引用。
+ */
+export declare function deepMerge<T extends Record<string, unknown>>(target: T, ...sources: Partial<T>[]): T;
+```
+
+### `get`
+
+```ts
+/**
+ * 通过路径获取对象值
+ */
+export declare function get<T = unknown>(obj: T, path: string, defaultValue?: unknown): unknown;
+```
+
+### `globalRegistry`
+
+```ts
+globalRegistry: StoreRegistry
+```
+
+### `identity`
+
+```ts
+/**
+ * 返回参数的函数
+ */
+export declare function identity<T>(value: T): T;
+```
+
+### `isArray`
+
+```ts
+/**
+ * 判断是否是数组
+ */
+export declare function isArray(value: unknown): value is unknown[];
+```
+
+### `isFunction`
+
+```ts
+/**
+ * 判断是否是函数
+ */
+export declare function isFunction(value: unknown): value is (...args: unknown[]) => unknown;
+```
+
+### `isGeomStore`
+
+```ts
+/**
+ * 检查是否是 GeomStore 实例
+ *
+ * 通过品牌 Symbol 精确识别，避免仅通过鸭子类型（属性存在性）误判。
+ * @param value - 待检查的值
+ */
+export declare function isGeomStore<S extends State = State>(value: unknown): value is Store<S>;
+```
+
+### `isObject`
+
+```ts
+/**
+ * GeomStore - 工具函数集合
+ *
+ * 提供常用的工具函数：
+ * - 类型判断函数
+ * - 对象操作函数
+ * - 路径操作函数
+ * - 克隆操作函数
+ */
+/**
+ * 判断是否是对象
+ *
+ * 注意：Map/Set 不是普通对象，深合并/克隆场景需单独处理，
+ * 否则会被展开成空普通对象导致静默数据损坏。
+ */
+export declare function isObject(value: unknown): value is Record<string, unknown>;
+```
+
+### `isPlainObject`
+
+```ts
+/**
+ * 判断是否是纯对象（plain object）
+ */
+export declare function isPlainObject(value: unknown): boolean;
+```
+
+### `isPromise`
+
+```ts
+/**
+ * 判断是否是Promise
+ */
+export declare function isPromise(value: unknown): value is Promise<unknown>;
+```
+
+### `noop`
+
+```ts
+/**
+ * 空函数
+ */
+export declare function noop(): void;
+```
+
+### `set`
+
+```ts
+/**
+ * 通过路径设置对象值
+ */
+export declare function set<T = unknown>(obj: T, path: string, value: unknown): void;
+```
+
+### `shallowEqual`
+
+```ts
+/**
+ * 浅比较两个值
+ */
+export declare function shallowEqual(a: unknown, b: unknown): boolean;
+```
+
 ### `uniqueId`
 
 ```ts
@@ -1998,21 +2013,6 @@ export declare function withPageStore<S extends State, A extends Actions, G exte
 };
 ```
 
-### `WithPageThis`
-
-```ts
-/**
- * 方法 this 重写映射类型
- *
- * 将配置对象中所有函数属性的 this 参数重写为 T，非函数属性（含 data）保持原样不变。
- * 仅用于装饰器入参，使方法内 this 自动获得精确类型推导（含 data、actions、自定义方法），
- * 且不改变对象结构类型，从而仍满足 PageOptions / ComponentOptions 约束。
- */
-export type WithPageThis<C, T> = {
-    [K in keyof C]: C[K] extends (...args: infer P) => infer R ? (this: T, ...args: P) => R : C[K];
-};
-```
-
 ---
 
 ## `./core`
@@ -2026,61 +2026,61 @@ export type WithPageThis<C, T> = {
 - `AppOptions`
 - `CacheOptions`
 - `CacheStats`
-- `clone`
 - `CloneMode`
 - `ComponentConfig`
 - `ComponentOwnMethods`
 - `ComponentThis`
-- `ComposedStore`
 - `ComposeOptions`
-- `composeStore`
+- `ComposedStore`
 - `ConnectOptions`
-- `createStore`
-- `createStoreTree`
-- `deepEqual`
-- `deepMerge`
 - `ExtractPageData`
-- `get`
 - `Getters`
-- `globalRegistry`
 - `HookHandler`
 - `HookName`
 - `HookSystem`
-- `identity`
 - `IHookSystem`
 - `InferActionArgs`
 - `InferActionReturn`
 - `InferGetterReturn`
-- `isArray`
-- `isFunction`
-- `isGeomStore`
-- `isObject`
-- `isPlainObject`
-- `isPromise`
 - `LRUCache`
 - `LRUCacheStats`
 - `NamespaceConfig`
-- `noop`
 - `PageConfig`
 - `PageOwnMethods`
 - `PageReservedKeys`
 - `PageThis`
 - `Plugin`
 - `PluginHook`
-- `set`
-- `shallowEqual`
 - `State`
 - `StateListener`
 - `Store`
 - `StoreOptions`
 - `StoreRegistry`
 - `StoreTreeNode`
+- `WithPageThis`
+- `clone`
+- `composeStore`
+- `createStore`
+- `createStoreTree`
+- `deepEqual`
+- `deepMerge`
+- `get`
+- `globalRegistry`
+- `identity`
+- `isArray`
+- `isFunction`
+- `isGeomStore`
+- `isObject`
+- `isPlainObject`
+- `isPromise`
+- `noop`
+- `set`
+- `shallowEqual`
 - `uniqueId`
 - `usePlugin`
 - `withAppStore`
 - `withComponentStore`
 - `withPageStore`
-- `WithPageThis`
 
 ---
 
@@ -2098,28 +2098,16 @@ export type WithPageThis<C, T> = {
 - `ActionResult`
 - `ActionUtils`
 - `ActionUtilsOptions`
-- `analyzerPlugin`
 - `AsyncActions`
 - `AsyncSnapshotOptions`
 - `BackgroundSyncConfig`
 - `BackupData`
-- `builtinPlugins`
 - `CacheDecoratorOptions`
-- `createAnalyzerPlugin`
-- `createDecorator`
-- `createEnterpriseApp`
-- `createSnapshot`
-- `createSnapshotAsync`
-- `createUserStore`
 - `DecoratorOptions`
-- `devtoolsPlugin`
 - `EnterpriseAppConfig`
 - `HotUpdateConfig`
-- `initBackgroundSync`
-- `initHotUpdate`
-- `loggerPlugin`
-- `MetricsCollector`
 - `MetricType`
+- `MetricsCollector`
 - `OfflineAction`
 - `OfflineManager`
 - `PerformanceAnalyzer`
@@ -2128,8 +2116,6 @@ export type WithPageThis<C, T> = {
 - `PerformanceOptions`
 - `PerformanceStats`
 - `PersistenceOptions`
-- `persistencePlugin`
-- `restoreFromHotUpdate`
 - `RetryDecoratorOptions`
 - `SnapshotDiff`
 - `SnapshotError`
@@ -2140,16 +2126,31 @@ export type WithPageThis<C, T> = {
 - `SnapshotResult`
 - `SnapshotStats`
 - `StorageBackend`
-- `storeManager`
 - `StoreManager`
 - `ThrottleDecoratorOptions`
 - `TimeTravelOptions`
-- `timeTravelPlugin`
-- `unregisterBackgroundSync`
 - `UserInfo`
 - `UserPreferences`
 - `UserState`
 - `UserStoreConfig`
+- `WxStorageBackend`
+- `analyzerPlugin`
+- `builtinPlugins`
+- `createAnalyzerPlugin`
+- `createDecorator`
+- `createEnterpriseApp`
+- `createSnapshot`
+- `createSnapshotAsync`
+- `createUserStore`
+- `devtoolsPlugin`
+- `initBackgroundSync`
+- `initHotUpdate`
+- `loggerPlugin`
+- `persistencePlugin`
+- `restoreFromHotUpdate`
+- `storeManager`
+- `timeTravelPlugin`
+- `unregisterBackgroundSync`
 - `withCache`
 - `withDebounce`
 - `withLoading`
@@ -2157,7 +2158,6 @@ export type WithPageThis<C, T> = {
 - `withRetry`
 - `withThrottle`
 - `withTimeout`
-- `WxStorageBackend`
 
 ---
 
@@ -2902,43 +2902,6 @@ export interface CacheDecoratorOptions {
 }
 ```
 
-### `createDecorator`
-
-```ts
-/**
- * 创建Action装饰器
- *
- * 创建一个通用装饰器，可以在Action执行前后执行自定义逻辑
- *
- * @static
- * @param {DecoratorOptions} [options={}] - 装饰器选项
- * @returns {MethodDecorator} 方法装饰器
- *
- * @example
- * ```typescript
- * const auditDecorator = createDecorator({
- *   before: (...args) => {
- *     console.log('[Audit] Action called with:', args)
- *   },
- *   after: (result) => {
- *     console.log('[Audit] Action completed with result:', result)
- *   },
- *   onError: (error) => {
- *     console.error('[Audit] Action failed:', error)
- *   }
- * })
- *
- * class MyComponent {
- *   @auditDecorator
- *   async loadData(id: string) {
- *     return await fetchData(id)
- *   }
- * }
- * ```
- */
-export declare function createDecorator(options?: DecoratorOptions): MethodDecorator;
-```
-
 ### `DecoratorOptions`
 
 ```ts
@@ -3007,6 +2970,43 @@ export interface ThrottleDecoratorOptions {
      */
     assumeAsync?: boolean;
 }
+```
+
+### `createDecorator`
+
+```ts
+/**
+ * 创建Action装饰器
+ *
+ * 创建一个通用装饰器，可以在Action执行前后执行自定义逻辑
+ *
+ * @static
+ * @param {DecoratorOptions} [options={}] - 装饰器选项
+ * @returns {MethodDecorator} 方法装饰器
+ *
+ * @example
+ * ```typescript
+ * const auditDecorator = createDecorator({
+ *   before: (...args) => {
+ *     console.log('[Audit] Action called with:', args)
+ *   },
+ *   after: (result) => {
+ *     console.log('[Audit] Action completed with result:', result)
+ *   },
+ *   onError: (error) => {
+ *     console.error('[Audit] Action failed:', error)
+ *   }
+ * })
+ *
+ * class MyComponent {
+ *   @auditDecorator
+ *   async loadData(id: string) {
+ *     return await fetchData(id)
+ *   }
+ * }
+ * ```
+ */
+export declare function createDecorator(options?: DecoratorOptions): MethodDecorator;
 ```
 
 ### `withCache`
@@ -3307,40 +3307,6 @@ export interface BackupData {
 }
 ```
 
-### `createEnterpriseApp`
-
-```ts
-/**
- * 示例：在 App.ts 中使用以上所有功能
- * 账号切换/登出时自动 dispose 旧的 OfflineManager，避免监听泄漏
- */
-export declare function createEnterpriseApp(config?: EnterpriseAppConfig): {
-    globalData: {
-        storeManager: import("./store-manager.js").StoreManager;
-        store: Store<UserState, import("../../types/store.js").Actions, import("../../types/store.js").Getters<UserState>> | null;
-        offlineManager: OfflineManager<UserState> | null;
-    };
-    onLaunch(): void;
-    onShow(): void;
-    login(userId: string): Store<UserState, import("../../types/store.js").Actions, import("../../types/store.js").Getters<UserState>>;
-    logout(): void;
-    getStore(): Store<UserState> | null;
-    getOfflineManager(): OfflineManager<UserState> | null;
-};
-```
-
-### `createUserStore`
-
-```ts
-/**
- * 创建用户隔离的 Store
- *
- * 每个用户拥有独立的 Store 实例与持久化键（store name 即 `user-store-${userId}`），
- * 登出时 StoreManager 按同一键清理持久化数据，保证键的写入与删除一致
- */
-export declare function createUserStore(config: UserStoreConfig): Store<UserState>;
-```
-
 ### `EnterpriseAppConfig`
 
 ```ts
@@ -3367,26 +3333,6 @@ export interface HotUpdateConfig<S extends State = State> {
     /** 用户确认更新且备份成功后的回调（可用于落库或上报） */
     onBeforeUpdate?: () => void;
 }
-```
-
-### `initBackgroundSync`
-
-```ts
-/**
- * 初始化后台/前台状态同步
- * 在小程序从后台返回前台时检查状态时效性
- *
- * 多次调用不会重复包装全局 App：
- * 若全局 App 仍为本模块安装的包装函数，则仅注册新的处理器；
- * 若全局 App 已被外部替换（如测试重置），则重新安装并重置注册表
- */
-export declare function initBackgroundSync<S extends State = State>(config: BackgroundSyncConfig<S>): void;
-```
-
-### `initHotUpdate`
-
-```ts
-export declare function initHotUpdate<S extends State = State>(config: HotUpdateConfig<S>): void;
 ```
 
 ### `OfflineAction`
@@ -3516,21 +3462,6 @@ export declare class OfflineManager<S extends State = State> {
 }
 ```
 
-### `restoreFromHotUpdate`
-
-```ts
-/**
- * 从热更新备份恢复状态
- */
-export declare function restoreFromHotUpdate<S extends State = State>(store: Store<S>, backupKey?: string): boolean;
-```
-
-### `storeManager`
-
-```ts
-storeManager: StoreManager
-```
-
 ### `StoreManager`
 
 ```ts
@@ -3580,18 +3511,6 @@ export declare class StoreManager {
      */
     private cleanupOldestStore;
 }
-```
-
-### `unregisterBackgroundSync`
-
-```ts
-/**
- * 注销指定 Store 的后台同步处理器
- *
- * 账号切换/登出时应调用，避免已销毁 Store 的处理器残留在注册表中，
- * 导致下次 onShow 触发 dispatch 抛错中断生命周期。
- */
-export declare function unregisterBackgroundSync<S extends State = State>(store: Store<S>): void;
 ```
 
 ### `UserInfo`
@@ -3654,6 +3573,87 @@ export interface UserStoreConfig {
     /** 初始状态覆盖项（可选） */
     initialState?: Partial<UserState>;
 }
+```
+
+### `createEnterpriseApp`
+
+```ts
+/**
+ * 示例：在 App.ts 中使用以上所有功能
+ * 账号切换/登出时自动 dispose 旧的 OfflineManager，避免监听泄漏
+ */
+export declare function createEnterpriseApp(config?: EnterpriseAppConfig): {
+    globalData: {
+        storeManager: import("./store-manager.js").StoreManager;
+        store: Store<UserState, import("../../types/store.js").Actions, import("../../types/store.js").Getters<UserState>> | null;
+        offlineManager: OfflineManager<UserState> | null;
+    };
+    onLaunch(): void;
+    onShow(): void;
+    login(userId: string): Store<UserState, import("../../types/store.js").Actions, import("../../types/store.js").Getters<UserState>>;
+    logout(): void;
+    getStore(): Store<UserState> | null;
+    getOfflineManager(): OfflineManager<UserState> | null;
+};
+```
+
+### `createUserStore`
+
+```ts
+/**
+ * 创建用户隔离的 Store
+ *
+ * 每个用户拥有独立的 Store 实例与持久化键（store name 即 `user-store-${userId}`），
+ * 登出时 StoreManager 按同一键清理持久化数据，保证键的写入与删除一致
+ */
+export declare function createUserStore(config: UserStoreConfig): Store<UserState>;
+```
+
+### `initBackgroundSync`
+
+```ts
+/**
+ * 初始化后台/前台状态同步
+ * 在小程序从后台返回前台时检查状态时效性
+ *
+ * 多次调用不会重复包装全局 App：
+ * 若全局 App 仍为本模块安装的包装函数，则仅注册新的处理器；
+ * 若全局 App 已被外部替换（如测试重置），则重新安装并重置注册表
+ */
+export declare function initBackgroundSync<S extends State = State>(config: BackgroundSyncConfig<S>): void;
+```
+
+### `initHotUpdate`
+
+```ts
+export declare function initHotUpdate<S extends State = State>(config: HotUpdateConfig<S>): void;
+```
+
+### `restoreFromHotUpdate`
+
+```ts
+/**
+ * 从热更新备份恢复状态
+ */
+export declare function restoreFromHotUpdate<S extends State = State>(store: Store<S>, backupKey?: string): boolean;
+```
+
+### `storeManager`
+
+```ts
+storeManager: StoreManager
+```
+
+### `unregisterBackgroundSync`
+
+```ts
+/**
+ * 注销指定 Store 的后台同步处理器
+ *
+ * 账号切换/登出时应调用，避免已销毁 Store 的处理器残留在注册表中，
+ * 导致下次 onShow 触发 dispatch 抛错中断生命周期。
+ */
+export declare function unregisterBackgroundSync<S extends State = State>(store: Store<S>): void;
 ```
 
 ---
@@ -3745,94 +3745,6 @@ export declare class ConsoleReporter implements ErrorReporter {
     report(context: ErrorContext): Promise<void>;
     reportBatch(contexts: ErrorContext[]): Promise<void>;
 }
-```
-
-### `createDefaultErrorRecovery`
-
-```ts
-/**
- * 创建默认的错误恢复器
- *
- * @param {RecoveryStrategyMap} [strategies] - 自定义策略
- * @returns {ErrorRecovery} 错误恢复器实例
- *
- * @example
- * ```typescript
- * const recovery = createDefaultErrorRecovery({
- *   [ErrorCode.ACTION_TIMEOUT]: {
- *     strategy: RecoveryStrategy.RETRY,
- *     maxRetries: 3,
- *     retryDelay: 1000
- *   }
- * })
- * ```
- */
-export declare function createDefaultErrorRecovery(strategies?: RecoveryStrategyMap): ErrorRecovery;
-```
-
-### `createDefaultMonitoring`
-
-```ts
-/**
- * 创建默认的错误监控系统
- *
- * @param {Partial<MonitoringConfig>} [config] - 配置选项
- * @returns {ErrorMonitoring} 错误监控系统实例
- *
- * @example
- * ```typescript
- * const monitoring = createDefaultMonitoring({
- *   enableConsoleLog: true,
- *   batchInterval: 10000
- * })
- * ```
- */
-export declare function createDefaultMonitoring(config?: Partial<MonitoringConfig>): ErrorMonitoring;
-```
-
-### `createError`
-
-```ts
-/**
- * 根据错误代码创建错误实例
- *
- * @param {ErrorCode} code - 错误代码
- * @param {string} message - 错误消息
- * @param {Record<string, unknown>} [context] - 错误上下文
- * @returns {GeomStoreError} 对应的错误实例
- *
- * @example
- * ```typescript
- * const error = createError(
- *   ErrorCode.ACTION_NOT_FOUND,
- *   'Action not found',
- *   { actionName: 'missing' }
- * )
- * // 返回 ActionError 实例
- * ```
- */
-export declare function createError(code: ErrorCode, message: string, context?: Record<string, unknown>): GeomStoreError;
-```
-
-### `createErrorContext`
-
-```ts
-/**
- * 创建错误上下文
- */
-export declare function createErrorContext(storeName: string, operation: OperationType, error: Error, level?: ErrorLevel, payload?: unknown): ErrorContext;
-```
-
-### `defaultErrorHandler`
-
-```ts
-defaultErrorHandler: ErrorHandler
-```
-
-### `defaultErrorRecovery`
-
-```ts
-defaultErrorRecovery: ErrorRecovery
 ```
 
 ### `ErrorAggregator`
@@ -4939,17 +4851,6 @@ export declare class GeomStoreError extends Error {
 }
 ```
 
-### `getDefaultMonitoring`
-
-```ts
-/**
- * 获取全局默认的错误监控实例（惰性单例）
- *
- * @returns {ErrorMonitoring} 默认错误监控实例
- */
-export declare function getDefaultMonitoring(): ErrorMonitoring;
-```
-
 ### `HttpReporter`
 
 ```ts
@@ -4986,109 +4887,6 @@ export declare class HttpReporter implements ErrorReporter {
      */
     private normalizeHeaders;
 }
-```
-
-### `isActionError`
-
-```ts
-/**
- * 检查是否为ActionError
- *
- * @param {unknown} error - 要检查的错误对象
- * @returns {error is ActionError} 是否为ActionError
- */
-export declare function isActionError(error: unknown): error is ActionError;
-```
-
-### `isComposeError`
-
-```ts
-/**
- * 检查是否为ComposeError
- *
- * @param {unknown} error - 要检查的错误对象
- * @returns {error is ComposeError} 是否为ComposeError
- */
-export declare function isComposeError(error: unknown): error is ComposeError;
-```
-
-### `isGeomStoreError`
-
-```ts
-/**
- * 错误类型守卫
- *
- * @description
- * 提供类型安全的错误检查函数，用于错误处理逻辑。
- */
-/**
- * 检查是否为GeomStoreError
- *
- * @param {unknown} error - 要检查的错误对象
- * @returns {error is GeomStoreError} 是否为GeomStoreError
- *
- * @example
- * ```typescript
- * try {
- *   store.dispatch('action')
- * } catch (error) {
- *   if (isGeomStoreError(error)) {
- *     console.log(error.code, error.context)
- *   } else {
- *     // 处理其他类型的错误
- *   }
- * }
- * ```
- */
-export declare function isGeomStoreError(error: unknown): error is GeomStoreError;
-```
-
-### `isPluginError`
-
-```ts
-/**
- * 检查是否为PluginError
- *
- * @param {unknown} error - 要检查的错误对象
- * @returns {error is PluginError} 是否为PluginError
- */
-export declare function isPluginError(error: unknown): error is PluginError;
-```
-
-### `isSelectorError`
-
-```ts
-/**
- * 检查是否为SelectorError
- *
- * @param {unknown} error - 要检查的错误对象
- * @returns {error is SelectorError} 是否为SelectorError
- */
-export declare function isSelectorError(error: unknown): error is SelectorError;
-```
-
-### `isStateError`
-
-```ts
-/**
- * 检查是否为StateError
- *
- * @param {unknown} error - 要检查的错误对象
- * @returns {error is StateError} 是否为StateError
- */
-export declare function isStateError(error: unknown): error is StateError;
-```
-
-### `isValidationError`
-
-```ts
-/**
- * 检查是否为ValidationError
- *
- * @param {unknown} error - 要检查的错误对象
- * @returns {error is ValidationError} 是否为ValidationError
- */
-export declare function isValidationError(error: unknown): error is ValidationError;
 ```
 
 ### `MonitoringConfig`
@@ -5363,6 +5161,208 @@ export declare class ValidationError extends GeomStoreError {
 }
 ```
 
+### `createDefaultErrorRecovery`
+
+```ts
+/**
+ * 创建默认的错误恢复器
+ *
+ * @param {RecoveryStrategyMap} [strategies] - 自定义策略
+ * @returns {ErrorRecovery} 错误恢复器实例
+ *
+ * @example
+ * ```typescript
+ * const recovery = createDefaultErrorRecovery({
+ *   [ErrorCode.ACTION_TIMEOUT]: {
+ *     strategy: RecoveryStrategy.RETRY,
+ *     maxRetries: 3,
+ *     retryDelay: 1000
+ *   }
+ * })
+ * ```
+ */
+export declare function createDefaultErrorRecovery(strategies?: RecoveryStrategyMap): ErrorRecovery;
+```
+
+### `createDefaultMonitoring`
+
+```ts
+/**
+ * 创建默认的错误监控系统
+ *
+ * @param {Partial<MonitoringConfig>} [config] - 配置选项
+ * @returns {ErrorMonitoring} 错误监控系统实例
+ *
+ * @example
+ * ```typescript
+ * const monitoring = createDefaultMonitoring({
+ *   enableConsoleLog: true,
+ *   batchInterval: 10000
+ * })
+ * ```
+ */
+export declare function createDefaultMonitoring(config?: Partial<MonitoringConfig>): ErrorMonitoring;
+```
+
+### `createError`
+
+```ts
+/**
+ * 根据错误代码创建错误实例
+ *
+ * @param {ErrorCode} code - 错误代码
+ * @param {string} message - 错误消息
+ * @param {Record<string, unknown>} [context] - 错误上下文
+ * @returns {GeomStoreError} 对应的错误实例
+ *
+ * @example
+ * ```typescript
+ * const error = createError(
+ *   ErrorCode.ACTION_NOT_FOUND,
+ *   'Action not found',
+ *   { actionName: 'missing' }
+ * )
+ * // 返回 ActionError 实例
+ * ```
+ */
+export declare function createError(code: ErrorCode, message: string, context?: Record<string, unknown>): GeomStoreError;
+```
+
+### `createErrorContext`
+
+```ts
+/**
+ * 创建错误上下文
+ */
+export declare function createErrorContext(storeName: string, operation: OperationType, error: Error, level?: ErrorLevel, payload?: unknown): ErrorContext;
+```
+
+### `defaultErrorHandler`
+
+```ts
+defaultErrorHandler: ErrorHandler
+```
+
+### `defaultErrorRecovery`
+
+```ts
+defaultErrorRecovery: ErrorRecovery
+```
+
+### `getDefaultMonitoring`
+
+```ts
+/**
+ * 获取全局默认的错误监控实例（惰性单例）
+ *
+ * @returns {ErrorMonitoring} 默认错误监控实例
+ */
+export declare function getDefaultMonitoring(): ErrorMonitoring;
+```
+
+### `isActionError`
+
+```ts
+/**
+ * 检查是否为ActionError
+ *
+ * @param {unknown} error - 要检查的错误对象
+ * @returns {error is ActionError} 是否为ActionError
+ */
+export declare function isActionError(error: unknown): error is ActionError;
+```
+
+### `isComposeError`
+
+```ts
+/**
+ * 检查是否为ComposeError
+ *
+ * @param {unknown} error - 要检查的错误对象
+ * @returns {error is ComposeError} 是否为ComposeError
+ */
+export declare function isComposeError(error: unknown): error is ComposeError;
+```
+
+### `isGeomStoreError`
+
+```ts
+/**
+ * 错误类型守卫
+ *
+ * @description
+ * 提供类型安全的错误检查函数，用于错误处理逻辑。
+ */
+/**
+ * 检查是否为GeomStoreError
+ *
+ * @param {unknown} error - 要检查的错误对象
+ * @returns {error is GeomStoreError} 是否为GeomStoreError
+ *
+ * @example
+ * ```typescript
+ * try {
+ *   store.dispatch('action')
+ * } catch (error) {
+ *   if (isGeomStoreError(error)) {
+ *     console.log(error.code, error.context)
+ *   } else {
+ *     // 处理其他类型的错误
+ *   }
+ * }
+ * ```
+ */
+export declare function isGeomStoreError(error: unknown): error is GeomStoreError;
+```
+
+### `isPluginError`
+
+```ts
+/**
+ * 检查是否为PluginError
+ *
+ * @param {unknown} error - 要检查的错误对象
+ * @returns {error is PluginError} 是否为PluginError
+ */
+export declare function isPluginError(error: unknown): error is PluginError;
+```
+
+### `isSelectorError`
+
+```ts
+/**
+ * 检查是否为SelectorError
+ *
+ * @param {unknown} error - 要检查的错误对象
+ * @returns {error is SelectorError} 是否为SelectorError
+ */
+export declare function isSelectorError(error: unknown): error is SelectorError;
+```
+
+### `isStateError`
+
+```ts
+/**
+ * 检查是否为StateError
+ *
+ * @param {unknown} error - 要检查的错误对象
+ * @returns {error is StateError} 是否为StateError
+ */
+export declare function isStateError(error: unknown): error is StateError;
+```
+
+### `isValidationError`
+
+```ts
+/**
+ * 检查是否为ValidationError
+ *
+ * @param {unknown} error - 要检查的错误对象
+ * @returns {error is ValidationError} 是否为ValidationError
+ */
+export declare function isValidationError(error: unknown): error is ValidationError;
+```
+
 ### `withErrorBoundary`
 
 ```ts
@@ -5396,109 +5396,16 @@ export declare function withErrorBoundary(options?: ErrorBoundaryOptions): (_tar
 
 > 类型声明：`./dist/extras/performance.d.ts`
 
-### `analyzerPlugin`
-
-```ts
-analyzerPlugin: Plugin
-```
-
-### `createAnalyzerPlugin`
+### `MetricType`
 
 ```ts
 /**
- * 性能分析插件
- *
- * 自动监控所有Store操作的性能，并提供分析工具
- *
- * @type {Plugin}
- *
- * @example
- * ```typescript
- * import { createStore } from '@geomstore/core'
- * import { analyzerPlugin } from '@geomstore/plugins'
- *
- * const store = createStore({
- *   name: 'user',
- *   state: {
- *     userInfo: null,
- *     posts: []
- *   },
- *   actions: {
- *     async fetchUser(id) {
- *       const user = await api.getUser(id)
- *       this.setState('userInfo', user)
- *     },
- *     async fetchPosts(userId) {
- *       const posts = await api.getPosts(userId)
- *       this.setState('posts', posts)
- *     }
- *   },
- *   getters: {
- *     userPosts: (state) => state.posts
- *   }
- * })
- *
- * // 使用默认配置安装
- * store.use(analyzerPlugin)
- *
- * // 使用自定义配置安装
- * store.use(createAnalyzerPlugin({
- *   sampleRate: 1.0,      // 100%采样
- *   threshold: 16,        // 16ms阈值
- *   trackMemory: true,    // 跟踪内存
- *   maxSize: 1000         // 最多1000条记录
- * }))
- *
- * // 访问性能监控器
- * const monitor = store.__performanceMonitor__
- *
- * // 获取所有指标
- * const metrics = monitor.getMetrics()
- * console.log(`Total metrics: ${metrics.length}`)
- *
- * // 获取统计信息
- * const stats = monitor.getStats()
- * console.log(`平均耗时: ${stats.avgDuration.toFixed(2)}ms`)
- * console.log(`最大耗时: ${stats.maxDuration.toFixed(2)}ms`)
- * console.log(`超阈值次数: ${stats.thresholdExceeded}`)
- *
- * // 按类型筛选
- * const dispatchMetrics = monitor.getMetricsByType('dispatch')
- * const getterMetrics = monitor.getMetricsByType('getter')
- *
- * // 按操作筛选
- * const fetchUserMetrics = monitor.getMetricsByOperation('fetchUser')
- *
- * // 获取最近的指标
- * const recentMetrics = monitor.getRecentMetrics(10)
- *
- * // 导出为JSON
- * const report = monitor.exportJSON()
- *
- * // 访问全局API
- * const api = globalThis.__GEOMSTORE_ANALYZER__['user']
- *
- * // 获取指标
- * const allMetrics = api.getMetrics()
- * const allStats = api.getStats()
- *
- * // 分析性能瓶颈
- * const bottlenecks = api.analyzeBottlenecks(16)
- * bottlenecks.forEach(b => {
- *   console.log(`${b.operation}:`)
- *   console.log(`  Severity: ${b.severity}`)
- *   console.log(`  Avg: ${b.avgDuration.toFixed(2)}ms`)
- *   console.log(`  Max: ${b.maxDuration.toFixed(2)}ms`)
- * })
- *
- * // 清除指标
- * api.clear()
- *
- * // 在控制台直接访问
- * // globalThis.__GEOMSTORE_ANALYZER__['user'].getStats()
- * ```
+ * GeomStore - 性能类型定义
  */
-export declare function createAnalyzerPlugin(options?: PerformanceOptions): Plugin;
+/**
+ * 性能指标类型
+ */
+export type MetricType = 'setState' | 'patch' | 'replaceState' | 'dispatch' | 'getter' | 'notify' | 'subscribe' | 'plugin' | 'state-update';
 ```
 
 ### `MetricsCollector`
@@ -5626,18 +5533,6 @@ export declare class MetricsCollector {
         avgDuration: number;
     }>;
 }
-```
-
-### `MetricType`
-
-```ts
-/**
- * GeomStore - 性能类型定义
- */
-/**
- * 性能指标类型
- */
-export type MetricType = 'setState' | 'patch' | 'replaceState' | 'dispatch' | 'getter' | 'notify' | 'subscribe' | 'plugin' | 'state-update';
 ```
 
 ### `PerformanceAnalyzer`
@@ -6112,29 +6007,116 @@ export interface PerformanceStats {
 }
 ```
 
+### `analyzerPlugin`
+
+```ts
+analyzerPlugin: Plugin
+```
+
+### `createAnalyzerPlugin`
+
+```ts
+/**
+ * 性能分析插件
+ *
+ * 自动监控所有Store操作的性能，并提供分析工具
+ *
+ * @type {Plugin}
+ *
+ * @example
+ * ```typescript
+ * import { createStore } from '@geomstore/core'
+ * import { analyzerPlugin } from '@geomstore/plugins'
+ *
+ * const store = createStore({
+ *   name: 'user',
+ *   state: {
+ *     userInfo: null,
+ *     posts: []
+ *   },
+ *   actions: {
+ *     async fetchUser(id) {
+ *       const user = await api.getUser(id)
+ *       this.setState('userInfo', user)
+ *     },
+ *     async fetchPosts(userId) {
+ *       const posts = await api.getPosts(userId)
+ *       this.setState('posts', posts)
+ *     }
+ *   },
+ *   getters: {
+ *     userPosts: (state) => state.posts
+ *   }
+ * })
+ *
+ * // 使用默认配置安装
+ * store.use(analyzerPlugin)
+ *
+ * // 使用自定义配置安装
+ * store.use(createAnalyzerPlugin({
+ *   sampleRate: 1.0,      // 100%采样
+ *   threshold: 16,        // 16ms阈值
+ *   trackMemory: true,    // 跟踪内存
+ *   maxSize: 1000         // 最多1000条记录
+ * }))
+ *
+ * // 访问性能监控器
+ * const monitor = store.__performanceMonitor__
+ *
+ * // 获取所有指标
+ * const metrics = monitor.getMetrics()
+ * console.log(`Total metrics: ${metrics.length}`)
+ *
+ * // 获取统计信息
+ * const stats = monitor.getStats()
+ * console.log(`平均耗时: ${stats.avgDuration.toFixed(2)}ms`)
+ * console.log(`最大耗时: ${stats.maxDuration.toFixed(2)}ms`)
+ * console.log(`超阈值次数: ${stats.thresholdExceeded}`)
+ *
+ * // 按类型筛选
+ * const dispatchMetrics = monitor.getMetricsByType('dispatch')
+ * const getterMetrics = monitor.getMetricsByType('getter')
+ *
+ * // 按操作筛选
+ * const fetchUserMetrics = monitor.getMetricsByOperation('fetchUser')
+ *
+ * // 获取最近的指标
+ * const recentMetrics = monitor.getRecentMetrics(10)
+ *
+ * // 导出为JSON
+ * const report = monitor.exportJSON()
+ *
+ * // 访问全局API
+ * const api = globalThis.__GEOMSTORE_ANALYZER__['user']
+ *
+ * // 获取指标
+ * const allMetrics = api.getMetrics()
+ * const allStats = api.getStats()
+ *
+ * // 分析性能瓶颈
+ * const bottlenecks = api.analyzeBottlenecks(16)
+ * bottlenecks.forEach(b => {
+ *   console.log(`${b.operation}:`)
+ *   console.log(`  Severity: ${b.severity}`)
+ *   console.log(`  Avg: ${b.avgDuration.toFixed(2)}ms`)
+ *   console.log(`  Max: ${b.maxDuration.toFixed(2)}ms`)
+ * })
+ *
+ * // 清除指标
+ * api.clear()
+ *
+ * // 在控制台直接访问
+ * // globalThis.__GEOMSTORE_ANALYZER__['user'].getStats()
+ * ```
+ */
+export declare function createAnalyzerPlugin(options?: PerformanceOptions): Plugin;
+```
+
 ---
 
 ## `./extras/plugins`
 
 > 类型声明：`./dist/extras/plugins.d.ts`
-
-### `builtinPlugins`
-
-```ts
-builtinPlugins: Plugin<object>[]
-```
-
-### `devtoolsPlugin`
-
-```ts
-devtoolsPlugin: Plugin
-```
-
-### `loggerPlugin`
-
-```ts
-loggerPlugin: Plugin
-```
 
 ### `PersistenceOptions`
 
@@ -6164,14 +6146,6 @@ export interface PersistenceOptions<S extends State = State> {
     debounce?: number;
     /** 卸载插件时是否清除存储数据（默认 false，仅停止监听，保留已持久化的数据） */
     clearOnUninstall?: boolean;
-}
-```
-
-### `persistencePlugin`
-
-```ts
-persistencePlugin: Plugin & {
-    <S extends State = State>(options?: PersistenceOptions<S>): Plugin;
 }
 ```
 
@@ -6228,12 +6202,6 @@ export interface TimeTravelOptions<S extends State = State> {
 }
 ```
 
-### `timeTravelPlugin`
-
-```ts
-timeTravelPlugin: <S extends State = State>(options?: TimeTravelOptions<S>) => Plugin
-```
-
 ### `WxStorageBackend`
 
 ```ts
@@ -6247,6 +6215,38 @@ export declare class WxStorageBackend implements StorageBackend {
     setItem(key: string, value: string): void;
     removeItem(key: string): void;
 }
+```
+
+### `builtinPlugins`
+
+```ts
+builtinPlugins: Plugin<object>[]
+```
+
+### `devtoolsPlugin`
+
+```ts
+devtoolsPlugin: Plugin
+```
+
+### `loggerPlugin`
+
+```ts
+loggerPlugin: Plugin
+```
+
+### `persistencePlugin`
+
+```ts
+persistencePlugin: Plugin & {
+    <S extends State = State>(options?: PersistenceOptions<S>): Plugin;
+}
+```
+
+### `timeTravelPlugin`
+
+```ts
+timeTravelPlugin: <S extends State = State>(options?: TimeTravelOptions<S>) => Plugin
 ```
 
 ---
@@ -6266,157 +6266,6 @@ export interface AsyncRetrySelectorOptions extends RetrySelectorOptions {
      */
     delay?: number | ((attempt: number) => number);
 }
-```
-
-### `createMemoizedSelector`
-
-```ts
-/**
- * 创建记忆化选择器
- *
- * 创建一个启用的缓存的选择器，默认缓存
- *
- * @template S - 状态类型
- * @template R - 返回值类型
- * @param {Selector<S, R>} selectorFn - 选择器函数
- * @param {(a: unknown, b: unknown) => boolean} [equalityFn] - 自定义相等性函数
- * @returns {Selector<S, R>} 记忆化选择器
- *
- * @example
- * ```typescript
- * const memoizedSelector = createMemoizedSelector(
- *   (state) => state.user.name,
- *   (a, b) => a === b
- * )
- *
- * // 相同输入只会计算一次
- * memoizedSelector(state) // 计算并缓存
- * memoizedSelector(state) // 使用缓存
- * ```
- */
-export declare function createMemoizedSelector<S extends State, R>(selectorFn: Selector<S, R>, equalityFn?: (a: unknown, b: unknown) => boolean): Selector<S, R>;
-```
-
-### `createParametricSelector`
-
-```ts
-/**
- * 创建参数化选择器
- *
- * 创建一个接受参数的选择器，支持对不同参数的缓存
- *
- * @template S - 状态类型
- * @template P - 参数类型
- * @template R - 返回值类型
- * @param {(state: S, params: P) => R} selectorFn - 接受参数的选择器函数
- * @param {object} [options] - 缓存配置选项
- * @param {number} [options.ttl=5000] - 缓存生存时间（毫秒）。除 TTL 外，每次调用还会用
- *   deepEqual 校验 state 内容快照：Store 状态就地变异（引用不变）时立即作废该 state 下的
- *   全部参数缓存，不会在 TTL 内返回陈旧值
- * @param {number} [options.maxEntries=1000] - 单个 state 下原始类型参数的缓存条目上限
- * @returns {(state: S) => (params: P) => R} 参数化选择器工厂
- *
- * 限制：与 createSelector 相同——校验所用的 state 快照由 clone（deepCloneState）生成，
- * 它对不可克隆对象（类实例、Promise、WeakMap/WeakSet 等）保留原引用，因此这类对象被
- * 就地变异时校验会因引用相等判定「未变化」，TTL 内返回陈旧值。规避：用 setState/$patch
- * 整体替换该字段。
- *
- * @example
- * ```typescript
- * const getUserById = createParametricSelector(
- *   (state, userId) => state.users[userId],
- *   { ttl: 10000 } // 自定义缓存有效期
- * )
- *
- * const getState = (state) => state
- * const getUser = getUserById(getState)
- *
- * // 使用不同的参数
- * const user1 = getUser('user1')
- * const user2 = getUser('user2')
- * // 每个参数独立缓存
- * ```
- */
-export declare function createParametricSelector<S extends State, P, R>(selectorFn: (state: S, params: P) => R, options?: {
-    ttl?: number;
-    maxEntries?: number;
-}): (state: S) => (params: P) => R;
-```
-
-### `createSelector`
-
-```ts
-/**
- * 创建选择器
- *
- * 创建一个可缓存的选择器，用于从状态中派生数据
- *
- * 限制：缓存对状态的比较基于 `clone(state)` 快照，而 clone（即 deepCloneState）对
- * 不可克隆对象（类实例、Promise、WeakMap/WeakSet 等）保留原引用而非拷贝。因此若
- * state 里放了类实例并就地修改其字段，快照与活状态共享同一实例，比较会因引用相等
- * 判定「未变化」，TTL 内返回陈旧值。规避：用 setState/$patch 整体替换该字段，
- * 让状态树产生新的纯对象。纯对象/数组/Date/RegExp/Map/Set 会被正确深拷贝，不受影响。
- *
- * @template S - 状态类型
- * @template R - 返回值类型
- * @param {Selector<S, R>} selectorFn - 选择器函数
- * @param {SelectorOptions} [options] - 缓存选项
- * @returns {Selector<S, R>} 选择器函数
- *
- * @example
- * ```typescript
- * // 基础选择器
- * const doubleValue = createSelector(
- *   (state) => state.value * 2
- * )
- *
- * // 带选项的选择器
- * const cachedSelector = createSelector(
- *   (state) => state.user.name,
- *   {
- *     cache: true,
- *     cacheTTL: 10000,
- *     equalityFn: (a, b) => a === b
- *   }
- * )
- *
- * // 使用
- * const result = doubleValue({ value: 10 })
- * console.log(result) // 20
- * ```
- */
-export declare function createSelector<S extends State, R>(selectorFn: Selector<S, R>, options?: SelectorOptions): Selector<S, R>;
-```
-
-### `createStructuredSelector`
-
-```ts
-/**
- * 创建组合选择器
- *
- * 从多个选择器组合成一个对象，便于批量获取派生状态
- *
- * @template S - 状态类型
- * @template R - 返回结构类型（默认从选择器映射推断）
- * @param {[K in keyof R]?: Selector<S, R[K]>} selectors - 选择器映射
- * @returns {Selector<S, R>} 组合选择器
- *
- * @example
- * ```typescript
- * // 也可显式指定状态类型：createStructuredSelector<AppState>({ ... })
- * const selector = createStructuredSelector({
- *   userName: (state) => state.user.name,
- *   userEmail: (state) => state.user.email,
- *   userAge: (state) => state.user.age
- * })
- *
- * const result = selector(state)
- * console.log(result) // { userName: '...', userEmail: '...', userAge: ... }
- * ```
- */
-export declare function createStructuredSelector<S extends State, R extends object = Record<string, unknown>>(selectors: {
-    [K in keyof R]?: Selector<S, R[K]>;
-}): Selector<S, R>;
 ```
 
 ### `ParametricSelector`
@@ -6954,6 +6803,157 @@ export type SelectorResult<R> = {
 };
 ```
 
+### `createMemoizedSelector`
+
+```ts
+/**
+ * 创建记忆化选择器
+ *
+ * 创建一个启用的缓存的选择器，默认缓存
+ *
+ * @template S - 状态类型
+ * @template R - 返回值类型
+ * @param {Selector<S, R>} selectorFn - 选择器函数
+ * @param {(a: unknown, b: unknown) => boolean} [equalityFn] - 自定义相等性函数
+ * @returns {Selector<S, R>} 记忆化选择器
+ *
+ * @example
+ * ```typescript
+ * const memoizedSelector = createMemoizedSelector(
+ *   (state) => state.user.name,
+ *   (a, b) => a === b
+ * )
+ *
+ * // 相同输入只会计算一次
+ * memoizedSelector(state) // 计算并缓存
+ * memoizedSelector(state) // 使用缓存
+ * ```
+ */
+export declare function createMemoizedSelector<S extends State, R>(selectorFn: Selector<S, R>, equalityFn?: (a: unknown, b: unknown) => boolean): Selector<S, R>;
+```
+
+### `createParametricSelector`
+
+```ts
+/**
+ * 创建参数化选择器
+ *
+ * 创建一个接受参数的选择器，支持对不同参数的缓存
+ *
+ * @template S - 状态类型
+ * @template P - 参数类型
+ * @template R - 返回值类型
+ * @param {(state: S, params: P) => R} selectorFn - 接受参数的选择器函数
+ * @param {object} [options] - 缓存配置选项
+ * @param {number} [options.ttl=5000] - 缓存生存时间（毫秒）。除 TTL 外，每次调用还会用
+ *   deepEqual 校验 state 内容快照：Store 状态就地变异（引用不变）时立即作废该 state 下的
+ *   全部参数缓存，不会在 TTL 内返回陈旧值
+ * @param {number} [options.maxEntries=1000] - 单个 state 下原始类型参数的缓存条目上限
+ * @returns {(state: S) => (params: P) => R} 参数化选择器工厂
+ *
+ * 限制：与 createSelector 相同——校验所用的 state 快照由 clone（deepCloneState）生成，
+ * 它对不可克隆对象（类实例、Promise、WeakMap/WeakSet 等）保留原引用，因此这类对象被
+ * 就地变异时校验会因引用相等判定「未变化」，TTL 内返回陈旧值。规避：用 setState/$patch
+ * 整体替换该字段。
+ *
+ * @example
+ * ```typescript
+ * const getUserById = createParametricSelector(
+ *   (state, userId) => state.users[userId],
+ *   { ttl: 10000 } // 自定义缓存有效期
+ * )
+ *
+ * const getState = (state) => state
+ * const getUser = getUserById(getState)
+ *
+ * // 使用不同的参数
+ * const user1 = getUser('user1')
+ * const user2 = getUser('user2')
+ * // 每个参数独立缓存
+ * ```
+ */
+export declare function createParametricSelector<S extends State, P, R>(selectorFn: (state: S, params: P) => R, options?: {
+    ttl?: number;
+    maxEntries?: number;
+}): (state: S) => (params: P) => R;
+```
+
+### `createSelector`
+
+```ts
+/**
+ * 创建选择器
+ *
+ * 创建一个可缓存的选择器，用于从状态中派生数据
+ *
+ * 限制：缓存对状态的比较基于 `clone(state)` 快照，而 clone（即 deepCloneState）对
+ * 不可克隆对象（类实例、Promise、WeakMap/WeakSet 等）保留原引用而非拷贝。因此若
+ * state 里放了类实例并就地修改其字段，快照与活状态共享同一实例，比较会因引用相等
+ * 判定「未变化」，TTL 内返回陈旧值。规避：用 setState/$patch 整体替换该字段，
+ * 让状态树产生新的纯对象。纯对象/数组/Date/RegExp/Map/Set 会被正确深拷贝，不受影响。
+ *
+ * @template S - 状态类型
+ * @template R - 返回值类型
+ * @param {Selector<S, R>} selectorFn - 选择器函数
+ * @param {SelectorOptions} [options] - 缓存选项
+ * @returns {Selector<S, R>} 选择器函数
+ *
+ * @example
+ * ```typescript
+ * // 基础选择器
+ * const doubleValue = createSelector(
+ *   (state) => state.value * 2
+ * )
+ *
+ * // 带选项的选择器
+ * const cachedSelector = createSelector(
+ *   (state) => state.user.name,
+ *   {
+ *     cache: true,
+ *     cacheTTL: 10000,
+ *     equalityFn: (a, b) => a === b
+ *   }
+ * )
+ *
+ * // 使用
+ * const result = doubleValue({ value: 10 })
+ * console.log(result) // 20
+ * ```
+ */
+export declare function createSelector<S extends State, R>(selectorFn: Selector<S, R>, options?: SelectorOptions): Selector<S, R>;
+```
+
+### `createStructuredSelector`
+
+```ts
+/**
+ * 创建组合选择器
+ *
+ * 从多个选择器组合成一个对象，便于批量获取派生状态
+ *
+ * @template S - 状态类型
+ * @template R - 返回结构类型（默认从选择器映射推断）
+ * @param {[K in keyof R]?: Selector<S, R[K]>} selectors - 选择器映射
+ * @returns {Selector<S, R>} 组合选择器
+ *
+ * @example
+ * ```typescript
+ * // 也可显式指定状态类型：createStructuredSelector<AppState>({ ... })
+ * const selector = createStructuredSelector({
+ *   userName: (state) => state.user.name,
+ *   userEmail: (state) => state.user.email,
+ *   userAge: (state) => state.user.age
+ * })
+ *
+ * const result = selector(state)
+ * console.log(result) // { userName: '...', userEmail: '...', userAge: ... }
+ * ```
+ */
+export declare function createStructuredSelector<S extends State, R extends object = Record<string, unknown>>(selectors: {
+    [K in keyof R]?: Selector<S, R[K]>;
+}): Selector<S, R>;
+```
+
 ---
 
 ## `./extras/snapshot`
@@ -6995,109 +6995,6 @@ export interface CloneContext {
     key: string | number;
     /** 已访问的弱引用集合（用于循环检测） */
     visited: WeakMap<object, unknown>;
-}
-```
-
-### `createSnapshot`
-
-```ts
-/**
- * 创建快照（便捷函数）
- */
-export declare function createSnapshot<T>(data: T, options?: SnapshotOptions): SnapshotResult<T>;
-```
-
-### `createSnapshotAsync`
-
-```ts
-/**
- * 创建异步快照（便捷函数）
- */
-export declare function createSnapshotAsync<T>(data: T, options?: Partial<AsyncSnapshotOptions>): Promise<SnapshotResult<T>>;
-```
-
-### `default`
-
-```ts
-/**
- * 增强型快照管理器
- *
- * 提供高性能、可配置的状态快照功能。
- *
- * @class SnapshotManager
- *
- * @example
- * ```typescript
- * const manager = new SnapshotManager()
- *
- * // 基础快照
- * const result = manager.createSnapshot(state)
- *
- * // 异步快照
- * const asyncResult = await manager.createSnapshotAsync(state, {
- *   onProgress: (p) => console.log(`${p.percentage}%`)
- * })
- * ```
- */
-export declare class SnapshotManager {
-    private defaultOptions;
-    private snapshotIdCounter;
-    private readonly snapshotIdSuffix;
-    constructor(options?: Partial<SnapshotOptions>);
-    /**
-     * 创建同步快照
-     *
-     * @param {T} data - 要快照的数据
-     * @param {SnapshotOptions} options - 配置选项
-     * @returns {SnapshotResult<T>} 快照结果
-     *
-     * @example
-     * ```typescript
-     * const result = manager.createSnapshot(state)
-     * console.log(result.metadata.nodeCount)
-     * ```
-     */
-    createSnapshot<T>(data: T, options?: SnapshotOptions): SnapshotResult<T>;
-    /**
-     * 创建异步快照
-     *
-     * 非阻塞式快照创建，支持进度回调和取消。
-     * 克隆按节点分片入队，每批次处理 batchSize 个节点，
-     * 批间让出控制权，避免大对象同步递归阻塞主线程。
-     *
-     * @param {T} data - 要快照的数据
-     * @param {AsyncSnapshotOptions} options - 异步配置选项
-     * @returns {Promise<SnapshotResult<T>>} 快照结果Promise
-     *
-     * @example
-     * ```typescript
-     * const result = await manager.createSnapshotAsync(largeState, {
-     *   batchSize: 100,
-     *   onProgress: (p) => updateProgressBar(p.percentage)
-     * })
-     * ```
-     */
-    createSnapshotAsync<T>(data: T, options?: Partial<AsyncSnapshotOptions>): Promise<SnapshotResult<T>>;
-    /**
-     * 对比两个快照
-     *
-     * @param {SnapshotResult<T1>} snapshot1 - 第一个快照
-     * @param {SnapshotResult<T2>} snapshot2 - 第二个快照（支持不同类型）
-     * @returns {SnapshotDiff} 差异结果
-     */
-    compareSnapshots<T1, T2>(snapshot1: SnapshotResult<T1>, snapshot2: SnapshotResult<T2>): SnapshotDiff;
-    /**
-     * 生成快照ID
-     *
-     * @private
-     */
-    private generateSnapshotId;
-    /**
-     * 获取数据类型
-     *
-     * @private
-     */
-    private getDataType;
 }
 ```
 
@@ -7360,6 +7257,109 @@ export interface SnapshotStats {
 }
 ```
 
+### `createSnapshot`
+
+```ts
+/**
+ * 创建快照（便捷函数）
+ */
+export declare function createSnapshot<T>(data: T, options?: SnapshotOptions): SnapshotResult<T>;
+```
+
+### `createSnapshotAsync`
+
+```ts
+/**
+ * 创建异步快照（便捷函数）
+ */
+export declare function createSnapshotAsync<T>(data: T, options?: Partial<AsyncSnapshotOptions>): Promise<SnapshotResult<T>>;
+```
+
+### `default`
+
+```ts
+/**
+ * 增强型快照管理器
+ *
+ * 提供高性能、可配置的状态快照功能。
+ *
+ * @class SnapshotManager
+ *
+ * @example
+ * ```typescript
+ * const manager = new SnapshotManager()
+ *
+ * // 基础快照
+ * const result = manager.createSnapshot(state)
+ *
+ * // 异步快照
+ * const asyncResult = await manager.createSnapshotAsync(state, {
+ *   onProgress: (p) => console.log(`${p.percentage}%`)
+ * })
+ * ```
+ */
+export declare class SnapshotManager {
+    private defaultOptions;
+    private snapshotIdCounter;
+    private readonly snapshotIdSuffix;
+    constructor(options?: Partial<SnapshotOptions>);
+    /**
+     * 创建同步快照
+     *
+     * @param {T} data - 要快照的数据
+     * @param {SnapshotOptions} options - 配置选项
+     * @returns {SnapshotResult<T>} 快照结果
+     *
+     * @example
+     * ```typescript
+     * const result = manager.createSnapshot(state)
+     * console.log(result.metadata.nodeCount)
+     * ```
+     */
+    createSnapshot<T>(data: T, options?: SnapshotOptions): SnapshotResult<T>;
+    /**
+     * 创建异步快照
+     *
+     * 非阻塞式快照创建，支持进度回调和取消。
+     * 克隆按节点分片入队，每批次处理 batchSize 个节点，
+     * 批间让出控制权，避免大对象同步递归阻塞主线程。
+     *
+     * @param {T} data - 要快照的数据
+     * @param {AsyncSnapshotOptions} options - 异步配置选项
+     * @returns {Promise<SnapshotResult<T>>} 快照结果Promise
+     *
+     * @example
+     * ```typescript
+     * const result = await manager.createSnapshotAsync(largeState, {
+     *   batchSize: 100,
+     *   onProgress: (p) => updateProgressBar(p.percentage)
+     * })
+     * ```
+     */
+    createSnapshotAsync<T>(data: T, options?: Partial<AsyncSnapshotOptions>): Promise<SnapshotResult<T>>;
+    /**
+     * 对比两个快照
+     *
+     * @param {SnapshotResult<T1>} snapshot1 - 第一个快照
+     * @param {SnapshotResult<T2>} snapshot2 - 第二个快照（支持不同类型）
+     * @returns {SnapshotDiff} 差异结果
+     */
+    compareSnapshots<T1, T2>(snapshot1: SnapshotResult<T1>, snapshot2: SnapshotResult<T2>): SnapshotDiff;
+    /**
+     * 生成快照ID
+     *
+     * @private
+     */
+    private generateSnapshotId;
+    /**
+     * 获取数据类型
+     *
+     * @private
+     */
+    private getDataType;
+}
+```
+
 ---
 
 ## `./integrations`
@@ -7400,74 +7400,6 @@ export interface BackupData {
 }
 ```
 
-### `bindActions`
-
-```ts
-/**
- * 绑定 Actions 到目标实例
- *
- * 将 Store 的 actions 绑定到 Page/Component/App 实例方法
- *
- * @template S - 状态类型
- * @param target - 目标实例
- * @param mappings - 映射关系（本地方法名 → Action名）
- * @param store - Store 实例
- * @returns 取消绑定函数数组
- */
-export declare function bindActions<S extends State = State>(target: Record<string, unknown>, mappings: Record<string, string>, store: Store<S>): Array<() => void>;
-```
-
-### `bindMappings`
-
-```ts
-/**
- * 绑定状态映射到目标对象
- *
- * 将 Store 的状态或 getters 映射到 Page/Component/App 实例，
- * 并自动订阅变化以实现双向同步。
- *
- * 所有映射的更新合并为一次批量 setter 调用：小程序 setData 调用开销较大，
- * 逐键调用会引发 N 次视图更新，合并后仅需一次。
- *
- * @template S - 状态类型
- * @param _target - 目标对象（Page/Component/App 实例）
- * @param mappings - 映射关系（本地键 → Store键）
- * @param getValue - 获取 Store 值的函数
- * @param setter - 批量设置本地值的函数（接收全部映射键的更新对象）
- * @param subscribeStore - 订阅 Store 变化的函数
- * @returns 取消绑定函数数组
- *
- * @example
- * ```typescript
- * const unbinds = bindMappings(
- *   pageInstance,
- *   { count: 'counter', name: 'userName' },
- *   (storeKey) => store.state[storeKey],
- *   (updates) => pageInstance.setData(updates),
- *   (callback) => store.subscribe(callback)
- * )
- * ```
- */
-export declare function bindMappings(_target: unknown, mappings: Record<string, string>, getValue: (storeKey: string) => unknown, setter: (updates: Record<string, unknown>) => void, subscribeStore: (callback: () => void, options?: {
-    readOnly?: boolean;
-}) => () => void, 
-/** 判断某状态键自上次通知以来是否变更（仅 state 映射可传入；getters 不提供，缺失时对象值保持「宁多勿漏」始终发送） */
-changedKeys?: (storeKey: string) => boolean): Array<() => void>;
-```
-
-### `cleanupBindings`
-
-```ts
-/**
- * 清理所有绑定
- *
- * 执行所有取消绑定函数，清理订阅和引用
- *
- * @param unbinds - 取消绑定函数数组
- */
-export declare function cleanupBindings(unbinds: Array<() => void>): void;
-```
-
 ### `ConnectOptions`
 
 ```ts
@@ -7495,40 +7427,6 @@ export interface ConnectOptions<S extends State = State, A extends Actions = Act
 }
 ```
 
-### `createEnterpriseApp`
-
-```ts
-/**
- * 示例：在 App.ts 中使用以上所有功能
- * 账号切换/登出时自动 dispose 旧的 OfflineManager，避免监听泄漏
- */
-export declare function createEnterpriseApp(config?: EnterpriseAppConfig): {
-    globalData: {
-        storeManager: import("./store-manager.js").StoreManager;
-        store: Store<UserState, import("../../types/store.js").Actions, import("../../types/store.js").Getters<UserState>> | null;
-        offlineManager: OfflineManager<UserState> | null;
-    };
-    onLaunch(): void;
-    onShow(): void;
-    login(userId: string): Store<UserState, import("../../types/store.js").Actions, import("../../types/store.js").Getters<UserState>>;
-    logout(): void;
-    getStore(): Store<UserState> | null;
-    getOfflineManager(): OfflineManager<UserState> | null;
-};
-```
-
-### `createUserStore`
-
-```ts
-/**
- * 创建用户隔离的 Store
- *
- * 每个用户拥有独立的 Store 实例与持久化键（store name 即 `user-store-${userId}`），
- * 登出时 StoreManager 按同一键清理持久化数据，保证键的写入与删除一致
- */
-export declare function createUserStore(config: UserStoreConfig): Store<UserState>;
-```
-
 ### `EnterpriseAppConfig`
 
 ```ts
@@ -7539,28 +7437,6 @@ export interface EnterpriseAppConfig {
     /** 允许的最长非活跃时长（毫秒），透传给 `initBackgroundSync`；默认 10 分钟 */
     maxInactiveTime?: number;
 }
-```
-
-### `exposeStoreAPI`
-
-```ts
-/**
- * 暴露 Store API 到目标实例
- *
- * 在 App 实例上暴露常用的 Store API 方法
- *
- * @template S - 状态类型
- * @param target - 目标实例（通常是 App 实例）
- * @param store - Store 实例
- * @returns 取消暴露函数
- *
- * @example
- * ```typescript
- * exposeStoreAPI(appInstance, store)
- * // 现在可以通过 appInstance.getStore() 访问 Store
- * ```
- */
-export declare function exposeStoreAPI<S extends State = State>(target: Record<string, unknown>, store: Store<S>): () => void;
 ```
 
 ### `HotUpdateConfig`
@@ -7577,26 +7453,6 @@ export interface HotUpdateConfig<S extends State = State> {
     /** 用户确认更新且备份成功后的回调（可用于落库或上报） */
     onBeforeUpdate?: () => void;
 }
-```
-
-### `initBackgroundSync`
-
-```ts
-/**
- * 初始化后台/前台状态同步
- * 在小程序从后台返回前台时检查状态时效性
- *
- * 多次调用不会重复包装全局 App：
- * 若全局 App 仍为本模块安装的包装函数，则仅注册新的处理器；
- * 若全局 App 已被外部替换（如测试重置），则重新安装并重置注册表
- */
-export declare function initBackgroundSync<S extends State = State>(config: BackgroundSyncConfig<S>): void;
-```
-
-### `initHotUpdate`
-
-```ts
-export declare function initHotUpdate<S extends State = State>(config: HotUpdateConfig<S>): void;
 ```
 
 ### `OfflineAction`
@@ -7726,6 +7582,263 @@ export declare class OfflineManager<S extends State = State> {
 }
 ```
 
+### `StoreManager`
+
+```ts
+/**
+ * Store 管理器：负责多账号 Store 的获取/创建、身份切换、登出与 LRU 淘汰
+ *
+ * 使用约束：
+ * - `getUserStore` 只「取/建」指定账号的 store，**不改变当前登录身份**——
+ *   只读预览其它账号时若顺带切换身份，后续 `logout()` 会清错账号的数据；
+ *   身份切换请显式调用 `switchUser`
+ * - 被 LRU 淘汰或 `logout()` 后的 store 已 `destroy()`，不可继续 dispatch
+ */
+export declare class StoreManager {
+    private stores;
+    private currentUserId;
+    private readonly maxStores;
+    constructor(maxStores?: number);
+    /**
+     * 获取或创建用户 Store
+     *
+     * 只负责「取/建某账号的 store」，**不改变当前登录身份**。
+     * 此前未命中分支会顺带写 this.currentUserId，而命中分支不会——同一调用的身份
+     * 副作用取决于 LRU 淘汰状态这一调用方不可见的实现细节；只读预览另一账号
+     * （getUserStore('B')）会静默把身份切成 B，随后 logout() 清的是 B 的数据。
+     * 身份切换与冷启动恢复一律走 switchUser 显式表达。
+     */
+    getUserStore(userId: string): Store<UserState>;
+    /**
+     * 切换用户
+     */
+    switchUser(userId: string): Store<UserState>;
+    /**
+     * 登出当前用户
+     * 持久化键与 createUserStore 的存储键一致（均为 `user-store-${userId}`）
+     */
+    logout(): void;
+    /**
+     * 获取当前用户的 Store
+     */
+    getCurrentStore(): Store<UserState> | null;
+    /**
+     * 清理所有 Store
+     */
+    clearAll(): void;
+    /**
+     * LRU 清理最早的 Store
+     */
+    private cleanupOldestStore;
+}
+```
+
+### `UserInfo`
+
+```ts
+/**
+ * 用户信息（由服务端返回，业务可自行扩展字段）
+ */
+export interface UserInfo {
+    /** 用户唯一标识 */
+    id?: string | number;
+    /** 昵称 */
+    name?: string;
+    /** 头像地址 */
+    avatar?: string;
+    [key: string]: unknown;
+}
+```
+
+### `UserPreferences`
+
+```ts
+/**
+ * 用户偏好设置（随账号隔离并持久化）
+ */
+export interface UserPreferences {
+    /** 主题标识 */
+    theme?: string;
+    /** 语言标识 */
+    language?: string;
+    [key: string]: unknown;
+}
+```
+
+### `UserState`
+
+```ts
+/**
+ * 用户隔离 Store 的状态形状
+ */
+export interface UserState extends State {
+    /** 当前用户信息；未登录或未同步时为 null */
+    userInfo: UserInfo | null;
+    /** 用户偏好设置 */
+    preferences: UserPreferences;
+    /** 最近一次与服务端同步的时间戳；未同步时为 null */
+    lastSyncTime: number | null;
+}
+```
+
+### `UserStoreConfig`
+
+```ts
+/**
+ * `createUserStore` 的配置项
+ */
+export interface UserStoreConfig {
+    /** 用户唯一标识：参与 Store 名称与持久化键（`user-store-${userId}`） */
+    userId: string;
+    /** 初始状态覆盖项（可选） */
+    initialState?: Partial<UserState>;
+}
+```
+
+### `bindActions`
+
+```ts
+/**
+ * 绑定 Actions 到目标实例
+ *
+ * 将 Store 的 actions 绑定到 Page/Component/App 实例方法
+ *
+ * @template S - 状态类型
+ * @param target - 目标实例
+ * @param mappings - 映射关系（本地方法名 → Action名）
+ * @param store - Store 实例
+ * @returns 取消绑定函数数组
+ */
+export declare function bindActions<S extends State = State>(target: Record<string, unknown>, mappings: Record<string, string>, store: Store<S>): Array<() => void>;
+```
+
+### `bindMappings`
+
+```ts
+/**
+ * 绑定状态映射到目标对象
+ *
+ * 将 Store 的状态或 getters 映射到 Page/Component/App 实例，
+ * 并自动订阅变化以实现双向同步。
+ *
+ * 所有映射的更新合并为一次批量 setter 调用：小程序 setData 调用开销较大，
+ * 逐键调用会引发 N 次视图更新，合并后仅需一次。
+ *
+ * @template S - 状态类型
+ * @param _target - 目标对象（Page/Component/App 实例）
+ * @param mappings - 映射关系（本地键 → Store键）
+ * @param getValue - 获取 Store 值的函数
+ * @param setter - 批量设置本地值的函数（接收全部映射键的更新对象）
+ * @param subscribeStore - 订阅 Store 变化的函数
+ * @returns 取消绑定函数数组
+ *
+ * @example
+ * ```typescript
+ * const unbinds = bindMappings(
+ *   pageInstance,
+ *   { count: 'counter', name: 'userName' },
+ *   (storeKey) => store.state[storeKey],
+ *   (updates) => pageInstance.setData(updates),
+ *   (callback) => store.subscribe(callback)
+ * )
+ * ```
+ */
+export declare function bindMappings(_target: unknown, mappings: Record<string, string>, getValue: (storeKey: string) => unknown, setter: (updates: Record<string, unknown>) => void, subscribeStore: (callback: () => void, options?: {
+    readOnly?: boolean;
+}) => () => void, 
+/** 判断某状态键自上次通知以来是否变更（仅 state 映射可传入；getters 不提供，缺失时对象值保持「宁多勿漏」始终发送） */
+changedKeys?: (storeKey: string) => boolean): Array<() => void>;
+```
+
+### `cleanupBindings`
+
+```ts
+/**
+ * 清理所有绑定
+ *
+ * 执行所有取消绑定函数，清理订阅和引用
+ *
+ * @param unbinds - 取消绑定函数数组
+ */
+export declare function cleanupBindings(unbinds: Array<() => void>): void;
+```
+
+### `createEnterpriseApp`
+
+```ts
+/**
+ * 示例：在 App.ts 中使用以上所有功能
+ * 账号切换/登出时自动 dispose 旧的 OfflineManager，避免监听泄漏
+ */
+export declare function createEnterpriseApp(config?: EnterpriseAppConfig): {
+    globalData: {
+        storeManager: import("./store-manager.js").StoreManager;
+        store: Store<UserState, import("../../types/store.js").Actions, import("../../types/store.js").Getters<UserState>> | null;
+        offlineManager: OfflineManager<UserState> | null;
+    };
+    onLaunch(): void;
+    onShow(): void;
+    login(userId: string): Store<UserState, import("../../types/store.js").Actions, import("../../types/store.js").Getters<UserState>>;
+    logout(): void;
+    getStore(): Store<UserState> | null;
+    getOfflineManager(): OfflineManager<UserState> | null;
+};
+```
+
+### `createUserStore`
+
+```ts
+/**
+ * 创建用户隔离的 Store
+ *
+ * 每个用户拥有独立的 Store 实例与持久化键（store name 即 `user-store-${userId}`），
+ * 登出时 StoreManager 按同一键清理持久化数据，保证键的写入与删除一致
+ */
+export declare function createUserStore(config: UserStoreConfig): Store<UserState>;
+```
+
+### `exposeStoreAPI`
+
+```ts
+/**
+ * 暴露 Store API 到目标实例
+ *
+ * 在 App 实例上暴露常用的 Store API 方法
+ *
+ * @template S - 状态类型
+ * @param target - 目标实例（通常是 App 实例）
+ * @param store - Store 实例
+ * @returns 取消暴露函数
+ *
+ * @example
+ * ```typescript
+ * exposeStoreAPI(appInstance, store)
+ * // 现在可以通过 appInstance.getStore() 访问 Store
+ * ```
+ */
+export declare function exposeStoreAPI<S extends State = State>(target: Record<string, unknown>, store: Store<S>): () => void;
+```
+
+### `initBackgroundSync`
+
+```ts
+/**
+ * 初始化后台/前台状态同步
+ * 在小程序从后台返回前台时检查状态时效性
+ *
+ * 多次调用不会重复包装全局 App：
+ * 若全局 App 仍为本模块安装的包装函数，则仅注册新的处理器；
+ * 若全局 App 已被外部替换（如测试重置），则重新安装并重置注册表
+ */
+export declare function initBackgroundSync<S extends State = State>(config: BackgroundSyncConfig<S>): void;
+```
+
+### `initHotUpdate`
+
+```ts
+export declare function initHotUpdate<S extends State = State>(config: HotUpdateConfig<S>): void;
+```
+
 ### `parseMapping`
 
 ```ts
@@ -7797,57 +7910,6 @@ export declare function restoreFromHotUpdate<S extends State = State>(store: Sto
 storeManager: StoreManager
 ```
 
-### `StoreManager`
-
-```ts
-/**
- * Store 管理器：负责多账号 Store 的获取/创建、身份切换、登出与 LRU 淘汰
- *
- * 使用约束：
- * - `getUserStore` 只「取/建」指定账号的 store，**不改变当前登录身份**——
- *   只读预览其它账号时若顺带切换身份，后续 `logout()` 会清错账号的数据；
- *   身份切换请显式调用 `switchUser`
- * - 被 LRU 淘汰或 `logout()` 后的 store 已 `destroy()`，不可继续 dispatch
- */
-export declare class StoreManager {
-    private stores;
-    private currentUserId;
-    private readonly maxStores;
-    constructor(maxStores?: number);
-    /**
-     * 获取或创建用户 Store
-     *
-     * 只负责「取/建某账号的 store」，**不改变当前登录身份**。
-     * 此前未命中分支会顺带写 this.currentUserId，而命中分支不会——同一调用的身份
-     * 副作用取决于 LRU 淘汰状态这一调用方不可见的实现细节；只读预览另一账号
-     * （getUserStore('B')）会静默把身份切成 B，随后 logout() 清的是 B 的数据。
-     * 身份切换与冷启动恢复一律走 switchUser 显式表达。
-     */
-    getUserStore(userId: string): Store<UserState>;
-    /**
-     * 切换用户
-     */
-    switchUser(userId: string): Store<UserState>;
-    /**
-     * 登出当前用户
-     * 持久化键与 createUserStore 的存储键一致（均为 `user-store-${userId}`）
-     */
-    logout(): void;
-    /**
-     * 获取当前用户的 Store
-     */
-    getCurrentStore(): Store<UserState> | null;
-    /**
-     * 清理所有 Store
-     */
-    clearAll(): void;
-    /**
-     * LRU 清理最早的 Store
-     */
-    private cleanupOldestStore;
-}
-```
-
 ### `unregisterBackgroundSync`
 
 ```ts
@@ -7858,68 +7920,6 @@ export declare class StoreManager {
  * 导致下次 onShow 触发 dispatch 抛错中断生命周期。
  */
 export declare function unregisterBackgroundSync<S extends State = State>(store: Store<S>): void;
-```
-
-### `UserInfo`
-
-```ts
-/**
- * 用户信息（由服务端返回，业务可自行扩展字段）
- */
-export interface UserInfo {
-    /** 用户唯一标识 */
-    id?: string | number;
-    /** 昵称 */
-    name?: string;
-    /** 头像地址 */
-    avatar?: string;
-    [key: string]: unknown;
-}
-```
-
-### `UserPreferences`
-
-```ts
-/**
- * 用户偏好设置（随账号隔离并持久化）
- */
-export interface UserPreferences {
-    /** 主题标识 */
-    theme?: string;
-    /** 语言标识 */
-    language?: string;
-    [key: string]: unknown;
-}
-```
-
-### `UserState`
-
-```ts
-/**
- * 用户隔离 Store 的状态形状
- */
-export interface UserState extends State {
-    /** 当前用户信息；未登录或未同步时为 null */
-    userInfo: UserInfo | null;
-    /** 用户偏好设置 */
-    preferences: UserPreferences;
-    /** 最近一次与服务端同步的时间戳；未同步时为 null */
-    lastSyncTime: number | null;
-}
-```
-
-### `UserStoreConfig`
-
-```ts
-/**
- * `createUserStore` 的配置项
- */
-export interface UserStoreConfig {
-    /** 用户唯一标识：参与 Store 名称与持久化键（`user-store-${userId}`） */
-    userId: string;
-    /** 初始状态覆盖项（可选） */
-    initialState?: Partial<UserState>;
-}
 ```
 
 ### `withAppStore`
