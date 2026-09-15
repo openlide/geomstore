@@ -20,7 +20,10 @@ coverage-report.json
 coverage-*.json
 
 # IDE
-.codebuddy/
+# .codebuddy 整体保持忽略（内含会话与本地数据），仅放开 skills 目录，使 project skill 可随仓库分发
+.codebuddy/*
+!.codebuddy/skills/
+!.codebuddy/skills/**
 .vscode/
 .idea/
 *.swp

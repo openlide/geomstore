@@ -88,6 +88,7 @@
     "build:release": "pnpm build && node scripts/minify-dist.mjs --strict",
     "stubs": "node scripts/generate-subpath-stubs.mjs",
     "stubs:clean": "node scripts/generate-subpath-stubs.mjs --clean",
+    "skill:api": "node scripts/generate-skill-api-reference.mjs",
     "prepack": "node scripts/generate-subpath-stubs.mjs",
     "postpack": "node scripts/generate-subpath-stubs.mjs --clean",
     "prepublishOnly": "pnpm test && pnpm run build:release",
