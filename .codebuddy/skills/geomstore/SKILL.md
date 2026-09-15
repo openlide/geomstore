@@ -18,7 +18,7 @@ GeomStore 是轻量级微信小程序状态管理库，提供类 Pinia 的 API�
 
 ## 使用规则
 
-1. **写代码前先确认签名，不要凭记忆**。按符号名查本 skill 自带的 `references/api.md`（从构建产物的类型声明自动生成，与当前版本一致；文件较大，用检索而非通读，方式见文末 Resources）。需要设计意图、选项默认值与语义契约时：在 GeomStore **仓库内**再看 `docs/API.md`，在**其他小程序项目**看已安装包的 `node_modules/@openlide/geomstore/dist/**/*.d.ts`（`docs/` 不随包发布，外部项目不存在）。
+1. **写代码前先确认签名，不要凭记忆**。查本 skill 自带的 `references/api/index.md`（从构建产物的类型声明自动生成、与当前版本一致，已按入口拆分，只打开所需入口的文件或用检索，方式见文末 Resources）。需要设计意图、选项默认值与语义契约时：在 GeomStore **仓库内**再看 `docs/API.md`，在**其他小程序项目**看已安装包的 `node_modules/@openlide/geomstore/dist/**/*.d.ts`（`docs/` 不随包发布，外部项目不存在）。
 2. **导入路径**（`exports` 仅声明下列子路径）：
 
    | 引入路径 | 内容 |
@@ -263,10 +263,11 @@ const diff = manager.compareSnapshots(result.data, createSnapshot(next).data)   
 
 **1）本 skill 自带，任何环境可用**
 
-- `references/api.md` —— 由 `scripts/generate-skill-api-reference.mjs` 从 `dist/**/*.d.ts` **自动生成的完整 API 参考**（含精确签名与 JSDoc，当前对应 v0.5.0）。**文件较大（7000+ 行），按符号名检索，不要整篇读取**：
+- `references/api/index.md` —— 由 `scripts/generate-skill-api-reference.mjs` 从 `dist/**/*.d.ts` **自动生成的 API 参考**（含精确签名与 JSDoc，重载会完整列出，当前对应 v0.5.0）。参考已**按入口拆分为 `references/api/*.md`**：先看索引的入口一览，再只打开所需入口的文件（渐进加载，不必读整个目录）。
 
   ```bash
-  rg -n '^### `createSelector`' references/api.md
+  rg -n 'createSelector' references/api/          # 不确定符号属于哪个入口时
+  rg -n '^### `createSnapshot`' references/api/   # 精确定位某个符号的完整声明
   ```
 
   它是构建产物的机械映射，重新生成：`pnpm build && pnpm skill:api`（请勿手工编辑）。

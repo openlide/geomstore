@@ -32,9 +32,21 @@ import { createSnapshot } from '@openlide/geomstore/extras/snapshot'            
 
 ## 1.1 createStore
 
+`createStore` 有两个重载：`state` 传工厂函数、或传对象字面量。工厂重载置于对象重载**之前**——函数类型本身可赋给 `State`，顺序颠倒会让 `state: () => ({...})` 被对象重载误判成 `S` 即函数类型，导致 getter / action 上下文退化。两种形态返回同一 `Store<S, A, G>`：
+
 ```ts
-createStore<S, A, G>(options: StoreOptions<S, A, G>): Store<S, A, G>
+// 工厂函数形式（推荐：避免引用类型被多实例共享）
+createStore<S extends State, A extends Actions = Actions, G extends Getters<S> = Getters<S>>(
+  options: FactoryStoreConfig<S, A, G>,
+): Store<S, A, G>
+
+// 对象字面量形式
+createStore<S extends State, A extends Actions = Actions, G extends Getters<S> = Getters<S>>(
+  options: LiteralStoreConfig<S, A, G>,
+): Store<S, A, G>
 ```
+
+> `FactoryStoreConfig` / `LiteralStoreConfig` 是内部的**未导出**别名，各自等价于 `Omit<StoreConfig<S, A, G>, 'state'>` 再把 `state` 固定为 `() => S` / `S`（即「下方选项表 + 该形态的 `state`」）。另有导出的 `StoreOptions`，那是给「显式泛型场景」使用的构造配置，**不是** `createStore` 的形参类型。
 
 | 选项 | 类型 | 默认 | 说明 |
 | --- | --- | --- | --- |

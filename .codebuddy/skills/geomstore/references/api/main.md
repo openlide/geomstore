@@ -1,0 +1,1993 @@
+# `.` API 参考（自动生成）
+
+> **本文件由 `scripts/generate-skill-api-reference.mjs` 从 `dist/**/*.d.ts` 生成，请勿手工编辑。**
+>
+> - 来源版本：`@openlide/geomstore@0.5.0`
+> - 内容来源：构建产物类型声明（随 npm 包发布，与安装版本必然一致）
+> - 重新生成：`pnpm build && pnpm skill:api`
+> - 引入路径：`.`
+> - 类型声明：`./dist/index.d.ts`
+> - 返回索引：[`index.md`](./index.md)
+
+### `ActionNames`
+
+```ts
+/**
+ * 从 Actions 类型提取所有 action 名称
+ */
+export type ActionNames<A extends Actions> = keyof A & string;
+```
+
+### `Actions`
+
+```ts
+/**
+ * Actions 类型约束
+ * 用于约束 actions 参数类型
+ */
+export type Actions = Record<string, (...args: any[]) => any>;
+```
+
+### `AppOptions`
+
+```ts
+/**
+ * `withAppStore` 处理的 App 配置对象
+ *
+ * 保留微信原生 App 生命周期与自定义字段，集成层在此基础上注入 store 相关能力。
+ */
+export interface AppOptions {
+    /** 全局数据对象（微信原生字段） */
+    globalData?: Record<string, unknown>;
+    /**
+     * 应用启动生命周期
+     *
+     * 这里**刻意不声明 `this`**：运行时传入的是增强后的 App 实例（globalData 上的映射状态、
+     * 绑定的 action、调试 API），精确类型由 withAppStore 注入的 `AppThis` 提供。
+     * 若在此写成 `this: AppOptions`，会覆盖注入结果，并使 `this.globalData` 退回可选。
+     */
+    onLaunch?(...args: unknown[]): void;
+    /** 应用切前台生命周期 */
+    onShow?(...args: unknown[]): void;
+    /** 应用切后台生命周期 */
+    onHide?(): void;
+    /** 全局错误回调 */
+    onError?(error: unknown): void;
+    /** 允许业务扩展自定义字段 */
+    [key: string]: unknown;
+}
+```
+
+### `CacheOptions`
+
+```ts
+/**
+ * 缓存配置选项
+ *
+ * @interface CacheOptions
+ * @template K - 键类型
+ * @template V - 值类型
+ */
+export interface CacheOptions<K = unknown, V = unknown> {
+    /** 初始容量 */
+    capacity?: number;
+    /** 是否启用访问统计 */
+    enableStats?: boolean;
+    /** 是否记录访问时间 */
+    trackAccessTime?: boolean;
+    /** 自定义淘汰回调 */
+    onEvict?: (key: K, value: V) => void;
+}
+```
+
+### `CacheStats`
+
+```ts
+/**
+ * 缓存统计信息
+ */
+export interface CacheStats {
+    /** 是否启用缓存 */
+    enabled: boolean;
+    /** 缓存的键数量 */
+    size: number;
+    /** 缓存的键列表 */
+    keys: Array<string>;
+    /** 总缓存命中次数 */
+    hits: number;
+    /** 总缓存未命中次数 */
+    misses: number;
+    /** 缓存淘汰次数 */
+    evictions?: number;
+}
+```
+
+### `CloneMode`
+
+```ts
+/** 克隆模式 */
+export type CloneMode = 'deep' | 'shallow' | 'safe' | 'json';
+```
+
+### `ComponentConfig`
+
+```ts
+/**
+ * 组件增强配置的形状（`withComponentStore` 的返回类型）
+ *
+ * 与 `ComponentThis` 的分工：配置对象上的注入 action 位于 `methods` 内（集成层确实把它们
+ * 合并进 `config.methods`，再由微信提升到实例），故这里不在顶层重复声明——否则返回类型会
+ * 声明出配置对象上并不存在的顶层方法（`config.add()` 能编译却在运行时失败）。
+ */
+export type ComponentConfig<S extends State, A extends Actions, G extends Getters<S> = Getters<S>, M extends ConnectOptions<S, A, G> = ConnectOptions<S, A, G>, ExtraMethods extends object = object> = {
+    data: ExtractPageData<S, M, G>;
+    methods: ExtraMethods & ExtractMappedActions<A, M>;
+} & {
+    setData: (data: Record<string, unknown>, callback?: () => void) => void;
+};
+```
+
+### `ComponentOwnMethods`
+
+```ts
+/**
+ * 从 Component 配置提取用户自定义方法对象（C.methods）
+ * Component 自定义方法在 methods 命名空间内，直接提取
+ */
+export type ComponentOwnMethods<C> = C extends {
+    methods: infer M;
+} ? (M extends Record<string, unknown> ? M : object) : object;
+```
+
+### `ComponentThis`
+
+```ts
+/**
+ * 组件方法 this 类型（原生精确推导）
+ *
+ * **仅用于注入方法内的 `this`**（由 `WithComponentThis` 挂到 methods / lifetimes /
+ * pageLifetimes 各命名空间）。描述装饰器返回的配置形状请用 `ComponentConfig`。
+ *
+ * 关于「展平」：微信会把 `methods` 的条目提升到组件实例，所以运行时
+ * `this.add(...)` 与 `this.methods.add(...)` **都可用**；若类型只在 `methods` 下提供注入成员，
+ * 方法内就必须手写 `this` 标注。故此处把注入成员展平到顶层，同时保留 `methods` 命名空间。
+ */
+export type ComponentThis<S extends State, A extends Actions, G extends Getters<S> = Getters<S>, M extends ConnectOptions<S, A, G> = ConnectOptions<S, A, G>, ExtraMethods extends object = object> = {
+    data: ExtractPageData<S, M, G>;
+} & ExtraMethods & ExtractMappedActions<A, M> & {
+    /** 配置对象上的 methods 命名空间（微信 Component 写法）；实例上这些条目被提升为顶层方法 */
+    methods: ExtraMethods & ExtractMappedActions<A, M>;
+    setData: (data: Record<string, unknown>, callback?: () => void) => void;
+};
+```
+
+### `ComposeOptions`
+
+```ts
+/**
+ * 组合选项
+ */
+export interface ComposeOptions {
+    /** 命名空间模式：true 启用（默认分隔符 /），或指定前缀字符串 */
+    namespace?: string | boolean;
+    /** 延迟初始化 */
+    lazy?: boolean;
+    /** 严格模式（访问不存在的Store报错） */
+    strict?: boolean;
+    /** Store树结构 */
+    tree?: boolean;
+}
+```
+
+### `ComposedStore`
+
+```ts
+/**
+ * ComposedStore 类
+ *
+ * 组合多个 Store 为一个统一的 Store 实例
+ * 使用类替代对象字面量，提供更好的性能和方法查找效率
+ */
+declare class ComposedStore<S extends State = State> implements Store<S> {
+    readonly name: string;
+    readonly actions: Record<string, (...args: unknown[]) => unknown>;
+    /** 实例级钩子系统 - 组合 Store 透传到子 Store */
+    readonly hooks: HookSystem;
+    /** 销毁标记 */
+    destroyed: boolean;
+    /** 内部 Store 数组 */
+    private _stores;
+    /** 命名空间 */
+    private _namespace;
+    /** 严格模式 */
+    private _strict;
+    /** stores 引用（暴露给外部） */
+    stores: Record<string, Store>;
+    /** 防抖相关：实例级统一调度，避免多个订阅者各自维护标志导致非首个订阅者丢通知 */
+    private _notificationScheduled;
+    /** 当前活跃的订阅者：监听器 → 注册次数。
+     *  与 SubscriptionManager 同语义——同一函数注册 N 次通知 N 次，退订只减一，
+     *  减到 0 才真正移除。此前用 Set 会使「退订其中一份」直接删除整个监听器，
+     *  用户仍持有的另一份退订句柄静默失效、永不再收到通知。 */
+    private _composedListeners;
+    /** 对子 Store 的订阅句柄（destroy 时统一退订，避免闭包残留） */
+    private _storeUnsubscribers;
+    /** 子 store 单路合并订阅是否已建立（构造期为缓存失效建立，组合层订阅复用，避免重复占额度） */
+    private _childSubscriptionsReady;
+    /** 已告警过的 state 键冲突组合（每个组合只告警一次，避免高频 getState 刷屏） */
+    private _warnedStateKeyConflicts;
+    /** 子 Store 钩子桥接的退订函数（destroy 时统一移除，防止闭包残留） */
+    private _hookUnsubscribers;
+    /** 自上次通知以来发生变更的子 store 名集合：命名空间模式下供 isStateKeyDirty 精确跳过 setData */
+    private _dirtyStores;
+    /** 合并状态缓存：非命名空间/命名空间两种读取形态各缓存一份，子 store 变化时失效 */
+    private _mergedCache;
+    /** 只读冻结形态的合并状态缓存（对应 state getter），与 _mergedCache 独立以免冻结影响 getState 消费者 */
+    private _mergedCacheFrozen;
+    /** 合并缓存是否启用：子 store 订阅失效回调建立失败时降级为每次读取重合并，保证不返回陈旧状态 */
+    private _mergedCacheEnabled;
+    constructor(stores: Store[], options?: ComposeOptions);
+    /**
+     * 建立（或复用）对子 store 的单路合并订阅：每个子 store 仅一份，
+     * 回调同时完成「合并缓存失效 + 调度通知」。幂等：已建立则直接返回，
+     * 保证构造期与组合层订阅期共用同一条订阅，不重复占用子 store 订阅额度。
+     */
+    private _ensureChildSubscriptions;
+    /**
+     * 销毁状态守卫：在调用任何公开方法前检查 Store 是否已销毁
+     */
+    private _ensureAlive;
+    /** 使合并状态缓存失效：任一子 store 通知时调用（构造期订阅） */
+    private _invalidateMergedCache;
+    /**
+     * 命名空间模式：按 store.name 归并各子 store 视图，语义与 getState/state/$snapshot 共用。
+     *
+     * 合并策略已拆至 ./merge.js
+     */
+    private _mergeNamespaced;
+    getState(): S;
+    /**
+     * 非命名空间模式下平铺合并各 store 的 state 键。
+     *
+     * 合并策略与冲突告警已拆至 ./merge.js（warnedStateKeyConflicts 由实例持有以跨调用去重）
+     */
+    private _mergeStateMaps;
+    get state(): S;
+    setState<K extends keyof S>(key: K, value: S[K]): void;
+    $patch(partialState: Partial<S>): void;
+    $replaceState(newState: S): void;
+    dispatch(actionName: string, ...args: unknown[]): unknown;
+    /**
+     * 合并后的 Getters 定义（只读）
+     *
+     * 键的合并规则与 getter() 的解析语义一致：命名空间模式下为 `storeName/getterName`，
+     * 非命名空间模式为裸名（同名冲突取第一个 store 的定义）
+     */
+    get getters(): Getters<S>;
+    /** 类型安全 getter（与 Store 接口重载签名保持一致） */
+    getter<K extends keyof Getters<S>>(getterName: K): InferGetterReturn<Getters<S>, K>;
+    /**
+     * 获取所有子 Store 的 getter 名称列表。
+     *
+     * 若存在命名空间前缀，返回 `${storeName}/${getterName}` 形式；否则返回去重后的裸名。
+     */
+    getGetterNames(): string[];
+    /**
+     * 向所有活跃订阅者广播当前状态
+     */
+    private _notifyListeners;
+    /**
+     * 调度一次合并通知：同一微任务内的多次状态变化只触发一次广播
+     */
+    private _scheduleNotify;
+    subscribe(listener: StateListener<S>): () => void;
+    /**
+     * 判断指定状态键自上次通知以来是否发生变更
+     *
+     * 组合 Store 将多个子 store 的状态按 store 名合并，键空间与子 store 不对应，
+     * 无法精确映射到某个子 store 的脏键。这里保守返回 true（视为已变更），
+     * 使绑定层在对象值上保持「宁多勿漏」行为，确保正确性；
+     * 对象值的整体替换（引用变化）仍由引用比较兜底发送。
+     *
+     * @param _key - 组合层状态键（即子 store 名）
+     * @returns 始终返回 true（保守：不跳过任何 setData）
+     */
+    isStateKeyDirty(key: string): boolean;
+    /** 释放一份监听器注册：同一监听器减到 0 才真正移除。
+     *
+     *  注意：不再随「最后一个组合层监听器退订」撤销子 store 订阅——该订阅同时承担
+     *  合并缓存失效（_invalidateMergedCache）职责，撤销后 getState() 会返回陈旧缓存，
+     *  且 _childSubscriptionsReady 保持 true 使重新订阅无法重建通知（静默失效）。
+     *  子 store 订阅与构造期建立对称，统一在 destroy() 释放。
+     */
+    private _releaseListener;
+    use(plugin: Plugin): () => void;
+    /**
+     * 销毁组合 Store
+     *
+     * @param destroyStores - 是否级联销毁子 Store（默认 true，保持向后兼容）。
+     *  当子 Store 在组合之外被独立持有并继续使用时，应传入 false：
+     *  仅退订组合层订阅并清理钩子，避免牵连外部持有的子 Store
+     */
+    destroy(destroyStores?: boolean): void;
+    getCached<K extends keyof S>(key: K): S[K];
+    enableCache(keys?: Array<keyof S>): void;
+    disableCache(): void;
+    invalidateCache<K extends keyof S>(key?: K): void;
+    getCacheStats(): CacheStats;
+    startBatch(): void;
+    /** 对各子 store 开启批量：已被独立销毁的子 store 跳过。
+     *
+     *  必须与 _endBatchOnStores 对称容错：此前裸循环在某个子 store 已销毁时抛错中断，
+     *  已成功 startBatch 的子 store 批量深度悬置为 1 且再无 endBatch 到达，
+     *  通知被永久抑制——对仍健康的子 store 是静默失效。跳过已销毁子 store 后
+     *  start/end 两侧深度始终配对（被跳过者从未 start，收尾时同样被跳过）。
+     */
+    private _startBatchOnStores;
+    endBatch(): void;
+    /** 对各子 store 收尾批量深度：已被独立销毁的子 store 跳过 */
+    private _endBatchOnStores;
+    batch<T>(fn: () => T): T;
+    $snapshot(): Readonly<S>;
+    $restore(snapshot: Readonly<S>): void;
+}
+```
+
+### `ConnectOptions`
+
+```ts
+/**
+ * 连接选项
+ *
+ * 泛型参数均可由 withPageStore / withComponentStore 的 store 参数自动推断：
+ * - `S`：约束 mapState 键/值须为状态键（拼错编译报错）
+ * - `A`：约束 mapActions 键/值须为 action 名
+ * - `G`：约束 mapGetters 键/值须为 getter 名
+ */
+export interface ConnectOptions<S extends State = State, A extends Actions = Actions, G extends Getters<S> = Getters<S>> {
+    /** 映射state */
+    mapState?: readonly (keyof S)[] | Record<string, keyof S>;
+    /** 映射getters */
+    mapGetters?: readonly (keyof G)[] | Record<string, keyof G>;
+    /** 映射actions（数组形式按 action 名映射；对象形式支持本地名重命名，值须为 action 名） */
+    mapActions?: readonly (keyof A)[] | Record<string, keyof A>;
+    /** 是否自动注入到页面/组件data（使用getCached） */
+    autoInject?: boolean;
+    /** 自动注入的字段映射（从store键到本地键） */
+    injectMapping?: Record<string, string>;
+    /** 是否在页面onShow/组件attached时更新注入（默认仅在onLoad时） */
+    autoUpdateOnShow?: boolean;
+}
+```
+
+### `ExtractPageData`
+
+```ts
+/**
+ * 从 ConnectOptions 提取完整的页面 data 类型
+ *
+ * 类型契约（严格）：
+ * - `Partial<S>`：全部状态键均可访问，但未映射的键运行时不一定存在，故其类型为
+ *   `T | undefined`，强制调用方判空，避免静默拿到 undefined。
+ * - 已映射键（`ExtractMappedState` / `ExtractMappedGetters`）经交集收窄仍保持精确类型：
+ *   `Partial<T> & T` 等于 `T`，故 Partial 不会削弱映射键。
+ * - 不提供索引签名：拼错的键会直接编译报错，而非静默返回 `unknown`。
+ *   data 上的动态键请在页面/应用的 `data`（或 `globalData`）字面量中显式声明；
+ *   运行时的动态写入走 `setData`，它本来就接受 `Record<string, unknown>`。
+ */
+export type ExtractPageData<S extends State, M extends {
+    mapState?: readonly (keyof S)[] | Record<string, keyof S>;
+    mapGetters?: readonly PropertyKey[] | Record<string, PropertyKey>;
+}, G extends Getters<S> = Getters<S>> = Partial<S> & ExtractMappedState<S, M> & ExtractMappedGetters<M, G>;
+```
+
+### `Getters`
+
+```ts
+/**
+ * Getters类型 - 支持类型推断
+ */
+export type Getters<S extends State = State> = {
+    [K: string]: (state: S) => unknown;
+};
+```
+
+### `HookHandler`
+
+```ts
+/**
+ * 钩子处理函数
+ */
+export type HookHandler<TArgs extends unknown[] = unknown[], TResult = void> = (...args: TArgs) => TResult;
+```
+
+### `HookName`
+
+```ts
+/**
+ * 钩子名称枚举
+ */
+export type HookName = 'beforeSetState' | 'afterSetState' | 'beforePatch' | 'afterPatch' | 'beforeDispatch' | 'afterDispatch' | 'beforeReplaceState' | 'afterReplaceState' | 'onError';
+```
+
+### `HookSystem`
+
+```ts
+/** 钩子系统实现类，每个 Store 实例独立拥有一个 HookSystem 实例 */
+export declare class HookSystem implements IHookSystem {
+    private hooks;
+    on(hookName: HookName, handler: HookHandler): () => void;
+    emit(hookName: HookName, ...args: unknown[]): void;
+    clear(hookName?: HookName): void;
+    /**
+     * 获取钩子数量
+     *
+     * 注意双语义：无参时返回已注册的钩子种类数；传入 hookName 时返回
+     * 该钩子当前的监听器数量。如需语义明确，推荐使用 listenerCount()。
+     */
+    size(hookName?: HookName): number;
+    /**
+     * 获取指定钩子的监听器数量
+     *
+     * size() 的语义明确别名：避免无参/有参返回不同量纲导致的误用。
+     */
+    listenerCount(hookName: HookName): number;
+}
+```
+
+### `IHookSystem`
+
+```ts
+/**
+ * 钩子系统契约接口
+ *
+ * 由 core/hooks 的 HookSystem 类实现；类型层仅依赖此接口，
+ * 避免 types 反向依赖实现类。
+ */
+export interface IHookSystem {
+    /** 注册钩子处理器，返回取消注册函数 */
+    on(hookName: HookName, handler: HookHandler): () => void;
+    /** 触发钩子 */
+    emit(hookName: HookName, ...args: unknown[]): void;
+    /** 清除钩子（指定名称或全部） */
+    clear(hookName?: HookName): void;
+    /** 查询钩子数量：传入 hookName 返回该钩子的 handler 数，不传返回已注册的钩子名称数 */
+    size(hookName?: HookName): number;
+}
+```
+
+### `InferActionArgs`
+
+```ts
+/**
+ * 推断Action参数类型
+ */
+export type InferActionArgs<A extends Actions, K extends keyof A> = A[K] extends (...args: infer Args) => unknown ? Args : never;
+```
+
+### `InferActionReturn`
+
+```ts
+/**
+ * 推断Action返回类型
+ */
+export type InferActionReturn<A extends Actions, K extends keyof A> = A[K] extends (...args: never[]) => infer R ? R : never;
+```
+
+### `InferGetterReturn`
+
+```ts
+/**
+ * 推断Getter返回类型
+ */
+export type InferGetterReturn<G extends Record<string, (state: any) => any>, K extends keyof G> = G[K] extends (...args: never[]) => infer R ? R : never;
+```
+
+### `LRUCache`
+
+```ts
+export declare class LRUCache<K, V> {
+    /** 当前容量 */
+    private capacity;
+    /** 缓存存储（Map提供O(1)查找） */
+    private cache;
+    /** 虚拟头节点（简化边界处理） */
+    private head;
+    /** 虚拟尾节点（简化边界处理） */
+    private tail;
+    /** 当前缓存项数量 */
+    private _size;
+    /** 命中次数 */
+    private hitCount;
+    /** 未命中次数 */
+    private missCount;
+    /** 淘汰次数 */
+    private evictionCount;
+    /** 总访问时间（毫秒） */
+    private totalAccessTime;
+    /** 配置选项 */
+    private options;
+    /**
+     * 创建LRU缓存实例
+     *
+     * @param {number | CacheOptions} config - 容量或配置选项
+     *
+     * @example
+     * ```typescript
+     * // 仅指定容量
+     * const cache1 = new LRUCache<string, number>(100)
+     *
+     * // 指定配置
+     * const cache2 = new LRUCache<string, number>({
+     *   capacity: 100,
+     *   enableStats: true,
+     *   trackAccessTime: true
+     * })
+     * ```
+     */
+    constructor(config?: number | CacheOptions<K, V>);
+    /**
+     * 创建哨兵节点（虚拟头/尾节点）
+     *
+     * @private
+     * @param {number} timestamp - 时间戳
+     * @returns {LRUNode<K, V>} 哨兵节点
+     */
+    private createSentinelNode;
+    /**
+     * 创建新的缓存节点
+     *
+     * @private
+     * @param {K} key - 键
+     * @param {V} value - 值
+     * @returns {LRUNode<K, V>} 新节点
+     */
+    private createNode;
+    /**
+     * 获取缓存值
+     *
+     * 如果键存在，将其移动到头部（标记为最近使用）并返回值。
+     * 如果键不存在，返回undefined。
+     *
+     * 优化：减少 Date.now() 调用次数，只在必要时更新访问时间
+     *
+     * @param {K} key - 键
+     * @returns {V | undefined} 值或undefined
+     *
+     * @example
+     * ```typescript
+     * const value = cache.get('user:123')
+     * if (value !== undefined) {
+     *   console.log('Cache hit:', value)
+     * } else {
+     *   console.log('Cache miss')
+     * }
+     * ```
+     */
+    get(key: K): V | undefined;
+    /**
+     * 设置缓存值
+     *
+     * 如果键已存在，更新值并将其移动到头部。
+     * 如果键不存在，创建新节点并添加到头部。
+     * 如果超出容量，淘汰最久未使用的节点。
+     *
+     * @param {K} key - 键
+     * @param {V} value - 值
+     * @returns {this} 支持链式调用
+     *
+     * @example
+     * ```typescript
+     * cache.set('user:123', { name: 'John', age: 30 })
+     *        .set('user:456', { name: 'Jane', age: 25 })
+     * ```
+     */
+    set(key: K, value: V): this;
+    /**
+     * 批量设置缓存值
+     *
+     * @param {Array<[K, V]>} entries - 键值对数组
+     * @returns {this} 支持链式调用
+     *
+     * @example
+     * ```typescript
+     * cache.setMany([
+     *   ['key1', value1],
+     *   ['key2', value2],
+     *   ['key3', value3]
+     * ])
+     * ```
+     */
+    setMany(entries: Array<[K, V]>): this;
+    /**
+     * 获取缓存值，如果不存在则计算并缓存
+     *
+     * @param {K} key - 键
+     * @param {() => V} factory - 值工厂函数
+     * @returns {V} 值
+     *
+     * @example
+     * ```typescript
+     * const user = cache.getOrSet('user:123', () => {
+     *   return fetchUserFromDatabase(123)
+     * })
+     * ```
+     */
+    getOrSet(key: K, factory: () => V): V;
+    /**
+     * 检查键是否存在（不更新访问顺序）
+     *
+     * @param {K} key - 键
+     * @returns {boolean} 是否存在
+     */
+    has(key: K): boolean;
+    /**
+     * 查看缓存值（不更新访问顺序）
+     *
+     * @param {K} key - 键
+     * @returns {V | undefined} 值或undefined
+     */
+    peek(key: K): V | undefined;
+    /**
+     * 删除缓存项
+     *
+     * @param {K} key - 键
+     * @returns {boolean} 是否删除成功
+     */
+    delete(key: K): boolean;
+    /**
+     * 清空缓存
+     *
+     * @returns {this} 支持链式调用
+     */
+    clear(): this;
+    /**
+     * 获取当前缓存大小
+     *
+     * @returns {number} 缓存项数量
+     */
+    size(): number;
+    /**
+     * 获取当前容量
+     *
+     * @returns {number} 容量
+     */
+    getCapacity(): number;
+    /**
+     * 动态调整容量
+     *
+     * 如果新容量小于当前大小，会淘汰最久未使用的项。
+     *
+     * @param {number} newCapacity - 新容量
+     * @returns {this} 支持链式调用
+     *
+     * @example
+     * ```typescript
+     * cache.resize(50)  // 缩小到50
+     * cache.resize(200) // 扩大到200
+     * ```
+     */
+    resize(newCapacity: number): this;
+    /**
+     * 获取所有键（按最近使用顺序，最新的在前）
+     *
+     * @returns {K[]} 键数组
+     */
+    keys(): K[];
+    /**
+     * 获取所有值（按最近使用顺序，最新的在前）
+     *
+     * @returns {V[]} 值数组
+     */
+    values(): V[];
+    /**
+     * 获取所有条目（按最近使用顺序，最新的在前）
+     *
+     * @returns {Array<{key: K, value: V}>} 条目数组
+     */
+    entries(): Array<{
+        key: K;
+        value: V;
+    }>;
+    /**
+     * 遍历缓存（按最近使用顺序）
+     *
+     * @param {(value: V, key: K) => void} callback - 回调函数
+     */
+    forEach(callback: (value: V, key: K) => void): void;
+    /**
+     * 获取缓存统计信息
+     *
+     * @returns {LRUCacheStats} 统计信息
+     *
+     * @example
+     * ```typescript
+     * const stats = cache.getStats()
+     * console.log(`Hit rate: ${stats.hitRate}%`)
+     * console.log(`Size: ${stats.size}/${stats.capacity}`)
+     * ```
+     */
+    getStats(): LRUCacheStats;
+    /**
+     * 重置统计信息（不清除缓存数据）
+     *
+     * @returns {this} 支持链式调用
+     */
+    resetStats(): this;
+    /**
+     * 转换为普通对象
+     *
+     * @returns {Record<string, V>} 普通对象
+     */
+    toObject(): Record<string, V>;
+    /**
+     * 将节点移动到头部（标记为最近使用）
+     *
+     * @private
+     * @param {LRUNode<K, V>} node - 节点
+     */
+    private moveToHead;
+    /**
+     * 添加节点到头部
+     *
+     * @private
+     * @param {LRUNode<K, V>} node - 节点
+     */
+    private addToHead;
+    /**
+     * 从链表中移除节点
+     *
+     * @private
+     * @param {LRUNode<K, V>} node - 节点
+     */
+    private removeFromList;
+    /**
+     * 淘汰最久未使用的节点（LRU策略核心）
+     *
+     * @private
+     */
+    private evictLRU;
+}
+```
+
+### `LRUCacheStats`
+
+```ts
+/**
+ * LRU缓存统计信息
+ *
+ * @interface LRUCacheStats
+ */
+export interface LRUCacheStats {
+    /** 缓存容量 */
+    capacity: number;
+    /** 当前缓存项数量 */
+    size: number;
+    /** 缓存命中次数 */
+    hits: number;
+    /** 缓存未命中次数 */
+    misses: number;
+    /** 总访问次数 */
+    totalAccesses: number;
+    /** 命中率（百分比） */
+    hitRate: number;
+    /** 未命中率（百分比） */
+    missRate: number;
+    /** 淘汰的缓存项数量 */
+    evictions: number;
+    /** 当前缓存键列表（按最近使用顺序） */
+    keys: string[];
+    /** 平均访问时间（毫秒） */
+    avgAccessTime: number;
+    /** 缓存项平均存活时间（毫秒） */
+    avgItemLifetime: number;
+}
+```
+
+### `NamespaceConfig`
+
+```ts
+/**
+ * 命名空间配置
+ */
+export interface NamespaceConfig {
+    /** 命名空间分隔符 */
+    separator?: string;
+    /** 是否自动添加命名空间 */
+    autoPrefix?: boolean;
+}
+```
+
+### `PageConfig`
+
+```ts
+/**
+ * 页面增强配置的形状（`withPageStore` 的返回类型）
+ *
+ * 与 `PageThis` 的分工：`PageThis` 描述**方法内的 `this`**（含映射 action，注入于页面实例），
+ * 本类型描述**装饰器返回的配置对象**——注入的 action 运行时绑定在实例上、并不存在于配置对象，
+ * 故这里只含 data 与框架成员。
+ *
+ * 之所以拆开：把「实例视角」直接当作「配置视角」会让返回类型声明出运行时并不存在的成员
+ * （例如 `config.increment()` 能通过编译却在运行时失败）。
+ */
+export type PageConfig<S extends State, M extends {
+    mapState?: readonly (keyof S)[] | Record<string, keyof S>;
+    mapGetters?: readonly PropertyKey[] | Record<string, PropertyKey>;
+} = ConnectOptions<S, Actions, Getters<S>>, G extends Getters<S> = Getters<S>> = {
+    data: ExtractPageData<S, M, G>;
+    setData: (data: Record<string, unknown>, callback?: () => void) => void;
+    getTabBar?: () => {
+        syncSelectedTab?: () => void;
+    } | undefined;
+};
+```
+
+### `PageOwnMethods`
+
+```ts
+/**
+ * 从 Page 配置提取用户自定义方法（排除保留键，方法 this 不检查以避免循环兼容性）
+ */
+export type PageOwnMethods<C> = {
+    [K in keyof Omit<C, PageReservedKeys>]: C[K] extends (...args: infer P) => infer R ? (...args: P) => R : C[K];
+};
+```
+
+### `PageReservedKeys`
+
+```ts
+/**
+ * Page 保留键（框架生命周期 + 内部字段），不参与自定义方法提取
+ */
+export type PageReservedKeys = 'data' | 'setData' | 'onLoad' | 'onShow' | 'onHide' | 'onUnload' | 'onReady' | 'onPullDownRefresh' | 'onReachBottom' | 'onPageScroll' | 'onShareAppMessage' | 'onResize' | 'onTabItemTap' | '__geomUnbinds';
+```
+
+### `PageThis`
+
+```ts
+/**
+ * 页面方法 this 类型（原生精确推导）
+ *
+ * 由 withPageStore 装饰器自动构造并注入方法签名，用户无需手动填写泛型参数。
+ * 方法内 `this.data` 包含完整状态 + 映射的 state/getters（精确类型），
+ * 映射的 action 以精确签名挂载到 this（参数/返回值类型不丢失），
+ * 用户自定义方法（排除保留键）也作为 ExtraMethods 注入 this。
+ *
+ * @example
+ * ```typescript
+ * const store = createStore({ state: { count: 0 }, actions: { increment() { this.state.count++ } } })
+ *
+ * Page(withPageStore(store, { mapState: ['count'], mapActions: ['increment'] })({
+ *   data: { localData: '...' },
+ *   onLoad() {
+ *     this.data.count // ✅ 自动推导为 number
+ *     this.increment() // ✅ 精确签名
+ *   }
+ * }))
+ * ```
+ */
+export type PageThis<S extends State, A extends Actions, G extends Getters<S> = Getters<S>, M extends ConnectOptions<S, A, G> = ConnectOptions<S, A, G>, ExtraMethods extends object = object> = {
+    data: ExtractPageData<S, M, G>;
+} & ExtraMethods & ExtractMappedActions<A, M> & {
+    setData: (data: Record<string, unknown>, callback?: () => void) => void;
+    getTabBar?: () => {
+        syncSelectedTab?: () => void;
+    } | undefined;
+};
+```
+
+### `Plugin`
+
+```ts
+/**
+ * 插件接口
+ *
+ * ```ts
+ * const plugin: Plugin<UserState> = {
+ *   name: 'user-analytics',
+ *   install(store) {            // store: Store<UserState, …>，getState() 类型精确
+ *     store.subscribe((state) => track(state.userInfo))
+ *   },
+ * }
+ * const uninstall = store.use(plugin)   // 无需断言
+ * ```
+ */
+export interface Plugin<S extends State = State> {
+    name: string;
+    install: PluginHook<S>;
+}
+```
+
+### `PluginHook`
+
+```ts
+/**
+ * 插件安装钩子 - 返回可选的卸载函数
+ *
+ * 泛型只开放**状态类型 S**：插件实现几乎只需要精确的 state 形状（如 `filter: (state) => …`），
+ * actions / getters 使用其默认约束即可。若把 A / G 也开放，调用方传具体 Store 时会因
+ * 参数逆变而在每个使用点被迫断言。
+ *
+ * 省略类型参数即得「适用于任意 Store」的插件（`Plugin` = `Plugin<State>`），
+ * 例如 logger / analyzer 这类与状态形状无关的插件。
+ */
+export type PluginHook<S extends State = State> = (store: Store<S, Actions, Getters<S>>) => void | (() => void);
+```
+
+### `State`
+
+```ts
+/**
+ * GeomStore - Store类型定义
+ * 采用 ThisType 方案消除循环依赖
+ */
+/**
+ * 状态类型
+ * 使用宽松对象约束，既兼容 Record<string, unknown> 的索引签名写法，
+ * 也允许未声明索引签名的业务 interface 直接作为 State 类型自动推断。
+ */
+export type State = object;
+```
+
+### `StateListener`
+
+```ts
+/**
+ * 状态监听器
+ */
+export type StateListener<S extends State = State> = (state: S) => void;
+```
+
+### `Store`
+
+```ts
+/**
+ * Store 实现类（模块化重构版）
+ *
+ * @class Store
+ * @template S - 状态类型
+ * @implements StoreInterface<S, A, G>
+ */
+export declare class Store<S extends State = State, A extends Actions = Actions, G extends Getters<S> = Getters<S>> implements StoreInterface<S, A, G> {
+    /** Store名称 */
+    readonly name: string;
+    /** 真实状态（私有） */
+    private _state;
+    /** 内部访问标记 */
+    private _isInternalAccess;
+    /** 状态保护配置 */
+    private _stateProtection;
+    /** 状态保护启用标志（内联缓存） */
+    private _stateProtectionEnabled;
+    /** 通知前是否深拷贝（显式配置；undefined 表示自动：仅当存在可写订阅者时拷贝） */
+    private _notifyClone;
+    /** 是否显式配置了 notify.clone（用于区分「默认自动」与「用户显式关闭」） */
+    private _notifyCloneExplicit;
+    /** 是否启用 notify 异步合并（微任务合并多次通知为一次，减少 setData 次数） */
+    private _notifyAsyncEnabled;
+    /** 异步通知合并器（仅启用时创建） */
+    private _asyncNotifier?;
+    /** 脏键集合：记录自上次通知以来发生变更的状态键，供集成层精确跳过未变化的映射 */
+    private _dirtyKeys;
+    /** 是否仅在状态实际变化时通知（默认 false） */
+    private _notifyOnlyOnChange;
+    /** 状态变更计数器（脏跟踪：供 onlyOnChange 模式判断 dispatch 是否修改了状态） */
+    private _mutationCount;
+    /** 脏跟踪代理缓存（仅 onlyOnChange 模式使用，$replaceState 时重建） */
+    private _dirtyProxyCache;
+    /** Actions集合（公开） */
+    actions: A;
+    /** 插件集合（按本 Store 的状态类型约束，状态无关插件以 Plugin<State> 兼容） */
+    private _plugins;
+    /** 插件卸载函数集合 */
+    private _pluginUninstallFns;
+    /** dispatch跟踪标记 */
+    private _dispatching;
+    /** batch 首层开始时的变更计数基线（onlyOnChange 模式判断批量期间是否发生变更） */
+    private _batchMutationBaseline;
+    /** 最近一次通知已覆盖到的变更计数：供 dispatch 补发通知去重（onlyOnChange） */
+    private _lastNotifiedMutationCount;
+    /** 销毁标记 - 防止销毁后继续操作 */
+    private _destroyed;
+    /** Proxy缓存（构造/重建时赋值，见 _rebuildStateProxyManager） */
+    private _proxyCache;
+    /** 状态保护代理管理器（构造/重建时赋值，见 _rebuildStateProxyManager） */
+    private _stateProxyManager;
+    /** 订阅管理器 */
+    private _subscriptionManager;
+    /** 缓存管理器 */
+    private _cacheManager;
+    /** Action执行器 */
+    private _actionManager;
+    /** Getter执行器 */
+    private _getterManager;
+    /** 批量更新管理器 */
+    private _batchManager;
+    /** 实例级钩子系统（每个 Store 独立） */
+    private _hooks;
+    /** 公开的钩子系统访问器，供插件使用 */
+    readonly hooks: HookSystem;
+    /** Store计数器 */
+    private static _storeCounter;
+    constructor(options?: StoreOptions<S, A, G>);
+    /**
+     * 状态访问器 - 返回受保护的Proxy
+     * 注意：state 是只读访问器，不支持直接赋值。请使用 setState()/$patch()/$replaceState() 来修改状态。
+     */
+    get state(): S;
+    /** 获取当前状态的原始引用（内部使用）。
+     *
+     *  ⚠️ 注意：此方法返回的是内部状态的直接引用，修改返回值会直接影响 Store 状态，
+     *  且不会触发订阅通知、钩子或缓存更新。
+     *
+     *  如果需要安全地读取状态，请使用 `store.state` getter（返回受保护的 Proxy）。
+     *  此方法主要供高级场景和内部模块使用。
+     */
+    getState(): S;
+    /**
+     * 设置单个状态值
+     * @param key - 状态键名（不能为空）
+     * @param value - 状态值
+     */
+    setState<K extends keyof S>(key: K, value: S[K]): void;
+    /**
+     * 批量更新状态
+     * @param partialState - 部分状态对象（不能为 null/undefined）
+     */
+    $patch(partialState: Partial<S>): void;
+    /**
+     * 替换整个状态
+     * @param newState - 新状态对象或状态工厂函数（工厂函数写法：`() => ({...})`，返回值不能为 null/undefined）
+     */
+    $replaceState(newState: S | (() => S)): void;
+    /**
+     * 判断指定状态键自上次通知以来是否发生变更
+     *
+     * 供集成层（withPageStore / withComponentStore）在同步通知回调内精确判断某个映射键是否变化，
+     * 从而跳过未变化对象值的冗余 setData。脏键在每次通知结束时清空。
+     *
+     * @param key - 状态键名
+     * @returns 该键自上次通知后是否发生过变更
+     */
+    isStateKeyDirty(key: string): boolean;
+    /**
+     * 创建状态快照
+     */
+    $snapshot(): Readonly<S>;
+    /**
+     * 从快照恢复状态
+     */
+    $restore(snapshot: Readonly<S>): void;
+    /**
+     * 执行action - 类型安全实现
+     * @throws 如果 Store 已销毁
+     */
+    dispatch<K extends keyof A>(actionName: K, ...args: InferActionArgs<A, K>): InferActionReturn<A, K>;
+    dispatch(actionName: string, ...args: unknown[]): unknown;
+    /**
+     * 使用 getter - 类型安全实现
+     * @throws 如果 Store 已销毁
+     */
+    getter<K extends keyof G>(getterName: K): InferGetterReturn<G, K>;
+    getter(getterName: string): unknown;
+    /**
+     * Getters 定义对象（只读）
+     *
+     * 供类型系统推断 Getters 键集合（如 withPageStore 的 mapGetters 约束），
+     * 亦可用于调试与运行时检查。允许在销毁后调用（只读，返回空对象）。
+     */
+    get getters(): G;
+    /**
+     * 获取所有 getter 的名称列表
+     *
+     * 用于 DevTools、调试与运行时反射。允许在销毁后调用（只读，返回空数组）。
+     */
+    getGetterNames(): string[];
+    /**
+     * 订阅状态变化
+     * @param listener - 状态变化回调函数
+     * @param options.readOnly 标记为只读订阅（仅读取状态、不修改）。当 Store 仅有只读订阅者时，
+     *   通知路径会跳过整棵状态树的深拷贝，显著降低大状态下的通知开销。
+     * @returns 取消订阅的函数
+     * @throws 如果 Store 已销毁
+     */
+    subscribe(listener: StateListener<S>, options?: {
+        readOnly?: boolean;
+    }): () => void;
+    /**
+     * 安装插件
+     * @param plugin - 插件实例
+     * @returns 卸载插件的函数
+     * @throws 如果 Store 已销毁
+     */
+    use(plugin: PluginType<NoInfer<S>>): () => void;
+    /** 创建插件卸载句柄（实现已拆至 ./pluginSupport.js） */
+    private _createPluginUninstaller;
+    /**
+     * 销毁Store - 释放所有资源
+     *
+     * 清理顺序（反向依赖）：
+     * 1. 插件卸载（依赖 hooks/state）
+     * 2. 订阅器清除
+     * 3. 缓存禁用
+     * 4. 钩子清除
+     * 5. 批量管理器重置
+     * 6. 销毁标记
+     * 7. Proxy 缓存清空
+     */
+    destroy(): void;
+    /**
+     * 检查 Store 是否已被销毁
+     */
+    get destroyed(): boolean;
+    /**
+     * 从缓存获取状态值
+     * @param key - 状态键名
+     * @returns 缓存的值或当前状态值
+     * @throws 如果 Store 已销毁
+     */
+    getCached<K extends keyof S>(key: K): S[K];
+    /**
+     * 启用缓存
+     * @param keys - 需要缓存的键（可选，默认全部）
+     * @throws 如果 Store 已销毁
+     */
+    enableCache(keys?: Array<keyof S>): void;
+    /**
+     * 禁用缓存
+     * @throws 如果 Store 已销毁
+     */
+    disableCache(): void;
+    /**
+     * 清除缓存
+     * @param key - 要清除的键（可选，不传则清除全部）
+     * @throws 如果 Store 已销毁
+     */
+    invalidateCache<K extends keyof S>(key?: K): void;
+    /**
+     * 获取缓存统计信息
+     * @returns 缓存统计对象
+     */
+    getCacheStats(): CacheStats;
+    /**
+     * 检查状态保护是否启用
+     */
+    isStateProtectionEnabled(): boolean;
+    /**
+     * 动态启用/禁用状态保护
+     */
+    setStateProtection(enabled: boolean): void;
+    /**
+     * 获取状态保护配置
+     */
+    getStateProtectionConfig(): Readonly<StateProtectionOptions>;
+    /**
+     * 开始批量更新
+     */
+    startBatch(): void;
+    /**
+     * 结束批量更新
+     */
+    endBatch(): void;
+    /**
+     * 在批量更新上下文中执行操作
+     * @param fn - 要执行的函数
+     * @returns 函数返回值
+     */
+    batch<T>(fn: () => T): T;
+    /** 初始化状态 */
+    private _initializeState;
+    /** 初始化Actions和Getters */
+    private _initializeActionsAndGetters;
+    /** 初始化缓存 */
+    private _initializeCache;
+    /** 在内部访问模式下执行操作 */
+    private _withInternalAccess;
+    /**
+     * 获取 action 上下文使用的状态
+     *
+     * - 默认模式：返回原始状态引用（零开销，与历史行为一致）
+     * - onlyOnChange 模式：返回脏跟踪代理，写入（含数组变异方法）会递增变更计数，
+     *   供 ActionManager 判断是否需要通知
+     */
+    private _getActionState;
+    /**
+     * 重建状态保护 Proxy 管理器（构造、$replaceState、setStateProtection 共用）。
+     *
+     * 强制新建 proxyCache：旧缓存中的 Proxy 闭包绑定旧状态对象树/旧 path，
+     * 复用会让保护层指向已过期对象。
+     */
+    private _rebuildStateProxyManager;
+    /** 创建允许写入的脏跟踪代理（实现已拆至 ./dirtyTracking.js） */
+    private _createDirtyTrackingProxy;
+    /** 批量结束通知：onlyOnChange 模式下批量期间无任何变更则跳过（与 dispatch 收尾语义一致） */
+    private _onBatchEnd;
+    /** 调度一次状态通知（同步或异步合并，取决于 notify.async 配置） */
+    private _scheduleNotify;
+    /** 通知状态变化 */
+    private _notifyListeners;
+}
+```
+
+### `StoreOptions`
+
+```ts
+/**
+ * Store 构造配置（显式泛型场景）
+ * actions 使用 `ActionsWithThis<S, A>` 注入 `this` 类型。
+ */
+export interface StoreOptions<S extends State = State, A extends Actions = Actions, G extends Getters<S> = Getters<S>> {
+    /** Store名称 */
+    name?: string;
+    /**
+     * 初始状态
+     * 支持对象字面量或工厂函数：`state: () => ({...})`
+     */
+    state?: S | (() => S);
+    /** Actions - 使用 ThisType 注入 this 类型 */
+    actions?: ActionsWithThis<S, A>;
+    /** Getters */
+    getters?: G;
+    /** 是否启用缓存 */
+    enableCache?: boolean;
+    /** 需要缓存的state键（为空时缓存所有） */
+    cacheKeys?: Array<keyof S>;
+    /** 缓存配置（容量、TTL等） */
+    cacheConfig?: CacheConfig;
+    /** 状态保护配置 */
+    stateProtection?: StateProtectionOptions;
+    /** 订阅配置（上限数量、超限策略） */
+    subscription?: SubscriptionOptions;
+    /** 通知行为配置（深拷贝开关、仅变更时通知） */
+    notify?: NotifyOptions;
+}
+```
+
+### `StoreRegistry`
+
+```ts
+/**
+ * Store注册表类
+ *
+ * 用于管理多个Store实例，提供统一的注册、访问和生命周期管理
+ *
+ * @class StoreRegistry
+ *
+ * @example
+ * ```typescript
+ * const registry = new StoreRegistry()
+ *
+ * // 注册Store
+ * registry.register('user', userStore)
+ * registry.register('product', productStore)
+ *
+ * // 批量注册
+ * registry.registerAll({ cart, order, payment })
+ *
+ * // 获取Store
+ * const store = registry.get('user')
+ * const storeOrThrow = registry.getOrThrow('product')
+ *
+ * // 设置默认Store
+ * registry.setDefault('user')
+ * const default = registry.getDefault()
+ * ```
+ */
+export declare class StoreRegistry {
+    /**
+     * Store映射
+     * @private
+     * @type {Map<string, Store>}
+     */
+    private stores;
+    /**
+     * 默认Store
+     * @private
+     * @type {Store | undefined}
+     */
+    private defaultStore?;
+    /**
+     * 注册Store
+     *
+     * 将Store实例注册到注册表中，如果同名Store已存在会覆盖
+     *
+     * @param {string} name - Store名称
+     * @param {Store} store - Store实例
+     * @throws {Error} 如果名称无效或store无效
+     *
+     * @example
+     * ```typescript
+     * const registry = new StoreRegistry()
+     * const store = createStore({ state: { count: 0 } })
+     *
+     * // 注册单个Store
+     * registry.register('counter', store)
+     *
+     * // 覆盖已存在的Store
+     * const newStore = createStore({ state: { count: 10 } })
+     * registry.register('counter', newStore) // 会覆盖
+     * ```
+     */
+    register(name: string, store: Store): void;
+    /**
+     * 批量注册Store
+     *
+     * 将多个Store实例批量注册到注册表中
+     *
+     * @param {Record<string, Store>} stores - Store名称到实例的映射
+     *
+     * @example
+     * ```typescript
+     * const registry = new StoreRegistry()
+     *
+     * registry.registerAll({
+     *   user: userStore,
+     *   product: productStore,
+     *   cart: cartStore
+     * })
+     *
+     * // 检查注册结果
+     * console.log(registry.size()) // 3
+     * ```
+     */
+    registerAll(stores: Record<string, Store>): void;
+    /**
+     * 注销Store
+     *
+     * 从注册表中移除Store并调用其destroy方法
+     *
+     * @param {string} name - Store名称
+     *
+     * @example
+     * ```typescript
+     * const registry = new StoreRegistry()
+     * registry.register('user', store)
+     *
+     * // 注销Store
+     * registry.unregister('user')
+     * // store.destroy() 会被调用
+     * ```
+     */
+    unregister(name: string): void;
+    /**
+     * 获取Store
+     *
+     * 根据名称获取Store实例
+     *
+     * @param {string} name - Store名称
+     * @returns {Store | undefined} Store实例，不存在则返回undefined
+     *
+     * @example
+     * ```typescript
+     * const store = registry.get('user')
+     * if (store) {
+     *   console.log('Store found:', store.getState())
+     * } else {
+     *   console.log('Store not found')
+     * }
+     * ```
+     */
+    get(name: string): Store | undefined;
+    /**
+     * 获取或抛出错误
+     *
+     * 根据名称获取Store，如果不存在则抛出错误
+     *
+     * @param {string} name - Store名称
+     * @returns {Store} Store实例
+     * @throws {Error} 如果Store不存在
+     *
+     * @example
+     * ```typescript
+     * try {
+     *   const store = registry.getOrThrow('user')
+     *   console.log(store.getState())
+     * } catch (error) {
+     *   console.error('Store not found:', error)
+     * }
+     * ```
+     */
+    getOrThrow(name: string): Store;
+    /**
+     * 检查Store是否存在
+     *
+     * @param {string} name - Store名称
+     * @returns {boolean} 是否存在
+     *
+     * @example
+     * ```typescript
+     * if (registry.has('user')) {
+     *   const store = registry.get('user')
+     *   // 使用store
+     * }
+     * ```
+     */
+    has(name: string): boolean;
+    /**
+     * 获取所有Store
+     *
+     * @returns {Record<string, Store>} 所有Store的映射
+     *
+     * @example
+     * ```typescript
+     * const allStores = registry.getAll()
+     * Object.entries(allStores).forEach(([name, store]) => {
+     *   console.log(`${name}:`, store.getState())
+     * })
+     * ```
+     */
+    getAll(): Record<string, Store>;
+    /**
+     * 获取Store数量
+     *
+     * @returns {number} 注册的Store数量
+     *
+     * @example
+     * ```typescript
+     * console.log(`Total stores: ${registry.size()}`)
+     * ```
+     */
+    size(): number;
+    /**
+     * 清空注册表
+     *
+     * 注销所有Store并清空注册表
+     *
+     *
+     * @example
+     * ```typescript
+     * // 清空所有Store
+     * registry.clear()
+     * console.log(registry.size()) // 0
+     * ```
+     */
+    clear(): void;
+    /**
+     * 设置默认Store
+     *
+     * 设置默认Store，用于快速访问
+     *
+     * @param {string} name - Store名称
+     * @throws {Error} 如果Store不存在
+     *
+     * @example
+     * ```typescript
+     * registry.register('user', userStore)
+     * registry.register('product', productStore)
+     *
+     * // 设置默认Store
+     * registry.setDefault('user')
+     *
+     * // 获取默认Store
+     * const defaultStore = registry.getDefault()
+     * ```
+     */
+    setDefault(name: string): void;
+    /**
+     * 获取默认Store
+     *
+     * @returns {Store | undefined} 默认Store，未设置则返回undefined
+     *
+     * @example
+     * ```typescript
+     * const defaultStore = registry.getDefault()
+     * if (defaultStore) {
+     *   console.log('Default store:', defaultStore.getState())
+     * }
+     * ```
+     */
+    getDefault(): Store | undefined;
+    /**
+     * 获取Store名称列表
+     *
+     * @returns {string[]} 所有Store名称的数组
+     *
+     * @example
+     * ```typescript
+     * const names = registry.getNames()
+     * console.log('Available stores:', names.join(', '))
+     * ```
+     */
+    getNames(): string[];
+    /**
+     * 遍历所有Store
+     *
+     * 对每个注册的Store执行回调函数
+     *
+     * @param {(name: string, store: Store) => void} callback - 回调函数
+     *
+     * @example
+     * ```typescript
+     * registry.forEach((name, store) => {
+     *   console.log(`Store ${name}:`, store.getState())
+     * })
+     * ```
+     */
+    forEach(callback: (name: string, store: Store) => void): void;
+    /**
+     * 创建Store快照
+     *
+     * 创建所有Store的状态快照
+     *
+     * @returns {Record<string, unknown>} Store名称到状态的映射
+     *
+     * @example
+     * ```typescript
+     * const snapshot = registry.createSnapshot()
+     * console.log('All states:', snapshot)
+     *
+     * // 稍后恢复
+     * registry.restoreSnapshot(snapshot)
+     * ```
+     */
+    createSnapshot(): Record<string, unknown>;
+    /**
+     * 从快照恢复所有Store
+     *
+     * 根据快照恢复所有Store的状态
+     *
+     * @param {Record<string, unknown>} snapshot - Store快照
+     *
+     * @example
+     * ```typescript
+     * const snapshot = registry.createSnapshot()
+     * // ... 修改状态
+     *
+     * // 恢复到快照
+     * registry.restoreSnapshot(snapshot)
+     * ```
+     */
+    restoreSnapshot(snapshot: Record<string, unknown>): void;
+}
+```
+
+### `StoreTreeNode`
+
+```ts
+/**
+ * Store树节点
+ */
+export interface StoreTreeNode {
+    name: string;
+    store: any;
+    children?: Record<string, StoreTreeNode>;
+}
+```
+
+### `WithPageThis`
+
+```ts
+/**
+ * 方法 this 重写映射类型
+ *
+ * 将配置对象中所有函数属性的 this 参数重写为 T，非函数属性（含 data）保持原样不变。
+ * 仅用于装饰器入参，使方法内 this 自动获得精确类型推导（含 data、actions、自定义方法），
+ * 且不改变对象结构类型，从而仍满足 PageOptions / ComponentOptions 约束。
+ */
+export type WithPageThis<C, T> = {
+    [K in keyof C]: C[K] extends (...args: infer P) => infer R ? (this: T, ...args: P) => R : C[K];
+};
+```
+
+### `clone`
+
+```ts
+/**
+ * 统一的克隆函数
+ *
+ * @param obj 要克隆的对象
+ * @param options.mode 克隆模式（默认 'deep'）：
+ * - `deep`：递归深拷贝，支持 Date/RegExp/Map/Set 与循环引用（复用 deepCloneState）
+ * - `shallow`：仅复制一层（数组/Map/Set 展开复制，对象浅拷贝）
+ * - `safe`：尽力深拷贝且绝不抛错——结构保真与 deep 相同（Date/Map/Set 正确克隆），
+ *   仅在克隆器真正失败时降级返回原引用并告警。旧版 safe 的 JSON 序列化语义
+ *   （Date 变字符串、Map/Set 变 `{}`、丢 undefined/函数）已移至显式命名的 `json` 模式
+ * - `json`：JSON 序列化往返，产出可结构化克隆的纯数据副本（有损），
+ *   序列化失败（循环引用等）时返回原引用
+ * @returns 克隆后的对象
+ */
+export declare function clone<T>(obj: T, options?: {
+    mode?: CloneMode;
+}): T;
+```
+
+### `composeStore`
+
+```ts
+/**
+ * Store组合函数 - 类型安全重载
+ * 支持完整的类型推断，保留原始 Store 的类型信息
+ */
+declare function composeStore<Stores extends readonly StoreLike[]>(stores: [...Stores], options?: ComposeOptions): Store<ExtractStates<Stores>, ExtractActions<Stores>, ExtractGetters<Stores>>;
+```
+
+### `createStore`
+
+```ts
+export declare function createStore<S extends State, A extends Actions = Actions, G extends Getters<S> = Getters<S>>(options: FactoryStoreConfig<S, A, G>): Store<S, A, G>;
+
+export declare function createStore<S extends State, A extends Actions = Actions, G extends Getters<S> = Getters<S>>(options: LiteralStoreConfig<S, A, G>): Store<S, A, G>;
+```
+
+### `createStoreTree`
+
+```ts
+/**
+ * 创建Store树
+ */
+export declare function createStoreTree(stores: Store[], options?: ComposeOptions): StoreTreeNode;
+```
+
+### `deepEqual`
+
+```ts
+/**
+ * GeomStore - 深度相等比较
+ *
+ * 自 helpers.ts 拆出：深度比较两个值（迭代实现，含循环引用与 Set 无序语义）。
+ *
+ * @module utils/equality
+ */
+/**
+ * 深度比较两个值（使用迭代实现避免栈溢出）
+ *
+ * 注意：超过 maxDepth 时本函数直接返回 false（并告警），而非抛错或视为相等。
+ * 这是保守语义——深度未知/超限的结构按「不相等」处理，
+ * 以避免误报相等导致缓存误命中。调用方如需比较超深结构，
+ * 请显式传入更大的 maxDepth。
+ *
+ * @param a - 第一个值
+ * @param b - 第二个值
+ * @param maxDepth - 最大递归深度（默认1000），超限时返回 false
+ * @returns 是否相等
+ */
+export declare function deepEqual(a: unknown, b: unknown, maxDepth?: number): boolean;
+```
+
+### `deepMerge`
+
+```ts
+/**
+ * 深度合并对象
+ *
+ * 注意：此函数会修改 target 对象。对于非纯对象值（如数组），
+ * 会进行深拷贝以防止 source 和 target 之间共享引用。
+ */
+export declare function deepMerge<T extends Record<string, unknown>>(target: T, ...sources: Partial<T>[]): T;
+```
+
+### `get`
+
+```ts
+/**
+ * 通过路径获取对象值
+ */
+export declare function get<T = unknown>(obj: T, path: string, defaultValue?: unknown): unknown;
+```
+
+### `globalRegistry`
+
+```ts
+globalRegistry: StoreRegistry
+```
+
+### `identity`
+
+```ts
+/**
+ * 返回参数的函数
+ */
+export declare function identity<T>(value: T): T;
+```
+
+### `isArray`
+
+```ts
+/**
+ * 判断是否是数组
+ */
+export declare function isArray(value: unknown): value is unknown[];
+```
+
+### `isFunction`
+
+```ts
+/**
+ * 判断是否是函数
+ */
+export declare function isFunction(value: unknown): value is (...args: unknown[]) => unknown;
+```
+
+### `isGeomStore`
+
+```ts
+/**
+ * 检查是否是 GeomStore 实例
+ *
+ * 通过品牌 Symbol 精确识别，避免仅通过鸭子类型（属性存在性）误判。
+ * @param value - 待检查的值
+ */
+export declare function isGeomStore<S extends State = State>(value: unknown): value is Store<S>;
+```
+
+### `isObject`
+
+```ts
+/**
+ * GeomStore - 工具函数集合
+ *
+ * 提供常用的工具函数：
+ * - 类型判断函数
+ * - 对象操作函数
+ * - 路径操作函数
+ * - 克隆操作函数
+ */
+/**
+ * 判断是否是对象
+ *
+ * 注意：Map/Set 不是普通对象，深合并/克隆场景需单独处理，
+ * 否则会被展开成空普通对象导致静默数据损坏。
+ */
+export declare function isObject(value: unknown): value is Record<string, unknown>;
+```
+
+### `isPlainObject`
+
+```ts
+/**
+ * 判断是否是纯对象（plain object）
+ */
+export declare function isPlainObject(value: unknown): boolean;
+```
+
+### `isPromise`
+
+```ts
+/**
+ * 判断是否是Promise
+ */
+export declare function isPromise(value: unknown): value is Promise<unknown>;
+```
+
+### `noop`
+
+```ts
+/**
+ * 空函数
+ */
+export declare function noop(): void;
+```
+
+### `set`
+
+```ts
+/**
+ * 通过路径设置对象值
+ */
+export declare function set<T = unknown>(obj: T, path: string, value: unknown): void;
+```
+
+### `shallowEqual`
+
+```ts
+/**
+ * 浅比较两个值
+ */
+export declare function shallowEqual(a: unknown, b: unknown): boolean;
+```
+
+### `uniqueId`
+
+```ts
+export declare function uniqueId(prefix?: string): string;
+```
+
+### `usePlugin`
+
+```ts
+/**
+ * 安装插件到 Store（带日志与错误兜底）
+ *
+ * 泛型**只从 store 参数反推**（`plugin` 上的 S 用 `NoInfer` 排除）：该位置处于逆变，
+ * 若参与推断会把 S 拉回约束 `State`，导致具体 Store 被判为不可赋值。
+ *
+ * 备选方案「独立类型参数 `P extends Plugin<S>`」已实测否决：宽插件（`Plugin<State>`）
+ * 会在约束校验时因 `Store` 自身含 `use` 成员而递归比较失败。故保留 `NoInfer`，
+ * 其最低 TS 版本要求（≥ 5.4）已在 README 与 CHANGELOG 中声明。
+ *
+ * `plugin` 需与 store 的状态类型匹配；状态无关的插件写作 `Plugin<State>`（如 `loggerPlugin`），
+ * 对任意 Store 都适用。
+ */
+export declare function usePlugin<S extends State, A extends Actions, G extends Getters<S>>(plugin: Plugin<NoInfer<S>>, store: Store<S, A, G>): () => void;
+```
+
+### `withAppStore`
+
+```ts
+/**
+ * App 集成函数
+ *
+ * 将 Store 连接到微信小程序 App，自动管理状态同步和订阅清理
+ *
+ * 类型推断：`S` / `A` / `G` 均从 store 参数自动推断，
+ * mapState / mapGetters / mapActions 的键与值拼错时会在编译期报错；
+ * 返回的装饰器保持传入 App 配置的原始类型（不擦除自定义方法/生命周期类型）。
+ *
+ * 生命周期内的 `this` 自动获得注入后的实例类型（`AppThis`）：映射的 state/getters
+ * 出现在 `globalData` 上、映射的 action 与调试 API 直接挂在实例上，**无需手写 this 标注**。
+ *
+ * @template S - 状态类型
+ * @template A - Actions 类型
+ * @template G - Getters 类型
+ * @param {Store<S, A, G>} store - Store 实例
+ * @param {ConnectOptions<S, A, G>} [options={}] - 连接选项
+ * @returns App 装饰器（保持配置类型，并注入方法 this）
+ *
+ * @example
+ * ```typescript
+ * import { createStore } from '@openlide/geomstore'
+ * import { withAppStore } from '@openlide/geomstore/integrations'
+ *
+ * const store = createStore({
+ *   name: 'app',
+ *   state: { userInfo: null, config: {}, theme: 'light' },
+ *   actions: {
+ *     async initApp() {
+ *       const config = await fetchConfig()
+ *       this.setState('config', config)
+ *     },
+ *     setTheme(theme) {
+ *       this.setState('theme', theme)
+ *     }
+ *   }
+ * })
+ *
+ * // 简写：数组形式（this.globalData / 注入的 action 均有类型，无需手写 this）
+ * App(withAppStore(store, {
+ *   mapState: ['userInfo', 'config', 'theme'],
+ *   mapActions: ['initApp', 'setTheme']
+ * })({
+ *   globalData: { otherData: '...' },
+ *   onLaunch() {
+ *     console.log(this.globalData.userInfo)
+ *     this.initApp()
+ *     this.setTheme('dark')
+ *   }
+ * }))
+ *
+ * // 高级用法：对象形式
+ * App(withAppStore(store, {
+ *   mapState: {
+ *     user: 'userInfo',
+ *     appConfig: 'config',
+ *     currentTheme: 'theme'
+ *   },
+ *   mapActions: {
+ *     doInit: 'initApp',
+ *     changeTheme: 'setTheme'
+ *   }
+ * })({
+ *   globalData: { otherData: '...' },
+ *   onLaunch() {
+ *     console.log(this.globalData.user)
+ *     this.doInit()
+ *     this.changeTheme('dark')
+ *   }
+ * }))
+ *
+ * // 调试 API
+ * // 在其他 Page 或 Component 中访问：
+ * const app = getApp()
+ * app.getStore()           // 获取 store 实例
+ * app.getState()           // 获取状态
+ * app.dispatch('xxx')      // dispatch action
+ * app.subscribe(callback)   // 订阅状态变化
+ * ```
+ */
+export declare function withAppStore<S extends State = State, A extends Actions = Actions, G extends Getters<S> = Getters<S>>(store: Store<S, A, G>, options?: ConnectOptions<S, A, G>): <C extends AppOptions>(AppConfig: WithPageThis<C, AppThis<S, A, G, ConnectOptions<S, A, G>, C>> & ThisType<AppThis<S, A, G, ConnectOptions<S, A, G>, C>>) => C;
+```
+
+### `withComponentStore`
+
+```ts
+/**
+ * Component 混入函数
+ *
+ * 将 Store 连接到微信小程序 Component，自动管理状态同步和订阅清理
+ *
+ * 类型推断：与 withPageStore 一致，`S` / `A` / `G` 从 store 参数自动推断，
+ * `O` 保留 options 字面量类型用于精确推导；
+ * mapState / mapGetters / mapActions 的键与值拼错时编译期报错；
+ * 装饰器返回类型重写所有方法的 this 为 ComponentThis，使方法内 this.data / this.xxx 自动获得精确类型
+ *
+ * @template S - 状态类型
+ * @template A - Actions 类型
+ * @template G - Getters 类型
+ * @template O - ConnectOptions 字面量类型（自动推断）
+ * @param {Store<S, A, G>} store - Store 实例
+ * @param {ConnectOptions<S, A, G>} [options={}] - 连接选项
+ * @returns Component 装饰器：入参为「各命名空间内方法 `this` 已注入」（`WithComponentThis`）的配置，返回增强后的配置（形状见 `ComponentConfig`）
+ *
+ * @example
+ * ```typescript
+ * import { createStore } from '@openlide/geomstore'
+ * import { withComponentStore } from '@openlide/geomstore/integrations'
+ *
+ * const store = createStore({
+ *   state: { count: 0, name: 'test' },
+ *   actions: { increment() { this.state.count++ } }
+ * })
+ *
+ * Component(withComponentStore(store, {
+ *   mapState: ['count', 'name'],
+ *   mapActions: ['increment']
+ * })({
+ *   methods: {
+ *     handleTap() {
+ *       this.data.count // ✅ 自动推导为 number
+ *       this.increment() // ✅ 精确签名
+ *     }
+ *   }
+ * }))
+ * ```
+ */
+export declare function withComponentStore<S extends State, A extends Actions, G extends Getters<S>, O extends ConnectOptions<S, A, G>>(store: Store<S, A, G>, options?: O): <C extends ComponentOptions>(ComponentConfig: WithComponentThis<C, ComponentThis<S, A, G, O, ComponentOwnMethods<C>>>) => ComponentConfig<S, A, G, O, ComponentOwnMethods<C>> & Omit<C, 'data' | 'methods'> & {
+    data: (C extends {
+        data: infer D;
+    } ? D : object) & ExtractPageData<S, O, G>;
+};
+```
+
+### `withPageStore`
+
+```ts
+/**
+ * Page 混入函数
+ *
+ * 将 Store 连接到微信小程序 Page，自动管理状态同步和订阅清理
+ *
+ * 类型推断：
+ * - `S` / `A` / `G` 均从 store 参数自动推断
+ * - `O` 保留 options 字面量类型，用于精确推导方法内 this.data 与 actions
+ * - mapState / mapGetters / mapActions 的键与值拼错时会在编译期报错
+ * - 装饰器返回类型重写所有方法的 this 为 PageThis，使方法内 this.data / this.xxx 自动获得精确类型
+ *
+ * @template S - 状态类型
+ * @template A - Actions 类型
+ * @template G - Getters 类型
+ * @template O - ConnectOptions 字面量类型（自动推断）
+ * @param {Store<S, A, G>} store - Store 实例
+ * @param {ConnectOptions<S, A, G>} [options={}] - 连接选项
+ * @returns Page 装饰器：入参为「方法 `this` 已注入」（`ThisType<PageThis>`）的配置，返回增强后的配置（形状见 `PageConfig`）
+ *
+ * @example
+ * ```typescript
+ * import { createStore } from '@openlide/geomstore'
+ * import { withPageStore } from '@openlide/geomstore/integrations'
+ *
+ * const store = createStore({
+ *   state: { count: 0, name: 'test' },
+ *   actions: { increment() { this.state.count++ } }
+ * })
+ *
+ * Page(withPageStore(store, {
+ *   mapState: ['count', 'name'],
+ *   mapActions: ['increment']
+ * })({
+ *   data: { localData: '...' },
+ *   onLoad() {
+ *     this.data.count // ✅ 自动推导为 number
+ *     this.increment() // ✅ 精确签名
+ *   }
+ * }))
+ * ```
+ */
+export declare function withPageStore<S extends State, A extends Actions, G extends Getters<S>, O extends ConnectOptions<S, A, G>>(store: Store<S, A, G>, options?: O): <C extends PageOptions>(PageConfig: WithPageThis<C, PageThis<S, A, G, O>> & {
+    data: object;
+} & ThisType<PageThis<S, A, G, O>>) => PageConfig<S, O, G> & Omit<C, "data"> & {
+    data: (C extends {
+        data: infer D;
+    } ? D : object) & ExtractPageData<S, O, G>;
+};
+```
