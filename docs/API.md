@@ -286,7 +286,7 @@ class SelectorComposer { createRetrySelector / createRetrySelectorAsync / … }
 | `maxCacheSize` | — | 缓存容量上限 |
 
 - `createSelector` / `SelectorFactory` 的版本化缓存命中要求**状态对象身份与版本号同时相同**（O(1) 比较）；不同 Store 即使版本号相同，也不会串用结果。状态不带版本号（如传入普通对象）时回退 `equalityFn`。
-- `createParametricSelector` 按参数分别缓存；`ttl: 0` 表示永不过期，`maxEntries` 控制容量并在写入前清理过期项
+- `createParametricSelector` 按参数分别缓存；`ttl: 0` 表示条目立即过期（等同禁用缓存，每次调用重新计算），`maxEntries` 控制容量并在写入前清理过期项
 - `createStructuredSelector` 以 DefineOwnProperty 语义写入结果（选择器映射含 `__proto__` 键时不会被静默丢弃）
 - `createStructuredSelector` 与 `SelectorComposer.combine` **需显式给出状态类型参数**：`S` 只出现在「对另一类型参数取索引」的嵌套位置（`Selector<S, R[K]>` / `Selector<S, unknown>[]`），TS 无法据此反推并会退回约束 `State`
 - `SelectorComposer.createObjectSelector` 对状态的**每个键**应用选择器并返回同键名对象（`K` 通常取 `keyof S`，而非某一单个键）

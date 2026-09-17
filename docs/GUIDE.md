@@ -276,7 +276,7 @@ import { createParametricSelector, createSelector } from '@openlide/geomstore/ex
 const selectPaidTotal = createSelector((state: State) =>
   state.orders.filter((o) => o.status === 'paid').reduce((sum, o) => sum + o.amount, 0))
 
-// 参数化：按参数分别缓存，注意 ttl 与容量上限（ttl: 0 表示永不过期）
+// 参数化：按参数分别缓存，注意 ttl 与容量上限（ttl: 0 表示立即过期，等同禁用缓存）
 const byOrder = createParametricSelector((state: State, id: number) => state.orders[id].amount, {
   ttl: 5000,
   maxEntries: 50,
