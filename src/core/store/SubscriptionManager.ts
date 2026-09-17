@@ -31,8 +31,14 @@ export interface SubscriptionManagerOptions {
  * 负责管理状态监听器的生命周期
  */
 export class SubscriptionManager<S extends State = State> implements SubscriptionManagerInterface<S> {
-  /** 监听器 → 注册信息：同一函数注册 N 次通知 N 次，任一份退订只减一（Redux/Vuex 同语义） */
-  private readonly _listeners: Map<StateListener<S>, { count: number; readOnly: boolean; registrations: Set<object> }> = new Map()
+  /**
+   * 监听器 → 各次注册的可写标记：同一函数注册 N 次通知 N 次，任一份退订只减一（Redux/Vuex 同语义）。
+   *
+   * 以「注册 → readOnly」映射而非条目级标记：readOnly 是每次注册的属性，
+   * 同一函数先以只读、后以可写注册时，若把标记闩在条目上，可写注册会被当成只读，
+   * 通知将跳过深拷贝并把受保护的活动状态交给可写回调
+   */
+  private readonly _listeners: Map<StateListener<S>, { registrations: Map<object, boolean> }> = new Map()
   /** 可写（非只读）监听器注册总次数：仅当存在可写订阅者时才需深拷贝做引用隔离 */
   private _writableCount = 0
   private readonly _maxSubscribers: number
@@ -76,11 +82,14 @@ export class SubscriptionManager<S extends State = State> implements Subscriptio
    */
   add(listener: StateListener<S>, options?: { readOnly?: boolean }): object {
     const registration = {}
+    const readOnly = options?.readOnly ?? false
     const existing = this._listeners.get(listener)
     if (existing !== undefined) {
-      existing.count += 1
-      existing.registrations.add(registration)
+      existing.registrations.set(registration, readOnly)
       this._totalCount += 1
+      if (!readOnly) {
+        this._writableCount += 1
+      }
       return registration
     }
     if (this.size >= this._maxSubscribers) {
@@ -102,8 +111,7 @@ export class SubscriptionManager<S extends State = State> implements Subscriptio
       }
     }
 
-    const readOnly = options?.readOnly ?? false
-    this._listeners.set(listener, { count: 1, readOnly, registrations: new Set([registration]) })
+    this._listeners.set(listener, { registrations: new Map([[registration, readOnly]]) })
     this._totalCount += 1
     if (!readOnly) {
       this._writableCount += 1
@@ -120,18 +128,18 @@ export class SubscriptionManager<S extends State = State> implements Subscriptio
     if (entry === undefined) {
       return false
     }
-    const token = registration ?? entry.registrations.values().next().value
-    if (token === undefined || !entry.registrations.delete(token)) {
+    const token = registration ?? entry.registrations.keys().next().value
+    if (token === undefined || !entry.registrations.has(token)) {
       return false
     }
+    const readOnly = entry.registrations.get(token) === true
+    entry.registrations.delete(token)
     this._totalCount -= 1
-    if (entry.count <= 1) {
+    if (!readOnly) {
+      this._writableCount -= 1
+    }
+    if (entry.registrations.size === 0) {
       this._listeners.delete(listener)
-      if (!entry.readOnly) {
-        this._writableCount -= 1
-      }
-    } else {
-      entry.count -= 1
     }
     return true
   }
@@ -166,7 +174,7 @@ export class SubscriptionManager<S extends State = State> implements Subscriptio
     // 按注册次数展开：重复注册的监听器每次通知收到多次回调
     const listeners: Array<(state: S) => void> = []
     this._listeners.forEach((entry, listener) => {
-      for (let i = 0; i < entry.count; i++) {
+      for (let i = 0; i < entry.registrations.size; i++) {
         listeners.push(listener)
       }
     })

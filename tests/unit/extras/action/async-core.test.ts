@@ -2,7 +2,7 @@
  * Action 异步公共内核单元测试
  *
  * 覆盖 retryWithBackoff 的缺省参数、shouldRetry 提前拒绝、onRetry 回调、
- * 无重试次数（含负数）等分支，以及 raceWithTimeout 的成功与超时两条路径。
+ * 非有限/负数重试次数归零（首次尝试必执行）等分支，以及 raceWithTimeout 的成功与超时两条路径。
  */
 import { raceWithTimeout, retryWithBackoff } from '@/extras/action/async-core.js'
 
@@ -53,11 +53,25 @@ describe('extras/action/async-core', () => {
       expect(fn).toHaveBeenCalledTimes(1)
     })
 
-    it('retries 为负数时循环体不执行，抛出兜底错误', async () => {
-      const fn = jest.fn().mockResolvedValue('never called')
+    it('retries 为负数时按 0 处理：首次尝试仍会执行', async () => {
+      const fn = jest.fn().mockResolvedValue('ok')
 
-      await expect(retryWithBackoff(fn, { retries: -1 })).rejects.toThrow('Retry failed without error')
-      expect(fn).not.toHaveBeenCalled()
+      await expect(retryWithBackoff(fn, { retries: -1 })).resolves.toBe('ok')
+      expect(fn).toHaveBeenCalledTimes(1)
+    })
+
+    it('retries 为 NaN 时按 0 处理：首次尝试仍会执行并抛出真实错误', async () => {
+      const fn = jest.fn().mockRejectedValue(new Error('real failure'))
+
+      await expect(retryWithBackoff(fn, { retries: Number.NaN })).rejects.toThrow('real failure')
+      expect(fn).toHaveBeenCalledTimes(1)
+    })
+
+    it('retries 为非有限值时回退 0（首次尝试必执行，不会挂起）', async () => {
+      const fn = jest.fn().mockRejectedValue(new Error('finite fallback'))
+
+      await expect(retryWithBackoff(fn, { retries: Number.POSITIVE_INFINITY })).rejects.toThrow('finite fallback')
+      expect(fn).toHaveBeenCalledTimes(1)
     })
   })
 

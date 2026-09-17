@@ -351,24 +351,23 @@ export class SelectorComposer {
 
       // 设置定时器
       timeoutId = setTimeout(() => {
-        const state = currentState
-        if (state === null) {
-          // 防御：仅在未保存状态时不可能到达（每次调用前已赋值）
-          currentReject?.(new Error('[SelectorComposer] Debounced selector state missing'))
-          return
-        }
         try {
+          const state = currentState
+          if (state === null) {
+            // 防御：仅在未保存状态时不可能到达（每次调用前已赋值）
+            currentReject?.(new Error('[SelectorComposer] Debounced selector state missing'))
+            return
+          }
+
           // 使用保存的最新状态执行选择器
           const value = selector(state)
-          if (currentResolve) {
-            currentResolve(value)
-          }
+          currentResolve?.(value)
         } catch (error) {
-          if (currentReject) {
-            currentReject(error as Error)
-          }
+          currentReject?.(error as Error)
         } finally {
-          // 清理
+          // 清理必须在所有出口执行（含 state 缺失的防御分支）：否则一个 null state
+          // 会把已结算的 Promise 与 resolve/reject/timer 留在共享槽位，后续调用永远
+          // 复用同一个已拒绝的 Promise，选择器结果全部被丢弃
           currentPromise = null
           currentResolve = null
           currentReject = null

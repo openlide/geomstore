@@ -26,16 +26,19 @@ interface RetryOptions {
  */
 export async function retryWithBackoff<T>(fn: () => Promise<T>, options: RetryOptions = {}): Promise<T> {
   const { retries = 3, delay = 100, shouldRetry, onRetry } = options
-  let lastError: Error | undefined
+  // 非有限值/负数/小数统一归一到非负整数：retries 表示「首次执行之外的重试次数」，
+  // 无论取何值首次调用都必须执行。此前 `i <= retries` 在 NaN/负数下整段循环不执行，
+  // fn 一次都没跑却抛出「Retry failed without error」这种与真实原因无关的错误
+  const maxRetries = Number.isFinite(retries) ? Math.max(0, Math.floor(retries)) : 0
 
-  for (let i = 0; i <= retries; i++) {
+  for (let i = 0; ; i++) {
     try {
       return await fn()
     } catch (error) {
-      lastError = error as Error
+      const lastError = error as Error
 
       // 还有重试次数且满足重试条件才继续
-      const canRetry = i < retries && (shouldRetry ? shouldRetry(lastError) : true)
+      const canRetry = i < maxRetries && (shouldRetry ? shouldRetry(lastError) : true)
       if (!canRetry) {
         throw lastError
       }
@@ -45,11 +48,6 @@ export async function retryWithBackoff<T>(fn: () => Promise<T>, options: RetryOp
       await new Promise((resolve) => setTimeout(resolve, delay * Math.pow(2, i)))
     }
   }
-
-  if (!lastError) {
-    throw new Error('Retry failed without error')
-  }
-  throw lastError
 }
 
 /**

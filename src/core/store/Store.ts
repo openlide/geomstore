@@ -40,7 +40,7 @@ import { deepMerge } from '../utils/helpers.js'
 import { LRUCache } from '../cache/LRUCache.js'
 
 // 子模块导入
-import { StateProxyManager, createProxyCache } from './StateProxy.js'
+import { StateProxyManager, createProxyCache, isBuiltinObject } from './StateProxy.js'
 import { SubscriptionManager, createSubscribeFunction } from './SubscriptionManager.js'
 import { StoreCacheManager } from './StoreCache.js'
 import { ActionManager, GetterManager } from './ActionManager.js'
@@ -353,6 +353,8 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
       // 记录脏键：deepMerge 可能就地变异该键下的嵌套对象，故整键标记为已变更
       this._markDirtyKey(key as keyof S)
     })
+    // deepMerge 就地改写的对象可能同时被其他顶层键引用，那些键的内容也变了
+    this._markAliasedKeys(new Set(Object.keys(partialState) as Array<keyof S>))
 
     if (!this._dispatching && !this._batchManager.isInBatch) {
       this._scheduleNotify()
@@ -532,7 +534,7 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
    * @returns 卸载插件的函数
    * @throws 如果 Store 已销毁
    */
-  use(plugin: PluginType<NoInfer<S>>): () => void {
+  use(plugin: PluginType<NoInfer<S>> | PluginType<State>): () => void {
     if (this._destroyed) {
       throw new Error('[GeomStore] Cannot call use on a destroyed Store')
     }
@@ -547,36 +549,40 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
     // findTargetStoreWithKey、子 store 重名的非命名空间分支）。
     // 不引入按实例计数：插件不同于监听器（后者「注册 N 次通知 N 次」是正当语义），
     // 需要多份独立副作用时应使用插件工厂（如 timeTravelPlugin()）产生不同实例
-    if (this._plugins.indexOf(plugin) !== -1) {
+    //
+    // 收窄为 PluginType<S> 再入内部结构：状态无关插件（Plugin<State>）在结构上满足
+    // 「可安装到本 Store」（install 只读取状态），内部集合与映射统一按自身状态类型存储
+    const target = plugin as PluginType<S>
+    if (this._plugins.indexOf(target) !== -1) {
       if (!isProduction()) {
         console.warn(
-          `[GeomStore][${this.name}] 插件 "${plugin.name}" 已安装，忽略重复的 use() 调用。` +
+          `[GeomStore][${this.name}] 插件 "${target.name}" 已安装，忽略重复的 use() 调用。` +
             '同一实例重复安装会丢失卸载函数；如需多份独立副作用，请用插件工厂产生不同实例',
         )
       }
-      return this._createPluginUninstaller(plugin)
+      return this._createPluginUninstaller(target)
     }
 
-    this._plugins.push(plugin)
+    this._plugins.push(target)
     const installation = {}
-    this._pluginInstallations.set(plugin, installation)
+    this._pluginInstallations.set(target, installation)
 
     let uninstall: unknown
     try {
-      uninstall = this._withInternalAccess(() => plugin.install?.(this))
+      uninstall = this._withInternalAccess(() => target.install?.(this))
     } catch (error) {
       // 安装失败回滚入列：否则半安装插件常驻列表，捕获后重试 use() 会累积重复条目
-      const index = this._plugins.indexOf(plugin)
+      const index = this._plugins.indexOf(target)
       if (index !== -1) {
         this._plugins.splice(index, 1)
       }
-      this._pluginInstallations.delete(plugin)
+      this._pluginInstallations.delete(target)
       throw error
     }
 
-    this._pluginUninstallFns.set(plugin, uninstall as (() => void) | undefined)
+    this._pluginUninstallFns.set(target, uninstall as (() => void) | undefined)
 
-    return this._createPluginUninstaller(plugin, installation)
+    return this._createPluginUninstaller(target, installation)
   }
 
   /** 创建插件卸载句柄（实现已拆至 ./pluginSupport.js） */
@@ -605,9 +611,15 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
 
     try {
       // 1. 反向卸载插件（后安装的先卸载）
-      for (let i = this._plugins.length - 1; i >= 0; i--) {
-        const plugin = this._plugins[i]
+      // 先快照并逐个消费映射再调用：清理函数可能重入（调用其他插件的卸载句柄、
+      // 或在清理中重新 use 插件）。按实时数组下标迭代会因 splice 移位而重复执行
+      // 同一个清理，也会让顺序错乱
+      const pluginsSnapshot = [...this._plugins]
+      for (let i = pluginsSnapshot.length - 1; i >= 0; i--) {
+        const plugin = pluginsSnapshot[i]
         const uninstallFn = this._pluginUninstallFns.get(plugin)
+        this._pluginUninstallFns.delete(plugin)
+        this._pluginInstallations.delete(plugin)
         if (typeof uninstallFn === 'function') {
           try {
             uninstallFn()
@@ -616,6 +628,7 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
           }
         }
       }
+      this._plugins = []
 
       // 2. 清理订阅器
       this._subscriptionManager.clear()
@@ -909,6 +922,86 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
     } else {
       this._notifyListeners()
     }
+  }
+
+  /**
+   * 标记与补丁键共享对象引用的其他顶层键
+   *
+   * `$patch` 的 deepMerge 会就地改写被补丁对象；若该对象同时被别的顶层键引用
+   * （如 `state.current = state.list[0]`），那些键的内容同样变了却没有被标记，
+   * 只映射它们的页面将永远看不到更新。仅在补丁值为对象时做可达性扫描，
+   * 与 `$replaceState` 的「整树所有键视为已变更」相比只覆盖确实受影响的部分。
+   */
+  private _markAliasedKeys(patched: ReadonlySet<keyof S>): void {
+    const targets: object[] = []
+    for (const key of patched) {
+      const value = this._state[key]
+      if (value !== null && typeof value === 'object') {
+        targets.push(value)
+      }
+    }
+    if (targets.length === 0) {
+      return
+    }
+
+    for (const rootKey of Reflect.ownKeys(this._state) as Array<keyof S>) {
+      if (patched.has(rootKey)) {
+        continue
+      }
+      const descriptor = Object.getOwnPropertyDescriptor(this._state, rootKey)
+      if (!descriptor || !('value' in descriptor)) {
+        continue
+      }
+      if (this._reachesAny(descriptor.value, targets)) {
+        this._markDirtyKey(rootKey)
+      }
+    }
+  }
+
+  /**
+   * 判断某值可达对象中是否包含任一目标对象
+   *
+   * 迭代实现（与脏追踪代理的归属解析同口径）：不进入内建对象、不求值访问器，
+   * 命中即提前返回。
+   */
+  private _reachesAny(value: unknown, targets: object[]): boolean {
+    if (targets.includes(value as object)) {
+      return true
+    }
+    if (value === null || typeof value !== 'object') {
+      return false
+    }
+    const targetSet = new Set(targets)
+    const pending: unknown[] = [value]
+    const seen = new Set<object>()
+    while (pending.length > 0) {
+      const current = pending.pop()
+      if (current === null || typeof current !== 'object' || seen.has(current)) {
+        continue
+      }
+      seen.add(current)
+      if (targetSet.has(current)) {
+        return true
+      }
+      if (current instanceof Map) {
+        for (const [key, child] of current) {
+          pending.push(key, child)
+        }
+      } else if (current instanceof Set) {
+        for (const child of current) {
+          pending.push(child)
+        }
+      } else if (isBuiltinObject(current)) {
+        continue
+      }
+      for (const key of Reflect.ownKeys(current)) {
+        const descriptor = Object.getOwnPropertyDescriptor(current, key)
+        if (descriptor && 'value' in descriptor) {
+          pending.push(descriptor.value)
+        }
+      }
+    }
+    return false
   }
 
   /**

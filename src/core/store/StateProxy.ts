@@ -136,9 +136,9 @@ export class StateProxyManager<S extends State = State> {
       get(obj: T, key: string | symbol): unknown {
         const value = (obj as Record<string | symbol, unknown>)[key]
 
-        // 非对象或 null 直接返回，无需拼接路径
+        // 非对象或 null：函数可能是非普通实例的方法，需绑定原始接收者后返回
         if (typeof value !== 'object' || value === null) {
-          return value
+          return self._bindMethod(obj, value)
         }
 
         // 内建对象不代理（见 isBuiltinObject 注释）
@@ -190,7 +190,29 @@ export class StateProxyManager<S extends State = State> {
   }
 
   /**
-   * 创建浅层 Proxy（仅保护顶层）
+   * 非普通实例（类实例、类型化数组等）的方法绑定到原始接收者。
+   *
+   * 保护代理作为 this 会让私有字段的品牌检查与类型化数组的内部槽位失效
+   * （"Cannot read private member …" / "this is not a typed array"）。
+   * 数组与普通对象的方法对代理接收者没有这类要求，保持原样返回，
+   * 避免每次属性访问都产生一次绑定分配。
+   */
+  private _bindMethod(owner: object | null, value: unknown): unknown {
+    if (typeof value !== 'function' || owner === null) {
+      return value
+    }
+    if (Array.isArray(owner)) {
+      return value
+    }
+    const prototype = Object.getPrototypeOf(owner)
+    if (prototype === Object.prototype || prototype === null) {
+      return value
+    }
+    return (value as (...args: unknown[]) => unknown).bind(owner)
+  }
+
+  /**
+   * 创建浅层 Proxy（仅保护顶层属性）
    */
   private _createShallowProxy<T extends object>(target: T, path: string): T {
     const self = this

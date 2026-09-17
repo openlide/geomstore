@@ -64,7 +64,8 @@ export class ActionHistoryTracker {
    * 返回指定Action或所有Action的执行历史
    *
    * @param {string} [actionName] - Action名称，如果未指定则返回所有Action的历史
-   * @returns {ActionResult[]} 执行历史数组（按时间倒序）
+   * @returns {ActionResult[]} 执行历史数组。传入 actionName 时按时间正序（最早在前，
+   *   保持插入顺序）；未传时聚合所有 Action 并按 startTime 倒序（最新在前）
    *
    * @example
    * ```typescript
@@ -167,7 +168,17 @@ export class ActionHistoryTracker {
    * ```
    */
   setMaxHistory(size: number): void {
-    this.maxHistory = Math.max(1, size)
+    // 非有限值/NaN 回退文档下限 1（否则 Math.max(1, NaN) === NaN，
+    // 长度比较恒为 false 导致历史无界增长）；小数向下取整，使「最多 size 条」可判定
+    this.maxHistory = Number.isFinite(size) ? Math.max(1, Math.floor(size)) : 1
+
+    // 立即裁剪已有桶：只在 record 时 shift 无法收敛——缩容后每次 push 后 shift
+    // 恰好相互抵消，桶长会永远钉死在旧上限
+    for (const history of this.actionResults.values()) {
+      if (history.length > this.maxHistory) {
+        history.splice(0, history.length - this.maxHistory)
+      }
+    }
   }
 
   /**

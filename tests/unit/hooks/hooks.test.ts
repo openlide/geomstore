@@ -5,6 +5,7 @@
 
 import { HookSystem, usePlugin, type Plugin } from '@/core/hooks/index.js'
 import { createStore } from '@/index.js'
+import { timeTravelPlugin } from '@/plugins/devtools/index.js'
 
 describe('HookSystem - 钩子系统', () => {
   // 创建独立的钩子实例用于测试
@@ -440,5 +441,66 @@ describe('usePlugin - 插件安装函数', () => {
     expect(() => {
       uninstall()
     }).not.toThrow()
+  })
+
+  it('PLUGIN-006: store.destroy() 应执行 usePlugin 安装的插件卸载逻辑', () => {
+    const store = createStore({ name: 'useplugin-destroy', state: { count: 0 } })
+    const cleanup = jest.fn()
+
+    usePlugin(
+      {
+        name: 'destroy-cleanup',
+        install() {
+          return cleanup
+        },
+      },
+      store,
+    )
+
+    store.destroy()
+
+    // 修复前：usePlugin 直接调 plugin.install，绕过 store.use 登记，destroy() 不会卸载
+    expect(cleanup).toHaveBeenCalledTimes(1)
+  })
+
+  it('PLUGIN-007: usePlugin + store.use 混用同一插件实例不会重复安装', () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation()
+    try {
+      const store = createStore({ name: 'useplugin-mixed', state: { count: 0 } })
+      const cleanup = jest.fn()
+      const install = jest.fn(() => cleanup)
+      const plugin: Plugin = { name: 'mixed', install }
+
+      const uninstallByHelper = usePlugin(plugin, store)
+      const uninstallByUse = store.use(plugin)
+
+      // 修复前：两条路径各自 install 一次（重复订阅/重复副作用）
+      expect(install).toHaveBeenCalledTimes(1)
+
+      // destroy 只卸载一次
+      store.destroy()
+      expect(cleanup).toHaveBeenCalledTimes(1)
+
+      // 两个卸载句柄均可安全调用且不重复清理
+      expect(() => uninstallByHelper()).not.toThrow()
+      expect(() => uninstallByUse()).not.toThrow()
+      expect(cleanup).toHaveBeenCalledTimes(1)
+    } finally {
+      warnSpy.mockRestore()
+    }
+  })
+
+  it('PLUGIN-008: usePlugin 安装的 timeTravelPlugin 在 destroy 后清理全局条目', () => {
+    // 修复前：插件未登记到 store，destroy() 不执行其卸载，全局条目永久泄漏
+    delete (globalThis as { __GEOMSTORE_TIME_TRAVEL__?: Record<string, unknown> }).__GEOMSTORE_TIME_TRAVEL__
+    const store = createStore({ name: 'useplugin-tt-leak', state: { count: 0 } })
+
+    usePlugin(timeTravelPlugin(), store)
+    expect((globalThis as { __GEOMSTORE_TIME_TRAVEL__?: Record<string, unknown> }).__GEOMSTORE_TIME_TRAVEL__?.['useplugin-tt-leak']).toBeDefined()
+
+    store.destroy()
+
+    expect((globalThis as { __GEOMSTORE_TIME_TRAVEL__?: Record<string, unknown> }).__GEOMSTORE_TIME_TRAVEL__?.['useplugin-tt-leak']).toBeUndefined()
+    delete (globalThis as { __GEOMSTORE_TIME_TRAVEL__?: Record<string, unknown> }).__GEOMSTORE_TIME_TRAVEL__
   })
 })

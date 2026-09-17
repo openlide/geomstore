@@ -584,6 +584,26 @@ describe('SelectorComposer', () => {
 
       await expect(promise).rejects.toThrow('[SelectorComposer] Debounced selector state missing')
     })
+
+    it('state 为 null 的调用只影响该次：后续有效状态应恢复执行并 resolve', async () => {
+      let callCount = 0
+      const selector = SelectorComposer.createDebouncedSelector((s: TestState) => {
+        callCount++
+        return s.value * 2
+      }, 100)
+
+      // 首次调用传入 null：只允许该次调用 reject，不得把共享槽位（promise/resolve/reject/timer）留在脏状态
+      const poisoned = selector(null as unknown as TestState)
+      jest.advanceTimersByTime(150)
+      await expect(poisoned).rejects.toThrow('[SelectorComposer] Debounced selector state missing')
+      expect(callCount).toBe(0)
+
+      // 修复前：第二次调用复用已拒绝的 Promise，且 resolve 落空 → 永远 reject、结果丢失
+      const recovered = selector(state)
+      jest.advanceTimersByTime(150)
+      await expect(recovered).resolves.toBe(84)
+      expect(callCount).toBe(1)
+    })
   })
 
   describe('createThrottledSelector', () => {

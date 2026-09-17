@@ -1393,6 +1393,31 @@ describe('Store - 核心功能', () => {
       expect(listener1).toHaveBeenCalledTimes(1)
     })
 
+    it('REGR-STORE-009: destroy 期间插件清理重入（调用其他插件句柄）时每个清理只执行一次', () => {
+      const store = createTestStore({ state: { count: 0 } })
+      const calls = { p1: 0, p2: 0, p3: 0 }
+      // 清理中卸载先前插件：按实时数组下标迭代会因 splice 移位而重复执行本插件清理
+      const first: { uninstall?: () => void } = {}
+
+      const plugin1 = { name: 'reentrant-a', install: () => () => void calls.p1++ }
+      const plugin2 = { name: 'reentrant-b', install: () => () => void calls.p2++ }
+      const plugin3 = {
+        name: 'reentrant-c',
+        install: () => () => {
+          calls.p3++
+          first.uninstall?.()
+        },
+      }
+
+      first.uninstall = store.use(plugin1)
+      store.use(plugin2)
+      store.use(plugin3)
+
+      store.destroy()
+
+      expect(calls).toEqual({ p1: 1, p2: 1, p3: 1 })
+    })
+
     it('STORE-087: destroy 应该处理插件卸载函数的多种类型', () => {
       const store = createTestStore({ state: { count: 0 } })
       const consoleSpy = jest.spyOn(console, 'error').mockImplementation()

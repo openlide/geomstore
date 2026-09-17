@@ -94,17 +94,18 @@ export class HookSystem implements IHookSystem {
  * `plugin` 需与 store 的状态类型匹配；状态无关的插件写作 `Plugin<State>`（如 `loggerPlugin`），
  * 对任意 Store 都适用。
  */
-export function usePlugin<S extends State, A extends Actions, G extends Getters<S>>(plugin: Plugin<NoInfer<S>>, store: Store<S, A, G>): () => void {
+export function usePlugin<S extends State, A extends Actions, G extends Getters<S>>(plugin: Plugin<NoInfer<S>> | Plugin<State>, store: Store<S, A, G>): () => void {
   try {
-    const uninstall = plugin.install(store)
+    // 委托给 store.use：插件需登记进宿主，destroy() 才会执行清理、重复安装才会被识别。
+    // 此前直接调 plugin.install，绕过登记：destroy() 不卸载、与 store.use 混用会双重安装、
+    // 全局入口（如 timeTravelPlugin）在销毁后残留
+    const uninstall = store.use(plugin as Plugin<S>)
     if (!isProduction()) {
       console.debug(`[GeomStore] Plugin "${plugin.name}" installed`)
     }
 
     return () => {
-      if (typeof uninstall === 'function') {
-        uninstall()
-      }
+      uninstall()
       if (!isProduction()) {
         console.debug(`[GeomStore] Plugin "${plugin.name}" uninstalled`)
       }

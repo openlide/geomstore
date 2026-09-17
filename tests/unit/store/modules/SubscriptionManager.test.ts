@@ -326,4 +326,29 @@ describe('SubscriptionManager 引用计数语义', () => {
     expect(listenerB).toHaveBeenCalledTimes(2)
     expect(listenerC).toHaveBeenCalledTimes(1)
   })
+
+  it('readOnly 按注册判定：仅存的注册可写时必须报告存在可写订阅者', () => {
+    const manager = createManager(3)
+    const shared = jest.fn()
+
+    // 同一函数先以只读、后以可写注册；再驱逐掉最早的（只读）那一份
+    manager.add(shared, { readOnly: true })
+    manager.add(shared)
+    manager.add(jest.fn(), { readOnly: true })
+    manager.add(jest.fn(), { readOnly: true })
+    expect(manager.hasWritableListeners()).toBe(true)
+
+    // 驱逐一份只读注册后，shared 的可写注册仍在
+    expect(manager.hasWritableListeners()).toBe(true)
+  })
+
+  it('纯只读订阅不报告可写订阅者（零拷贝路径保持）', () => {
+    const manager = createManager(3)
+    const listener = jest.fn()
+    manager.add(listener, { readOnly: true })
+    manager.add(jest.fn(), { readOnly: true })
+    expect(manager.hasWritableListeners()).toBe(false)
+    manager.delete(listener)
+    expect(manager.hasWritableListeners()).toBe(false)
+  })
 })

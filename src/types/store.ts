@@ -334,8 +334,12 @@ export interface Store<S extends State = State, A extends Actions = Actions, G e
    * 为什么不改成「独立类型参数 `P extends Plugin<S>`」：那样只是把逆变比较搬进约束校验，
    * 而 `Store` 自身含 `use` 成员 ⇒ 递归比较后失败——实测宽插件 `Plugin<State>` 会无法
    * 赋给 `Plugin<ConcreteState>`。故保留 `NoInfer`，并把最低 TS 版本写进文档。
+   *
+   * 联合 `Plugin<State>`（状态无关插件）：它不参与推断，也不会放宽校验——
+   * `Plugin<具体状态>` 仍无法传入其他状态类型的 Store；但宽插件的可赋值性不再
+   * 依赖「比较 Store 自身成员形成的循环假设」，签名被实例化时不会暴露为类型错误
    */
-  use(plugin: Plugin<NoInfer<S>>): () => void
+  use(plugin: Plugin<NoInfer<S>> | Plugin<State>): () => void
 
   /** 销毁Store */
   destroy(): void

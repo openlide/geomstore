@@ -618,6 +618,170 @@ describe('企业级方案 - 离线状态管理', () => {
         mockWx.getNetworkType = originalGetNetworkType
       }
     })
+
+    it('REGR-OFF-004 (BUG 回归): 已 dispose 的 manager 在途同步不得覆写同键上新实例的入队', async () => {
+      let release: () => void = () => {}
+      const gate = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      let entered = false
+      const sharedKey = 'shared_dispose_queue'
+
+      const storeA = createStore({
+        name: 'dispose-a',
+        state: { done: 0 },
+        actions: {
+          async slowAction() {
+            entered = true
+            await gate
+            ;(this.state as any).done++
+          },
+        },
+      })
+
+      // 账号 A 的慢操作已在共享键的磁盘队列中
+      mockStorage[sharedKey] = JSON.stringify([{ id: 'slow-1', type: 'slowAction', payload: null, timestamp: Date.now(), retryCount: 0 }])
+      const managerA = new OfflineManager(storeA, sharedKey)
+      const syncingA = managerA.syncQueue()
+
+      // 等慢操作真正进入执行，制造「同步在途」窗口
+      for (let i = 0; i < 20 && !entered; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 0))
+      }
+      expect(entered).toBe(true)
+
+      // 登出/切号：A 被释放，同键上的新实例 B 接管并写入自己的操作
+      managerA.dispose()
+
+      const storeB = createStore({
+        name: 'dispose-b',
+        state: { items: [] as string[] },
+        actions: {
+          addItem(item: string) {
+            (this.state as any).items.push(item)
+          },
+        },
+      })
+      const managerB = new OfflineManager(storeB, sharedKey)
+      ;(managerB as any).isOnline = false
+      await managerB.execute('addItem', () => Promise.resolve(null), 'item-b')
+      expect(managerB.getQueueLength()).toBe(2)
+
+      release()
+      await syncingA
+
+      // 修复前：A 的 finally 无条件 saveQueue，用「A 视角」的队列覆写共享键，
+      // B 刚持久化的操作从磁盘消失（B 内存仍有、磁盘没有，重启即丢）
+      const persisted = JSON.parse(String(mockStorage[sharedKey])) as Array<{ type: string }>
+      expect(persisted.some((action) => action.type === 'addItem')).toBe(true)
+      expect(persisted).toHaveLength(managerB.getQueueLength())
+
+      storeA.destroy()
+      storeB.destroy()
+      managerB.dispose()
+    })
+
+    it('REGR-OFF-005 (BUG 回归): dispose 应停止在途同步循环，不再执行剩余操作', async () => {
+      let release: () => void = () => {}
+      const gate = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      let entered = false
+
+      const store = createStore({
+        name: 'dispose-loop-store',
+        state: { done: 0 },
+        actions: {
+          async slowAction() {
+            entered = true
+            await gate
+            ;(this.state as any).done++
+          },
+        },
+      })
+
+      mockStorage['dispose_loop_queue'] = JSON.stringify([
+        { id: '1', type: 'slowAction', payload: null, timestamp: Date.now(), retryCount: 0 },
+        { id: '2', type: 'slowAction', payload: null, timestamp: Date.now(), retryCount: 0 },
+      ])
+      const manager = new OfflineManager(store, 'dispose_loop_queue')
+      const syncing = manager.syncQueue()
+
+      for (let i = 0; i < 20 && !entered; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 0))
+      }
+      expect(entered).toBe(true)
+
+      manager.dispose()
+      release()
+      await syncing
+
+      // 修复前：dispose 只摘除网络监听，循环继续把第 2 个操作也执行完
+      expect(store.state.done).toBe(1)
+      // 未执行项保持原样留在磁盘（未被已释放实例的视角覆写）
+      const persisted = JSON.parse(String(mockStorage['dispose_loop_queue'])) as Array<{ id: string }>
+      expect(persisted.map((action) => action.id)).toEqual(['1', '2'])
+
+      store.destroy()
+    })
+
+    it('REGR-OFF-006 (BUG 回归): 队列中的损坏条目应被丢弃，其余操作继续同步', async () => {
+      const warnSpy = jest.spyOn(console, 'warn').mockImplementation()
+      mockStorage['malformed_queue'] = JSON.stringify([
+        { id: '1', type: 'syncToServer', payload: null, timestamp: Date.now(), retryCount: 0 },
+        null,
+        'not-an-action',
+        { id: '4', type: 'addItem' },
+        { id: '5', type: 'addItem', payload: 'ok', timestamp: Date.now(), retryCount: 0 },
+      ])
+
+      try {
+        offlineManager = new OfflineManager(testStore, 'malformed_queue')
+
+        // 损坏条目（null / 字符串 / 缺 retryCount）在加载时被丢弃，合法条目保留
+        expect(offlineManager.getQueueLength()).toBe(2)
+
+        // 修复前：null 条目令 retryCount++ 抛 TypeError，整个 syncQueue 拒绝，
+        // 后续所有合法操作永久得不到同步
+        await offlineManager.syncQueue()
+
+        expect(testStore.state.syncCount).toBe(1)
+        expect(testStore.state.items).toEqual(['ok'])
+        expect(warnSpy.mock.calls.some((call) => String(call[0]).includes('损坏'))).toBe(true)
+        // 清理后的队列已落盘（不再包含损坏条目）
+        expect(JSON.parse(String(mockStorage['malformed_queue']))).toEqual([])
+      } finally {
+        warnSpy.mockRestore()
+      }
+    })
+
+    it('REGR-OFF-008: 队列全部损坏时直接删除存储键而非留下空数组', () => {
+      const warnSpy = jest.spyOn(console, 'warn').mockImplementation()
+      mockStorage['all_broken_queue'] = JSON.stringify([null, 'not-an-action', { id: 'x' }])
+
+      try {
+        offlineManager = new OfflineManager(testStore, 'all_broken_queue')
+
+        expect(offlineManager.getQueueLength()).toBe(0)
+        // 全部损坏：删除键，避免磁盘上长期留着无意义的空队列
+        expect(mockStorage['all_broken_queue']).toBeUndefined()
+      } finally {
+        warnSpy.mockRestore()
+      }
+    })
+
+    it('REGR-OFF-007 (BUG 回归): 内存中混入损坏条目时 syncQueue 仍应处理其余操作', async () => {
+      offlineManager = new OfflineManager(testStore, 'in_memory_malformed_queue')
+      // 绕过 loadQueue 直接注入损坏条目（如运行期外部替换数组），
+      // 验证 retryCount++ 路径自身也有防护
+      ;(offlineManager as any).actionQueue = [null, { id: 'ok', type: 'syncToServer', payload: null, timestamp: Date.now(), retryCount: 0 }]
+
+      // 修复前：null 条目的 retryCount++ 抛 TypeError，整个 syncQueue 拒绝
+      await expect(offlineManager.syncQueue()).resolves.toBeUndefined()
+
+      expect(testStore.state.syncCount).toBe(1)
+      expect(offlineManager.getQueueLength()).toBe(0)
+    })
   })
 })
 

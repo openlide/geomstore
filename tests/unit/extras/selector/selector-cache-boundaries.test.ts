@@ -53,13 +53,22 @@ describe('选择器的无版本回退与缓存开关', () => {
 })
 
 describe('参数化选择器的 TTL 维护', () => {
-  it('ttl=0（永不过期）时不清理条目', () => {
-    const select = createParametricSelector((s: { base: number }, factor: number) => s.base * factor, { ttl: 0, maxEntries: 1 })
+  it('ttl=0 表示立即过期（等同禁用缓存）：读取侧每次重算，仅受容量淘汰约束', () => {
+    let callCount = 0
+    const select = createParametricSelector(
+      (s: { base: number }, factor: number) => {
+        callCount++
+        return s.base * factor
+      },
+      { ttl: 0, maxEntries: 1 },
+    )
     const byState = select({ base: 2 })
 
     expect(byState(1)).toBe(2)
     expect(byState(2)).toBe(4)
     expect(byState(1)).toBe(2)
+    // ttl=0：条目立即过期，三次调用都应重新执行（不返回缓存值）；容量淘汰仍生效
+    expect(callCount).toBe(3)
   })
 
   it('ttl>0 且容量达上限时清理过期条目并淘汰最旧', () => {

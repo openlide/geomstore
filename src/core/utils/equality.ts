@@ -20,14 +20,14 @@
  * @returns 是否相等
  */
 export function deepEqual(a: unknown, b: unknown, maxDepth: number = 1000): boolean {
-  // 使用 Map 记录已比较过的对象配对，正确处理循环引用
-  return compareWithSeenPairs(a, b, maxDepth, new Map<object, object>())
+  // 使用「对象对」集合记录已比较过的组合，正确处理循环引用与别名图
+  return compareWithSeenPairs(a, b, maxDepth, new Map<object, Set<object>>())
 }
 
-/** 一次配对记录：回滚时按逆序恢复（首次新增删除、覆盖还原） */
+/** 一次配对记录：回滚时按逆序移除 */
 interface PairRecord {
   key: object
-  previous: object | undefined
+  partner: object
 }
 
 /**
@@ -35,9 +35,9 @@ interface PairRecord {
  *
  * 配对表由调用方传入：Set 元素候选配对需要跨多次比较共享同一份循环防护，
  * 否则各自新建配对表会让自引用元素无限递归直到深度上限，等价的循环 Set 被判为不等。
- * pairLog 非空时记录新增/覆盖的配对，供候选匹配失败后回滚。
+ * pairLog 非空时记录新增的配对，供候选匹配失败后回滚。
  */
-function compareWithSeenPairs(a: unknown, b: unknown, maxDepth: number, seenPairs: Map<object, object>, pairLog?: PairRecord[]): boolean {
+function compareWithSeenPairs(a: unknown, b: unknown, maxDepth: number, seenPairs: Map<object, Set<object>>, pairLog?: PairRecord[]): boolean {
   // 使用迭代实现，避免递归栈溢出
   const stack: Array<{ a: unknown; b: unknown; depth: number }> = [{ a, b, depth: 0 }]
 
@@ -69,17 +69,23 @@ function compareWithSeenPairs(a: unknown, b: unknown, maxDepth: number, seenPair
     // 基本类型且不相等
     if (typeof currentA !== 'object') return false
 
-    // 检查循环引用 - 使用 Map 记录 A→B 的配对关系
+    // 循环判定按「对象对」而非 A→B 单值映射：同一对象与不同伙伴的比较是两个独立事实。
+    // 单值映射会挤掉先前的假设，等价图在重推中逐层加深直至耗尽深度上限（单向误判不等）
     const objA = currentA as object
     const objB = currentB as object
-    if (seenPairs.get(objA) === objB) {
+    let partners = seenPairs.get(objA)
+    if (partners !== undefined && partners.has(objB)) {
       // 已经比较过相同的配对，跳过以避免无限循环
       continue
     }
-    if (pairLog) {
-      pairLog.push({ key: objA, previous: seenPairs.get(objA) })
+    if (partners === undefined) {
+      partners = new Set<object>()
+      seenPairs.set(objA, partners)
     }
-    seenPairs.set(objA, objB)
+    partners.add(objB)
+    if (pairLog) {
+      pairLog.push({ key: objA, partner: objB })
+    }
 
     // 内建对象按内容比较：Object.keys 对 Date/Map/Set/RegExp 恒为空，
     // 直接走通用对象比较会把内容不同的实例误判为相等
@@ -156,7 +162,7 @@ function compareWithSeenPairs(a: unknown, b: unknown, maxDepth: number, seenPair
  * 对对象元素按深度相等做贪心配对。Set 内元素互异且 deepEqual 为等价关系，
  * 贪心配对在此场景下等价于完美匹配，故结果正确。
  */
-function setsEqual(setA: Set<unknown>, setB: Set<unknown>, maxDepth: number, seenPairs: Map<object, object>, pairLog?: PairRecord[]): boolean {
+function setsEqual(setA: Set<unknown>, setB: Set<unknown>, maxDepth: number, seenPairs: Map<object, Set<object>>, pairLog?: PairRecord[]): boolean {
   const itemsA = [...setA]
   const remainingB: unknown[] = [...setB]
 
@@ -189,10 +195,12 @@ function setsEqual(setA: Set<unknown>, setB: Set<unknown>, maxDepth: number, see
         }
         for (let k = candidateLog.length - 1; k >= 0; k--) {
           const record = candidateLog[k]
-          if (record.previous === undefined) {
-            seenPairs.delete(record.key)
-          } else {
-            seenPairs.set(record.key, record.previous)
+          const partners = seenPairs.get(record.key)
+          if (partners !== undefined) {
+            partners.delete(record.partner)
+            if (partners.size === 0) {
+              seenPairs.delete(record.key)
+            }
           }
         }
       }

@@ -633,18 +633,17 @@ describe('Action Decorators', () => {
       expect(instance.attempts).toBe(3) // 1次初始 + 2次重试
     })
 
-    it('DECORATOR-025: retries 为负数时循环不执行，应该抛出 Retry failed without error', async () => {
-      // 当 retries < 0 时，for 循环条件 i <= retries 不满足，循环体不执行
-      // lastError 保持 undefined，进入 if (!lastError) 分支
+    it('DECORATOR-025: retries 为负数时按 0 处理，首次尝试仍执行并抛出真实错误', async () => {
+      // retries 表示「首次执行之外的重试次数」，负数归一到 0：方法必被调用一次
       class NegativeRetryClass {
         @withRetry({ retries: -1, delay: 1 })
         async method() {
-          throw new Error('should not reach')
+          throw new Error('real failure')
         }
       }
 
       const instance = new NegativeRetryClass()
-      await expect(instance.method()).rejects.toThrow('Retry failed without error')
+      await expect(instance.method()).rejects.toThrow('real failure')
     })
 
     it('DECORATOR-026: retries 为小数时循环正常结束后应该抛出 lastError', async () => {

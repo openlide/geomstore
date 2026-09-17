@@ -90,7 +90,10 @@ export const loggerPlugin: Plugin = {
 // 使用工厂函数创建"可调用 + 可安装"的插件：
 // - 作为函数调用时：persistencePlugin(options) 返回新的带配置 Plugin
 // - 作为 Plugin 对象使用时：具有 name / install 属性（使用默认选项）
-const _persistencePluginFactory = <S extends State = State>(options?: PersistenceOptions<S>): Plugin => ({
+// 返回类型保留 S：此前声明为 Plugin（即 Plugin<State>），显式传入的状态类型会被抹掉，
+// 结果既无法赋给 store.use（其参数为 Plugin<自身状态类型>），也丢掉了 filter/validate
+// 回调与状态类型的关联
+const _persistencePluginFactory = <S extends State = State>(options?: PersistenceOptions<S>): Plugin<S> => ({
   name: 'persistence',
   install: (store) => installPersistence(store as unknown as Store<S>, options),
 })
@@ -114,9 +117,9 @@ Object.defineProperty(_persistencePluginFactory, 'name', {
  * 后端方法返回 Promise 时会显式抛错，避免异步写入静默丢数据。
  */
 export const persistencePlugin: Plugin & {
-  <S extends State = State>(options?: PersistenceOptions<S>): Plugin
+  <S extends State = State>(options?: PersistenceOptions<S>): Plugin<S>
 } = _persistencePluginFactory as Plugin & {
-  <S extends State = State>(options?: PersistenceOptions<S>): Plugin
+  <S extends State = State>(options?: PersistenceOptions<S>): Plugin<S>
 }
 
 /**
@@ -184,6 +187,12 @@ function installPersistence<S extends State>(store: Store<S>, options: Persisten
     }
   }
 
+  // 恢复后「待吸收」的序列化载荷：notify.async 下 $patch 的合并通知是微任务，
+  // 会打到下方安装后才注册的订阅上。该通知只承载「恢复本身」的内容，不应触发回写——
+  // 否则安装后立即覆写同一 tick 内其他实例写入的新数据，且每次启动都重写磁盘
+  // （lastSaved 去重被绕过）。仅在首次通知且内容与恢复结果一致时吸收一次
+  let absorbedSerialized: string | null = null
+
   if (shouldRestore) {
     try {
       const savedState = storageAdapter.getItem(storageKey)
@@ -200,6 +209,14 @@ function installPersistence<S extends State>(store: Store<S>, options: Persisten
           // 恢复时使用 $patch 合并语义：filter 可能只持久化了部分键，
           // 若用 $replaceState 整体替换会丢失未持久化的运行时键（如 UI 态/临时态）
           store.$patch(filteredState)
+          // 记下恢复后的序列化内容，供订阅回调吸收恢复自身的延迟通知。
+          // 用序列化比较而非状态版本：克隆/只读代理等载荷形态下版本号不可见
+          try {
+            absorbedSerialized = JSON.stringify(filter ? filter(store.getState()) : store.getState())
+          } catch {
+            // 序列化失败（循环引用等）：放弃吸收，维持「通知即落盘」的原有行为
+            absorbedSerialized = null
+          }
           if (!isProduction()) {
             console.log('[GeomStore][persistence] State restored from storage:', storageKey)
           }
@@ -219,6 +236,20 @@ function installPersistence<S extends State>(store: Store<S>, options: Persisten
   const unsubscribe = store.subscribe(
     (state) => {
       const stateToSave = filter ? filter(state) : state
+
+      // 吸收恢复自身的延迟通知（仅首次通知生效，避免陈旧载荷误吞后续真实变更）：
+      // 通知内容与恢复结果一致说明状态自恢复以来未变化，不产生任何写入
+      if (absorbedSerialized !== null) {
+        const restoredPayload = absorbedSerialized
+        absorbedSerialized = null
+        try {
+          if (JSON.stringify(stateToSave) === restoredPayload) {
+            return
+          }
+        } catch {
+          // 序列化失败：继续走正常落盘路径，由 saveState 内部兜底
+        }
+      }
 
       if (debounceMs > 0) {
         if (debounceTimer) {

@@ -236,17 +236,45 @@ describe('Helpers - 工具函数', () => {
       it('HELPERS-031c: Set 候选配对失败后回滚配对，不污染后续候选', () => {
         const c = { inner: { v: 1 } }
         const d = { inner: { v: 2 } } // c 与 d 深度不等
-        // 键序使 u（c vs d）先于 w 出栈比较：c→d 会先被记入配对表，随后才因更深层不等而失败
+        // 键序使 u（c vs d）先于 w 出栈比较：配对会先被记入配对表，随后才因更深层不等而失败
         const p = { w: 1, u: c }
         const q = { w: 2, u: d }
         const m = { w: 2, u: d }
         const r = { w: 1, u: d } // 只有跳过 c/d 比较才会被误判为与 p 相等
         // 集内无完美匹配（p 无对等元素），必须为 false；
-        // 失败候选留下的 c→d 配对会让后续 p vs r 跳过 u 键而产生假相等
+        // 失败候选留下的配对会让后续 p vs r 跳过 u 键而产生假相等
         expect(deepEqual(new Set([p, m]), new Set([q, r]))).toBe(false)
         // 单次比较内部不残留跨调用状态
         expect(deepEqual(p, r)).toBe(false)
         expect(deepEqual(new Set([p]), new Set([q]))).toBe(false)
+      })
+
+      it('HELPERS-031e: Set 元素比较失败后配对表清空（回滚到无配对）', () => {
+        // 候选在弹出配对后立即失败：回滚需要把该配对整个移除
+        expect(deepEqual(new Set([{ a: 1 }]), new Set([{ a: 2 }]))).toBe(false)
+        // 反向同样成立，且不残留跨调用状态
+        expect(deepEqual(new Set([{ a: 2 }]), new Set([{ a: 1 }]))).toBe(false)
+      })
+
+      it('HELPERS-031d: 等价循环/别名图两个方向都判等（配对按对象对记录）', () => {
+        const a: Record<string, unknown> = { b: null }
+        a.b = a // 1 节点自环
+        const b: Record<string, unknown> = { b: { b: null } }
+        ;(b.b as Record<string, unknown>).b = b // 2 节点环，展开后同构
+
+        // 修复前：单值配对表会被不同伙伴挤掉，单向耗尽深度上限误判不等
+        expect(deepEqual(a, b)).toBe(true)
+        expect(deepEqual(b, a)).toBe(true)
+        expect(deepEqual(new Set([a]), new Set([b]))).toBe(true)
+        expect(deepEqual(new Set([b]), new Set([a]))).toBe(true)
+
+        // 确实不同的循环仍必须两个方向都不等
+        const x: Record<string, unknown> = { v: 1 }
+        x.self = x
+        const y: Record<string, unknown> = { v: 2 }
+        y.self = y
+        expect(deepEqual(x, y)).toBe(false)
+        expect(deepEqual(y, x)).toBe(false)
       })
     })
 

@@ -6,6 +6,7 @@
  */
 
 import type { Store, State } from '../../types/store.js'
+import { isPlainObject } from '../../core/utils/helpers.js'
 import { storage, logger, DEFAULT_MAX_RETRY, type WxApi } from './env.js'
 
 // 本模块直接调用 wx（网络状态/UI 反馈），故保留模块级 ambient 声明
@@ -34,6 +35,19 @@ const DEFAULT_QUEUE_KEY = 'offline_action_queue'
  */
 function generateId(): string {
   return `${Date.now()}_${Math.random().toString(36).substring(2, 11)}`
+}
+
+/**
+ * 校验一条待同步操作的结构是否完整（用于加载与同步循环的入口拦截）。
+ *
+ * 存储中的队列可能被外部写坏（null、字符串、缺 retryCount 的对象等）：
+ * 这类条目会让 syncQueue 的 `action.retryCount++` 抛 TypeError，
+ * 整个队列（含其后的合法操作）永久得不到同步且不会进死信。
+ */
+function isValidOfflineAction(value: unknown): value is OfflineAction {
+  if (!isPlainObject(value)) return false
+  const candidate = value as Partial<OfflineAction>
+  return typeof candidate.type === 'string' && typeof candidate.retryCount === 'number'
 }
 
 /**
@@ -105,7 +119,8 @@ export class OfflineManager<S extends State = State> {
    * syncing 互斥保证并发触发时队列不会被重复执行
    */
   async syncQueue(): Promise<void> {
-    if (this.syncing || this.actionQueue.length === 0) return
+    // 已释放实例不得再发起同步：其落盘会覆写共享键上新实例的队列（dispose 后账号可能已切换）
+    if (this.disposed || this.syncing || this.actionQueue.length === 0) return
 
     this.syncing = true
     const failedActions: OfflineAction[] = []
@@ -118,8 +133,22 @@ export class OfflineManager<S extends State = State> {
 
     try {
       for (; this.syncNextIndex < this.syncPending.length; this.syncNextIndex++) {
+        // dispose 后立即停止本轮：已释放实例不得再执行任何操作，
+        // 其 finally 的落盘会抹掉新实例（同键）刚持久化的操作
+        if (this.disposed) break
+
         const action = this.syncPending[this.syncNextIndex]
+        // 循环入口再次校验：loadQueue 之外的途径（外部替换数组、并发写入）
+        // 混入的损坏条目不能拖垮整个队列（retryCount++ 会抛 TypeError）
+        if (!isValidOfflineAction(action)) {
+          logger.warn('OfflineManager', `丢弃损坏的离线操作条目: ${this.queueKey}`)
+          continue
+        }
+
         const success = await this.tryExecuteAction(action)
+        // 执行期间被 dispose：本轮就此停止，剩余项（含当前项）在 finally 回填但不落盘
+        if (this.disposed) break
+
         if (!success) {
           action.retryCount++
           if (action.retryCount < this.maxRetryCount) {
@@ -161,8 +190,13 @@ export class OfflineManager<S extends State = State> {
       this.syncFailed = []
       this.syncNextIndex = 0
       this.syncing = false
-      // saveQueue 内部已尽力而为（storage.set 不外抛），此处无需再兜底
-      this.saveQueue()
+      // 已释放实例不再落盘（saveQueue 内部同样有守卫，双重防御）：
+      // dispose 后账号可能已切换、共享键已由新实例接管，旧实例的联合视图
+      // 会覆写新实例刚持久化的操作，造成内存与磁盘分叉、重启丢操作
+      if (!this.disposed) {
+        // saveQueue 内部已尽力而为（storage.set 不外抛），此处无需再兜底
+        this.saveQueue()
+      }
     }
   }
 
@@ -285,6 +319,10 @@ export class OfflineManager<S extends State = State> {
    * 进程在同步窗口内被杀会让未处理旧操作永久丢失（at-least-once）
    */
   private saveQueue(): void {
+    // 已释放实例禁止再落盘：dispose 后账号可能已切换，同键已由新实例接管，
+    // 旧实例的在途同步（或 dispose 后的 enqueue）落盘会覆写新实例的队列，
+    // 磁盘丢失操作而新实例内存仍持有——重启即永久丢失
+    if (this.disposed) return
     const view = this.syncing ? [...this.syncFailed, ...this.syncPending.slice(this.syncNextIndex), ...this.actionQueue] : this.actionQueue
     storage.set(this.queueKey, view)
   }
@@ -322,9 +360,22 @@ export class OfflineManager<S extends State = State> {
    * 从存储加载队列
    */
   private loadQueue(): void {
-    const saved = storage.get<OfflineAction[]>(this.queueKey)
+    const saved = storage.get<unknown>(this.queueKey)
     if (Array.isArray(saved)) {
-      this.actionQueue = saved
+      // 逐项校验并丢弃损坏条目（null/字符串/缺 retryCount 等）：
+      // 这类条目会让 syncQueue 在 retryCount++ 处抛 TypeError 永久卡死整个队列
+      const valid = saved.filter(isValidOfflineAction)
+      if (valid.length !== saved.length) {
+        logger.warn('OfflineManager', `离线队列包含损坏条目，已丢弃 ${saved.length - valid.length} 条: ${this.queueKey}`)
+        // 同步清理磁盘副本，避免损坏条目在每次启动时反复出现；
+        // 全部损坏时直接删键（与下方非数组数据同口径），不留空数组
+        if (valid.length > 0) {
+          storage.set(this.queueKey, valid)
+        } else {
+          storage.remove(this.queueKey)
+        }
+      }
+      this.actionQueue = valid
     } else if (saved !== null) {
       // 形状校验失败（损坏的 JSON / 非数组数据）：清理而非保留，
       // 否则 syncQueue 会按字符迭代字符串并静默清空队列，离线操作丢失

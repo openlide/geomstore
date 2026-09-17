@@ -68,11 +68,18 @@ export function createDirtyTrackingProxy(root: object, cache: DirtyTrackingCache
     if (!isObject(value)) return value
     const target = value
     const collection = target instanceof Map || target instanceof Set
-    const prototype = Object.getPrototypeOf(target)
-    // Opaque instances retain their raw receiver, including private-field brands.
-    if (!collection && (isBuiltinObject(target) || (!Array.isArray(target) && prototype !== Object.prototype && prototype !== null))) return target
+    // 内部槽位语义在代理下必然失效的内建对象（Date/RegExp/WeakMap/WeakSet）保持原引用，
+    // 内部变异不计入（既有契约）。Map/Set 由 collectionMethod 单独处理
+    if (!collection && isBuiltinObject(target)) return target
     const cached = cache.proxies.get(target)
     if (cached) return cached
+
+    const array = Array.isArray(target)
+    const prototype = Object.getPrototypeOf(target)
+    // 非普通实例（类实例、类型化数组）：方法必须绑定到原始接收者，否则 #private 字段
+    // 与类型化数组的内部槽位会因 this 是代理而抛错。实例属性的写入仍经 set 陷阱可追踪；
+    // 方法内部对原始对象自身的写入无法精细归因，故调用时保守标记所属顶层键（宁可多报）
+    const bindMethods = !collection && !array && prototype !== Object.prototype && prototype !== null
 
     const methods = new Map<string | symbol, unknown>()
     const proxy = new Proxy(target, {
@@ -88,7 +95,17 @@ export function createDirtyTrackingProxy(root: object, cache: DirtyTrackingCache
             return method
           }
         }
-        return wrap(Reflect.get(obj, key, obj))
+        const raw = Reflect.get(obj, key, obj)
+        if (bindMethods && typeof raw === 'function' && key !== 'constructor') {
+          if (methods.has(key)) return methods.get(key)
+          const invoke = (...args: unknown[]): unknown => {
+            report(obj)
+            return Reflect.apply(raw as (...a: unknown[]) => unknown, obj, args)
+          }
+          methods.set(key, invoke)
+          return invoke
+        }
+        return wrap(raw)
       },
       set(obj, key, next) {
         const previous = Object.getOwnPropertyDescriptor(obj, key)

@@ -450,13 +450,16 @@ describe('ActionExecutor', () => {
       expect(attemptCount).toBe(2)
     })
 
-    test('retries 为负数时循环不执行应该抛出 Retry failed without error', async () => {
+    test('retries 为负数时按 0 处理：首次尝试仍执行并抛出真实错误', async () => {
       const actions = {
-        testAction: async () => 'result',
+        testAction: async () => {
+          throw new Error('real failure')
+        },
       }
 
-      // retries=-1 时循环不执行，lastError 保持 undefined，进入 !lastError 分支
-      await expect(executor.executeWithRetry(actions, 'testAction', [], { retries: -1, delay: 1 })).rejects.toThrow('Retry failed without error')
+      // retries 表示「首次执行之外的重试次数」，负数归一到 0：fn 必被调用一次，
+      // 抛出的必须是真实错误而非与原因无关的兜底错误
+      await expect(executor.executeWithRetry(actions, 'testAction', [], { retries: -1, delay: 1 })).rejects.toThrow('real failure')
     })
   })
 

@@ -615,14 +615,16 @@ class ComposedStore<S extends State = State> implements Store<S> {
 
   // ==================== 插件管理 ====================
 
-  use(plugin: Plugin): () => void {
+  use(plugin: Plugin<S> | Plugin<State>): () => void {
     this._ensureAlive('use')
     const uninstalls: Array<() => void> = []
 
     for (const store of this._stores) {
       let uninstall: unknown
       try {
-        uninstall = store.use(plugin)
+        // 子 store 以各自的类型参数声明 use：组合状态类型的插件在结构上同时适用于各子 store
+        // （插件仅通过 install 读取状态），故在此收窄为子 store 的插件类型
+        uninstall = store.use(plugin as unknown as Plugin)
       } catch (error) {
         // 某个子 store 安装失败：回滚已完成安装的子 store，
         // 避免半安装插件残留（部分 store 有插件、部分没有）

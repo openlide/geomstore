@@ -40,6 +40,46 @@ describe('timeTravelPlugin', () => {
     }
   })
 
+  it('audit regression: 回放窗口内手动 record 不被吞且不被回放二次截断', async () => {
+    // 异步通知：undo 的延迟回放通知与手动 record 相遇
+    const store = createStore({ name: 'tt-record-async', state: { n: 0 }, notify: { async: true }, actions: {} })
+    const uninstall = store.use(timeTravelPlugin())
+    try {
+      const api = (store as any).__timeTravel__
+      store.setState('n', 1)
+      await Promise.resolve()
+      store.setState('n', 2)
+      await Promise.resolve()
+      store.setState('n', 3)
+      await Promise.resolve()
+      expect(api.getSnapshots().map((s: { n: number }) => s.n)).toEqual([0, 1, 2, 3])
+
+      api.undo()
+      api.record()
+      await Promise.resolve()
+      await Promise.resolve()
+      // 手动记录生效（在索引 2 处开新分支），回放通知被吞掉而非再次写入
+      expect(api.getSnapshots().map((s: { n: number }) => s.n)).toEqual([0, 1, 2, 2])
+      expect(api.canRedo()).toBe(false)
+    } finally {
+      uninstall()
+    }
+
+    // 同步通知：traveling 窗口内没有延迟回放，手动 record 同样必须生效
+    const syncStore = createStore({ name: 'tt-record-sync', state: { n: 0 }, actions: {} })
+    const uninstall2 = syncStore.use(timeTravelPlugin())
+    try {
+      const api = (syncStore as any).__timeTravel__
+      syncStore.setState('n', 1)
+      syncStore.setState('n', 2)
+      api.undo()
+      api.record()
+      expect(api.getSnapshots().map((s: { n: number }) => s.n)).toEqual([0, 1, 1])
+    } finally {
+      uninstall2()
+    }
+  })
+
   it('audit regression: returned snapshots cannot pollute history or restored state', () => {
     const store = createStore({ name: 'snapshot-isolation', state: { user: { name: 'original' }, items: [{ value: 1 }] } })
     const uninstall = store.use(timeTravelPlugin())

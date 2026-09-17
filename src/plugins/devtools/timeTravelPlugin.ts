@@ -186,20 +186,9 @@ export const timeTravelPlugin = <S extends State = State>(options: TimeTravelOpt
        */
       let pendingTravelVersion: number | undefined
 
-      // 记录快照
+      // 记录快照（手动 record 与初始记录走此路径：不做回放吞并判断，
+      // 用户显式要求记录时不应被启发式静默丢弃）
       const recordSnapshot = (state: S): void => {
-        // 如果正在时间旅行，不记录快照
-        if (traveling) {
-          return
-        }
-        if (pendingTravelVersion !== undefined) {
-          const currentVersion = getStateVersion(store.state)
-          const isTravelEcho = currentVersion === pendingTravelVersion
-          pendingTravelVersion = undefined
-          if (isTravelEcho) {
-            return
-          }
-        }
         // 检查过滤函数
         if (filter && !filter(state)) {
           return
@@ -227,13 +216,34 @@ export const timeTravelPlugin = <S extends State = State>(options: TimeTravelOpt
         }
       }
 
+      /**
+       * 通知路径的记录：先做回放吞并判断，再落到 recordSnapshot。
+       *
+       * 判断只在此路径生效——手动 api.record() 是用户的显式要求，不能被吞。
+       * 标记按「状态版本未再前进」识别这一次通知就是旅行回放，真实变更照常记录。
+       */
+      const recordFromNotification = (state: S): void => {
+        // 同步通知窗口内的回放：traveling 尚未复位
+        if (traveling) {
+          return
+        }
+        if (pendingTravelVersion !== undefined) {
+          const isTravelEcho = getStateVersion(store.state) === pendingTravelVersion
+          pendingTravelVersion = undefined
+          if (isTravelEcho) {
+            return
+          }
+        }
+        recordSnapshot(state)
+      }
+
       // 监控状态变化
       // 只读订阅：仅读取状态做快照，不修改载荷（快照自身仍需独立深拷贝，
       // 否则会与后续变更共享活引用），避免额外引入一份整树深拷贝
       const unsubscribe = store.subscribe(
         (state) => {
           if (autoRecord) {
-            recordSnapshot(state as S)
+            recordFromNotification(state as S)
           }
         },
         { readOnly: true },
