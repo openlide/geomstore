@@ -12,6 +12,7 @@
 import type { Store, State } from '../../types/store.js'
 import type { Plugin } from '../../types/plugin.js'
 import { isProduction, deepCloneState } from '../../core/store/utils.js'
+import { getStateVersion } from '../../core/store/stateVersion.js'
 import { registerGlobalEntry } from '../globalRegistry.js'
 
 /**
@@ -175,13 +176,29 @@ export const timeTravelPlugin = <S extends State = State>(options: TimeTravelOpt
     install(store: Store) {
       const snapshots: Array<{ state: S; timestamp: number }> = []
       let currentIndex = -1
-      let traveling = false // 是否正在进行时间旅行
+      let traveling = false // 是否正在进行时间旅行（同步通知窗口内）
+      /**
+       * 时间旅行产生的待吞通知对应的状态版本号。
+       *
+       * notify.async 下 $replaceState 的通知在微任务里到达，届时 traveling 已复位；
+       * 若照常记录，回放的状态会被当作新分支写入并删掉 redo 历史（undo 后无法 redo）。
+       * 用状态版本号识别「这一次通知就是旅行回放」：版本未再前进才吞掉，真实变更照常记录。
+       */
+      let pendingTravelVersion: number | undefined
 
       // 记录快照
       const recordSnapshot = (state: S): void => {
         // 如果正在时间旅行，不记录快照
         if (traveling) {
           return
+        }
+        if (pendingTravelVersion !== undefined) {
+          const currentVersion = getStateVersion(store.state)
+          const isTravelEcho = currentVersion === pendingTravelVersion
+          pendingTravelVersion = undefined
+          if (isTravelEcho) {
+            return
+          }
         }
         // 检查过滤函数
         if (filter && !filter(state)) {
@@ -250,6 +267,9 @@ export const timeTravelPlugin = <S extends State = State>(options: TimeTravelOpt
           traveling = true
           try {
             store.$replaceState(snapshot.state)
+            // 同步通知下回放已在 traveling 窗口内被吞掉；这里为异步通知留下识别标记，
+            // 版本号在本次回放后再未前进时，下一次通知即为该回放本身
+            pendingTravelVersion = getStateVersion(store.state)
           } finally {
             traveling = false
           }

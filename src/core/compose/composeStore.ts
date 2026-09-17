@@ -120,6 +120,27 @@ class ComposedStore<S extends State = State> implements Store<S> {
       this.stores[store.name] = store
     }
 
+    // 嵌套组合的写路径提示：非命名空间外层包含命名空间内层时，内层子 store 的键
+    // 在合并状态里是「子 store 名/键」形式，写操作必须用完整斜杠路径（'leaf/n'）。
+    // 裸键在非严格模式会被静默忽略，故构造期提示一次
+    if (!this._namespace && !isProduction()) {
+      for (const store of stores) {
+        const nested = (store as { stores?: Record<string, unknown> }).stores
+        if (!nested) continue
+        // 仅命名空间内层需要提示：其子 store 的键在合并状态里是「子 store 名/键」，
+        // 而平铺内层的键就是裸键（可直接按名访问），无需额外写法
+        const nestedState = store.getState()
+        const namespaced = Object.keys(nested).some((name) => Object.prototype.hasOwnProperty.call(nestedState, name))
+        if (namespaced) {
+          console.warn(
+            `[composeStore] 非命名空间组合中包含命名空间子组合 "${store.name}"：` +
+              '读写其内部 store 的键请使用「子 store 名/键」形式的完整斜杠路径（如 "leaf/count"），裸键会被忽略',
+          )
+          break
+        }
+      }
+    }
+
     // 合并子 store 的 action 注册表，键与 dispatch 命名规则一致，
     // 使外层组合能按 child.actions 路由嵌套组合的裸名 dispatch
     const mergedActions: Record<string, (...args: unknown[]) => unknown> = {}
@@ -516,7 +537,7 @@ class ComposedStore<S extends State = State> implements Store<S> {
     const existingCount = this._composedListeners.get(listener)
     if (existingCount !== undefined) {
       this._composedListeners.set(listener, existingCount + 1)
-      return () => this._releaseListener(listener)
+      return this._createUnsubscribe(listener)
     }
     this._composedListeners.set(listener, 1)
 
@@ -535,7 +556,7 @@ class ComposedStore<S extends State = State> implements Store<S> {
     // 与普通 Store.subscribe 保持一致：订阅时不立即回调，
     // 仅在子 store 状态变化时通知，避免带副作用的监听器在订阅时被意外执行
 
-    return () => this._releaseListener(listener)
+    return this._createUnsubscribe(listener)
   }
 
   /**
@@ -571,6 +592,15 @@ class ComposedStore<S extends State = State> implements Store<S> {
    *  且 _childSubscriptionsReady 保持 true 使重新订阅无法重建通知（静默失效）。
    *  子 store 订阅与构造期建立对称，统一在 destroy() 释放。
    */
+  private _createUnsubscribe(listener: StateListener<S>): () => void {
+    let active = true
+    return () => {
+      if (!active) return
+      active = false
+      this._releaseListener(listener)
+    }
+  }
+
   private _releaseListener(listener: StateListener<S>): void {
     const count = this._composedListeners.get(listener)
     if (count === undefined) {

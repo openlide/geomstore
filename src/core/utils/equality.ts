@@ -20,10 +20,26 @@
  * @returns 是否相等
  */
 export function deepEqual(a: unknown, b: unknown, maxDepth: number = 1000): boolean {
+  // 使用 Map 记录已比较过的对象配对，正确处理循环引用
+  return compareWithSeenPairs(a, b, maxDepth, new Map<object, object>())
+}
+
+/** 一次配对记录：回滚时按逆序恢复（首次新增删除、覆盖还原） */
+interface PairRecord {
+  key: object
+  previous: object | undefined
+}
+
+/**
+ * 以给定的配对表执行比较（迭代实现，避免栈溢出）
+ *
+ * 配对表由调用方传入：Set 元素候选配对需要跨多次比较共享同一份循环防护，
+ * 否则各自新建配对表会让自引用元素无限递归直到深度上限，等价的循环 Set 被判为不等。
+ * pairLog 非空时记录新增/覆盖的配对，供候选匹配失败后回滚。
+ */
+function compareWithSeenPairs(a: unknown, b: unknown, maxDepth: number, seenPairs: Map<object, object>, pairLog?: PairRecord[]): boolean {
   // 使用迭代实现，避免递归栈溢出
   const stack: Array<{ a: unknown; b: unknown; depth: number }> = [{ a, b, depth: 0 }]
-  // 使用 Map 记录已比较过的对象配对，正确处理循环引用
-  const seenPairs = new Map<object, object>()
 
   while (stack.length > 0) {
     const item = stack.pop()
@@ -59,6 +75,9 @@ export function deepEqual(a: unknown, b: unknown, maxDepth: number = 1000): bool
     if (seenPairs.get(objA) === objB) {
       // 已经比较过相同的配对，跳过以避免无限循环
       continue
+    }
+    if (pairLog) {
+      pairLog.push({ key: objA, previous: seenPairs.get(objA) })
     }
     seenPairs.set(objA, objB)
 
@@ -96,8 +115,8 @@ export function deepEqual(a: unknown, b: unknown, maxDepth: number = 1000): bool
       if (!(currentA instanceof Set && currentB instanceof Set) || currentA.size !== currentB.size) {
         return false
       }
-      // Set 是集合，比较应与插入顺序无关
-      if (!setsEqual(currentA, currentB, maxDepth, depth)) {
+      // Set 是集合，比较应与插入顺序无关；配对表共享以支持循环元素
+      if (!setsEqual(currentA, currentB, maxDepth, seenPairs, pairLog)) {
         return false
       }
       continue
@@ -137,7 +156,7 @@ export function deepEqual(a: unknown, b: unknown, maxDepth: number = 1000): bool
  * 对对象元素按深度相等做贪心配对。Set 内元素互异且 deepEqual 为等价关系，
  * 贪心配对在此场景下等价于完美匹配，故结果正确。
  */
-function setsEqual(setA: Set<unknown>, setB: Set<unknown>, maxDepth: number, depth: number): boolean {
+function setsEqual(setA: Set<unknown>, setB: Set<unknown>, maxDepth: number, seenPairs: Map<object, object>, pairLog?: PairRecord[]): boolean {
   const itemsA = [...setA]
   const remainingB: unknown[] = [...setB]
 
@@ -154,11 +173,28 @@ function setsEqual(setA: Set<unknown>, setB: Set<unknown>, maxDepth: number, dep
         break
       }
 
-      // 对象元素：深度比较（deepEqual 内部为迭代实现，不会栈溢出）
-      if (typeof itemA === 'object' && typeof itemB === 'object' && itemA !== null && itemB !== null && deepEqual(itemA, itemB, maxDepth - depth - 1)) {
-        matched = true
-        remainingB.splice(j, 1)
-        break
+      // 对象元素：深度比较（迭代实现，不会栈溢出）。
+      // 共享外层配对表（循环元素才能终止），并记录本次候选新增的配对——
+      // 失败时回滚，避免失败候选的配对污染后续候选的比较结果
+      if (typeof itemA === 'object' && typeof itemB === 'object' && itemA !== null && itemB !== null) {
+        const candidateLog: PairRecord[] = []
+        const candidatePairs = compareWithSeenPairs(itemA, itemB, maxDepth, seenPairs, candidateLog)
+        if (candidatePairs) {
+          if (pairLog) {
+            pairLog.push(...candidateLog)
+          }
+          matched = true
+          remainingB.splice(j, 1)
+          break
+        }
+        for (let k = candidateLog.length - 1; k >= 0; k--) {
+          const record = candidateLog[k]
+          if (record.previous === undefined) {
+            seenPairs.delete(record.key)
+          } else {
+            seenPairs.set(record.key, record.previous)
+          }
+        }
       }
     }
 

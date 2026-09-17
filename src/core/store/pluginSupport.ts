@@ -15,33 +15,50 @@ export const GEOMSTORE_BRAND: unique symbol = Symbol.for('__geomstore_brand__')
 /**
  * 创建插件卸载句柄
  *
- * 幂等：重复调用只在首次生效（移出 plugins、调用插件自身的卸载函数、清除映射），
- * 之后再调为安全 no-op。首次安装与重复安装返回的都是由本工厂生成的等价句柄，
- * 因此重复 use() 拿到的 token 与首个 token 行为一致。
+ * 句柄绑定创建它的那一次安装（代际令牌）：
+ * - 重复调用只在首次生效；清理函数抛错时映射已消费，后续调用不再二次执行；
+ * - 卸载后重新安装同一插件时，旧句柄不再影响新安装——否则旧 token 会移除新安装
+ *   并执行新安装的清理函数，使重新安装静默失效。
  *
- * 以显式传参接收宿主的插件集合与卸载映射（而非读取实例私有字段），
+ * 以显式传参接收宿主的插件集合与映射（而非读取实例私有字段），
  * 使本工厂对 Store 实例无隐式依赖。
  *
  * @param plugin - 目标插件
  * @param plugins - 宿主持有的插件集合
  * @param uninstallFns - 宿主持有的「插件 → 卸载函数」映射
+ * @param installations - 宿主持有的「插件 → 当前安装代际令牌」映射
+ * @param installation - 本次安装的代际令牌
  */
 export function createPluginUninstaller<S extends State>(
   plugin: PluginType<S>,
   plugins: PluginType<S>[],
   uninstallFns: Map<PluginType<S>, (() => void) | undefined>,
+  installations: Map<PluginType<S>, object>,
+  installation: object | undefined,
 ): () => void {
+  let consumed = false
   return () => {
+    if (consumed) {
+      return
+    }
+    consumed = true
+    // 代际校验：旧安装的句柄不得动到之后的重新安装
+    if (installations.get(plugin) !== installation) {
+      return
+    }
+
     const index = plugins.indexOf(plugin)
     if (index !== -1) {
       plugins.splice(index, 1)
     }
 
     const uninstallFn = uninstallFns.get(plugin)
+    // 先消费映射再执行清理：清理函数抛错时映射不会被二次读取，
+    // 同一句柄的后续调用（consumed）也不会二次执行
+    uninstallFns.delete(plugin)
+    installations.delete(plugin)
     if (typeof uninstallFn === 'function') {
       uninstallFn()
     }
-
-    uninstallFns.delete(plugin)
   }
 }

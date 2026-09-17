@@ -15,6 +15,31 @@ describe('timeTravelPlugin', () => {
     jest.restoreAllMocks()
   })
 
+  it('audit regression: notify.async 时 undo 不删除 redo 历史', async () => {
+    const store = createStore({ name: 'tt-async-history', state: { n: 0 }, notify: { async: true }, actions: {} })
+    const uninstall = store.use(timeTravelPlugin())
+    try {
+      const api = (store as any).__timeTravel__
+      store.setState('n', 1)
+      await Promise.resolve()
+      store.setState('n', 2)
+      await Promise.resolve()
+      expect(api.getSnapshotCount()).toBe(3)
+
+      api.undo()
+      // 回放触发的异步通知在此到达：不得被记录成新分支
+      await Promise.resolve()
+      expect(api.getSnapshotCount()).toBe(3)
+      expect(store.getState().n).toBe(1)
+
+      api.redo()
+      await Promise.resolve()
+      expect(store.getState().n).toBe(2)
+    } finally {
+      uninstall()
+    }
+  })
+
   it('audit regression: returned snapshots cannot pollute history or restored state', () => {
     const store = createStore({ name: 'snapshot-isolation', state: { user: { name: 'original' }, items: [{ value: 1 }] } })
     const uninstall = store.use(timeTravelPlugin())

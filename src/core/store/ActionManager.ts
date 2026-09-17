@@ -147,11 +147,13 @@ export class ActionManager<S extends State = State, A extends Actions = Actions>
       })
     }
 
+    // onlyOnChange 模式：基线必须在进入 dispatch 之前采集。dispatch 期间通知被抑制，
+    // beforeDispatch 钩子里的写入同样属于本次 dispatch 事务；基线晚采会把钩子写入
+    // 当成「无变化」，收尾时跳过通知，该变更对所有监听器永久不可见
+    const mutationsBefore = this._notifyOnlyOnChange ? this._getMutationCount() : 0
     // 先设置 dispatching 状态，再触发钩子，确保监听器能获取正确的状态
     this._enterDispatch()
     this._hooks.emit('beforeDispatch', name, args)
-    // onlyOnChange 模式：记录执行前的变更计数，未变化则跳过通知
-    const mutationsBefore = this._notifyOnlyOnChange ? this._getMutationCount() : 0
     try {
       // boundActions 在 initialize 时已经包装了 _withInternalAccess，此处无需再次包装
       const result = this._boundActions[name](...args)

@@ -490,7 +490,76 @@ describe('composeStore', () => {
     })
   })
 
+  describe('嵌套组合的键路由', () => {
+    test('非命名空间外层可通过斜杠路径写入命名空间内层的子 store', () => {
+      const leaf = createStore({ name: 'leaf', state: { n: 1 } })
+      const inner = composeStore([leaf], { namespace: 'inner', strict: true })
+      const flat = composeStore([inner], { strict: true })
+      try {
+        flat.setState('leaf/n' as never, 5 as never)
+        expect(leaf.getState().n).toBe(5)
+        flat.$patch({ 'leaf/n': 7 } as never)
+        expect(leaf.getState().n).toBe(7)
+      } finally {
+        flat.destroy()
+      }
+    })
+
+    test('构造期对非命名空间外层包含子组合给出写路径提示', () => {
+      const warn = jest.spyOn(console, 'warn').mockImplementation()
+      const leaf = createStore({ name: 'leaf', state: { n: 1 } })
+      const inner = composeStore([leaf], { namespace: 'inner' })
+      const flat = composeStore([inner], { strict: true })
+      try {
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining('斜杠路径'))
+      } finally {
+        warn.mockRestore()
+        flat.destroy()
+      }
+    })
+  })
+
   describe('subscribe', () => {
+    test.each([0, 1])('unsubscribe handle %i is idempotent and does not remove another registration', async (index) => {
+      const composed = composeStore([store1, store2])
+      const listener = jest.fn()
+      const handles = [composed.subscribe(listener), composed.subscribe(listener)]
+      const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0))
+
+      try {
+        store1.setState('age', 26)
+        await flush()
+        expect(listener).toHaveBeenCalledTimes(2)
+        listener.mockClear()
+
+        handles[index]()
+        handles[index]()
+        store1.setState('age', 27)
+        await flush()
+        expect(listener).toHaveBeenCalledTimes(1)
+        listener.mockClear()
+
+        handles[1 - index]()
+        store1.setState('age', 28)
+        await flush()
+        expect(listener).not.toHaveBeenCalled()
+
+        const later = composed.subscribe(listener)
+        handles[0]()
+        handles[1]()
+        store1.setState('age', 29)
+        await flush()
+        expect(listener).toHaveBeenCalledTimes(1)
+        later()
+        listener.mockClear()
+        store1.setState('age', 30)
+        await flush()
+        expect(listener).not.toHaveBeenCalled()
+      } finally {
+        composed.destroy()
+      }
+    })
+
     test('应该能够订阅组合store的状态变化', (done) => {
       const composed = composeStore([store1, store2])
       let callCount = 0

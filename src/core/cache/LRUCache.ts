@@ -258,9 +258,16 @@ export class LRUCache<K, V> {
     this.addToHead(newNode)
     this._size++
 
-    // 检查容量，执行LRU淘汰
-    if (this._size > this.capacity) {
+    // 检查容量，执行LRU淘汰。
+    // 用循环而非单次 if：onEvict 回调可能重入 set()（回调里回填数据），
+    // 单次淘汰后尺寸可能仍超限，容量不变量会永久失效
+    while (this._size > this.capacity) {
+      const sizeBefore = this._size
       this.evictLRU()
+      // 回调重入写入且淘汰无效（如空缓存）时终止，避免死循环
+      if (this._size >= sizeBefore) {
+        break
+      }
     }
 
     return this
@@ -434,15 +441,18 @@ export class LRUCache<K, V> {
     // 与构造器同守卫：NaN/Infinity 容量会让淘汰判定失效导致缓存无界
     const validCapacity = Number.isFinite(newCapacity) ? Math.max(1, newCapacity) : this.capacity
 
-    if (validCapacity < this._size) {
-      // 需要淘汰多余的项
-      const evictCount = this._size - validCapacity
-      for (let i = 0; i < evictCount; i++) {
-        this.evictLRU()
+    // 先落定容量再淘汰：onEvict 回调可能重入 set()，只有容量已更新，
+    // 重入写入才不会按旧上限继续扩容；循环条件也保证回调重入后仍收敛到新容量
+    this.capacity = validCapacity
+    while (this._size > this.capacity) {
+      const sizeBefore = this._size
+      this.evictLRU()
+      // 淘汰未生效（缓存已空）或回调重入使其增长时终止，避免死循环
+      if (this._size >= sizeBefore) {
+        break
       }
     }
 
-    this.capacity = validCapacity
     return this
   }
 

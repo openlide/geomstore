@@ -411,6 +411,44 @@ describe('企业级方案 - 离线状态管理', () => {
       expect(result[result.length - 1].id).toBe('overflow')
     })
 
+    it('ENTERPRISE-066b (BUG 回归): 同步失败的操作不重复落盘，恢复后不重复执行', async () => {
+      mockStorage['dup_queue'] = JSON.stringify([{ id: 'dup-1', type: 'failingAction', payload: null, timestamp: Date.now(), retryCount: 0 }])
+      offlineManager = new OfflineManager(testStore, 'dup_queue', 3)
+
+      await offlineManager.syncQueue()
+
+      const persisted = JSON.parse(String(mockStorage['dup_queue']))
+      expect(persisted).toHaveLength(1)
+      expect(persisted[0].id).toBe('dup-1')
+    })
+
+    it('ENTERPRISE-066c (BUG 回归): 死信落盘失败时操作保留在队列中不丢失', async () => {
+      mockStorage['dl_fail_queue'] = JSON.stringify([{ id: 'dl-1', type: 'ghostAction', payload: null, timestamp: Date.now(), retryCount: 0 }])
+      const onDrop = jest.fn()
+      offlineManager = new OfflineManager(testStore, 'dl_fail_queue', 1, onDrop)
+
+      // 模拟死信键写入失败（配额满），普通队列写入照常
+      const originalSet = mockWx.setStorageSync.getMockImplementation() as (key: string, value: unknown) => void
+      mockWx.setStorageSync.mockImplementation((key: string, value: unknown) => {
+        if (key.includes('dead_letter')) {
+          throw new Error('storage quota exceeded')
+        }
+        originalSet(key, value)
+      })
+
+      try {
+        await offlineManager.syncQueue()
+      } finally {
+        mockWx.setStorageSync.mockImplementation(originalSet)
+      }
+
+      // 死信未落盘：操作必须留队（内存与磁盘都在），且不触发 onDrop
+      expect(offlineManager.getQueueLength()).toBe(1)
+      expect(JSON.parse(String(mockStorage['dl_fail_queue']))).toHaveLength(1)
+      expect(offlineManager.getDeadLetters()).toHaveLength(0)
+      expect(onDrop).not.toHaveBeenCalled()
+    })
+
     it('ENTERPRISE-055: 存储值为对象时应该直接加载', () => {
       mockStorage['object_queue'] = [{ id: '1', type: 'addItem', payload: 'x', timestamp: Date.now(), retryCount: 0 }]
       offlineManager = new OfflineManager(testStore, 'object_queue')

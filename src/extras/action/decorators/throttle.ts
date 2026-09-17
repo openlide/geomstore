@@ -108,14 +108,19 @@ export function withThrottle(interval: number = 300, options: ThrottleDecoratorO
           const trailingArgs = state.pendingArgs
           state.pendingArgs = null
           state.lastCallTime = Date.now()
-          // fire-and-forget：返回值不回传；异步方法的 rejection 不能变成
-          // unhandled rejection，显式记录
-          const result = originalMethod.apply(this, trailingArgs) as unknown
-          if (result instanceof Promise) {
-            observesPromise = true
-            result.catch((error) => {
-              console.error('[withThrottle] trailing invocation failed:', error)
-            })
+          // fire-and-forget：返回值不回传，且调用方早已返回——尾随执行的失败
+          // 不可能再抛给调用方，必须就地兜住：同步抛错会变成 uncaughtException，
+          // 异步 rejection 会变成 unhandledRejection
+          try {
+            const result = originalMethod.apply(this, trailingArgs) as unknown
+            if (result instanceof Promise) {
+              observesPromise = true
+              result.catch((error) => {
+                console.error('[withThrottle] trailing invocation failed:', error)
+              })
+            }
+          } catch (error) {
+            console.error('[withThrottle] trailing invocation failed:', error)
           }
         }
       }

@@ -98,6 +98,15 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
   /** 脏键集合：记录自上次通知以来发生变更的状态键，供集成层精确跳过未变化的映射 */
   private _dirtyKeys: Set<keyof S> = new Set()
 
+  /**
+   * 通知期间新产生的脏键（重入写入）：回调内写入会触发下一轮通知，
+   * 其脏键不能随本轮收尾一起清空，否则下一轮会被集成层当作「未变化」跳过
+   */
+  private _deferredDirtyKeys: Set<keyof S> = new Set()
+
+  /** 是否正在通知：决定脏键写入是否需要同时记入下一轮 */
+  private _notifying = false
+
   /** 是否仅在状态实际变化时通知（默认 false） */
   private _notifyOnlyOnChange: boolean
 
@@ -115,6 +124,9 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
 
   /** 插件卸载函数集合 */
   private _pluginUninstallFns: Map<PluginType<S>, (() => void) | undefined> = new Map()
+
+  /** 插件当前安装的代际令牌：卸载句柄据此识别自己是否仍对应最新一次安装 */
+  private _pluginInstallations: Map<PluginType<S>, object> = new Map()
 
   /** dispatch跟踪标记 */
   private _dispatching = false
@@ -304,7 +316,7 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
     })
 
     this._mutationCount++
-    this._dirtyKeys.add(key)
+    this._markDirtyKey(key)
     this._cacheManager.set(key, value)
 
     if (!this._dispatching && !this._batchManager.isInBatch) {
@@ -339,7 +351,7 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
       // 写入 partial 值会导致缓存与状态不一致
       this._cacheManager.set(key as keyof S, this._state[key as keyof S])
       // 记录脏键：deepMerge 可能就地变异该键下的嵌套对象，故整键标记为已变更
-      this._dirtyKeys.add(key as keyof S)
+      this._markDirtyKey(key as keyof S)
     })
 
     if (!this._dispatching && !this._batchManager.isInBatch) {
@@ -396,7 +408,7 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
     this._mutationCount++
     // 整树替换：所有键均视为已变更
     Object.keys(this._state).forEach((key) => {
-      this._dirtyKeys.add(key as keyof S)
+      this._markDirtyKey(key as keyof S)
     })
 
     // 与 setState/$patch 一致：dispatch 或批量更新期间跳过通知，
@@ -546,6 +558,8 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
     }
 
     this._plugins.push(plugin)
+    const installation = {}
+    this._pluginInstallations.set(plugin, installation)
 
     let uninstall: unknown
     try {
@@ -556,17 +570,18 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
       if (index !== -1) {
         this._plugins.splice(index, 1)
       }
+      this._pluginInstallations.delete(plugin)
       throw error
     }
 
     this._pluginUninstallFns.set(plugin, uninstall as (() => void) | undefined)
 
-    return this._createPluginUninstaller(plugin)
+    return this._createPluginUninstaller(plugin, installation)
   }
 
   /** 创建插件卸载句柄（实现已拆至 ./pluginSupport.js） */
-  private _createPluginUninstaller(plugin: PluginType<S>): () => void {
-    return createPluginUninstaller(plugin, this._plugins, this._pluginUninstallFns)
+  private _createPluginUninstaller(plugin: PluginType<S>, installation: object | undefined = this._pluginInstallations.get(plugin)): () => void {
+    return createPluginUninstaller(plugin, this._plugins, this._pluginUninstallFns, this._pluginInstallations, installation)
   }
 
   // ==================== 生命周期管理 ====================
@@ -622,6 +637,7 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
       // 7. 清空集合引用
       this._plugins = []
       this._pluginUninstallFns.clear()
+      this._pluginInstallations.clear()
       this._proxyCache = createProxyCache()
     } catch (error) {
       console.error('[GeomStore] Error during Store destruction:', error)
@@ -865,7 +881,7 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
     return createDirtyTrackingProxy(target, this._dirtyProxyCache, (rootKeys) => {
       this._mutationCount++
       for (const rootKey of rootKeys) {
-        this._dirtyKeys.add(rootKey as keyof S)
+        this._markDirtyKey(rootKey as keyof S)
       }
     })
   }
@@ -895,6 +911,19 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
     }
   }
 
+  /**
+   * 标记状态键为脏
+   *
+   * 通知进行中（含回调内的重入写入）同时记入下一轮：那部分变更会触发新一轮通知，
+   * 若只写当前集合，本轮收尾就会把它清掉，下一轮被集成层当作「未变化」跳过
+   */
+  private _markDirtyKey(key: keyof S): void {
+    this._dirtyKeys.add(key)
+    if (this._notifying) {
+      this._deferredDirtyKeys.add(key)
+    }
+  }
+
   /** 通知状态变化 */
   private _notifyListeners(): void {
     // 深拷贝隔离仅在有「可写（用户）订阅者」时必要：页面/组件绑定均为只读订阅，
@@ -912,12 +941,34 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
     } else {
       payload = this._state
     }
-    this._subscriptionManager.notify(payload, false)
+    // 本轮已通知的脏键与「通知期间新产生的脏键」分离：回调内的写入（重入）会被
+    // 调度为下一轮通知，其脏键必须留给下一轮。若在收尾统一 clear，重入写入的脏键
+    // 会连同一轮的脏键一起被清掉，集成层对稳定引用对象值的跳过判定（isStateKeyDirty）
+    // 就会把下一轮更新当作「未变化」，视图永久漏更新
+    // 重入（回调内的写入触发了新一轮通知）：先把通知期间累积的脏键提升为本轮可见集合，
+    // 本轮回调才能看到那些键；最外层通知的收尾则把可见集合换成「通知期间新产生的脏键」
+    const reentrant = this._notifying
+    if (reentrant) {
+      for (const key of this._deferredDirtyKeys) {
+        this._dirtyKeys.add(key)
+      }
+      this._deferredDirtyKeys = new Set()
+    }
+
+    this._notifying = true
+    try {
+      this._subscriptionManager.notify(payload, false)
+    } finally {
+      this._notifying = reentrant
+    }
     // 记录本次通知已覆盖到的变更计数：后续 dispatch 补发按此去重，
     // 避免「续段 setState 已自发通知 + 完成补发」的重复通知
     this._lastNotifiedMutationCount = this._mutationCount
-    // 清空脏键：本批次变更已通知完毕
-    this._dirtyKeys.clear()
+    if (!reentrant) {
+      // 最外层通知收尾：已通知的脏键作废，只保留通知期间新产生的脏键（留给下一轮）
+      this._dirtyKeys = this._deferredDirtyKeys
+      this._deferredDirtyKeys = new Set()
+    }
   }
 }
 

@@ -238,12 +238,19 @@ function installPersistence<S extends State>(store: Store<S>, options: Persisten
     { readOnly: true },
   )
 
+  // 最近一次成功落盘的序列化结果：卸载补写时据此跳过无变化的重复写入
+  let lastSaved: string | null = null
+
   function saveState(state: Partial<S>): void {
     // 卸载后不再执行保存操作
     if (isUninstalled) return
     try {
       const serialized = JSON.stringify(state)
+      if (serialized === lastSaved) {
+        return
+      }
       storageAdapter.setItem(storageKey, serialized)
+      lastSaved = serialized
     } catch (error) {
       console.error('[GeomStore] Failed to persist state:', error)
       store.hooks.emit('onError', error as Error, 'persistence')
@@ -251,17 +258,25 @@ function installPersistence<S extends State>(store: Store<S>, options: Persisten
   }
 
   return () => {
-    // 防抖窗口内卸载：pendingState 尚未落盘，先同步补写最后一次变更
-    // （clearOnUninstall 时数据即将清除，无需补写），
-    // 否则「卸载仅停止监听、保留已持久化数据」的语义下会丢最后一次写入
-    if (debounceTimer) {
-      clearTimeout(debounceTimer)
-      debounceTimer = null
-      if (pendingState !== null && !clearOnUninstall) {
-        saveState(pendingState)
+    if (!clearOnUninstall) {
+      // 防抖窗口内卸载：pendingState 尚未落盘，先同步补写最后一次变更
+      if (debounceTimer) {
+        clearTimeout(debounceTimer)
+        debounceTimer = null
+        if (pendingState !== null) {
+          saveState(pendingState)
+        }
       }
-      pendingState = null
+      // 最终补写：notify.async 下最后一次写入可能尚未触发订阅回调（pendingState 为空），
+      // 而 destroy 会取消待发通知，窗口期内的变更会既不通知也不落盘。
+      // 直接读取当前状态落盘（与 lastSaved 比较，无变化时不产生写入）
+      try {
+        saveState(filter ? filter(store.getState()) : store.getState())
+      } catch (error) {
+        console.error('[GeomStore] Failed to persist state on uninstall:', error)
+      }
     }
+    pendingState = null
     isUninstalled = true
     unsubscribe()
     // 仅在配置了 clearOnUninstall 时才清除存储数据

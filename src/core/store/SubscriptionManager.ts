@@ -32,7 +32,7 @@ export interface SubscriptionManagerOptions {
  */
 export class SubscriptionManager<S extends State = State> implements SubscriptionManagerInterface<S> {
   /** 监听器 → 注册信息：同一函数注册 N 次通知 N 次，任一份退订只减一（Redux/Vuex 同语义） */
-  private readonly _listeners: Map<StateListener<S>, { count: number; readOnly: boolean }> = new Map()
+  private readonly _listeners: Map<StateListener<S>, { count: number; readOnly: boolean; registrations: Set<object> }> = new Map()
   /** 可写（非只读）监听器注册总次数：仅当存在可写订阅者时才需深拷贝做引用隔离 */
   private _writableCount = 0
   private readonly _maxSubscribers: number
@@ -74,12 +74,14 @@ export class SubscriptionManager<S extends State = State> implements Subscriptio
    *
    * @param options.readOnly 标记为只读订阅（仅读取状态、不修改），可让 Store 在仅有只读订阅时跳过深拷贝
    */
-  add(listener: StateListener<S>, options?: { readOnly?: boolean }): void {
+  add(listener: StateListener<S>, options?: { readOnly?: boolean }): object {
+    const registration = {}
     const existing = this._listeners.get(listener)
     if (existing !== undefined) {
       existing.count += 1
+      existing.registrations.add(registration)
       this._totalCount += 1
-      return
+      return registration
     }
     if (this.size >= this._maxSubscribers) {
       if (this._onLimit === 'throw') {
@@ -101,19 +103,25 @@ export class SubscriptionManager<S extends State = State> implements Subscriptio
     }
 
     const readOnly = options?.readOnly ?? false
-    this._listeners.set(listener, { count: 1, readOnly })
+    this._listeners.set(listener, { count: 1, readOnly, registrations: new Set([registration]) })
     this._totalCount += 1
     if (!readOnly) {
       this._writableCount += 1
     }
+    return registration
   }
 
   /**
-   * 移除监听器：存在多份注册时只减一，最后一次调用才真正移除
+   * 移除监听器：存在多份注册时只减一，最后一次调用才真正移除。
+   * 传入注册句柄时只移除该次注册；被驱逐的注册句柄与其余注册互不影响。
    */
-  delete(listener: StateListener<S>): boolean {
+  delete(listener: StateListener<S>, registration?: object): boolean {
     const entry = this._listeners.get(listener)
     if (entry === undefined) {
+      return false
+    }
+    const token = registration ?? entry.registrations.values().next().value
+    if (token === undefined || !entry.registrations.delete(token)) {
       return false
     }
     this._totalCount -= 1
@@ -188,14 +196,14 @@ export function createSubscribeFunction<S extends State>(
   manager: SubscriptionManager<S>,
 ): (listener: StateListener<S>, options?: { readOnly?: boolean }) => () => void {
   return (listener: StateListener<S>, options?: { readOnly?: boolean }): (() => void) => {
-    manager.add(listener, options)
+    const registration = manager.add(listener, options)
     let consumed = false
     return () => {
       if (consumed) {
         return
       }
       consumed = true
-      manager.delete(listener)
+      manager.delete(listener, registration)
     }
   }
 }

@@ -172,7 +172,9 @@ describe('Builtin Plugins - 内置插件', () => {
     it('PERSIST-005: 保存失败时应该记录错误', () => {
       const consoleSpy = jest.spyOn(console, 'error').mockImplementation()
       mockGetStorageSync.mockReturnValue(null)
-      mockSetStorageSync.mockImplementation(() => {
+      // 仅本次调用抛错：mockImplementation 会持续到本文件结束，
+      // 后续测试的写入会莫名抛错（beforeEach 只 clear 调用记录，不重置实现）
+      mockSetStorageSync.mockImplementationOnce(() => {
         throw new Error('Storage error')
       })
 

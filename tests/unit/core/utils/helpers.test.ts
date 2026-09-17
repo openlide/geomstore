@@ -216,6 +216,38 @@ describe('Helpers - 工具函数', () => {
         expect(consoleSpy).toHaveBeenCalled()
         consoleSpy.mockRestore()
       })
+
+      it('HELPERS-031b: 自引用 Set 按循环配对判等，不误报不相等', () => {
+        const consoleSpy = jest.spyOn(console, 'warn').mockImplementation()
+        const a = new Set<unknown>()
+        a.add(a)
+        const b = new Set<unknown>()
+        b.add(b)
+        const c = new Set<unknown>()
+        c.add(new Set([1]))
+
+        expect(deepEqual(a, b)).toBe(true)
+        expect(deepEqual(a, c)).toBe(false)
+        // 循环元素不应靠深度超限兜底：不应产生告警
+        expect(consoleSpy).not.toHaveBeenCalled()
+        consoleSpy.mockRestore()
+      })
+
+      it('HELPERS-031c: Set 候选配对失败后回滚配对，不污染后续候选', () => {
+        const c = { inner: { v: 1 } }
+        const d = { inner: { v: 2 } } // c 与 d 深度不等
+        // 键序使 u（c vs d）先于 w 出栈比较：c→d 会先被记入配对表，随后才因更深层不等而失败
+        const p = { w: 1, u: c }
+        const q = { w: 2, u: d }
+        const m = { w: 2, u: d }
+        const r = { w: 1, u: d } // 只有跳过 c/d 比较才会被误判为与 p 相等
+        // 集内无完美匹配（p 无对等元素），必须为 false；
+        // 失败候选留下的 c→d 配对会让后续 p vs r 跳过 u 键而产生假相等
+        expect(deepEqual(new Set([p, m]), new Set([q, r]))).toBe(false)
+        // 单次比较内部不残留跨调用状态
+        expect(deepEqual(p, r)).toBe(false)
+        expect(deepEqual(new Set([p]), new Set([q]))).toBe(false)
+      })
     })
 
     describe('deepMerge', () => {

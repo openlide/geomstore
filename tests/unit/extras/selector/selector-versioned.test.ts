@@ -10,6 +10,40 @@ import { createSelector } from '@/extras/selector/createSelector.js'
 import { createParametricSelector } from '@/extras/selector/parametricSelector.js'
 
 describe('选择器的版本化缓存失效', () => {
+  it.each([false, true])('does not compare a live versioned cache entry with plain input (history: %s)', (history) => {
+    const store = createStore({ name: 'selector-mixed', state: { count: 1 } })
+    const compute = jest.fn((s: { count: number }) => s.count * 2)
+    const select = createSelector(compute)
+    try {
+      expect(select(store.state)).toBe(2)
+      if (history) expect(select({ count: 9 })).toBe(18)
+      // The cached versioned state is a live reference, not a content snapshot.
+      store.$patch({ count: 2 })
+      expect(select({ count: 2 })).toBe(4)
+      expect(select({ count: 2 })).toBe(4)
+      expect(compute).toHaveBeenCalledTimes(history ? 3 : 2)
+    } finally {
+      store.destroy()
+    }
+  })
+
+  // 版本化与无版本输入交替时，历史中的版本化条目仍应能被同一 store 状态命中；
+  // 若一律跳过回溯，交替读取会退化为每次重算（命中率损失，非正确性问题）
+  it('reuses a versioned history entry when plain objects interleave', () => {
+    const store = createStore({ name: 'selector-interleave', state: { count: 1 } })
+    const compute = jest.fn((s: { count: number }) => s.count * 2)
+    const select = createSelector(compute)
+    try {
+      expect(select(store.state)).toBe(2)
+      expect(select({ count: 5 })).toBe(10)
+      expect(select(store.state)).toBe(2)
+      expect(select({ count: 5 })).toBe(10)
+      expect(compute).toHaveBeenCalledTimes(2)
+    } finally {
+      store.destroy()
+    }
+  })
+
   it('createSelector：版本未变时命中缓存，版本变化后重算', () => {
     const store = createStore({ name: 'selector-version', state: { count: 1 } })
     const select = createSelector((s: { count: number }) => s.count * 2)

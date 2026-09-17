@@ -185,13 +185,17 @@ export class ErrorMonitoring {
               return 'fail' as const
             },
           )
-        return Promise.race([task, this.delay(this.reportTimeout).then(() => 'timeout' as const)]).then((outcome) => {
-          if (outcome === 'ok') {
-            anyReporterSucceeded = true
-          } else if (outcome === 'timeout') {
-            console.warn(`[ErrorMonitoring] Reporter "${reporter.getName()}" timed out after ${this.reportTimeout}ms`)
-          }
-        })
+        const timeout = this.delay(this.reportTimeout)
+        return Promise.race([task, timeout.promise.then(() => 'timeout' as const)])
+          .then((outcome) => {
+            if (outcome === 'ok') {
+              anyReporterSucceeded = true
+            } else if (outcome === 'timeout') {
+              console.warn(`[ErrorMonitoring] Reporter "${reporter.getName()}" timed out after ${this.reportTimeout}ms`)
+            }
+          })
+          // 上报先落地（成功/失败）时取消未到期的超时定时器，避免句柄残留
+          .finally(() => timeout.cancel())
       })
       await Promise.allSettled(promises)
 
@@ -360,9 +364,10 @@ export class ErrorMonitoring {
    * @param {number} ms - 延迟毫秒数
    * @returns {Promise<void>}
    */
-  private delay(ms: number): Promise<void> {
-    return new Promise((resolve) => {
-      const timer = setTimeout(resolve, ms)
+  private delay(ms: number): { promise: Promise<void>; cancel: () => void } {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const promise = new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, ms)
       // unref()：退避等待定时器不应阻止 Node.js 进程/测试 worker 退出
       // （与 batchTimer 的 unref 处理一致，小程序/浏览器环境无 unref 时跳过）
       const timerWithUnref = timer as unknown as { unref?: () => void }
@@ -370,6 +375,17 @@ export class ErrorMonitoring {
         timerWithUnref.unref()
       }
     })
+    // 返回取消句柄：上报先落地时必须清掉未到期的超时定时器，
+    // 否则每次 flush 都会为每个报告器残留一个（默认 10s 后才到期）的定时器
+    return {
+      promise,
+      cancel: () => {
+        if (timer !== undefined) {
+          clearTimeout(timer)
+          timer = undefined
+        }
+      },
+    }
   }
 }
 

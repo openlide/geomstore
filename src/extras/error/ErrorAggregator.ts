@@ -15,6 +15,15 @@ import { GeomStoreError, isGeomStoreError } from '../../core/errors/GeomStoreErr
  * 将相似的错误聚合成组，便于分析和报告
  */
 export class ErrorAggregator {
+  /**
+   * 各 Store 的错误发生次数
+   *
+   * 单独按次计数：错误组会把同一站点在不同 Store 的报错合并为一条，
+   * 若按组计数求和（组 count 累加给每个受影响 Store），跨 Store 的组
+   * 会把整组次数重复计入每个 Store，byStore 之和超过 totalErrors
+   */
+  private readonly storeCounts: Map<string, number> = new Map()
+
   private groups = new Map<string, ErrorGroup>()
   private readonly maxGroups: number
 
@@ -33,6 +42,7 @@ export class ErrorAggregator {
     const error = context.error as GeomStoreError
     const code = isGeomStoreError(error) ? error.code : 'UNKNOWN'
     const now = context.timestamp || Date.now()
+    this.storeCounts.set(context.storeName, (this.storeCounts.get(context.storeName) ?? 0) + 1)
 
     // 检查是否已存在该组
     const group = this.groups.get(groupId)
@@ -132,6 +142,7 @@ export class ErrorAggregator {
    */
   clear(): void {
     this.groups.clear()
+    this.storeCounts.clear()
   }
 
   /**
@@ -152,15 +163,9 @@ export class ErrorAggregator {
         },
         {} as Record<string, number>,
       ),
-      byStore: groups.reduce(
-        (acc, g) => {
-          g.affectedStores.forEach((store) => {
-            acc[store] = (acc[store] || 0) + g.count
-          })
-          return acc
-        },
-        {} as Record<string, number>,
-      ),
+      // 按 Store 的实际发生次数统计（而非把组 count 累加给每个受影响 Store），
+      // 保证 byStore 各项之和等于 totalErrors
+      byStore: Object.fromEntries(this.storeCounts) as Record<string, number>,
     }
   }
 }

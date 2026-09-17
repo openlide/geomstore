@@ -223,8 +223,8 @@ export class ErrorRecovery {
     const baseDelay = config.retryDelay !== undefined ? config.retryDelay : 1000
     const useExponentialBackoff = config.exponentialBackoff !== undefined ? config.exponentialBackoff : true
 
-    // 获取重试计数
-    const retryKey = this.getRetryKey(error)
+    // 获取重试计数（键按 Store/操作隔离，缺省取会话内嵌 context）
+    const retryKey = this.getRetryKey(error, context)
 
     // 以时间窗识别「新故障周期」：窗口覆盖本周期 maxRetries 次重试的全部退避时长
     // （2 倍余量，下限 60s）。窗口内即使每次失败都以新错误实例触发 recover（调用方
@@ -403,9 +403,12 @@ export class ErrorRecovery {
    * @param {GeomStoreError} error - 错误对象
    * @returns {string} 重试键
    */
-  private getRetryKey(error: GeomStoreError): string {
-    const storeName = error.context?.storeName || 'unknown'
-    const operation = error.context?.operation || 'unknown'
+  private getRetryKey(error: GeomStoreError, context?: RecoveryContext): string {
+    // recover() 的第二个参数与会话内嵌 context 都是合法来源：单看 error.context 会让
+    // 「错误对象未内嵌 context、由调用方按 Store/操作传入」的场景全部落到 unknown，
+    // 不同 Store 的重试额度互相挤占（A 用满后 B 也被判超限）
+    const storeName = context?.storeName || error.context?.storeName || 'unknown'
+    const operation = context?.operation || error.context?.operation || 'unknown'
     return `${error.code}:${storeName}:${operation}`
   }
 

@@ -670,6 +670,27 @@ describe('ErrorAggregator', () => {
       expect(group).toBeInstanceOf(Object)
     })
 
+    it('MONITOR-007b: byStore 按实际发生次数统计，跨 Store 组不重复计数', () => {
+      const shared = new Error('same site failure')
+      const make = (storeName: string): ErrorContext => ({
+        storeName,
+        operation: 'dispatch',
+        error: shared,
+        level: 'error',
+        timestamp: Date.now(),
+      })
+
+      aggregator.addError(make('storeA'))
+      aggregator.addError(make('storeA'))
+      aggregator.addError(make('storeB'))
+
+      const stats = aggregator.getStats()
+      expect(stats.totalErrors).toBe(3)
+      expect(stats.byStore).toEqual({ storeA: 2, storeB: 1 })
+      // 各项之和必须等于总错误数（此前把整组 count 记给每个受影响 Store，会翻倍）
+      expect(Object.values(stats.byStore).reduce((sum, count) => sum + count, 0)).toBe(stats.totalErrors)
+    })
+
     it('MONITOR-008: 相同的错误应该聚合到同一组', () => {
       const error1 = new Error('Same error message')
       const error2 = new Error('Same error message')

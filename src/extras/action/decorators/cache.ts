@@ -273,7 +273,13 @@ export function withCache(options: CacheDecoratorOptions = {}): MethodDecorator 
         observesPromise = true
         const pending = result.then(
           (value) => {
-            writeCache(cache, key, value, Date.now())
+            // 乱序完成保护：仅在条目仍是本次调用的占位（或已被淘汰）时回填。
+            // 若同参的新调用已替换占位或已写入新值，旧请求的结果不得回写——否则
+            // 「旧请求慢、新请求快」会让缓存退回更早的数据
+            const entry = cache.get(key)
+            if (entry === undefined || entry.pending === pending) {
+              writeCache(cache, key, value, Date.now())
+            }
             return value
           },
           (error) => {

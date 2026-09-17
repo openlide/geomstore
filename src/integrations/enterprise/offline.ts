@@ -128,8 +128,14 @@ export class OfflineManager<S extends State = State> {
             // 超过重试上限：不再静默丢弃，落盘死信队列并回调通知，
             // 避免企业场景离线订单/表单直接丢失且无感知
             logger.error('OfflineManager', `操作重试次数超过限制，移入死信队列: ${action.type}`)
-            this.appendDeadLetter(action)
-            this.onDrop?.(action)
+            if (this.appendDeadLetter(action)) {
+              this.onDrop?.(action)
+            } else {
+              // 死信落盘失败（配额满等）：不得丢弃——队列落盘会覆盖磁盘副本，
+              // 操作会同时从内存与存储消失。保留在队列中等待后续重试
+              logger.warn('OfflineManager', `死信落盘失败，操作保留在离线队列: ${action.type}`)
+              failedActions.push(action)
+            }
           }
         }
       }
@@ -148,12 +154,15 @@ export class OfflineManager<S extends State = State> {
       // 已被用户清空的操作会在此复活并经 saveQueue 落盘——清空被静默撤销。
       // 改读字段后与 saveQueue 拼接联合视图的口径也一致
       this.actionQueue = [...this.syncFailed, ...this.syncPending.slice(this.syncNextIndex), ...this.actionQueue]
-      // saveQueue 内部已尽力而为（storage.set 不外抛），此处无需再兜底
-      this.saveQueue()
+      // 先落定同步状态再落盘：syncFailed/syncPending 此刻已并入 actionQueue，
+      // 若仍处于 syncing，saveQueue 的联合视图会把失败段再拼一次，
+      // 同一操作在磁盘上出现两份，重启恢复后被重复执行
       this.syncPending = []
       this.syncFailed = []
       this.syncNextIndex = 0
       this.syncing = false
+      // saveQueue 内部已尽力而为（storage.set 不外抛），此处无需再兜底
+      this.saveQueue()
     }
   }
 
@@ -283,14 +292,15 @@ export class OfflineManager<S extends State = State> {
   /**
    * 追加操作到死信队列（持久化，供业务层后续人工处理或上报）
    */
-  private appendDeadLetter(action: OfflineAction): void {
+  private appendDeadLetter(action: OfflineAction): boolean {
     const deadLetters = this.getDeadLetters()
     deadLetters.push(action)
     // 超限时淘汰最旧条目，保护 storage 容量
     if (deadLetters.length > OfflineManager.MAX_DEAD_LETTERS) {
       deadLetters.splice(0, deadLetters.length - OfflineManager.MAX_DEAD_LETTERS)
     }
-    storage.set(this.deadLetterKey, deadLetters)
+    // 返回落盘结果：调用方据此决定能否安全地从队列移除该操作
+    return storage.set(this.deadLetterKey, deadLetters)
   }
 
   /**

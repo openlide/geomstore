@@ -71,4 +71,36 @@ describe('持久化插件的卸载补写', () => {
     expect(storageBackend.setItem).toHaveBeenCalled()
     expect(storageBackend.removeItem).not.toHaveBeenCalled()
   })
+
+  it('notify.async 下通知未送达即销毁时仍补写最后一次变更', async () => {
+    const store = createStore({
+      name: 'persist-async-destroy',
+      state: { n: 0 },
+      notify: { async: true },
+      actions: {},
+    })
+    const saved = new Map<string, string>()
+    const storageBackend = {
+      getItem: (key: string) => saved.get(key) ?? null,
+      setItem: (key: string, value: string) => void saved.set(key, value),
+      removeItem: (key: string) => void saved.delete(key),
+    }
+    store.use(persistencePlugin({ storage: storageBackend, debounce: 1000 }))
+
+    // 写入后立刻销毁：待发通知被取消，订阅回调从未收到新状态
+    store.setState('n', 1)
+    store.destroy()
+
+    // 存储键默认加 geomstore_ 前缀
+    expect(JSON.parse(saved.get('geomstore_persist-async-destroy') ?? 'null')).toEqual({ n: 1 })
+  })
+
+  it('卸载补写不产生无变化的重复写入', () => {
+    const store = createStore({ name: 'persist-no-dup', state: { x: 1 }, actions: {} })
+    const storageBackend = { getItem: () => null, setItem: jest.fn(), removeItem: jest.fn() }
+    const uninstall = store.use(persistencePlugin({ storage: storageBackend }))
+    uninstall()
+    uninstall()
+    expect(storageBackend.setItem).toHaveBeenCalledTimes(1)
+  })
 })

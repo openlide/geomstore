@@ -257,8 +257,9 @@ export class PerformanceMonitor implements PerformanceMonitorInterface {
     // 记录指标
     this.metrics.push(record)
 
-    // 限制数量
-    if (this.metrics.length > this.options.maxSize) {
+    // 限制数量：用 while 而非单次 shift，保证任何时刻都收敛到 maxSize
+    // （setOptions 缩小容量后残留的旧记录不应让本缓冲长期超限）
+    while (this.metrics.length > this.options.maxSize) {
       this.metrics.shift()
     }
 
@@ -383,6 +384,11 @@ export class PerformanceMonitor implements PerformanceMonitorInterface {
       maxSize: options.maxSize ?? this.options.maxSize,
       trackMemory: options.trackMemory ?? this.options.trackMemory,
     })
+    // 缩小容量时立即裁剪：仅靠 record 路径的逐条淘汰，缓冲区会长期保留
+    // 超过新上限的旧记录（每次写入只挤掉一条，长度停在旧上限）
+    while (this.metrics.length > this.options.maxSize) {
+      this.metrics.shift()
+    }
   }
 
   /**

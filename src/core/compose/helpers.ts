@@ -83,10 +83,31 @@ export function dispatchByNamespace<T>(
   } else {
     // 非命名空间模式：需要先分组
     const storeGroups = new Map<Store, Record<string, T>>()
+    // 命名空间内层的键需还原成内层期望的形状（{ 子store名: { 键: 值 } }），
+    // 不能按原样透传——内层的命名空间查找以顶层键为 store 名
+    const nestedGroups = new Map<Store, Record<string, Record<string, T>>>()
 
     for (const key in data) {
       const value = data[key]
       const targetStore = findTargetStore(key, stores, namespace)
+      if (targetStore && !options?.warnMissingKeys) {
+        const nested = (targetStore as { stores?: Record<string, unknown> }).stores
+        const separator = key.indexOf('/')
+        if (nested && separator > 0) {
+          const head = key.slice(0, separator)
+          if (Object.prototype.hasOwnProperty.call(nested, head)) {
+            let payload = nestedGroups.get(targetStore)
+            if (!payload) {
+              payload = {}
+              nestedGroups.set(targetStore, payload)
+            }
+            const bucket = (payload[head] ?? {}) as Record<string, T>
+            bucket[key.slice(separator + 1)] = value
+            payload[head] = bucket
+            continue
+          }
+        }
+      }
       if (targetStore) {
         let group = storeGroups.get(targetStore)
         if (!group) {
@@ -97,6 +118,11 @@ export function dispatchByNamespace<T>(
       } else if (strict) {
         throw new Error(`[composeStore] Cannot find store for key: ${key}`)
       }
+    }
+
+    // 先应用嵌套分组：内层组合自行按命名空间规则路由到具体子 store
+    for (const [store, payload] of nestedGroups) {
+      applyToStore(store, payload as T, handler)
     }
 
     // 一次性调用每个 store
@@ -151,6 +177,23 @@ export function findTargetStoreWithKey(key: string, stores: Store[], namespace?:
         `[composeStore] Ambiguous key "${key}" found in multiple stores: ${matchingStores.map((s) => s.name).join(', ')}. ` +
           `Consider using namespaced mode for disambiguation.`,
       )
+    }
+
+    if (matchingStores.length === 0) {
+      // 嵌套组合：非命名空间外层可包含命名空间内层，此时内层的子 store 以
+      // 「子 store 名/键」的形式出现在合并状态里（如 'leaf/n'）。整串键在此
+      // 匹配不到顶层键，交给持有该子 store 的内层组合按其自身模式继续解析，
+      // 避免「dispatch 能用、setState 静默失败」的读写能力不对称
+      const separator = key.indexOf('/')
+      if (separator > 0) {
+        const head = key.slice(0, separator)
+        for (const store of stores) {
+          const nested = (store as { stores?: Record<string, unknown> }).stores
+          if (nested && Object.prototype.hasOwnProperty.call(nested, head)) {
+            return [store, key]
+          }
+        }
+      }
     }
 
     return [matchingStores[0], key]

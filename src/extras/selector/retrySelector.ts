@@ -155,7 +155,9 @@ export function createRetrySelectorAsync<S extends State, R>(selector: Selector<
     for (let attempt = 0; ; attempt++) {
       attemptCount = attempt + 1
       try {
-        return selector(state)
+        // await 而非直接 return：异步选择器的 rejection 在 return 之后才落地，
+        // 不 await 会让 catch 永远捕不到失败，重试与 error.attempts 标注全部失效
+        return await selector(state)
       } catch (error) {
         lastError = error as Error
         const canRetry = attempt < retries && (!shouldRetry || shouldRetry(lastError, attempt + 1))
