@@ -184,7 +184,18 @@ export class StoreCacheManager<S extends State = State> {
     }
 
     const now = Date.now()
-    const keys: Iterable<keyof S> = this._cacheKeys ?? stateKeys
+    // 刷新范围必须是「缓存中已有键 ∪ 当前状态键」：action 内 delete 状态键后，
+    // 该键不在 stateKeys 里，仅遍历 stateKeys 永远走不到删除分支，
+    // TTL=0 时过期条目将永久滞留并被 getCached 读到
+    const keys = new Set<keyof S>(this._cacheKeys ?? [])
+    for (const key of this._cache.keys()) {
+      keys.add(key)
+    }
+    if (!this._cacheKeys) {
+      for (const key of stateKeys) {
+        keys.add(key)
+      }
+    }
 
     for (const key of keys) {
       const value = getState(key)

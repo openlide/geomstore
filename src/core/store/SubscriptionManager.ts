@@ -179,13 +179,22 @@ export class SubscriptionManager<S extends State = State> implements Subscriptio
 /**
  * 创建订阅函数返回值
  * 返回一个取消订阅的函数
+ *
+ * 句柄幂等：同一句柄重复调用只退订一次，不会误删同一回调的其他注册。
+ * （此前按回调身份直接 delete，旧句柄的重复调用会额外扣减仍存活的注册计数，
+ * 导致其他退订句柄持有的订阅凭空失效。）
  */
 export function createSubscribeFunction<S extends State>(
   manager: SubscriptionManager<S>,
 ): (listener: StateListener<S>, options?: { readOnly?: boolean }) => () => void {
   return (listener: StateListener<S>, options?: { readOnly?: boolean }): (() => void) => {
     manager.add(listener, options)
+    let consumed = false
     return () => {
+      if (consumed) {
+        return
+      }
+      consumed = true
       manager.delete(listener)
     }
   }

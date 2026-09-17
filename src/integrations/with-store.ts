@@ -221,9 +221,13 @@ export function withPageStore<S extends State, A extends Actions, G extends Gett
     // 扩展 onUnload
     const originalOnUnload = enhancedConfig.onUnload
     enhancedConfig.onUnload = function (this: PageOptions) {
-      // 清理当前页面实例的订阅
-      cleanupBindings(this.__geomUnbinds || [])
-      originalOnUnload?.call(this)
+      try {
+        // 用户卸载逻辑仍可调用映射的 actions、读取同步状态
+        originalOnUnload?.call(this)
+      } finally {
+        // 即使用户生命周期抛错，也必须清理当前实例的绑定
+        cleanupBindings(this.__geomUnbinds || [])
+      }
     }
 
     return enhancedConfig as unknown as PageConfig<S, O, G> & Omit<C, 'data'> & { data: (C extends { data: infer D } ? D : object) & ExtractPageData<S, O, G> }
@@ -363,18 +367,22 @@ export function withComponentStore<S extends State, A extends Actions, G extends
       },
 
       detached: function (this: ComponentInstance) {
-        // 清理当前组件实例的订阅
-        cleanupBindings(this.__geomUnbinds || [])
-        // 移除实例上绑定的 action 方法：同样先做实例级拷贝再删除，
-        // 避免 this.methods 仍指向配置级共享对象时误删其他实例仍在使用的方法
-        if (this.methods) {
-          const methods = { ...this.methods }
-          this.methods = methods
-          Object.keys(actionsMapping).forEach((localName) => {
-            delete methods[localName]
-          })
+        try {
+          // 与 Page 一致：用户生命周期结束前保留绑定
+          originalDetached?.call(this)
+        } finally {
+          // 即使用户生命周期抛错，也必须清理当前实例的绑定
+          cleanupBindings(this.__geomUnbinds || [])
+          // 移除实例上绑定的 action 方法：同样先做实例级拷贝再删除，
+          // 避免 this.methods 仍指向配置级共享对象时误删其他实例仍在使用的方法
+          if (this.methods) {
+            const methods = { ...this.methods }
+            this.methods = methods
+            Object.keys(actionsMapping).forEach((localName) => {
+              delete methods[localName]
+            })
+          }
         }
-        originalDetached?.call(this)
       },
     }
 

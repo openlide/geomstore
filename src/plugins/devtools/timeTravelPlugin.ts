@@ -229,7 +229,9 @@ export const timeTravelPlugin = <S extends State = State>(options: TimeTravelOpt
       const api = {
         // 获取快照列表（快照时间戳在前、状态字段展开在后：状态自身字段优先，
         // 避免用户状态中名为 timestamp 的键被快照元数据覆盖）
-        getSnapshots: () => snapshots.map((s) => ({ timestamp: s.timestamp, ...s.state })),
+        // 与记录快照使用同一克隆策略：隔离支持的嵌套类型，保留不可安全克隆
+        // 的类实例/WeakMap/Promise 等原引用，不用 JSON 或 structuredClone 改变兼容性。
+        getSnapshots: () => snapshots.map((s) => ({ timestamp: s.timestamp, ...deepCloneState(s.state) })),
 
         // 获取快照数量
         getSnapshotCount: () => snapshots.length,

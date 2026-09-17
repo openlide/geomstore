@@ -144,10 +144,9 @@ export class SelectorFactory<S extends State = Record<string, unknown>, R = unkn
     if (item.timestamp + this.options.cacheTTL <= now) {
       return false
     }
-    // 版本化快路径：Store 状态带版本号时退化为 O(1) 整数比较，免去此前
-    // 每次执行都要对 cache + cacheHistory 逐条做全树 deepEqual 的开销
+    // 版本号由各 Store 独立计数；版本化条目保留原状态引用，须同时校验身份与版本。
     if (item.version !== undefined && stateVersion !== undefined) {
-      return item.version === stateVersion
+      return item.state === state && item.version === stateVersion
     }
     // 回退：状态无版本标记（非 Store 状态，如直接传入的普通对象），沿用 equalityFn 比较
     // equalityFn 在构造期已归一化（未提供时回退默认 deepEqual），类型上恒为函数，无需 falsy 兜底分支
@@ -173,7 +172,8 @@ export class SelectorFactory<S extends State = Record<string, unknown>, R = unkn
     // 版本化场景：版本号单调递增，历史条目的版本号必然小于当前值，回溯不可能命中
     // （当前 cache 未命中说明版本已变或已过期），直接判定 miss。
     // 此处仍保留向 cacheHistory 写入，使 getCacheStatus().cacheSize 语义不变。
-    if (stateVersion !== undefined && this.cache?.version !== undefined) {
+    // 只有同一状态对象的版本变化才能跳过历史；跨 Store 时仍需搜索其他身份的条目。
+    if (stateVersion !== undefined && this.cache?.version !== undefined && this.cache.state === state) {
       return null
     }
 

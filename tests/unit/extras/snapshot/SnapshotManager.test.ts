@@ -6,6 +6,44 @@ import { SnapshotManager, createSnapshot, createSnapshotAsync } from '../../../.
 import * as cloneAsync from '../../../../src/extras/snapshot/clone-async.js'
 
 describe('SnapshotManager', () => {
+  describe('audit regressions: cycles and own undefined properties', () => {
+    const manager = new SnapshotManager()
+
+    test.each(['object', 'array', 'map'])('identical cyclic %s snapshots are unchanged', (type) => {
+      const data: any = type === 'array' ? [] : type === 'map' ? new Map() : {}
+      if (type === 'array') data.push(data)
+      else if (type === 'map') data.set('self', data)
+      else data.self = data
+      const diff = manager.compareSnapshots(manager.createSnapshot(data), manager.createSnapshot(data))
+      expect(diff.changed).toBe(false)
+      expect(diff.changes).toEqual([])
+    })
+
+    test('cycles do not hide changed siblings or comparisons with different partners', () => {
+      const shared: any = { value: 1 }
+      shared.self = shared
+      const other: any = { value: 2 }
+      other.self = other
+      const diff = manager.compareSnapshots(manager.createSnapshot({ first: shared, second: shared }), manager.createSnapshot({ first: shared, second: other }))
+      expect(diff.changes).toEqual([{ path: 'root.second.value', oldValue: 1, newValue: 2 }])
+    })
+
+    test.each(['added', 'removed'] as const)('reports an own undefined property being %s', (kind) => {
+      const absent = manager.createSnapshot({ nested: {} })
+      const present = manager.createSnapshot({ nested: { value: undefined } })
+      const diff = kind === 'added' ? manager.compareSnapshots(absent, present) : manager.compareSnapshots(present, absent)
+      expect(diff.changed).toBe(true)
+      expect(diff.changes).toEqual([{ path: 'root.nested.value', oldValue: undefined, newValue: undefined, kind }])
+      expect(manager.compareSnapshots(present, manager.createSnapshot({ nested: { value: undefined } })).changed).toBe(false)
+    })
+
+    test('inherited values do not count as own properties', () => {
+      const absent = Object.create({ value: undefined })
+      const diff = manager.compareSnapshots(manager.createSnapshot(absent), manager.createSnapshot({ value: undefined }))
+      expect(diff.changes).toEqual([{ path: 'root.value', oldValue: undefined, newValue: undefined, kind: 'added' }])
+    })
+  })
+
   describe('基础快照', () => {
     test('should create basic snapshot', () => {
       const manager = new SnapshotManager()
@@ -2483,15 +2521,13 @@ describe('覆盖率补全：克隆降级与中止路径', () => {
     // 先捕获真实实现，保证「首次调用走真实逻辑」的既有意图不变
     const original = cloneAsync.processNodeAsync
     let firstCall = true
-    jest
-      .spyOn(cloneAsync, 'processNodeAsync')
-      .mockImplementation(((...args: Parameters<typeof original>): unknown => {
-        if (firstCall) {
-          firstCall = false
-          return original(...args)
-        }
-        throw new Error('internal clone boom')
-      }) as typeof original)
+    jest.spyOn(cloneAsync, 'processNodeAsync').mockImplementation(((...args: Parameters<typeof original>): unknown => {
+      if (firstCall) {
+        firstCall = false
+        return original(...args)
+      }
+      throw new Error('internal clone boom')
+    }) as typeof original)
 
     const result = await manager.createSnapshotAsync(data, { onError: () => true } as never)
 

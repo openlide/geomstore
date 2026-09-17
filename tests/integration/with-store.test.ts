@@ -370,6 +370,52 @@ describe('withPageStore - Page集成', () => {
       expect(mockSetData).not.toHaveBeenCalled()
     })
 
+    it.each([false, true])('BUG-6: onUnload retains bindings until the user hook finishes (throws=%s)', (throws) => {
+      const error = new Error('user onUnload failed')
+      const store = createStore({
+        state: { count: 0 },
+        getters: { double: (state) => state.count * 2 },
+        actions: {
+          add(amount: number) { this.state.count += amount },
+        },
+      })
+      const onUnload = jest.fn(function (this: any) {
+        expect(this.__geomUnbinds.length).toBeGreaterThan(0)
+        this.addOnUnload(3)
+        expect(this.data).toEqual({ count: 3, double: 6 })
+        if (throws) throw error
+      })
+      const config = withPageStore(store, {
+        mapState: ['count'],
+        mapGetters: ['double'],
+        mapActions: { addOnUnload: 'add' },
+      })({ data: {}, onLoad: jest.fn(), onUnload })
+      const setData = jest.fn(function (this: any, updates: Record<string, unknown>) {
+        Object.assign(this.data, updates)
+      })
+      const instance: any = { data: {}, setData }
+      config.onLoad.call(instance)
+
+      let caught: unknown
+      try {
+        config.onUnload.call(instance)
+      } catch (cause) {
+        caught = cause
+      }
+      expect(caught).toBe(throws ? error : undefined)
+      expect(onUnload).toHaveBeenCalledTimes(1)
+      expect(onUnload.mock.contexts[0]).toBe(instance)
+      expect(store.state.count).toBe(3)
+      expect(instance.addOnUnload).toBeUndefined()
+      expect(instance.__geomUnbinds).toEqual([])
+
+      setData.mockClear()
+      store.setState('count', 10)
+      expect(setData).not.toHaveBeenCalled()
+      expect(instance.data).toEqual({ count: 3, double: 6 })
+      store.destroy()
+    })
+
     it('INTEGRATION-016: 应该调用原始的onLoad', () => {
       const originalOnLoad = jest.fn()
       const store = createStore({
@@ -635,6 +681,58 @@ describe('withComponentStore - Component集成', () => {
       store.setState('count', 10)
 
       expect(mockSetData).not.toHaveBeenCalled()
+    })
+
+    it.each([false, true])('BUG-6: detached retains bindings until the user hook finishes (throws=%s)', (throws) => {
+      const error = new Error('user detached failed')
+      const store = createStore({
+        state: { count: 0 },
+        getters: { double: (state) => state.count * 2 },
+        actions: {
+          add(amount: number) { this.state.count += amount },
+        },
+      })
+      const detached = jest.fn(function (this: any) {
+        expect(this.__geomUnbinds.length).toBeGreaterThan(0)
+        // Exercise both the framework-installed method and the integration's methods copy.
+        this.addOnDetach(1)
+        this.methods.addOnDetach(2)
+        expect(this.data).toEqual({ count: 3, double: 6 })
+        if (throws) throw error
+      })
+      const ownMethod = jest.fn()
+      const config = withComponentStore(store, {
+        mapState: ['count'],
+        mapGetters: ['double'],
+        mapActions: { addOnDetach: 'add' },
+      })({ data: {}, methods: { ownMethod }, lifetimes: { attached: jest.fn(), detached } })
+      const setData = jest.fn(function (this: any, updates: Record<string, unknown>) {
+        Object.assign(this.data, updates)
+      })
+      // WeChat exposes configured methods directly on the instance.
+      const instance: any = { ...config.methods, methods: config.methods, data: {}, setData }
+      config.lifetimes?.attached?.call(instance)
+
+      let caught: unknown
+      try {
+        config.lifetimes?.detached?.call(instance)
+      } catch (cause) {
+        caught = cause
+      }
+      expect(caught).toBe(throws ? error : undefined)
+      expect(detached).toHaveBeenCalledTimes(1)
+      expect(detached.mock.contexts[0]).toBe(instance)
+      expect(store.state.count).toBe(3)
+      expect(instance.methods.addOnDetach).toBeUndefined()
+      expect(instance.methods.ownMethod).toBe(ownMethod)
+      expect(config.methods.addOnDetach).toBeDefined()
+      expect(instance.__geomUnbinds).toEqual([])
+
+      setData.mockClear()
+      store.setState('count', 10)
+      expect(setData).not.toHaveBeenCalled()
+      expect(instance.data).toEqual({ count: 3, double: 6 })
+      store.destroy()
     })
 
     it('INTEGRATION-028: 应该调用原始的attached', () => {

@@ -36,7 +36,6 @@ interface ThrottleState {
   pendingArgs: unknown[] | null
   timer: ReturnType<typeof setTimeout> | null
 }
-
 /**
  * 创建节流装饰器
  *
@@ -69,20 +68,22 @@ export function withThrottle(interval: number = 300, options: ThrottleDecoratorO
     leading = true
   }
 
-  // 按宿主 + 方法名隔离状态：同一装饰器实例装饰多个方法时互不干扰
-  const stateMap = new WeakMap<object, Map<string, ThrottleState>>()
+  // 按宿主 + 方法键隔离状态：同一装饰器实例装饰多个方法时互不干扰。
+  // 键保留原始 propertyKey（含 Symbol 身份）：String() 折叠会让同名 Symbol
+  // 方法互吞调用。宿主包含函数（类/静态方法场景）。
+  const stateMap = new WeakMap<object, Map<string | symbol, ThrottleState>>()
 
   return function (_target: unknown, propertyKey: string | symbol, descriptor: PropertyDescriptor): PropertyDescriptor {
     const originalMethod = descriptor.value
-    const methodKey = String(propertyKey)
+    const methodKey = propertyKey
     const isAsyncMethod = isAsyncFunction(originalMethod)
     let observesPromise = false
 
     descriptor.value = function (this: unknown, ...args: unknown[]) {
       const now = Date.now()
 
-      // 宿主非对象：状态无法持久化，直接放行执行（不跨调用串扰）
-      if (typeof this !== 'object' || this === null) {
+      // 宿主非对象/函数：状态无法持久化，直接放行执行（不跨调用串扰）
+      if ((typeof this !== 'object' && typeof this !== 'function') || this === null) {
         return originalMethod.apply(this, args)
       }
 

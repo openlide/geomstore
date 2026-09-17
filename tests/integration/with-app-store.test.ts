@@ -256,20 +256,38 @@ describe('withAppStore', () => {
   })
 
   describe('生命周期管理', () => {
-    it('应该在 onHide 时清理所有订阅', () => {
+    it.each([false, true])('onHide preserves actions and subscriptions, including when the user hook throws (throws=%s)', (throws) => {
+      const error = new Error('user onHide failed')
+      const onHide = jest.fn(function (this: any) {
+        this.increment()
+        expect(this.globalData.count).toBe(1)
+        expect(this.globalData.doubleCount).toBe(2)
+        if (throws) throw error
+      })
       const app: any = withAppStore(store, {
         mapState: ['count'],
-        mapGetters: ['doubleCount']
-      })(mockAppConfig)
-      
+        mapGetters: ['doubleCount'],
+        mapActions: ['increment'],
+      })({ ...mockAppConfig, onHide })
+
       app.onLaunch()
-      expect(app.globalData).toBeDefined()
-      
-      app.onHide()
-      
+      let caught: unknown
+      try {
+        app.onHide()
+      } catch (cause) {
+        caught = cause
+      }
+      expect(caught).toBe(throws ? error : undefined)
+      expect(onHide).toHaveBeenCalledTimes(1)
+      expect(onHide.mock.contexts[0]).toBe(app)
+
+      // App bindings live for the application lifetime, not just until onHide.
+      app.increment()
+      expect(app.globalData.count).toBe(2)
+      expect(app.globalData.doubleCount).toBe(4)
       store.dispatch('increment')
-      // globalData 应该不再更新（虽然由于同步执行，可能在清理前已经更新）
-      // 关键是订阅应该被清理
+      expect(app.globalData.count).toBe(3)
+      expect(app.globalData.doubleCount).toBe(6)
     })
 
     it('应该在 onHide 时调用原始 onHide', () => {

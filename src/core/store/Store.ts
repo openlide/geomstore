@@ -48,7 +48,7 @@ import { BatchManager } from './BatchManager.js'
 import type { ProxyCache, InternalStateProtectionConfig } from './types.js'
 import { deepCloneState, deepFreezeState, isProduction } from './utils.js'
 import { defineStateVersion } from './stateVersion.js'
-import { createDirtyTrackingProxy } from './dirtyTracking.js'
+import { createDirtyTrackingProxy, createDirtyTrackingCache, type DirtyTrackingCache } from './dirtyTracking.js'
 import { GEOMSTORE_BRAND, createPluginUninstaller } from './pluginSupport.js'
 import { AsyncBatchNotifier } from '../performance/AsyncBatchNotifier.js'
 
@@ -104,8 +104,8 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
   /** 状态变更计数器（脏跟踪：供 onlyOnChange 模式判断 dispatch 是否修改了状态） */
   private _mutationCount = 0
 
-  /** 脏跟踪代理缓存（仅 onlyOnChange 模式使用，$replaceState 时重建） */
-  private _dirtyProxyCache: WeakMap<object, object> = new WeakMap()
+  /** Action 脏跟踪缓存（代理与原对象的双向映射；$replaceState 时重建） */
+  private _dirtyProxyCache: DirtyTrackingCache = createDirtyTrackingCache()
 
   /** Actions集合（公开） */
   public actions!: A
@@ -369,9 +369,11 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
     this._hooks.emit('beforeReplaceState', resolvedState)
 
     this._withInternalAccess(() => {
-      // 清理旧状态缓存
+      // 整树替换：旧状态的键（含 action 内已 delete 的键）不再存在于新状态，
+      // 直接整表清空再由下方按新状态回填。仅按旧状态键清理会漏掉
+      // 「已从状态删除但仍在缓存中」的键，TTL=0 时过期值会被永久读到
       if (this._cacheManager.enabled) {
-        this._cacheManager.clearOldState(Object.keys(this._state) as Array<keyof S>)
+        this._cacheManager.invalidate()
       }
 
       // 深拷贝新状态，防止外部修改 newState 影响 Store 内部状态
@@ -390,7 +392,7 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
     // 清除所有 Proxy 缓存（状态保护 + 脏跟踪均需重建）
     this._rebuildStateProxyManager()
     // 脏跟踪代理缓存指向旧状态对象树，一并重建
-    this._dirtyProxyCache = new WeakMap()
+    this._dirtyProxyCache = createDirtyTrackingCache()
     this._mutationCount++
     // 整树替换：所有键均视为已变更
     Object.keys(this._state).forEach((key) => {
@@ -832,17 +834,8 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
     }
   }
 
-  /**
-   * 获取 action 上下文使用的状态
-   *
-   * - 默认模式：返回原始状态引用（零开销，与历史行为一致）
-   * - onlyOnChange 模式：返回脏跟踪代理，写入（含数组变异方法）会递增变更计数，
-   *   供 ActionManager 判断是否需要通知
-   */
+  /** Action 写入始终跟踪脏键；onlyOnChange 额外使用变更计数决定是否通知。 */
   private _getActionState(): S {
-    if (!this._notifyOnlyOnChange) {
-      return this._state
-    }
     return this._createDirtyTrackingProxy(this._state) as S
   }
 
@@ -861,10 +854,19 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
     })
   }
 
-  /** 创建允许写入的脏跟踪代理（实现已拆至 ./dirtyTracking.js） */
+  /** 创建允许写入的脏跟踪代理（实现已拆至 ./dirtyTracking.js）
+   *
+   *  onMutate 回调同时做两件事：
+   *  1. 递增变更计数（onlyOnChange 判断 dispatch/batch 是否修改了状态）
+   *  2. 标记受影响的顶层状态键（dirtyKeys）——action 直接变异嵌套对象/数组/Map/Set
+   *     时不再只有计数、没有脏键，集成层的批量/脏过滤路径（isStateKeyDirty）才能跳过未变化映射
+   */
   private _createDirtyTrackingProxy(target: object): object {
-    return createDirtyTrackingProxy(target, this._dirtyProxyCache, () => {
+    return createDirtyTrackingProxy(target, this._dirtyProxyCache, (rootKeys) => {
       this._mutationCount++
+      for (const rootKey of rootKeys) {
+        this._dirtyKeys.add(rootKey as keyof S)
+      }
     })
   }
 

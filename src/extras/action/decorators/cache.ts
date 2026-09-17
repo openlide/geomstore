@@ -193,14 +193,15 @@ function defaultKeyFn(...args: unknown[]): string {
 export function withCache(options: CacheDecoratorOptions = {}): MethodDecorator {
   const { ttl = 5000, keyFn } = options
 
-  // 按宿主对象隔离缓存，避免多实例共享缓存条目。
+  // 按宿主对象隔离缓存，避免多实例共享缓存条目。宿主包含函数（类/静态方法场景）。
   // entry.pending：异步方法进行中的 Promise（in-flight 去重标记），
   // 并发的同参调用复用同一 Promise，避免重复执行（如重复发请求）
   const store = new WeakMap<object, Map<string, { value: unknown; expiry: number; pending?: Promise<unknown> }>>()
+  let nextMethodId = 0
 
   const getCache = (host: unknown): Map<string, { value: unknown; expiry: number; pending?: Promise<unknown> }> => {
-    if (typeof host !== 'object' || host === null) {
-      // 宿主不是对象时返回一次性 Map（不跨调用串扰）
+    if ((typeof host !== 'object' && typeof host !== 'function') || host === null) {
+      // 宿主不是对象或函数时返回一次性 Map（不跨调用串扰）
       return new Map()
     }
     let cache = store.get(host)
@@ -213,6 +214,8 @@ export function withCache(options: CacheDecoratorOptions = {}): MethodDecorator 
 
   return function (_target: unknown, propertyKey: string | symbol, descriptor: PropertyDescriptor): PropertyDescriptor {
     const originalMethod = descriptor.value
+    // 每次装饰独立编号，避免复用工厂时不同方法（含同描述 Symbol）共享参数缓存。
+    const methodKey = `${++nextMethodId}::`
     // 静态判别原方法异步性（原型比较，压缩安全）；运行时观测兜底非 async 但返回 Promise 的方法
     const isAsyncMethod = isAsyncFunction(originalMethod)
     let observesPromise = false
@@ -243,9 +246,6 @@ export function withCache(options: CacheDecoratorOptions = {}): MethodDecorator 
 
     descriptor.value = function (this: unknown, ...args: unknown[]) {
       const cache = getCache(this)
-      // 缓存键携带方法名前缀：同一装饰器实例（工厂返回值复用）装饰多个方法时，
-      // 仅按参数生成的键会让方法 B 命中方法 A 的缓存，静默返回错误数据
-      const methodKey = `${String(propertyKey)}::`
       const key = `${methodKey}${keyFn ? keyFn(...args) : defaultKeyFn(...args)}`
       const now = Date.now()
 

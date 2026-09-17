@@ -15,6 +15,73 @@ describe('timeTravelPlugin', () => {
     jest.restoreAllMocks()
   })
 
+  it('audit regression: returned snapshots cannot pollute history or restored state', () => {
+    const store = createStore({ name: 'snapshot-isolation', state: { user: { name: 'original' }, items: [{ value: 1 }] } })
+    const uninstall = store.use(timeTravelPlugin())
+    try {
+      const api = (store as any).__timeTravel__
+      store.setState('user', { name: 'current' })
+      const snapshots = api.getSnapshots()
+      snapshots[0].user.name = 'polluted'
+      snapshots[0].items[0].value = 99
+      snapshots.pop()
+      api.goTo(0)
+      expect(store.getState().user.name).toBe('original')
+      expect(store.getState().items[0].value).toBe(1)
+      expect(api.getSnapshots()[0].user.name).toBe('original')
+      expect(api.getSnapshotCount()).toBe(2)
+    } finally {
+      uninstall()
+    }
+  })
+
+  it('audit regression: snapshot reads preserve supported types and opaque values', () => {
+    class Opaque {
+      value = 1
+    }
+    const opaque = new Opaque()
+    const callback = () => 1
+    const cycle: any = { value: 1 }
+    cycle.self = cycle
+    const store = createStore({
+      name: 'snapshot-types',
+      state: {
+        timestamp: 'state timestamp',
+        cycle,
+        date: new Date(123),
+        regexp: /test/gi,
+        map: new Map([['key', { value: 1 }]]),
+        set: new Set([{ value: 1 }]),
+        opaque,
+        callback,
+      },
+    })
+    const uninstall = store.use(timeTravelPlugin())
+    try {
+      const api = (store as any).__timeTravel__
+      const first = api.getSnapshots()[0]
+      const second = api.getSnapshots()[0]
+      expect(first.timestamp).toBe('state timestamp')
+      expect(first.cycle.self).toBe(first.cycle)
+      expect(first.opaque).toBe(opaque)
+      expect(first.callback).toBe(callback)
+      expect(first.regexp).toBeInstanceOf(RegExp)
+      expect(first.regexp.flags).toBe('gi')
+      first.cycle.value = 2
+      first.date.setTime(456)
+      first.map.get('key').value = 2
+      ;[...first.set][0].value = 2
+      expect(second.cycle.value).toBe(1)
+      expect(second.date.getTime()).toBe(123)
+      expect(second.map.get('key').value).toBe(1)
+      expect([...second.set][0].value).toBe(1)
+      api.goTo(0)
+      expect(store.getState().cycle.value).toBe(1)
+    } finally {
+      uninstall()
+    }
+  })
+
   it('should install time travel plugin', () => {
     const store = createStore({
       name: 'test',

@@ -1,6 +1,6 @@
 # GeomStore
 
-面向**微信小程序优先**的 TypeScript 状态管理库：核心极简、可选能力下沉 extras，按需引入即可让主包只带真正用到的代码。
+面向**原生微信小程序优先**的 TypeScript 状态管理库：核心极简、可选能力下沉 extras，按需引入即可让主包只带真正用到的代码。
 
 - **核心 / extras 分层**：主入口与 `core` 只含运行必需 API；快照、选择器、Action 增强、性能监控、错误处理、企业集成等全部通过 `extras/*` 子路径按需引入
 - **小程序原生友好**：内置 `withPageStore` / `withComponentStore` / `withAppStore` 集成，页面卸载自动退订；环境差异（`wx.request`、同步存储、基础库缺失的 `console.group`）均已适配

@@ -1,61 +1,159 @@
-/**
- * GeomStore - onlyOnChange 模式的脏跟踪代理
- *
- * 自 Store.ts 拆出：创建允许写入的脏跟踪代理（递归包装嵌套对象，
- * WeakMap 缓存保证引用稳定）；set / deleteProperty / defineProperty 三个写入陷阱
- * 统一经 onMutate 通知宿主递增变更计数。
- *
- * @module store/dirtyTracking
- */
-
+/** Writable action proxies: report mutations and every affected top-level key. */
 import { isBuiltinObject } from './StateProxy.js'
 
+export interface DirtyTrackingCache {
+  proxies: WeakMap<object, object>
+  targets: WeakMap<object, object>
+}
+
+export function createDirtyTrackingCache(): DirtyTrackingCache {
+  return { proxies: new WeakMap(), targets: new WeakMap() }
+}
+
 /**
- * 创建允许写入的脏跟踪代理
- *
- * @param target - 被包装的对象
- * @param cache - 引用稳定性缓存（同一对象复用同一 Proxy；$replaceState 时由宿主重建）
- * @param onMutate - 任一写入发生时回调，宿主据此递增变更计数
+ * One proxy per object, not per access path: aliases retain reference identity.
+ * Resolve ownership from the current root on nested writes, rather than caching
+ * the first path read. This includes unread aliases and handles cycles, reparenting
+ * and detached references (also after setState/$patch) without stale parent links.
+ * Writes visit the reachable graph per top-level key to resolve current owners.
+ * Accessors are not evaluated during ownership lookup, avoiding unrelated effects.
  */
-export function createDirtyTrackingProxy(target: object, cache: WeakMap<object, object>, onMutate: () => void): object {
-  const cached = cache.get(target)
-  if (cached) {
-    return cached
+export function createDirtyTrackingProxy(root: object, cache: DirtyTrackingCache, onMutate: (rootKeys: Iterable<string | symbol>) => void): object {
+  const unwrap = (value: unknown): unknown => (value !== null && typeof value === 'object' ? (cache.targets.get(value) ?? value) : value)
+
+  const contains = (value: unknown, target: object, seen: Set<object>): boolean => {
+    value = unwrap(value)
+    if (value === target) return true
+    if (value === null || typeof value !== 'object' || seen.has(value)) return false
+    seen.add(value)
+    if (value instanceof Map) {
+      for (const [key, child] of value) {
+        if (contains(key, target, seen) || contains(child, target, seen)) return true
+      }
+    } else if (value instanceof Set) {
+      for (const child of value) {
+        if (contains(child, target, seen)) return true
+      }
+    } else if (isBuiltinObject(value)) {
+      return false
+    }
+    for (const key of Reflect.ownKeys(value)) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key)
+      if (descriptor && 'value' in descriptor && contains(descriptor.value, target, seen)) return true
+    }
+    return false
   }
 
-  const proxy = new Proxy(target, {
-    get(obj: object, key: string | symbol): unknown {
-      const value = (obj as Record<string | symbol, unknown>)[key]
-      if (typeof value !== 'object' || value === null) {
-        return value
-      }
-      // 内建对象（Date/Map/Set 等）不包装：其方法以内部槽位为 receiver，
-      // 经 Proxy 调用会抛 "this is not a Date/Map object"（与 StateProxy 同契约：
-      // 内建对象内部的变异不计入 mutationCount）
-      if (isBuiltinObject(value)) {
-        return value
-      }
-      return createDirtyTrackingProxy(value, cache, onMutate)
-    },
-    set(obj: object, key: string | symbol, value: unknown): boolean {
-      (obj as Record<string | symbol, unknown>)[key] = value
-      onMutate()
-      return true
-    },
-    deleteProperty(obj: object, key: string | symbol): boolean {
-      delete (obj as Record<string | symbol, unknown>)[key]
-      onMutate()
-      return true
-    },
-    defineProperty(obj: object, key: string | symbol, descriptor: PropertyDescriptor): boolean {
-      // defineProperty 不经过 set 陷阱：缺此陷阱时 action 内经
-      // Object.defineProperty 的写入不递增计数，onlyOnChange 模式漏通知
-      Object.defineProperty(obj, key, descriptor)
-      onMutate()
-      return true
-    },
-  })
+  const report = (target: object, key?: string | symbol): void => {
+    const keys = new Set<string | symbol>()
+    if (target === root && key !== undefined) {
+      keys.add(key)
+    }
+    // Even a root mutation can affect a top-level alias that points back to root.
+    for (const rootKey of Reflect.ownKeys(root)) {
+      const descriptor = Object.getOwnPropertyDescriptor(root, rootKey)
+      if (descriptor && 'value' in descriptor && contains(descriptor.value, target, new Set())) keys.add(rootKey)
+    }
+    onMutate(keys)
+  }
 
-  cache.set(target, proxy)
-  return proxy
+  const wrap = (value: unknown): unknown => {
+    value = unwrap(value)
+    if (value === null || typeof value !== 'object') return value
+    const target = value
+    const collection = target instanceof Map || target instanceof Set
+    // These builtins still retain their existing raw-reference contract.
+    if (!collection && isBuiltinObject(target)) return target
+    const cached = cache.proxies.get(target)
+    if (cached) return cached
+
+    const methods = new Map<string | symbol, unknown>()
+    const proxy = new Proxy(target, {
+      get(obj, key) {
+        const descriptor = Object.getOwnPropertyDescriptor(obj, key)
+        // Proxy invariants require the exact value for locked data properties.
+        if (descriptor && !descriptor.configurable && 'value' in descriptor && !descriptor.writable) return descriptor.value
+        if (collection) {
+          if (methods.has(key)) return methods.get(key)
+          const method = collectionMethod(obj as Map<unknown, unknown> | Set<unknown>, key, proxy)
+          if (method !== undefined) {
+            methods.set(key, method)
+            return method
+          }
+        }
+        return wrap(Reflect.get(obj, key, obj))
+      },
+      set(obj, key, next) {
+        const success = Reflect.set(obj, key, unwrap(next))
+        if (success) report(obj, key)
+        return success
+      },
+      deleteProperty(obj, key) {
+        const success = Reflect.deleteProperty(obj, key)
+        if (success) report(obj, key)
+        return success
+      },
+      defineProperty(obj, key, descriptor) {
+        const normalized = 'value' in descriptor ? { ...descriptor, value: unwrap(descriptor.value) } : descriptor
+        const success = Reflect.defineProperty(obj, key, normalized)
+        if (success) report(obj, key)
+        return success
+      },
+    })
+    cache.proxies.set(target, proxy)
+    cache.targets.set(proxy, target)
+    return proxy
+  }
+
+  // Collection methods need raw receivers for internal slots, but all values
+  // returned to an action must be wrapped, including iterators and forEach.
+  const collectionMethod = (obj: Map<unknown, unknown> | Set<unknown>, key: string | symbol, proxy: object): unknown => {
+    if (key === 'set' && obj instanceof Map) {
+      return (entryKey: unknown, value: unknown) => {
+        obj.set(unwrap(entryKey), unwrap(value))
+        report(obj)
+        return proxy
+      }
+    }
+    if (key === 'add' && obj instanceof Set) {
+      return (value: unknown) => {
+        obj.add(unwrap(value))
+        report(obj)
+        return proxy
+      }
+    }
+    if (key === 'delete') {
+      return (value: unknown) => {
+        const deleted = obj.delete(unwrap(value))
+        if (deleted) report(obj)
+        return deleted
+      }
+    }
+    if (key === 'clear') {
+      return () => {
+        const changed = obj.size > 0
+        obj.clear()
+        if (changed) report(obj)
+      }
+    }
+    if (key === 'has') return (value: unknown) => obj.has(unwrap(value))
+    if (key === 'get' && obj instanceof Map) return (value: unknown) => wrap(obj.get(unwrap(value)))
+    if (key === 'forEach') {
+      return (callback: (value: unknown, key: unknown, collection: object) => void, thisArg?: unknown) => {
+        obj.forEach((value, entryKey) => callback.call(thisArg, wrap(value), wrap(entryKey), proxy))
+      }
+    }
+    if (key === Symbol.iterator || key === 'entries' || key === 'keys' || key === 'values') {
+      return function* () {
+        const entries = key === 'entries' || (key === Symbol.iterator && obj instanceof Map)
+        const iterator = key === 'keys' ? obj.keys() : entries ? obj.entries() : obj.values()
+        for (const item of iterator) {
+          yield entries ? (item as unknown[]).map(wrap) : wrap(item)
+        }
+      }
+    }
+    return undefined
+  }
+
+  return wrap(root) as object
 }

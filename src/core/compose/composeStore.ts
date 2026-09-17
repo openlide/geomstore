@@ -11,6 +11,7 @@ import type { Plugin } from '../../types/plugin.js'
 import type { ComposeOptions, StoreTreeNode, StoreLike, ExtractStates, ExtractActions, ExtractGetters } from '../../types/compose.js'
 import { HookSystem } from '../hooks/index.js'
 import { isProduction } from '../store/utils.js'
+import { getStateVersion } from '../store/stateVersion.js'
 import { ALL_HOOK_NAMES, dispatchByNamespace, findTargetStoreWithKey, parseActionName } from './helpers.js'
 import { mergeNamespaced, mergeStateMaps } from './merge.js'
 
@@ -22,7 +23,11 @@ import { mergeNamespaced, mergeStateMaps } from './merge.js'
  */
 class ComposedStore<S extends State = State> implements Store<S> {
   readonly name: string
-  readonly actions: Record<string, (...args: unknown[]) => unknown> = {}
+  /**
+   * 合并后的 action 注册表：键与 dispatch 的命名规则一致（命名空间模式为
+   * `storeName/actionName`，非命名空间模式为裸名，同名取第一个 store）。
+   */
+  readonly actions: Record<string, (...args: unknown[]) => unknown>
 
   /** 实例级钩子系统 - 组合 Store 透传到子 Store */
   public readonly hooks: HookSystem
@@ -62,6 +67,15 @@ class ComposedStore<S extends State = State> implements Store<S> {
   private _mergedCacheFrozen: Record<string, unknown> | null = null
   /** 合并缓存是否启用：子 store 订阅失效回调建立失败时降级为每次读取重合并，保证不返回陈旧状态 */
   private _mergedCacheEnabled: boolean = true
+  /**
+   * 缓存建立时各子 store 的状态版本号快照：读取时逐一比对，不一致即失效。
+   *
+   * 子 store 的失效回调依赖「通知」，但批处理会推迟通知、notify:{async:true} 会
+   * 延迟通知——仅靠通知失效会让批内的读改写读到缓存里的过期值（丢失更新）。
+   * 版本号 getter 在子 store 的每条写入路径上同步递增，此处读取时校验
+   * 不受通知时序影响。无版本号的子 store（含嵌套组合）每次读取时保守失效。
+   */
+  private _cachedChildVersions: Array<number | undefined> = []
 
   constructor(stores: Store[], options: ComposeOptions = {}) {
     this._stores = stores
@@ -105,6 +119,19 @@ class ComposedStore<S extends State = State> implements Store<S> {
     for (const store of stores) {
       this.stores[store.name] = store
     }
+
+    // 合并子 store 的 action 注册表，键与 dispatch 命名规则一致，
+    // 使外层组合能按 child.actions 路由嵌套组合的裸名 dispatch
+    const mergedActions: Record<string, (...args: unknown[]) => unknown> = {}
+    for (const store of stores) {
+      for (const actionName of Object.keys(store.actions ?? {})) {
+        const mappedKey = this._namespace ? `${store.name}/${actionName}` : actionName
+        if (!Object.prototype.hasOwnProperty.call(mergedActions, mappedKey)) {
+          mergedActions[mappedKey] = (...args: unknown[]) => store.dispatch(actionName, ...args)
+        }
+      }
+    }
+    this.actions = mergedActions
 
     // 钩子桥接：子 store 触发的生命周期事件在组合层同步重发。
     // 此前 hooks 只在 destroy 时被 clear，从不接收任何事件——通过
@@ -191,6 +218,24 @@ class ComposedStore<S extends State = State> implements Store<S> {
   }
 
   /**
+   * 读取前校验合并缓存新鲜度：逐一比对各子 store 当前状态版本号与缓存建立时的
+   * 快照，任一不一致即失效。覆盖批处理推迟通知、异步通知未 flush 等窗口——
+   * 这些场景下子 store 状态已变但失效回调尚未执行。
+   */
+  private _ensureMergedCacheFresh(): void {
+    if (!this._mergedCache && !this._mergedCacheFrozen) {
+      return
+    }
+    for (let i = 0; i < this._stores.length; i++) {
+      const current = getStateVersion(this._stores[i].state)
+      if (current === undefined || current !== this._cachedChildVersions[i]) {
+        this._invalidateMergedCache()
+        return
+      }
+    }
+  }
+
+  /**
    * 命名空间模式：按 store.name 归并各子 store 视图，语义与 getState/state/$snapshot 共用。
    *
    * 合并策略已拆至 ./merge.js
@@ -205,16 +250,20 @@ class ComposedStore<S extends State = State> implements Store<S> {
       if (!this._mergedCacheEnabled) {
         return this._mergeNamespaced((store) => store.getState() as Record<string, unknown>) as S
       }
+      this._ensureMergedCacheFresh()
       if (!this._mergedCache) {
         this._mergedCache = this._mergeNamespaced((store) => store.getState() as Record<string, unknown>)
+        this._recordChildVersions()
       }
       return this._mergedCache as S
     }
     if (!this._mergedCacheEnabled) {
       return this._mergeStateMaps((store) => store.getState() as Record<string, unknown>) as S
     }
+    this._ensureMergedCacheFresh()
     if (!this._mergedCache) {
       this._mergedCache = this._mergeStateMaps((store) => store.getState() as Record<string, unknown>)
+      this._recordChildVersions()
     }
     return this._mergedCache as S
   }
@@ -234,8 +283,10 @@ class ComposedStore<S extends State = State> implements Store<S> {
       if (!this._mergedCacheEnabled) {
         return this._mergeNamespaced((store) => store.state as unknown as Record<string, unknown>, true) as S
       }
+      this._ensureMergedCacheFresh()
       if (!this._mergedCacheFrozen) {
         this._mergedCacheFrozen = this._mergeNamespaced((store) => store.state as unknown as Record<string, unknown>, true)
+        this._recordChildVersions()
       }
       return this._mergedCacheFrozen as S
     }
@@ -245,10 +296,17 @@ class ComposedStore<S extends State = State> implements Store<S> {
     if (!this._mergedCacheEnabled) {
       return Object.freeze(this._mergeStateMaps((store) => store.state as unknown as Record<string, unknown>)) as S
     }
+    this._ensureMergedCacheFresh()
     if (!this._mergedCacheFrozen) {
       this._mergedCacheFrozen = Object.freeze(this._mergeStateMaps((store) => store.state as unknown as Record<string, unknown>))
+      this._recordChildVersions()
     }
     return this._mergedCacheFrozen as S
+  }
+
+  /** 记录当前各子 store 的状态版本号，供读取时校验缓存新鲜度 */
+  private _recordChildVersions(): void {
+    this._cachedChildVersions = this._stores.map((store) => getStateVersion(store.state))
   }
 
   setState<K extends keyof S>(key: K, value: S[K]): void {

@@ -39,7 +39,33 @@ export function compareSnapshots<T1, T2>(snapshot1: SnapshotResult<T1>, snapshot
   const MAX_COMPARE_DEPTH = 100
   const changes: Array<{ path: string; oldValue: unknown; newValue: unknown; kind?: 'changed' | 'added' | 'removed' }> = []
 
+  // 已对比过的「对象对」登记表：逐路径调用 compare 时，循环引用会让同一对对象
+  // （如 root 与 root.self 克隆后互指）反复进入比较，原先仅靠深度护栏截断会把
+  // 内容完全相同的循环快照误报为「有变化」。按「对象对」记忆而非单侧对象记忆，
+  // 才不会把「同一对象 vs 不同伙伴」的合法二次比较误判为环。
+  const comparedPairs = new WeakMap<object, WeakSet<object>>()
+
   const compare = (obj1: unknown, obj2: unknown, path: string, depth: number): void => {
+    if (obj1 !== null && obj2 !== null && typeof obj1 === 'object' && typeof obj2 === 'object') {
+      let partners = comparedPairs.get(obj1)
+      if (partners?.has(obj2)) return
+      if (!partners) {
+        partners = new WeakSet<object>()
+        comparedPairs.set(obj1, partners)
+      }
+      partners.add(obj2)
+      try {
+        compareValues(obj1, obj2, path, depth)
+      } finally {
+        // Only active ancestors are cycles; shared children still need diffs at each path.
+        partners.delete(obj2)
+      }
+      return
+    }
+    compareValues(obj1, obj2, path, depth)
+  }
+
+  const compareValues = (obj1: unknown, obj2: unknown, path: string, depth: number): void => {
     // 深度保护：超出最大深度后停止递归，避免深层嵌套导致栈溢出
     if (depth > MAX_COMPARE_DEPTH) {
       changes.push({ path, oldValue: obj1, newValue: obj2 })
@@ -226,7 +252,15 @@ export function compareSnapshots<T1, T2>(snapshot1: SnapshotResult<T1>, snapshot
     for (const key of allKeys) {
       /* istanbul ignore next -- path 自 compare(data, data, 'root') 起算，永不为空 */
       const newPath = path ? `${path}.${key}` : key
-      compare((obj1 as Record<string, unknown>)[key], (obj2 as Record<string, unknown>)[key], newPath, depth + 1)
+      const has1 = Object.prototype.hasOwnProperty.call(obj1, key)
+      const has2 = Object.prototype.hasOwnProperty.call(obj2, key)
+      if (!has1) {
+        changes.push({ path: newPath, oldValue: undefined, newValue: (obj2 as Record<string, unknown>)[key], kind: 'added' })
+      } else if (!has2) {
+        changes.push({ path: newPath, oldValue: (obj1 as Record<string, unknown>)[key], newValue: undefined, kind: 'removed' })
+      } else {
+        compare((obj1 as Record<string, unknown>)[key], (obj2 as Record<string, unknown>)[key], newPath, depth + 1)
+      }
     }
   }
 
