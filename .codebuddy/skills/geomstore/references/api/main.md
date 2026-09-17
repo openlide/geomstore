@@ -2,7 +2,7 @@
 
 > **本文件由 `scripts/generate-skill-api-reference.mjs` 从 `dist/**/*.d.ts` 生成，请勿手工编辑。**
 >
-> - 来源版本：`@openlide/geomstore@0.5.0`
+> - 来源版本：`@openlide/geomstore@0.5.1`
 > - 内容来源：构建产物类型声明（随 npm 包发布，与安装版本必然一致）
 > - 重新生成：`pnpm build && pnpm skill:api`
 > - 引入路径：`.`
@@ -321,8 +321,9 @@ declare class ComposedStore<S extends State = State> implements Store<S> {
      *  且 _childSubscriptionsReady 保持 true 使重新订阅无法重建通知（静默失效）。
      *  子 store 订阅与构造期建立对称，统一在 destroy() 释放。
      */
+    private _createUnsubscribe;
     private _releaseListener;
-    use(plugin: Plugin): () => void;
+    use(plugin: Plugin<S> | Plugin<State>): () => void;
     /**
      * 销毁组合 Store
      *
@@ -991,6 +992,13 @@ export declare class Store<S extends State = State, A extends Actions = Actions,
     private _asyncNotifier?;
     /** 脏键集合：记录自上次通知以来发生变更的状态键，供集成层精确跳过未变化的映射 */
     private _dirtyKeys;
+    /**
+     * 通知期间新产生的脏键（重入写入）：回调内写入会触发下一轮通知，
+     * 其脏键不能随本轮收尾一起清空，否则下一轮会被集成层当作「未变化」跳过
+     */
+    private _deferredDirtyKeys;
+    /** 是否正在通知：决定脏键写入是否需要同时记入下一轮 */
+    private _notifying;
     /** 是否仅在状态实际变化时通知（默认 false） */
     private _notifyOnlyOnChange;
     /** 状态变更计数器（脏跟踪：供 onlyOnChange 模式判断 dispatch 是否修改了状态） */
@@ -1003,6 +1011,8 @@ export declare class Store<S extends State = State, A extends Actions = Actions,
     private _plugins;
     /** 插件卸载函数集合 */
     private _pluginUninstallFns;
+    /** 插件当前安装的代际令牌：卸载句柄据此识别自己是否仍对应最新一次安装 */
+    private _pluginInstallations;
     /** dispatch跟踪标记 */
     private _dispatching;
     /** batch 首层开始时的变更计数基线（onlyOnChange 模式判断批量期间是否发生变更） */
@@ -1122,7 +1132,7 @@ export declare class Store<S extends State = State, A extends Actions = Actions,
      * @returns 卸载插件的函数
      * @throws 如果 Store 已销毁
      */
-    use(plugin: PluginType<NoInfer<S>>): () => void;
+    use(plugin: PluginType<NoInfer<S>> | PluginType<State>): () => void;
     /** 创建插件卸载句柄（实现已拆至 ./pluginSupport.js） */
     private _createPluginUninstaller;
     /**
@@ -1226,6 +1236,29 @@ export declare class Store<S extends State = State, A extends Actions = Actions,
     private _onBatchEnd;
     /** 调度一次状态通知（同步或异步合并，取决于 notify.async 配置） */
     private _scheduleNotify;
+    /**
+     * 标记与补丁键共享对象引用的其他顶层键
+     *
+     * `$patch` 的 deepMerge 会就地改写被补丁对象；若该对象同时被别的顶层键引用
+     * （如 `state.current = state.list[0]`），那些键的内容同样变了却没有被标记，
+     * 只映射它们的页面将永远看不到更新。仅在补丁值为对象时做可达性扫描，
+     * 与 `$replaceState` 的「整树所有键视为已变更」相比只覆盖确实受影响的部分。
+     */
+    private _markAliasedKeys;
+    /**
+     * 判断某值可达对象中是否包含任一目标对象
+     *
+     * 迭代实现（与脏追踪代理的归属解析同口径）：不进入内建对象、不求值访问器，
+     * 命中即提前返回。
+     */
+    private _reachesAny;
+    /**
+     * 标记状态键为脏
+     *
+     * 通知进行中（含回调内的重入写入）同时记入下一轮：那部分变更会触发新一轮通知，
+     * 若只写当前集合，本轮收尾就会把它清掉，下一轮被集成层当作「未变化」跳过
+     */
+    private _markDirtyKey;
     /** 通知状态变化 */
     private _notifyListeners;
 }
@@ -1820,7 +1853,7 @@ export declare function uniqueId(prefix?: string): string;
  * `plugin` 需与 store 的状态类型匹配；状态无关的插件写作 `Plugin<State>`（如 `loggerPlugin`），
  * 对任意 Store 都适用。
  */
-export declare function usePlugin<S extends State, A extends Actions, G extends Getters<S>>(plugin: Plugin<NoInfer<S>>, store: Store<S, A, G>): () => void;
+export declare function usePlugin<S extends State, A extends Actions, G extends Getters<S>>(plugin: Plugin<NoInfer<S>> | Plugin<State>, store: Store<S, A, G>): () => void;
 ```
 
 ### `withAppStore`

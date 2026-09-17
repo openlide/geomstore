@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-09-17
+
 ### Fixed（第三轮复审）
 
 - **类实例与类型化数组的变异恢复可追踪**：上一轮为修 `#private` 方法把非普通对象整体改为原样返回，导致其内部写入既不报脏键也不计数（默认模式视图陈旧、`onlyOnChange` 完全不通知）。改为保留写陷阱，并在读取时把实例方法绑定到原始接收者；实例属性写入与类型化数组元素写入正常标记，方法调用保守标记所属键。
@@ -346,5 +348,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [0.1.1]: https://github.com/openlide/GeomStore/releases/tag/v0.1.1
 [0.1.2]: https://github.com/openlide/GeomStore/releases/tag/v0.1.2
 [0.2.0]: https://github.com/openlide/GeomStore/releases/tag/v0.2.0
-[Unreleased]: https://github.com/openlide/GeomStore/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/openlide/GeomStore/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/openlide/GeomStore/releases/tag/v0.5.1
 [0.5.0]: https://github.com/openlide/GeomStore/releases/tag/v0.5.0

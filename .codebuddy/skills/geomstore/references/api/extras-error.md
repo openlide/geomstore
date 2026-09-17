@@ -2,7 +2,7 @@
 
 > **本文件由 `scripts/generate-skill-api-reference.mjs` 从 `dist/**/*.d.ts` 生成，请勿手工编辑。**
 >
-> - 来源版本：`@openlide/geomstore@0.5.0`
+> - 来源版本：`@openlide/geomstore@0.5.1`
 > - 内容来源：构建产物类型声明（随 npm 包发布，与安装版本必然一致）
 > - 重新生成：`pnpm build && pnpm skill:api`
 > - 引入路径：`./extras/error`
@@ -103,6 +103,14 @@ export declare class ConsoleReporter implements ErrorReporter {
  * 将相似的错误聚合成组，便于分析和报告
  */
 export declare class ErrorAggregator {
+    /**
+     * 各 Store 的错误发生次数
+     *
+     * 单独按次计数：错误组会把同一站点在不同 Store 的报错合并为一条，
+     * 若按组计数求和（组 count 累加给每个受影响 Store），跨 Store 的组
+     * 会把整组次数重复计入每个 Store，byStore 之和超过 totalErrors
+     */
+    private readonly storeCounts;
     private groups;
     private readonly maxGroups;
     constructor(maxGroups?: number);
