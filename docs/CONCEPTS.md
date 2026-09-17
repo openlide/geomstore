@@ -17,18 +17,20 @@
 | --- | --- | --- |
 | `notify.clone` | 通知时是否克隆状态；关闭且状态保护关闭时，**仅当无可读写订阅者**才返回原始引用（零拷贝） | `true` |
 | `notify.async` | 微任务合并：同一 tick 内多次写入只通知一次 | `false` |
-| `notify.onlyOnChange` | 脏跟踪：dispatch / batch 期间未实际改变状态则不通知 | `false` |
+| `notify.onlyOnChange` | dispatch / batch 期间未检测到写入则不通知（依据变更计数，非内容深比较） | `false` |
 
 - **监听器只接收新状态**：`StateListener<S> = (state: S) => void`；需要前后对比请在闭包里自行保存。
 - **只读订阅**：`subscribe(listener, { readOnly: true })` 声明不写入状态，通知路径可据此做零拷贝优化。
 - **dispatch 的通知去重**：异步 action 的同步段不单独通知（其变更会被完成时的补发覆盖），`await` 之后的变更在结算时补发一次；嵌套 dispatch 仅最外层通知；dispatch 与 batch 交叉时由 batch 收尾统一通知。
-- **订阅有上限**：达上限时可配置驱逐最旧监听器或直接抛错；同一监听器重复订阅按引用计数计次（退订一份不误删其他份）。
+- **订阅有上限**：达上限时可配置驱逐最旧监听器或直接抛错；同一监听器重复订阅按引用计数计次。每个退订句柄幂等，重复调用同一句柄不会退订其他注册。
+- **Action 脏跟踪始终启用**：默认模式与 `onlyOnChange` 模式都通过可写代理记录对象 / 数组 / Map / Set 的直接变异，标记所有受影响的顶层键；异步 action 的脏键累积到通知时。`onlyOnChange` 额外依据变更计数跳过无写入的通知，并非前后内容深比较。
+- **别名与边界**：同一对象复用同一代理；归属关系按需求构建一次索引（标量写入 O(1) 查表，结构变更时重建），可识别未读取的别名、循环与重新挂接，构建与查找都不求值访问器。类实例等其他非普通对象与 Date 一样保留原引用，内部变异不被跟踪；请通过 `setState` / `$patch` 替换值。
 
 ## 3. 状态保护（State Protection）
 
 `stateProtection` 开启后，状态访问经代理拦截写入、删除与 `Object.defineProperty`：
 
-- **四种代理**：深层对象、浅层对象、数组、脏跟踪专用代理，共用同一组写陷阱；数组的索引 / symbol / 自定义属性上的对象值都经缓存包装，不存在绕过保护的裸引用
+- **保护与脏跟踪分工**：深层对象、浅层对象与数组代理负责外部写入保护；Action 使用独立的可写脏跟踪代理。深层保护下数组的索引 / symbol / 自定义属性上的对象值经缓存包装
 - **非法变更抛错**：越过 `setState` / `$patch` 直接变异会抛错（开发模式给出可读路径），错误消息对 BigInt / 循环引用值安全
 - **`deep: false` 只保护顶层**：嵌套对象不再被包装（性能优先）
 
@@ -36,14 +38,14 @@
 
 每次状态写入都会推进一个内部版本号，`getStateVersion(state)` 可读取。
 
-- **用途**：选择器缓存命中判定退化为 O(1) 整数比较——若改为对缓存项做全树 `deepEqual`，2000 键的状态树上单次判定即达秒级，而整数比较是亚毫秒级。
+- **用途**：选择器缓存同时校验**状态对象身份与版本号**（O(1)），不做全树比较。不同 Store 独立计数，版本号相同也不能跨状态对象误命中。
 - **回退路径**：状态不带版本号（例如直接传入的普通对象）时，选择器回退用 `equalityFn`（默认 `deepEqual`）比较。
 
 ## 5. 缓存（Cache）
 
 `enableCache(keys?)` 打开 Store 内置缓存（`keys` 省略表示全部顶层键），`getCached` / `invalidateCache` / `getCacheStats` 分别用于读取、失效与观测。
 
-- **失效时机**：对应键发生写入即失效，下次读取重新计算
+- **刷新时机**：受控写入更新对应缓存；dispatch 收尾及异步结算时刷新缓存中已有键与当前状态键，清除 action 内已删除的键；`$replaceState` 清空整表后按新状态回填
 - **按需开启**：`cacheConfig.enableStats` 采集命中统计有额外开销；只缓存高频键（如长列表）收益最大
 - **LRU 工具**：核心另导出 `LRUCache`（容量淘汰 + TTL），供需要独立缓存策略的场景使用
 
@@ -55,6 +57,8 @@
 - **同步 / 异步**：同步实现是迭代式深克隆（不递归爆栈）；异步实现按 `batchSize` 分片、批间让出控制权，适合大对象并支持 `onProgress`。
 - **其他维度**：`maxDepth` 超限返回占位符（不返回活引用）、循环引用检测始终生效（`detectCircular` 只控制是否上报）、访问器属性以 getter 求值结果克隆、类实例保留原型。
 - **自定义克隆器**：两条路径共用同一套抛错语义（落账 → 咨询 `onError` → 继续则丢弃 / 中止则抛 `SnapshotAbortError`）。
+- **差异比较**：`SnapshotManager.compareSnapshots` 按活动对象对识别循环，共享子对象仍在各路径比较；自有 `undefined` 属性的新增 / 删除与键缺失不同，分别报告 `kind: 'added' | 'removed'`。
+- **不要混淆时间旅行契约**：`timeTravelPlugin.getSnapshots()` 使用核心 `deepCloneState` 克隆支持的普通对象 / 数组 / Date / RegExp / Map / Set（支持循环引用）；类实例、函数、Promise、WeakMap 等保留原引用，不能宣称与 extras 快照一样完全隔离。
 
 ## 7. 选择器（Selector，`extras/selector`）
 
@@ -77,7 +81,9 @@
 
 ## 10. 组合（Compose）
 
-- **命名空间**：`composeStore([a, b], { namespace: true })` 下子 store 按 `name` 嵌套，dispatch 使用 `'storeName/actionName'`
+- **命名空间**：`composeStore([a, b], { namespace: true })` 下子 store 按 `name` 嵌套，dispatch 使用 `'storeName/actionName'`；合并的 `actions` 注册表也支持外层组合路由嵌套组合的裸名 action（非命名空间模式同名取第一个 Store）
+- **合并缓存**：`getState()` / `state` 读取前校验子 Store 版本，批内或异步通知尚未发出时也保持新鲜；无版本号的子 Store（含嵌套组合）每次读取保守失效
+- **嵌套内层**：非命名空间外层包含命名空间内层时，其子 store 的键为「子 store 名/键」，写操作需用完整斜杠路径（构造期开发模式提示）
 - **脏追踪**：命名空间模式下 `isStateKeyDirty` 精确判断子 store 是否变化，集成层据此跳过未变化的 `setData`
 - **订阅复用**：组合层 N 个监听器只占用每个子 store 一份订阅；无只读订阅者时通知走零拷贝
 - **只读化**：`composed.state` 顶层冻结，嵌套经子 store 保护代理，写入不会穿透

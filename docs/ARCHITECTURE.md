@@ -81,8 +81,8 @@ src/
 | --- | --- |
 | `Store.ts` | 公开 API 门面：状态读写、快照/恢复、缓存开关、订阅、批量、插件安装、销毁守卫 |
 | `factory.ts` | `createStore`：选项归一化（默认值、状态工厂求值、缓存配置） |
-| `StateProxy.ts` | 状态保护：深/浅/数组/脏跟踪四类代理，共用一组写陷阱；路径拼接统一走 `_joinPath` |
-| `dirtyTracking.ts` | `onlyOnChange` 的脏跟踪代理与变更计数 |
+| `StateProxy.ts` | 状态保护：深/浅/数组代理拦截非法写入；Action 可写脏跟踪由 `dirtyTracking.ts` 单独实现 |
+| `dirtyTracking.ts` | 默认与 `onlyOnChange` 模式共用的 Action 可写代理；跟踪变更计数与所有受影响的顶层脏键 |
 | `ActionManager.ts` | dispatch 生命周期：深度计数、action 上下文、仅最外层通知、异步结算补发、`onError` 钩子 |
 | `SubscriptionManager.ts` | 订阅注册/退订/上限策略（引用计数；重复订阅计次） |
 | `BatchManager.ts` | 批开始/结束与嵌套；批内变更基线 |
@@ -91,7 +91,7 @@ src/
 | `pluginSupport.ts` | 插件安装与回滚、钩子接线 |
 | `types.ts` / `utils.ts` / `index.ts` | 局部类型、内部工具与出口 |
 
-**关键不变量**：所有写路径（`setState` / `$patch` / `$replaceState` / action 上下文）最终都经过同一处「写入 → 推进版本号 → 失效缓存 → 触发钩子 → 调度通知」，因此钩子与缓存不会漏事件。
+**写入追踪**：`setState` / `$patch` / `$replaceState` 推进版本并更新缓存；Action 可写代理对对象 / 数组 / Map / Set 的变异递增计数并标记顶层脏键，dispatch 收尾及异步结算时刷新键缓存（包含已删除键），整体替换则清空缓存后按新状态回填。代理按对象复用：归属关系按需求构建一次索引，标量写入 O(1) 查表；仅在结构变更（增删键、写入对象值、长度变化）或状态版本被外部推进时失效重建，因此覆盖未读取的别名、循环与重新挂接，逐项更新列表不再退化为平方级遍历。归属查找与构建都不求值访问器。类实例等其他非普通对象保持原引用（含 `#private` 字段的方法依赖原始接收者），其内部变异与 Date 一样不被跟踪，应显式替换值。
 
 ### 4.2 `core/cache`：LRUCache
 
@@ -102,6 +102,8 @@ src/
 - `composeStore(stores, { namespace, strict })`：命名空间模式下子 store 按 `name` 嵌套，dispatch 支持 `'store/action'`
 - 组合层 N 个监听器只占用每个子 store **一份**订阅（避免成倍挤占外部直连订阅的额度）
 - 无只读订阅者时通知走零拷贝；`isStateKeyDirty` 在命名空间模式下精确追踪脏子 store
+- `getState()` / `state` 读取合并缓存前校验子 Store 版本，批内及异步通知前也能读到最新值；无版本号的子 Store（含嵌套组合）每次读取保守失效
+- 合并子 Store 的 `actions` 注册表，嵌套组合支持外层裸名 dispatch；非命名空间模式同名 action 取第一个 Store
 - `StoreRegistry` / `globalRegistry` 提供按名字管理
 
 ### 4.4 `core/hooks`：钩子与插件运行时
@@ -146,6 +148,8 @@ extras（聚合）            仅调试或全都要用；会把以上全部拉�
 | `withPageStore` | `onLoad` | `onUnload` |
 | `withComponentStore` | `lifetimes.attached` | `lifetimes.detached` |
 | `withAppStore` | 包装全局 `App` 构造器 | 不做清理（生命周期贯穿运行期，仅防重复绑定） |
+
+Page 的 `onUnload` / Component 的 `lifetimes.detached` 先调用用户钩子，再在 `finally` 中清理绑定，即使钩子同步抛错也会清理；用户钩子的同步段仍可使用映射 actions。包装器不等待异步钩子的 Promise，`await` 后不能依赖绑定仍存在。
 
 **只识别 `lifetimes` 写法**（基础库 3.15.0+）；组件 methods 上的运行时注入改为实例级拷贝，多实例挂载不互相覆盖。
 
@@ -205,10 +209,11 @@ createSnapshotAsync(data, options)
 
 ```
 Store 通知 → 集成层合并订阅回调
-  → 对每个映射键判断 isStateKeyDirty(key)
-      ├─ false → 跳过（视图层零开销）
-      └─ true  → 组装 setData 补丁（对象值不做引用脏检查、undefined 字段被过滤）
-  → 调用页面/组件实例的 setData
+  → 对每个映射值判断是否需要更新
+      ├─ 原始值：值未变则跳过
+      ├─ mapState 对象值：引用未变且顶层键未变脏才跳过
+      └─ 无脏键信息的对象映射（如 mapGetters）：保守下发
+  → 过滤 undefined，合并补丁；仅有更新时调用一次 setData
 ```
 
 ## 9. 构建与产物

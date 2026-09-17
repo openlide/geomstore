@@ -52,14 +52,14 @@ store.$patch({ x: 1 })
 
 ### `isStateKeyDirty` 有什么用？
 
-供集成层判断「自上次通知以来某键是否变化」，据此跳过无意义的 `setData`（小程序视图层更新是主要开销）。组合 Store 的命名空间模式下它会精确判断**子 store** 是否变化。
+供集成层判断「自上次通知以来某键是否变化」，据此跳过无意义的 `setData`（小程序视图层更新是主要开销）。默认与 `onlyOnChange` 模式都跟踪 Action 内对象 / 数组 / Map / Set 的直接变异，标记所有受影响的顶层键（含别名，异步段累积到通知时）。Date 等其他内建对象的内部变异不被跟踪，请显式替换值。组合 Store 的命名空间模式下它会精确判断**子 store** 是否变化。
 
 ## 缓存与选择器
 
 ### 缓存命中率很低 / 选择器返回了陈旧值
 
 - **命中率低**：只缓存热点键（`enableCache(['visibleRows'])`）；状态频繁整体替换（`$replaceState`）会让缓存反复失效
-- **陈旧值**：选择器命中判定优先用**状态版本号**（O(1)）；当状态不带版本号（例如你把普通对象直接传给选择器）时才回退 `equalityFn`（默认 `deepEqual`）。如果你自定义了 `equalityFn` 且它过于宽松，就会误命中——检查它是否只比较自有属性
+- **陈旧值**：选择器命中判定同时校验**状态对象身份与版本号**（O(1)，不同 Store 的同版本状态不会串值）；当状态不带版本号（例如你把普通对象直接传给选择器）时才回退 `equalityFn`（默认 `deepEqual`）。如果你自定义了 `equalityFn` 且它过于宽松，就会误命中——检查它是否只比较自有属性
 
 ### `enableCache` 的 stats 会影响性能吗？
 
@@ -100,6 +100,10 @@ store.$patch({ x: 1 })
 - 访问器属性：以 getter 求值结果克隆（**不会二次触发** getter）
 - `Date` / `Map` / `Set`：按类型正确克隆；循环引用检测始终生效（`detectCircular` 只控制是否**上报**）
 
+### 时间旅行的 `getSnapshots()` 返回值可以修改吗？
+
+支持的普通对象 / 数组 / Date / RegExp / Map / Set 会通过核心 `deepCloneState` 重新克隆，修改这些副本不会污染内部历史或后续恢复值，循环引用也受支持。但类实例、函数、Promise、WeakMap 等仍保留原引用，不要修改这些共享节点；它不是 `extras/snapshot` 的丢弃契约。
+
 ## 装饰器
 
 ### `withThrottle` / `withCache` 为什么返回了 `undefined`？
@@ -115,7 +119,7 @@ withCache({ ttl: 30_000, assumeAsync: true })
 
 ### 同一个装饰器实例用在多个方法上会串数据吗？
 
-不会。装饰器状态按**方法**隔离（`withCache` / `withDebounce` / `withThrottle` 均分桶）；`withLoading` 的引用计数按 (宿主, loading 键) 集中，多装饰器并发不会提前翻转 `loading`。
+不会。`withCache` / `withDebounce` / `withThrottle` 按**宿主与方法**隔离，支持类静态方法（函数宿主）；不同 Symbol 即使描述相同也互不干扰。防抖 / 节流保留原始方法键身份，缓存按每次装饰独立编号；`withLoading` 的引用计数按 (宿主, loading 键) 集中，多装饰器并发不会提前翻转 `loading`。
 
 ### `withThrottle` 的间隔参数写在哪里？
 
@@ -157,6 +161,10 @@ withComponentStore(store, { mapState: ['count'] })({
   lifetimes: { attached() {}, detached() {} },
 })
 ```
+
+### 卸载钩子里还能调用映射的 action 吗？
+
+可以在 `onUnload` / `lifetimes.detached` 的同步段调用。用户钩子先执行，绑定随后在 `finally` 中清理，即使钩子同步抛错也不会漏清理；包装器不等待异步钩子的 Promise，不要在 `await` 后依赖映射方法仍可用。
 
 ### 组件 / App 里要不要手写 `this` 类型？
 

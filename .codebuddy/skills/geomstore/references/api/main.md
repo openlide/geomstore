@@ -190,6 +190,10 @@ export interface ComposeOptions {
  */
 declare class ComposedStore<S extends State = State> implements Store<S> {
     readonly name: string;
+    /**
+     * 合并后的 action 注册表：键与 dispatch 的命名规则一致（命名空间模式为
+     * `storeName/actionName`，非命名空间模式为裸名，同名取第一个 store）。
+     */
     readonly actions: Record<string, (...args: unknown[]) => unknown>;
     /** 实例级钩子系统 - 组合 Store 透传到子 Store */
     readonly hooks: HookSystem;
@@ -226,6 +230,15 @@ declare class ComposedStore<S extends State = State> implements Store<S> {
     private _mergedCacheFrozen;
     /** 合并缓存是否启用：子 store 订阅失效回调建立失败时降级为每次读取重合并，保证不返回陈旧状态 */
     private _mergedCacheEnabled;
+    /**
+     * 缓存建立时各子 store 的状态版本号快照：读取时逐一比对，不一致即失效。
+     *
+     * 子 store 的失效回调依赖「通知」，但批处理会推迟通知、notify:{async:true} 会
+     * 延迟通知——仅靠通知失效会让批内的读改写读到缓存里的过期值（丢失更新）。
+     * 版本号 getter 在子 store 的每条写入路径上同步递增，此处读取时校验
+     * 不受通知时序影响。无版本号的子 store（含嵌套组合）每次读取时保守失效。
+     */
+    private _cachedChildVersions;
     constructor(stores: Store[], options?: ComposeOptions);
     /**
      * 建立（或复用）对子 store 的单路合并订阅：每个子 store 仅一份，
@@ -240,6 +253,12 @@ declare class ComposedStore<S extends State = State> implements Store<S> {
     /** 使合并状态缓存失效：任一子 store 通知时调用（构造期订阅） */
     private _invalidateMergedCache;
     /**
+     * 读取前校验合并缓存新鲜度：逐一比对各子 store 当前状态版本号与缓存建立时的
+     * 快照，任一不一致即失效。覆盖批处理推迟通知、异步通知未 flush 等窗口——
+     * 这些场景下子 store 状态已变但失效回调尚未执行。
+     */
+    private _ensureMergedCacheFresh;
+    /**
      * 命名空间模式：按 store.name 归并各子 store 视图，语义与 getState/state/$snapshot 共用。
      *
      * 合并策略已拆至 ./merge.js
@@ -253,6 +272,8 @@ declare class ComposedStore<S extends State = State> implements Store<S> {
      */
     private _mergeStateMaps;
     get state(): S;
+    /** 记录当前各子 store 的状态版本号，供读取时校验缓存新鲜度 */
+    private _recordChildVersions;
     setState<K extends keyof S>(key: K, value: S[K]): void;
     $patch(partialState: Partial<S>): void;
     $replaceState(newState: S): void;
@@ -974,7 +995,7 @@ export declare class Store<S extends State = State, A extends Actions = Actions,
     private _notifyOnlyOnChange;
     /** 状态变更计数器（脏跟踪：供 onlyOnChange 模式判断 dispatch 是否修改了状态） */
     private _mutationCount;
-    /** 脏跟踪代理缓存（仅 onlyOnChange 模式使用，$replaceState 时重建） */
+    /** Action 脏跟踪缓存（代理与原对象的双向映射；$replaceState 时重建） */
     private _dirtyProxyCache;
     /** Actions集合（公开） */
     actions: A;
@@ -1184,13 +1205,7 @@ export declare class Store<S extends State = State, A extends Actions = Actions,
     private _initializeCache;
     /** 在内部访问模式下执行操作 */
     private _withInternalAccess;
-    /**
-     * 获取 action 上下文使用的状态
-     *
-     * - 默认模式：返回原始状态引用（零开销，与历史行为一致）
-     * - onlyOnChange 模式：返回脏跟踪代理，写入（含数组变异方法）会递增变更计数，
-     *   供 ActionManager 判断是否需要通知
-     */
+    /** Action 写入始终跟踪脏键；onlyOnChange 额外使用变更计数决定是否通知。 */
     private _getActionState;
     /**
      * 重建状态保护 Proxy 管理器（构造、$replaceState、setStateProtection 共用）。
@@ -1199,7 +1214,13 @@ export declare class Store<S extends State = State, A extends Actions = Actions,
      * 复用会让保护层指向已过期对象。
      */
     private _rebuildStateProxyManager;
-    /** 创建允许写入的脏跟踪代理（实现已拆至 ./dirtyTracking.js） */
+    /** 创建允许写入的脏跟踪代理（实现已拆至 ./dirtyTracking.js）
+     *
+     *  onMutate 回调同时做两件事：
+     *  1. 递增变更计数（onlyOnChange 判断 dispatch/batch 是否修改了状态）
+     *  2. 标记受影响的顶层状态键（dirtyKeys）——action 直接变异嵌套对象/数组/Map/Set
+     *     时不再只有计数、没有脏键，集成层的批量/脏过滤路径（isStateKeyDirty）才能跳过未变化映射
+     */
     private _createDirtyTrackingProxy;
     /** 批量结束通知：onlyOnChange 模式下批量期间无任何变更则跳过（与 dispatch 收尾语义一致） */
     private _onBatchEnd;

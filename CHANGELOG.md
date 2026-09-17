@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Action 脏追踪按归属索引复用**：此前每次写入都按顶层键遍历可达对象图，列表逐项更新呈平方级增长（2000 项约 7s，10000 项约 3 分钟）。现改为按需构建一次归属索引，仅结构变更（新增/删除键、写入对象值、长度变化）与外部版本推进时失效重建，标量写入为 O(1) 查表。
+- **Action 状态代理保留非普通实例的原始接收者**：类实例（含 `#private` 字段、getter 依赖内部槽位）不再被代理包装，`this.state.instance.method()` 不再抛 "Cannot read private member"；其内部变异与 Date 等同属「不追踪」契约，需通过 `setState`/`$patch` 替换值。
+- **退订句柄按注册标识精确退订**：被驱逐的旧句柄不再误删同一回调的重新注册（此前旧句柄会把新注册一并移除，导致新订阅静默失效）；组合 Store 的退订句柄同样幂等。
+- **插件卸载句柄绑定安装代际**：旧句柄不再卸载同一插件的新一次安装；清理函数抛错时同一句柄重复调用不再二次执行。
+- **异步通知中的重入写入保留脏键**：通知回调内的写入归下一轮通知，此前会被本轮收尾清空，集成层对稳定引用对象值判定「未变化」而永久漏更新。
+- **`beforeDispatch` 钩子内的写入不再丢失通知**：`onlyOnChange` 的变更基线改在钩子之前采集，覆盖完整 dispatch 事务。
+- **离线队列失败项不再重复落盘**：同步收尾先归并再落盘，修复「内存 1 条、磁盘 2 条」导致重启后重复执行的问题。
+- **死信落盘失败不再丢数据**：`storage.set` 返回 false 时操作保留在队列中等待重试，而非被静默丢弃。
+- **持久化在通知未送达即销毁时补写最后一次变更**：`notify.async` 下 `setState` 后立即销毁的场景此前既不通知也不落盘；现于卸载时直接读取当前状态落盘（与上次写入比较，无变化不重复写）。
+- **时间旅行在 `notify.async` 下不再丢 redo 历史**：回放触发的延迟通知按状态版本号识别并跳过记录，不再被当作新分支截断历史。
+- **选择器混合输入不再返回陈旧值**：缓存条目为版本化（活动引用）而输入是无版本普通对象时一律 miss，避免 `deepEqual` 命中已变异的旧结果。
+- **异步重试选择器真正重试**：`createRetrySelectorAsync` 对 Promise rejection 生效（此前 `return selector(state)` 使 catch 永不触发，重试与 `error.attempts` 均失效）。
+- **循环 Set 比较与快照 diff**：Set 元素配对共享循环防护并在候选失败时回滚配对，自引用 Set 不再被判不等或误报差异。
+- **缓存装饰器乱序完成保护**：同参新调用已替换占位或已写入新值时，旧请求的结果不再回写（此前慢请求会覆盖快请求的新值）。
+- **节流尾随执行的同步异常就地兜住**：不再逃逸为 `uncaughtException`。
+- **`LRUCache` 缩容/写入维持容量不变量**：`onEvict` 重入 `set()` 时循环淘汰至上限，不再永久超容量。
+- **`ErrorRecovery` 重试额度按调用上下文隔离**：`recover(error, { storeName, operation })` 的第二参数参与重试键，不同 Store 不再互相挤占额度。
+- **`ErrorMonitoring` 上报超时定时器回收**：上报先落地时取消未到期的定时器，不再每次 flush 残留句柄。
+- **`ErrorAggregator.getStats().byStore` 按实际次数统计**：跨 Store 错误组不再把整组次数重复计入每个 Store，各项之和等于 `totalErrors`。
+- **`PerformanceMonitor.setOptions({ maxSize })` 立即裁剪**：缩小容量后不再长期保留超限的历史记录。
+- **嵌套组合的键路由**：非命名空间外层包含命名空间内层时，`setState`/`$patch` 支持 `'子store名/键'` 斜杠路径，并在构造期提示书写形式（此前 dispatch 可用而写入静默失效）。
+
+### Fixed（第一轮，cb686d4 起）
+
+- `createSelector` / `SelectorFactory` 的缓存同时校验状态身份与版本号，避免不同 Store 的相同版本串用结果。
+- Store 在 action 完成刷新缓存时移除已删除状态键；`$replaceState` 清空整个键级缓存后回填，避免遗留孤立条目。
+- `subscribe` 返回的退订句柄幂等，重复调用不会抵消同一监听器的其他注册。
+- 组合 Store 在读取合并缓存前校验子 store 版本，修复批内与异步通知等待期间的陈旧读取；无版本号的子 store（含嵌套组合）保守失效。
+- 组合 Store 汇总子 actions 注册表，支持嵌套非命名空间组合按裸名 dispatch 并保留参数、返回值。
+- Page 的 `onUnload` 与 Component 的 `lifetimes.detached` 先执行用户钩子，再在 `finally` 清理绑定；同步钩子内仍可调用映射 actions，抛错也完成清理。异步钩子的 Promise 不会被等待。
+- `withDebounce` / `withThrottle` / `withCache` 支持函数宿主（静态方法），且隔离同描述 Symbol 方法及其同名字符串方法的状态。
+- 快照 diff 按对象对识别循环，避免等价循环被误报为变化；对象比较区分自有 `undefined` 属性的新增与删除。
+- 时间旅行 `getSnapshots()` 克隆每条历史状态，防止返回值中的普通对象、数组及受支持内建类型被修改后污染历史。沿用核心克隆契约：类实例、函数、Promise、弱集合等仍共享引用，不承诺完全隔离。
+- action 直接变异在默认与 `onlyOnChange` 模式下均累积顶层脏键，覆盖嵌套对象、数组、Map/Set、共享别名与批量/异步通知路径。
+
+### Changed
+
+- 同步 API、指南、架构说明与 GeomStore skill 的行为契约；补充脏键追踪开销、卸载同步边界及时间旅行克隆范围。版本号仍为 0.5.0，上述内容尚未发布。
+
 ## [0.5.0] - 2026-09-10
 
 ### Added

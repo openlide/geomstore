@@ -104,6 +104,8 @@ Component(
 
 > 组件生命周期必须写在 `lifetimes` 字段内（基础库 3.15.0+）；写在配置顶层的 `attached` / `detached` 不会被调用。支持的生命周期：`created` / `attached` / `ready` / `moved` / `detached` / `error`，页面级为 `show` / `hide` / `resize`（均与微信官方一致，写错会在编译期报错）；这些生命周期内的 `this` 已注入，可直接访问 `this.data` 与注入的方法。
 
+Page 的 `onUnload` 与 Component 的 `lifetimes.detached` 会先执行用户钩子，再在 `finally` 中清理绑定；同步段仍可调用映射 actions，同步抛错也不会漏清理。包装器不等待异步钩子返回的 Promise，不要在 `await` 后依赖绑定仍可用。
+
 ### 1.4 App 级
 
 ```ts
@@ -165,6 +167,8 @@ store.dispatch('login', user)        // 同步 action：原样返回其返回值
 await store.dispatch('load')         // 异步 action：返回 Promise，失败原样抛出
 ```
 
+Action 内的 `this.state` 是可写脏跟踪代理：默认与 `onlyOnChange` 模式均跟踪对象 / 数组 / Map / Set 的直接变异，并标记所有受影响的顶层键（含别名，异步段的脏键累积到通知时）。Date 等其他内建对象的内部变异不被跟踪，请用 `setState` / `$patch` 替换值。`onlyOnChange` 依据写入计数而非前后内容深比较，不能用于过滤所有同值写入。
+
 **通知语义**（只有一个统一规则，避免重复/遗漏）：
 
 - 异步 action 的**同步段不单独通知**，其变更由完成时（fulfill 或 reject）的补发覆盖一次
@@ -206,10 +210,10 @@ store.subscribe(listener, { readOnly: true })   // 声明不写状态：通知�
 | --- | --- | --- |
 | `notify.clone` | 通知时是否克隆状态；关闭且状态保护关闭时，**仅当无可读写订阅者**才返回原始引用 | `true` |
 | `notify.async` | 微任务合并：同一 tick 内多次写入只通知一次 | `false` |
-| `notify.onlyOnChange` | 脏跟踪：dispatch / batch 期间未实际改变状态则不通知 | `false` |
+| `notify.onlyOnChange` | dispatch / batch 期间未检测到写入则不通知（依据变更计数，非内容深比较） | `false` |
 
 - 监听器签名是 **`(state: S) => void`**（没有 `prevState` 参数），需要前后对比请在闭包里自行保存
-- 订阅数达上限时按 `subscription.onLimit` 策略处理（`evict-oldest` / `throw`）；同一监听器重复订阅按引用计数计次，退订一份不影响其他份
+- 订阅数达上限时按 `subscription.onLimit` 策略处理（`evict-oldest` / `throw`）；同一监听器重复订阅按引用计数计次，每个退订句柄幂等，重复调用不会移除其他注册
 - `store.isStateKeyDirty(key)` 供集成层跳过未变化的映射键（避免无意义的 `setData`）
 
 ## 6. 钩子与插件
@@ -279,7 +283,7 @@ const byOrder = createParametricSelector((state: State, id: number) => state.ord
 })(store.getState())
 ```
 
-缓存命中判定优先用**状态版本号**；状态不带版本号（如直接传入的普通对象）时回退 `equalityFn`（默认 `deepEqual`）。`SelectorComposer` 提供异步与重试形态，重试错误带不可枚举的 `attempts` 记录真实执行次数。
+缓存命中判定同时校验**状态对象身份与版本号**，不同 Store 即使版本相同也不会串值；状态不带版本号（如直接传入的普通对象）时回退 `equalityFn`（默认 `deepEqual`）。`SelectorComposer` 提供异步与重试形态，重试错误带不可枚举的 `attempts` 记录真实执行次数。
 
 ## 9. 组合 Store
 
@@ -294,6 +298,9 @@ root.subscribe((state) => { /* 任一子 store 变化都会收到 */ })
 - 命名空间模式下状态按 `name` 嵌套；`isStateKeyDirty` 精确判断子 store 是否变化，集成层据此跳过未变化的 `setData`
 - 组合层 N 个监听器只占每个子 store 一份订阅；无只读订阅者时通知走零拷贝
 - `composed.state` 顶层冻结、嵌套经子 store 保护代理，写入不会穿透
+- 合并缓存在读取前校验子 Store 版本，批内及异步通知前也能读到最新状态；无版本号的子 Store（含嵌套组合）每次读取保守失效
+- 子 Store 的 `actions` 注册表会合并，外层组合可按裸名路由嵌套组合的 action；非命名空间模式同名取第一个 Store
+- 非命名空间外层包含命名空间内层时，内层子 store 的键写作 `'子store名/键'`：`flat.setState('leaf/count', 1)`、`flat.$patch({ 'leaf/count': 2 })`（构造期开发模式会提示书写形式）
 - 需要按名字管理多个 store 时用 `StoreRegistry`
 
 ## 10. 错误处理（`extras/error`）

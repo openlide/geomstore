@@ -31,7 +31,7 @@ GeomStore 是轻量级微信小程序状态管理库，提供类 Pinia 的 API�
    微信「构建 npm」等不解析 `exports` 的场景，另有转发子目录（`store` / `hooks` / `plugins` / `integrations` / `compose` / `selectors` / `snapshot` / `performance` / `actions` / `cache` / `error`）可用，但 **Node 与打包器下请以上表为准**（如快照用 `extras/snapshot`，而非 `/snapshot`）。
 3. **环境要求**：Node ≥ 22；TypeScript **≥ 5.4**（`Store.use` / `usePlugin` 的公开签名使用 `NoInfer`，低版本会报 `Cannot find name 'NoInfer'`，除非开启 `skipLibCheck`）；用装饰器需 `experimentalDecorators`。
 4. **状态只能通过 action 修改**：禁止 `store.state.xxx = value`（开发模式直接抛错；生产模式由 `stateProtection.productionHandler` 决定：默认 `'warn'` 告警后放行、`'silent'` 静默放行、`'error'` 抛错；绕过 action 的写入不触发订阅通知）。合法写法：action 内 `this.state.xxx`、`this.setState(k, v)`、`this.$patch(partial)`、`this.$replaceState(next)`。
-5. **订阅是引用计数**：同一函数注册 N 次就通知 N 次，退订函数每次只抵消一份。`subscribe` 的监听器只接收**一个参数** `(state) => void`（新状态），没有 `prevState`。
+5. **订阅是引用计数**：同一函数注册 N 次就通知 N 次，每个退订句柄只抵消自己那一次注册，重复调用同一句柄无效；句柄按注册标识精确退订，被上限驱逐的旧句柄不会误删同一回调的重新注册。`subscribe` 的监听器只接收**一个参数** `(state) => void`（新状态），没有 `prevState`。
 6. **action 的 `this`**：指向 action 上下文，含 `state` / `setState` / `$patch` / `$replaceState` / `getState` / `dispatch`，以及同 store 的其他 action；其余参数调用方传入。
 7. **插件已泛型化**：`Plugin<S extends State = State>`。写 `install(store)` 时可标注具体状态类型；`store.use(plugin)` 与 `usePlugin(plugin, store)` 传具体 Store **无需断言**，状态无关的插件写作 `Plugin<State>`（如 `loggerPlugin`）。
 8. **getter 是纯函数且不缓存**：`(state) => value`，每次读取重新执行；计算密集型派生用选择器。
@@ -114,6 +114,8 @@ App(withAppStore(appStore, { mapState: ['userInfo'], mapActions: ['initApp'] })(
 }))
 ```
 
+Page 的 `onUnload` 与 Component 的 `lifetimes.detached` 先同步执行用户钩子，再在 `finally` 清理绑定；钩子内可以调用映射 actions，抛错仍会清理。包装器不等待 Promise，`await` 后不要再依赖映射方法。
+
 三处集成的配置方法内 `this` 类型**已自动注入**（`PageThis` / `ComponentThis` / `AppThis`），不要手写 `this` 标注——手写反而会覆盖集成层注入的类型。
 
 ## 常见任务
@@ -128,6 +130,8 @@ store.batch(() => { /* 多次写入合并为一次通知 */ })   // 或 startBat
 ```
 
 action 体内调用 `batch()` 时通知统一延迟到 dispatch 收尾补发一次；批保护只覆盖同步段，异步回调 `await` 之后的变更逐条通知（开发模式有告警）。
+
+action 内 `this.state` 的对象/数组与 Map/Set 写入在两种通知模式下都会标记顶层脏键（共享别名可能标记多键），归属按需求建一次索引、标量写入 O(1)，逐项更新长列表不再退化；在同步订阅回调内读取 `isStateKeyDirty(key)`，通知结束后脏键清空（回调内重入写入的脏键留给下一轮）。默认模式同样追踪；`onlyOnChange` 只是按变更计数抑制通知，并非内容深比较，其基线覆盖 `beforeDispatch` 钩子内的写入。`getState()` 裸引用、Date 等其他内建对象以及类实例（`#private` 方法保留原始接收者）的内部变异不受此代理追踪，请显式替换值。
 
 ### 插件（`extras/plugins`）
 
@@ -150,6 +154,8 @@ store.use(timeTravelPlugin({ maxSize: 100 }))   // store.__timeTravel__.undo()
 
 `storage` 必须**同步**（`{ getItem, setItem, removeItem }`），传异步实现会被拒绝；不传则自动探测 `wx` 同步存储，否则降级内存存储。
 
+时间旅行 `getSnapshots()` 返回核心 `deepCloneState` 的副本，修改普通对象、数组、Date/RegExp/Map/Set 不会污染历史或 `goTo` 恢复值。但类实例、函数、Promise、弱集合仍共享引用，不要把它等同于 extras/snapshot 的完全隔离/丢弃契约。
+
 ### 选择器（`extras/selector`）
 
 ```ts
@@ -162,7 +168,7 @@ const memoDouble = createMemoizedSelector((s: CounterState) => s.count * 2)
 const selectById = createParametricSelector((s: CounterState, id: string) => /* ... */)
 ```
 
-命中判定优先走状态版本号（O(1)），否则回退 `equalityFn`。`createStructuredSelector` 与 `SelectorComposer.combine` **需显式给出状态类型参数**（TS 无法反推）。
+`createSelector` / `SelectorFactory` 的版本化缓存同时比较**状态对象身份与版本号**（O(1)）；跨 Store 的相同版本不会串值。无版本号时回退 `equalityFn`。`createStructuredSelector` 与 `SelectorComposer.combine` **需显式给出状态类型参数**（TS 无法反推）。
 
 ### Store 组合（主入口）
 
@@ -173,6 +179,10 @@ const root = composeStore([userStore, cartStore], { namespace: true, strict: tru
 root.dispatch('userStore/login', payload)      // 命名空间模式下用斜杠路径
 root.$patch({ 'userStore/name': 'Alice' })
 ```
+
+组合 Store 的 `getState()` / `state` 在批内与异步通知等待期间也校验子 store 版本；无版本号的子 store（含嵌套组合）每次读取保守失效。`actions` 汇总子 action 名称，嵌套非命名空间组合可按裸名 dispatch；同名取第一个，命名空间模式仍使用斜杠路径。
+
+非命名空间外层包含**命名空间内层**时，内层子 store 的键为「子 store 名/键」：写操作用完整斜杠路径（`flat.setState('leaf/count', 1)`、`flat.$patch({ 'leaf/count': 2 })`），构造期开发模式会提示；`$replaceState` 不支持该路径。
 
 ### Action 装饰器（`extras/action`）
 
@@ -193,7 +203,9 @@ class UserService {
 }
 ```
 
-签名：`withLog(options?)` / `withDebounce(wait, options?)` / `withThrottle(interval, options?)` / `withCache(options?)` / `withRetry(options?)` / `withTimeout(timeout, options?)` / `createDecorator(impl)`。节流的 `leading` / `trailing` 默认均为 `true`；方法"非 `async` 语法但返回 Promise"时置 `assumeAsync: true`，使被抑制的调用同样返回 Promise。函数式场景用 `ActionExecutor` / `ActionLoader` / `withLoading`。
+`withDebounce` / `withThrottle` / `withCache` 支持实例方法与静态方法，按宿主和方法隔离状态；复用装饰器时，同描述 Symbol 方法与同名字符串方法互不干扰。
+
+签名：`withLog(options?)` / `withDebounce(delay = 300)` / `withThrottle(interval, options?)` / `withCache(options?)` / `withRetry(options?)` / `withTimeout(timeout, options?)` / `createDecorator(impl)`。节流的 `leading` / `trailing` 默认均为 `true`；方法"非 `async` 语法但返回 Promise"时置 `assumeAsync: true`，使被抑制的调用同样返回 Promise。函数式场景用 `ActionExecutor` / `ActionLoader` / `withLoading`。
 
 ### 错误处理（`extras/error`）
 
@@ -229,14 +241,16 @@ store.$restore(snap)
 // 快照引擎：返回 { data, metadata, success, errors, stats }；克隆失败不抛错（有 cloneError 时 success:false）
 const manager = new SnapshotManager()
 const result = createSnapshot(store.getState())
-const diff = manager.compareSnapshots(result.data, createSnapshot(next).data)   // 实例方法
+const diff = manager.compareSnapshots(result, createSnapshot(next))   // 传完整 SnapshotResult，不是 .data
 ```
+
+比较按对象对识别循环，等价循环不因重复进入被误判（深度 100 保护仍保留）。对象的自有 `undefined` 属性与缺失键不同，新增/删除会产生对应 `kind`，继承属性不参与。
 
 ## 性能与最佳实践
 
 - **计算密集型派生用选择器**，不要用 getter（getter 每次读取都重新执行）。
-- **多字段一起更新用 `$patch` 或 `batch()`**，避免多次通知；未实际变更时可用 `notify.onlyOnChange` 抑制通知。
-- **热点 state 键可开缓存**：`createStore({ enableCache: true, cacheKeys: ['count'] })`，读取用 `store.getCached('count')`。
+- **多字段一起更新用 `$patch` 或 `batch()`**，避免多次通知；未检测到写入时可用 `notify.onlyOnChange` 抑制通知，同值写入也可能推进计数。
+- **热点 state 键可开缓存**：`createStore({ enableCache: true, cacheKeys: ['count'] })`，读取用 `store.getCached('count')`。action 完成刷新时会移除已 `delete` 的键；`$replaceState` 清空缓存后回填，不依赖旧状态仍保留该键。
 - **`notify: { clone: false }`** 进入零拷贝通知模式（监听器收到只读代理，调用方需自行保证不修改）。
 - **可选能力按需引入**，尤其在小程序主包中；`extras` 聚合入口只在调试时用。
 - **App 级订阅不随 `onHide` 清理**（`withAppStore` 只在 `onLaunch` 建立，贯穿运行期）。
@@ -251,7 +265,7 @@ const diff = manager.compareSnapshots(result.data, createSnapshot(next).data)   
 | `Cannot find name 'NoInfer'` | TypeScript < 5.4，升级 TS 或开启 `skipLibCheck` |
 | 从主入口引 `createSelector` / `SnapshotManager` / `withRetry` 报错 | 这些是可选能力，改从 `extras/selector` / `extras/snapshot` / `extras/action` 引入 |
 | 直接改 state 不生效或被警告 | 必须经 action：`dispatch` / `this.$patch` / `store.$patch` |
-| 订阅回调不触发 | 检查是否只读未写；`notify.onlyOnChange` 为 `true` 时未实际变更不通知 |
+| 订阅回调不触发 | 检查是否只读未写；`notify.onlyOnChange` 为 `true` 时未检测到写入不通知 |
 | 订阅触发次数不符 / 退订后仍触发 | 同一函数重复订阅按引用计数通知 N 次、退订只减一份，确认没有重复注册 |
 | 组件生命周期不执行 | 微信要求写在 `lifetimes` / `pageLifetimes` 内，配置顶层的 `attached` 等不会被执行 |
 | `withRetry(fn, opts)` 报错 | 装饰器只能用于类方法且需 `experimentalDecorators`；函数式场景用 `ActionExecutor` |

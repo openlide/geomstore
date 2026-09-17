@@ -4,6 +4,21 @@
 
 > 版本约定：`0.x` 阶段的行为契约变更会显式标注「Breaking」并给出迁移代码；仅「新增可选项」之类的纯增量不在此列。
 
+## 未发布修复（cb686d4）
+
+公开签名不变；升级时请确认依赖旧行为的断言与收尾逻辑：
+
+- **Action 状态代理**：默认与 `onlyOnChange` 模式均跟踪对象 / 数组 / Map / Set 的直接变异，标记所有受影响的顶层键（含别名与异步累积）。归属关系按需求构建一次索引、标量写入 O(1) 查表，逐项更新长列表不再呈平方级开销；类实例等其他非普通对象与 Date 一样保留原引用（`#private` 方法依赖原始接收者），内部变异不跟踪，需显式替换值。`onlyOnChange` 是变更计数判定，不是内容深比较。
+- **通知与脏键**：通知回调内的重入写入归下一轮通知（脏键不会被本轮清空）；`onlyOnChange` 的变更基线覆盖 `beforeDispatch` 钩子内的写入。退订句柄按注册标识精确退订：被驱逐的旧句柄不会误删同一回调的重新注册，插件卸载句柄也不影响同一插件的重新安装。
+- **缓存新鲜度**：dispatch 刷新时会移除已删除的状态键，`$replaceState` 清空整表后回填；组合缓存读取前校验子 Store 版本，无版本号的子 Store（含嵌套组合）每次读取保守失效，不要依赖合并结果引用永远稳定。合并的 `actions` 注册表支持外层裸名 dispatch 路由嵌套组合，非命名空间模式同名取第一个 Store。
+- **选择器与退订**：版本化选择器缓存同时校验状态对象身份与版本号；每个退订句柄幂等，重复调用不会消耗同回调的其他注册。
+- **卸载顺序**：Page `onUnload` / Component `lifetimes.detached` 先执行用户钩子，再在 `finally` 清理绑定，同步抛错也会清理。依赖映射 actions 的收尾放在同步段；包装器不等待异步钩子的 Promise。
+- **装饰器隔离**：`withDebounce` / `withThrottle` / `withCache` 支持静态方法（函数宿主），不同的同描述 Symbol 方法互不串扰。
+- **快照 diff 与循环 Set**：按活动对象对识别循环，共享子对象仍按各路径比较；自有 `undefined` 属性新增 / 删除会报告 `kind: 'added' | 'removed'`。Set 元素配对共享循环防护并在候选失败时回滚，自引用 Set 判等为真、快照差异不再误报。
+- **持久化与离线队列**：持久化卸载时直接读取当前状态补写（`notify.async` 下通知未送达即销毁也不再丢最后一次变更），与上次写入内容相同则不重复写；离线队列同步失败项只落盘一份（不再重启后重复执行），死信落盘失败时操作保留在队列中而非丢弃。
+- **错误与性能子系统**：`ErrorRecovery.recover` 第二参数参与重试键（按 Store/操作隔离额度）；`ErrorMonitoring` 上报成功后回收超时定时器；`ErrorAggregator.getStats().byStore` 按实际次数统计（各项之和等于 `totalErrors`）；`PerformanceMonitor.setOptions({ maxSize })` 立即裁剪超额记录；`LRUCache` 缩容期间 `onEvict` 重入写入后仍维持容量上限。
+- **时间旅行**：`getSnapshots()` 重新用核心 `deepCloneState` 克隆每条历史状态；支持的普通对象 / 数组 / Date / RegExp / Map / Set 与内部历史隔离，循环引用受支持。类实例、函数、Promise、WeakMap 等仍保留原引用，不是 extras/snapshot 的「不可克隆节点丢弃」契约，不要修改共享节点。
+
 ## 升级到 0.5.0
 
 ### 1. 产物格式由 CJS 切换为 ESM

@@ -56,7 +56,7 @@ createStore<S extends State, A extends Actions = Actions, G extends Getters<S> =
 | `getters` | `G` | — | 纯函数，**只接收 `state`** |
 | `notify.clone` | `boolean` | `true` | 通知时是否克隆状态（关闭且状态保护关闭时，仅无可读写订阅者才零拷贝） |
 | `notify.async` | `boolean` | `false` | 微任务合并同一 tick 内的多次写入 |
-| `notify.onlyOnChange` | `boolean` | `false` | 脏跟踪：未实际改变状态的 dispatch / batch 不通知 |
+| `notify.onlyOnChange` | `boolean` | `false` | 根据变更计数抑制未检测到写入的 dispatch / batch 通知；脏键追踪不依赖此开关，同值写入也可能推进计数 |
 | `stateProtection.deep` | `boolean` | `true` | 是否递归保护嵌套对象（`false` 只保护顶层） |
 | `cacheConfig.enableStats` | `boolean` | `false` | 是否采集缓存命中统计（有额外开销） |
 | `subscription.onLimit` | `'evict-oldest' \| 'throw'` | `'evict-oldest'` | 订阅数达上限时的策略 |
@@ -91,6 +91,11 @@ createStore<S extends State, A extends Actions = Actions, G extends Getters<S> =
 | `batch` | `<T>(fn: () => T): T` | 期间合并通知，结束时统一发一次（返回值与异常原样透传） |
 | `startBatch` / `endBatch` | `(): void` | 手动批量（支持嵌套，仅最外层收尾时通知） |
 
+- 同一监听器注册 N 次会收到 N 次通知。每个返回的退订句柄只抵消一份注册，**重复调用同一句柄无效**，不会移除其他注册。
+- action 内通过 `this.state` 修改对象、数组及 Map/Set 时，会累积受影响的**顶层键**；共享别名可能同时使多个键变脏。这在默认模式与 `onlyOnChange` 模式下均生效。
+- 在同步订阅回调内读取 `isStateKeyDirty(key)`；脏键在通知结束后清空，批处理或异步通知等待期间会累积。`batch` 延迟的是通知，不是状态写入。
+- Date 等其他内建对象的内部变异不在此代理追踪范围；需要通知时，通过 `setState` 等 API 替换所属状态键。`getState()` 返回的裸引用不是 action 脏追踪视图。
+
 ### 缓存
 
 | 方法 | 签名 | 说明 |
@@ -100,6 +105,8 @@ createStore<S extends State, A extends Actions = Actions, G extends Getters<S> =
 | `getCached` | `<K extends keyof S>(key: K): S[K]` | 走缓存读取 |
 | `invalidateCache` | `<K extends keyof S>(key?: K): void` | 省略 `key` 清空全部 |
 | `getCacheStats` | `(): CacheStats` | 只读，销毁后仍可调用 |
+
+action 完成时，缓存刷新同时检查已有缓存键与当前状态键，移除已被 `delete this.state.key` 删除的条目；`$replaceState` 则先清空整个键级缓存再按新状态回填。不要依赖 action 尚未完成时 `getCached` 已反映直接变异。
 
 ### 插件与生命周期
 
@@ -170,11 +177,11 @@ withAppStore<S, A, G>(store, options?: ConnectOptions<S, A, G>): <C>(config: C) 
 | `mapActions` | `['login']` | `{ doLogin: 'login' }` |
 | `inject` | — | 注入额外值 / 方法 |
 
-- 订阅在 `onUnload`（Page）/ `detached`（Component）**自动清理**；App 级不做清理（生命周期贯穿运行期）
+- `onUnload`（Page）/ `lifetimes.detached`（Component）先执行用户生命周期，再在 `finally` 中清理订阅与映射 actions；用户钩子同步执行期间仍可调用映射方法，抛错也会完成清理。包装器**不等待异步钩子返回的 Promise**，不要在 `await` 后依赖仍存在的映射方法。App 级绑定不随 `onHide` 清理。
 - 组件生命周期必须写在 `lifetimes` 字段内；配置顶层的 `attached` / `detached` 不会被执行
 - 三处集成的配置方法内 `this` 均已注入（`PageThis` / `ComponentThis` / `AppThis`），**无需手写 `this` 标注**；Component 的注入方法与 `data` 同时出现在顶层与 `methods` 下（微信会把 `methods` 条目提升到实例）
 - 类型分工：`PageThis` / `ComponentThis` / `AppThis` 描述**方法内的 `this`**（含实例侧注入的 action）；装饰器**返回的配置对象**由 `PageConfig` / `ComponentConfig` 描述，不含这些实例侧成员
-- 映射值为对象时不做引用脏检查，始终纳入 `setData`；`undefined` 字段被过滤（清除字段请用 `null`）
+- `mapState` 对象值仅在引用未变且对应顶层键未变脏时跳过更新；`mapGetters` 等没有脏键信息的对象映射保守下发。原始值按值比较；`undefined` 字段被过滤（清除字段请用 `null`）。
 - 底层绑定工具 `parseMapping` / `bindMappings` / `bindActions` / `performAutoInject` / `exposeStoreAPI` / `cleanupBindings` **不在主入口**，需从 `@openlide/geomstore/integrations` 引入（已在 `exports` 声明）；日常优先使用上述高阶函数
 
 ## 1.6 组合
@@ -192,6 +199,10 @@ export const globalRegistry: StoreRegistry
 | `strict` | `false` | 冲突与非法访问按严格模式处理 |
 
 `ComposedStore`：`getState` / `dispatch`（支持斜杠路径）/ `subscribe` / `isStateKeyDirty` / `hooks` / `$patch` / `$replaceState` / `destroy` 等，语义与单 Store 一致。
+
+- `getState()` / `state` 的合并缓存在读取前校验子 store 版本，批内或 `notify.async` 尚未通知时也能读取最新状态；无版本号的子 store（含嵌套组合）保守地在每次读取时使缓存失效。
+- `actions` 汇总子 store 的 action 名称，外层非命名空间组合可以把裸名 `dispatch('increment', ...args)` 路由到内层非命名空间组合；同名 action 取第一个。命名空间模式仍使用 `'store/action'` 路径。
+- 非命名空间组合包含**命名空间内层**时，其子 store 的键以「子 store 名/键」出现在合并状态里：读写用完整斜杠路径（`setState('leaf/count', 1)`、`$patch({ 'leaf/count': 2 })`），构造期会在开发模式提示书写形式。`$replaceState` 不支持该路径（整树替换需按内层命名空间形状传值）。
 
 ## 1.7 LRUCache
 
@@ -252,7 +263,7 @@ export default SnapshotManager
 
 其他要点：类实例保留原型；访问器属性以 getter 求值结果克隆（不二次触发）；`customCloner` 抛错语义在同步/异步路径**完全一致**（落账 → 咨询 `onError` → 继续丢子树 / 中止抛 `SnapshotAbortError`）。
 
-`SnapshotManager.compareSnapshots(snapshot1, snapshot2): SnapshotDiff` —— 纯函数实现，不依赖实例状态；数组逐元素比较（`kind: 'added' | 'removed'`），`Set` 无序匹配，`Map` 键引用匹配失败后做结构匹配。
+`SnapshotManager.compareSnapshots(snapshot1, snapshot2): SnapshotDiff` —— 传入两个完整的 `SnapshotResult`，而非 `.data`；纯函数实现，不依赖实例状态。数组逐元素比较，`Set` 无序匹配，`Map` 键引用匹配失败后做结构匹配。递归按对象对识别循环，等价循环不会仅因重复进入而产生差异；最大递归深度 100 的保护仍保留。对象比较区分自有键缺失与值为 `undefined`：新增/删除自有 `undefined` 属性会产生 `kind: 'added' | 'removed'`，继承属性不参与。
 
 ---
 
@@ -274,7 +285,7 @@ class SelectorComposer { createRetrySelector / createRetrySelectorAsync / … }
 | `equalityFn` | `deepEqual` | 无状态版本号时的回退比较器 |
 | `maxCacheSize` | — | 缓存容量上限 |
 
-- **命中判定优先走状态版本号**（O(1) 整数比较）；状态不带版本号（如传入普通对象）时回退 `equalityFn`
+- `createSelector` / `SelectorFactory` 的版本化缓存命中要求**状态对象身份与版本号同时相同**（O(1) 比较）；不同 Store 即使版本号相同，也不会串用结果。状态不带版本号（如传入普通对象）时回退 `equalityFn`。
 - `createParametricSelector` 按参数分别缓存；`ttl: 0` 表示永不过期，`maxEntries` 控制容量并在写入前清理过期项
 - `createStructuredSelector` 以 DefineOwnProperty 语义写入结果（选择器映射含 `__proto__` 键时不会被静默丢弃）
 - `createStructuredSelector` 与 `SelectorComposer.combine` **需显式给出状态类型参数**：`S` 只出现在「对另一类型参数取索引」的嵌套位置（`Selector<S, R[K]>` / `Selector<S, unknown>[]`），TS 无法据此反推并会退回约束 `State`
@@ -305,7 +316,7 @@ class ActionUtils { … }               // 便捷工具（ActionUtilsOptions）
 
 ```ts
 withLog(options?)
-withDebounce(wait: number, options?)
+withDebounce(delay?: number)                  // 默认 300ms
 withThrottle(interval: number, options?)     // 间隔是第一个位置参数
 withCache(options?)
 withRetry(options?)
@@ -321,7 +332,7 @@ createDecorator(impl)                         // 自定义装饰器
 | `RetryDecoratorOptions.retries` / `delay` / `shouldRetry` | 默认重试延迟与指数退避由 `delay` 控制 |
 | `DecoratorOptions.logger` 等 | 见 `src/extras/action/decorators/common.ts` |
 
-> 装饰器状态按**方法**隔离（同一装饰器实例复用于多个方法不会串数据）；异步判定基于函数原型比较，压缩后依然可靠。
+> `withDebounce` / `withThrottle` / `withCache` 按**宿主与方法**隔离状态，支持实例方法与静态方法。复用同一装饰器时，不同 Symbol 方法（即使 description 相同）以及与其字符串表示同名的方法不会串数据。异步判定基于函数原型比较，压缩后依然可靠。
 
 ---
 
@@ -348,6 +359,8 @@ loggerPlugin / devtoolsPlugin / timeTravelPlugin: Plugin
 builtinPlugins: Plugin[]
 class WxStorageBackend implements StorageBackend
 ```
+
+`timeTravelPlugin(options?)` 安装后通过 `store.__timeTravel__` 提供 `getSnapshots()`、`goTo(index)`、`undo()`、`redo()` 等调试接口。`getSnapshots()` 对每条历史状态重新使用核心 `deepCloneState` 克隆：修改返回值中的普通对象、数组或 Date/RegExp/Map/Set，不会污染内部历史与后续 `goTo` 恢复值，循环引用也受支持。**这不是 extras/snapshot 的丢弃契约**：类实例、函数、Promise、WeakMap/WeakSet 等不可克隆节点仍保留原引用；不要修改这些共享节点。
 
 | `PersistenceOptions` | 默认 | 说明 |
 | --- | --- | --- |
