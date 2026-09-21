@@ -131,13 +131,21 @@ export class ErrorMonitoring {
     }
 
     // 检查是否达到批量阈值
+    // 注意：这里的 await 只保证等到「在途那次 flush」结束，不保证本条错误已上报——
+    // 每次 flush 只发送进入时快照的批次，快照后才入队的条目（含本条并发入队者）
+    // 留给下一次（周期/shutdown）。需要即时排空应重复 await flushReports 直至不再返回在途
     if (this.errorQueue.length >= this.batchThreshold) {
       await this.flushReports()
     }
   }
 
   /**
-   * 立即上报所有队列中的错误
+   * 立即上报队列中的错误
+   *
+   * 语义边界：本次 flush 发送的是进入时快照的队列，flush 期间新入队的错误
+   * 不在其中；已有 flush 在途时返回该 flush 的 Promise，resolve 仅代表那一批
+   * 已处理完，当前队列可能仍有条目未发送。因此本方法**不是**「排空队列」的保证，
+   * 需要排空语义请使用 shutdown()（它会等在途 flush 并做最终上报）
    *
    * @returns {Promise<void>}
    */
@@ -301,11 +309,17 @@ export class ErrorMonitoring {
 
   /**
    * 清除所有数据
+   *
+   * 只清数据（队列、聚合统计、连续失败计数），不停止周期调度器、也不影响在途
+   * flush——调度器仍会到期 flush 清除后新入队的错误；需要「停止」语义请用 shutdown()
    */
   clear(): void {
     this.errorQueue = []
     this.aggregator.clear()
     this.nonAggregatedErrorCount = 0
+    // 连续失败计数属于「数据」而非「调度器状态」：不清零则 clear() 前接近
+    // maxFlushRetries 的进度会泄漏到新周期，clear() 后首个新批次提前触发丢弃
+    this.consecutiveFlushFailures = 0
   }
 
   /**

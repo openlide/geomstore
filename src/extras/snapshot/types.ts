@@ -14,15 +14,33 @@ export interface SnapshotOptions {
   detectCircular?: boolean
   /** 是否包含不可枚举属性 */
   includeNonEnumerable?: boolean
-  /** 自定义克隆函数 */
-  customCloner?: (value: unknown, context: CloneContext) => unknown | undefined
+  /**
+   * 自定义克隆函数：命中该节点时返回其克隆结果。
+   *
+   * 「已处理 / 交回默认克隆」的契约以**返回值与抛错**表达，而非返回类型（返回 undefined
+   * 同样落在 `unknown` 内）：
+   * - 返回 `undefined`：视为未命中，按 Date/RegExp/Map/Set/数组/对象的默认规则继续克隆；
+   * - 返回其他值：作为该节点的克隆结果直接使用；
+   * - 抛错：落账一条 `cloneError` 并咨询 {@link SnapshotOptions#onError}——
+   *   返回 true 则丢弃该节点（**不会**把活引用兜底进快照），返回 false 则整个快照以
+   *   SnapshotAbortError 中止、交付失败结果。
+   */
+  customCloner?: (value: unknown, context: CloneContext) => unknown
   /** 是否异步执行 */
   async?: boolean
   /** 异步批次大小 */
   batchSize?: number
-  /** 进度回调 */
+  /**
+   * 进度回调（仅异步路径）。抛错不会污染快照结果：异常被就地记为一条 `unknown`
+   * 错误（不影响 `success`）并停止后续上报
+   */
   onProgress?: (progress: SnapshotProgress) => void
-  /** 错误回调 */
+  /**
+   * 错误回调：返回 true 继续克隆、false 中止。
+   * 与 onProgress 不同，它是降级决策的作出方而非上报方，故不对其抛错做静默兜底：
+   * 同步路径下异常冲出克隆、整个快照以失败结果交付；异步路径下该节点被记为 cloneError，
+   * `success` 随之为 false
+   */
   onError?: (error: SnapshotError, context: SnapshotErrorContext) => boolean | void
 }
 
@@ -116,7 +134,10 @@ export interface SnapshotMetadata {
   dataType: string
   /** 数据大小（字节，估算） */
   size: number
-  /** 节点数量 */
+  /**
+   * 节点数量：本次实际进入克隆的节点数（同步 / 异步两条路径同口径）。
+   * 不含因超出 maxDepth 而在计数前返回的节点。
+   */
   nodeCount: number
   /** 最大深度 */
   maxDepth: number

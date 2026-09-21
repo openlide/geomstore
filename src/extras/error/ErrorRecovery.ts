@@ -8,12 +8,24 @@
  * - 错误重试机制
  */
 
-import { GeomStoreError, isGeomStoreError, ErrorCode } from '../../core/errors/GeomStoreError.js'
+import { GeomStoreError, isGeomStoreError, createError, ErrorCode } from '../../core/errors/GeomStoreError.js'
 import { MAX_RETRY_KEYS, RecoveryStrategy, type RecoveryConfig, type RecoveryContext, type RecoveryStrategyMap } from './recoveryTypes.js'
 
 // 类型与常量已拆至 ./recoveryTypes.js；此处再导出以保持既有导入路径（extras/error/ErrorRecovery.js）不变
 export { RecoveryStrategy } from './recoveryTypes.js'
 export type { RecoveryConfig, RecoveryContext, RecoveryStrategyMap } from './recoveryTypes.js'
+
+/**
+ * 给元错误挂上原始抛出值作为 cause。
+ *
+ * target/lib 为 ES2020，`Error` 构造器无 `cause` 选项签名，用属性赋值补齐，
+ * 保证「非 GeomStoreError / 未配置策略」两类抛出仍可回溯原始错误
+ */
+function withCause<T extends Error>(meta: T, original: unknown): T {
+  const tagged = meta as Error & { cause?: unknown }
+  tagged.cause = original
+  return meta
+}
 
 /**
  * 错误恢复器类
@@ -123,13 +135,28 @@ export class ErrorRecovery {
   async recover(error: unknown, context: Partial<RecoveryContext> = {}): Promise<unknown> {
     // 验证错误类型
     if (!isGeomStoreError(error)) {
-      throw new Error('[ErrorRecovery] Can only recover GeomStoreError instances')
+      // 抛 GeomStoreError（PARAMETER_ERROR）而非裸 Error：本模块调用方普遍用
+      // isGeomStoreError/error.code 分类错误，裸 Error 会被当作「外来错误」绕过
+      // 既有处理；原始抛出值挂 cause 保留（ES2020 lib 的 Error 构造器无 cause
+      // 选项，用赋值补）
+      throw withCause(
+        createError(ErrorCode.PARAMETER_ERROR, '[ErrorRecovery] Can only recover GeomStoreError instances', {
+          receivedName: (error as { name?: unknown } | null)?.name ?? typeof error,
+        }),
+        error,
+      )
     }
 
     // 获取恢复配置
     const config = this.getConfig(error.code)
     if (!config) {
-      throw new Error(`[ErrorRecovery] No recovery strategy configured for error code: ${error.code}`)
+      // 同上：context.originalCode 保留入错配置的错误码，供调用方分类排查
+      throw withCause(
+        createError(ErrorCode.INTERNAL_ERROR, `[ErrorRecovery] No recovery strategy configured for error code: ${error.code}`, {
+          originalCode: error.code,
+        }),
+        error,
+      )
     }
 
     // 检查是否应该恢复
@@ -160,8 +187,12 @@ export class ErrorRecovery {
         }
       }
 
-      // 清除重试计数
-      this.clearRetryCount(error.code)
+      // 仅清除当前重试键的计数与周期窗：恢复成功只代表本 (store, operation) 的
+      // 故障周期结束。按 error.code 级联清除会误重置同码其他进行中的额度，
+      // 违反 executeRetryStrategy max-retries 分支自述的键级不变量
+      const retryKey = this.getRetryKey(error, recoveryContext)
+      this.retryCount.delete(retryKey)
+      this.retryWindowStart.delete(retryKey)
 
       return result
     } catch (recoveryError) {
@@ -350,8 +381,10 @@ export class ErrorRecovery {
    * @returns {unknown} 重启结果
    */
   private executeRestartStrategy(context: RecoveryContext): unknown {
-    // 清除重试计数
-    this.clearRetryCount(context.error.code)
+    // 仅清当前重试键，不按 code 级联（与恢复成功路径同口径，避免误重置同码其他额度）
+    const retryKey = this.getRetryKey(context.error, context)
+    this.retryCount.delete(retryKey)
+    this.retryWindowStart.delete(retryKey)
 
     // 返回undefined，表示需要重启
     return undefined
@@ -377,25 +410,6 @@ export class ErrorRecovery {
   private incrementRetryCount(key: string): void {
     const current = this.getRetryCount(key)
     this.retryCount.set(key, current + 1)
-  }
-
-  /**
-   * 清除重试计数与对应周期窗
-   *
-   * @private
-   * @param {string} errorCode - 错误代码
-   */
-  private clearRetryCount(errorCode: string): void {
-    const keys = Array.from(this.retryCount.keys())
-    keys.forEach((key) => {
-      // 精确匹配错误码段（重试键格式为 `${code}:${storeName}:${operation}`）：
-      // 此前用 startsWith(errorCode) 前缀匹配，当一个错误码是另一个的前缀
-      // （如 'ACTION' 与 'ACTION_TIMEOUT'）时会误清后者的计数
-      if (key.split(':')[0] === errorCode) {
-        this.retryCount.delete(key)
-        this.retryWindowStart.delete(key)
-      }
-    })
   }
 
   /**
@@ -428,7 +442,7 @@ export class ErrorRecovery {
   /**
    * 清除所有重试计数
    *
-   * 与私有 clearRetryCount 同口径：计数与周期窗必须一起清。只清计数会留下陈旧窗口，
+   * 计数与周期窗必须一起清。只清计数会留下陈旧窗口，
    * 该窗口在中途过期时触发额度重置，使 max-retries 防重试风暴保护被击穿
    * （原本应被拦截的重试被放行），且残留窗口条目再无释放路径。
    *

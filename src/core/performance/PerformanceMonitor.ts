@@ -247,6 +247,10 @@ export class PerformanceMonitor implements PerformanceMonitorInterface {
         })
 
         this.currentOperations.delete(key)
+      } else {
+        // 条目已被 pruneStaleOperations()/clear() 摘除，或同一 disposer 被调用了两次：
+        // 这条测量会无声消失，调用方无从解释监控数据的缺口。降级为可观测但不抛出
+        console.debug(`[GeomStore][Performance] 计时条目缺失，${type}:${operation} 本次未记录（可能被清理或 end() 重复调用）`)
       }
     }
   }

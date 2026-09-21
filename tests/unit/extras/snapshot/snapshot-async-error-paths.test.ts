@@ -24,9 +24,10 @@ describe('异步快照的非 Error 抛出物', () => {
     expect(result.success).toBe(false)
   })
 
-  it('进度回调抛出非 Error 时按 Unknown error 记录，不向外抛出', async () => {
+  it('进度回调抛出非 Error 时记一条 Unknown 并停用上报，不影响克隆结果', async () => {
+    const data = { a: { b: 1 } }
     const result = await createSnapshotAsync(
-      { a: { b: 1 } },
+      data,
       {
         onProgress: () => {
           throw 'progress boom'
@@ -34,8 +35,10 @@ describe('异步快照的非 Error 抛出物', () => {
       } as any,
     )
 
-    expect(result.errors.length).toBeGreaterThan(0)
-    expect(result.success).toBe(false)
+    // 进度回调只是「上报」方：它抛错不得把完好克隆降级为失败结果（#300）
+    expect(result.success).toBe(true)
+    expect(result.data).toEqual(data)
+    expect(result.errors.filter((e) => e.type === 'unknown')).toHaveLength(1)
   })
 
   it('填充阶段抛出非 Error 时降级记录且不中断队列', async () => {

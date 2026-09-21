@@ -12,16 +12,7 @@
  */
 
 import type { AsyncSnapshotOptions, CloneContext, SnapshotError, SnapshotStats } from './types.js'
-import {
-  SKIP_CLONE_NODE,
-  SnapshotAbortError,
-  cloneDeep,
-  clonePrelude,
-  invokeCustomCloner,
-  makeCloneError,
-  normalizeDescriptorFlags,
-  safeReadProperty,
-} from './clone.js'
+import { SKIP_CLONE_NODE, cloneDeep, clonePrelude, handleCloneError, invokeCustomCloner, normalizeDescriptorFlags, safeReadProperty } from './clone.js'
 
 /**
  * 异步克隆任务
@@ -198,19 +189,12 @@ export function processNodeAsync(
   const cloned: Record<string, unknown> = Object.create(Object.getPrototypeOf(value) as object | null) as Record<string, unknown>
   context.visited.set(value as object, cloned)
 
-  // keys 计算纳入 try（与同步路径同语义：陷阱抛错走 onError 降级）
+  // keys 计算纳入 try（与同步路径同语义：共用 handleCloneError，中止信号原样上抛）
   let keys: string[]
   try {
     keys = options.includeNonEnumerable ? Object.getOwnPropertyNames(value) : Object.keys(value)
   } catch (error) {
-    stats.cloneOperations++
-    // 错误必须落账：静默丢弃会让克隆降级对调用方不可见（与同步路径同口径）
-    const snapshotError = makeCloneError(context.path, error)
-    errors.push(snapshotError)
-    const shouldContinue = options.onError(snapshotError, { path: context.path, depth: context.depth, value, recoverable: true })
-    if (!shouldContinue) {
-      throw new SnapshotAbortError(error)
-    }
+    handleCloneError(error, { path: context.path, depth: context.depth, value }, options, errors, stats)
     return cloned
   }
 
@@ -270,27 +254,22 @@ export function processNodeAsync(
         })
       }
     } catch (error) {
-      if (error instanceof SnapshotAbortError) {
-        throw error
-      }
-      stats.cloneOperations++
-      // 错误必须落账：静默丢弃会让克隆降级对调用方不可见（与同步路径同口径）
-      const snapshotError = makeCloneError(`${context.path}.${key}`, error)
-      errors.push(snapshotError)
-      const shouldContinue = options.onError(snapshotError, {
-        path: `${context.path}.${key}`,
-        depth: context.depth,
-        // 描述符可用时直接取 value：访问器描述符没有 value 字段、恒为 undefined，
-        // 与原「识别访问器后显式返回 undefined」等价，故无需再区分描述符种类；
-        // 访问器 getter 已证明会抛错，不经 safeReadProperty 二次触发；
-        // 仅当描述符不可得（查询本身抛错）时才兜底读取
-        value: descriptor ? descriptor.value : safeReadProperty(value as Record<string, unknown>, key),
-        recoverable: true,
-      })
-
-      if (!shouldContinue) {
-        throw new SnapshotAbortError(error)
-      }
+      // 与同步路径共用 handleCloneError：中止信号原样上抛，其余按 cloneError 落账并咨询 onError
+      handleCloneError(
+        error,
+        {
+          path: `${context.path}.${key}`,
+          depth: context.depth,
+          // 描述符可用时直接取 value：访问器描述符没有 value 字段、恒为 undefined，
+          // 与原「识别访问器后显式返回 undefined」等价，故无需再区分描述符种类；
+          // 访问器 getter 已证明会抛错，不经 safeReadProperty 二次触发；
+          // 仅当描述符不可得（查询本身抛错）时才兜底读取
+          value: descriptor ? descriptor.value : safeReadProperty(value as Record<string, unknown>, key),
+        },
+        options,
+        errors,
+        stats,
+      )
     }
   }
 

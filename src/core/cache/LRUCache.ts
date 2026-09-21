@@ -64,6 +64,13 @@ export class LRUCache<K, V> {
   /** 当前缓存项数量 */
   private _size: number
 
+  /**
+   * 淘汰进行中：onEvict 回调重入 set()/resize() 时不再启动第二层淘汰循环。
+   * 重入的写入交给外层循环消化（回调返回后外层 while 会重新核对容量），
+   * 否则「回调内回填刚被逐出的键」会一层套一层递归，直到 RangeError 栈溢出。
+   */
+  private evicting = false
+
   /** 命中次数 */
   private hitCount: number
 
@@ -260,14 +267,19 @@ export class LRUCache<K, V> {
 
     // 检查容量，执行LRU淘汰。
     // 用循环而非单次 if：onEvict 回调可能重入 set()（回调里回填数据），
-    // 单次淘汰后尺寸可能仍超限，容量不变量会永久失效
-    while (this._size > this.capacity) {
-      const sizeBefore = this._size
+    // 单次淘汰后尺寸可能仍超限，容量不变量会永久失效。
+    // 重入保护：淘汰进行中回调里再 set() 只写入、不开第二层淘汰循环（由本帧统一收敛），
+    // 否则「回填被逐出的键」会一层套一层递归，几百次写入即 RangeError 栈溢出。
+    // 预算取代「净尺寸没减少就 break」：回调回填会抵消淘汰带来的减量，按净尺寸判定会
+    // 提前收手、把容量永久留在超限档位（回填有限时应收敛到新容量）；
+    // 按「本轮至多淘汰 entrySize 个」判定则既收敛又有界。
+    // 残余限制：回调每次都把被逐出的键原样填回来时，淘汰与回填互相抵消，尺寸会随写入缓增
+    // ——这种回调本身就要了比容量更多的条目，库只保证不崩、不在单帧内无界循环
+    const evictionBudget = this._size
+    let evictions = 0
+    while (!this.evicting && this._size > this.capacity && evictions < evictionBudget) {
       this.evictLRU()
-      // 回调重入写入且淘汰无效（如空缓存）时终止，避免死循环
-      if (this._size >= sizeBefore) {
-        break
-      }
+      evictions++
     }
 
     return this
@@ -442,15 +454,14 @@ export class LRUCache<K, V> {
     const validCapacity = Number.isFinite(newCapacity) ? Math.max(1, newCapacity) : this.capacity
 
     // 先落定容量再淘汰：onEvict 回调可能重入 set()，只有容量已更新，
-    // 重入写入才不会按旧上限继续扩容；循环条件也保证回调重入后仍收敛到新容量
+    // 重入写入才不会按旧上限继续扩容；循环条件也保证回调重入后仍收敛到新容量。
+    // 淘汰预算与收敛判据同 set()：回调重入的写入由本帧继续淘汰
     this.capacity = validCapacity
-    while (this._size > this.capacity) {
-      const sizeBefore = this._size
+    const evictionBudget = this._size
+    let evictions = 0
+    while (!this.evicting && this._size > this.capacity && evictions < evictionBudget) {
       this.evictLRU()
-      // 淘汰未生效（缓存已空）或回调重入使其增长时终止，避免死循环
-      if (this._size >= sizeBefore) {
-        break
-      }
+      evictions++
     }
 
     return this
@@ -678,9 +689,14 @@ export class LRUCache<K, V> {
     this.evictionCount++
 
     try {
+      // 标记本帧淘汰进行中：回调内重入的 set()/resize() 只写入、不再开启第二层
+      // 淘汰循环（嵌套淘汰会在每次回填时再递归一层，capacity=1 时直接栈溢出）
+      this.evicting = true
       this.options.onEvict?.(lruNode.key, lruNode.value)
     } catch (error) {
       console.error('[LRUCache] Error in onEvict callback:', error)
+    } finally {
+      this.evicting = false
     }
   }
 }

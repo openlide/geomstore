@@ -87,7 +87,10 @@ export class SelectorFactory<S extends State = Record<string, unknown>, R = unkn
     this.selector = selector
     this.options = {
       cache: options.cache ?? true,
-      cacheSize: options.cacheSize ?? 10,
+      // cacheSize 归一化：0 或负数会让刚 push 的条目立即被 shift 掉，this.cache 随之脱离
+      // history（getCacheStatus 报出 hasCache:true 与 cacheSize:0 并存的矛盾状态）；
+      // NaN 使 `length > NaN` 恒为 false，history 变成无界增长。口径与 LRUCache 的容量守卫一致
+      cacheSize: Number.isFinite(options.cacheSize) ? Math.max(1, options.cacheSize as number) : 10,
       cacheTTL: options.cacheTTL ?? 5000,
       // 默认 deepEqual 而非引用/浅比较：Store 状态是就地变异的同一对象
       // （getState 返回活动引用、setState/$patch 原地写入），引用比较或浅比较
@@ -321,6 +324,13 @@ export class SelectorFactory<S extends State = Record<string, unknown>, R = unkn
  * state 里放了类实例并就地修改其字段，快照与活状态共享同一实例，比较会因引用相等
  * 判定「未变化」，TTL 内返回陈旧值。规避：用 setState/$patch 整体替换该字段，
  * 让状态树产生新的纯对象。纯对象/数组/Date/RegExp/Map/Set 会被正确深拷贝，不受影响。
+ *
+ * 性能口径：Store 状态自带版本号，命中判定走 O(1) 整数比较，不克隆状态；上述快照
+ * 只在「状态无版本标记（直接传入普通对象）+ 默认 deepEqual」的回退路径上发生——
+ * 每次 miss 深克隆整棵状态树，且 `cacheHistory` 最多驻留 `cacheSize`（默认 10）份完整
+ * 快照，每次命中还要深比较整棵树，即每次 `execute` 均为 O(状态规模)。大状态 + 普通对象
+ * 输入时需自控成本，两条免克隆出口：传 `equalityFn: (a, b) => a === b`（改为比较引用，
+ * 代价是感知不到就地变异）、或 `cache: false`（彻底不缓存，每次重算）。
  *
  * @template S - 状态类型
  * @template R - 返回值类型

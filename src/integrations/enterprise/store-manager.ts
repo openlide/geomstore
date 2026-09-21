@@ -5,7 +5,7 @@
  */
 
 import type { Store } from '../../types/store.js'
-import { createUserStore, type UserState } from './user-store.js'
+import { createUserStore, userStoreKey, type UserState } from './user-store.js'
 import { storage, logger, CURRENT_USER_KEY, DEFAULT_MAX_STORES } from './env.js'
 
 /**
@@ -45,7 +45,7 @@ export class StoreManager {
       return existingStore
     }
 
-    this.cleanupOldestStore(userId)
+    this.cleanupOldestStore()
 
     const store = createUserStore({ userId })
     this.stores.set(userId, store)
@@ -59,13 +59,18 @@ export class StoreManager {
   switchUser(userId: string): Store<UserState> {
     const newStore = this.getUserStore(userId)
     this.currentUserId = userId
+    // 身份变更必须落盘：logout 会 remove CURRENT_USER_KEY，冷启动
+    // （createEnterpriseApp）也只读该键恢复身份。此前持久化只发生在示例 login
+    // 路径里，StoreManager 的直接调用方换号后 storage 仍指向上一个账号，
+    // 下次冷启动恢复错误身份。getUserStore 的只读预览不写此键（不改身份）
+    storage.set(CURRENT_USER_KEY, userId)
     logger.log('StoreManager', `切换到用户: ${userId}`)
     return newStore
   }
 
   /**
    * 登出当前用户
-   * 持久化键与 createUserStore 的存储键一致（均为 `user-store-${userId}`）
+   * 持久化键经 userStoreKey 派生，与 createUserStore 写入的键同源
    */
   logout(): void {
     if (!this.currentUserId) return
@@ -74,7 +79,7 @@ export class StoreManager {
     store?.destroy()
     this.stores.delete(this.currentUserId)
 
-    storage.remove(`user-store-${this.currentUserId}`)
+    storage.remove(userStoreKey(this.currentUserId))
     storage.remove(CURRENT_USER_KEY)
 
     this.currentUserId = null
@@ -100,26 +105,33 @@ export class StoreManager {
   /**
    * LRU 清理最早的 Store
    */
-  private cleanupOldestStore(excludeUserId: string): void {
+  private cleanupOldestStore(): void {
     if (this.stores.size < this.maxStores) return
 
-    // 跳过排除用户与当前活跃用户找到最久未使用的 Store：
-    // - 若 LRU 头部恰好是排除用户时不清理，会导致 stores 超限，需继续向后查找
-    // - currentUserId 的 store 被淘汰会让 getCurrentStore() 返回 null、
-    //   页面订阅被 destroy 静默清除，因此也必须排除
+    // Map 迭代序即淘汰序，从头找第一个非当前用户的 store。
+    // 此前的 excludeUserId 参数是死代码（唯一调用点在 stores.get(userId) 未命中
+    // 分支，待建 userId 必不在 map 中），已移除。
+    // currentUserId 必须排除：其 store 被淘汰会让 getCurrentStore() 返回 null、
+    // 页面订阅被 destroy 静默清除
     let oldestKey: string | undefined
     for (const key of this.stores.keys()) {
-      if (key !== excludeUserId && key !== this.currentUserId) {
+      if (key !== this.currentUserId) {
         oldestKey = key
         break
       }
     }
 
-    if (oldestKey) {
-      this.stores.get(oldestKey)?.destroy()
-      this.stores.delete(oldestKey)
-      logger.log('StoreManager', `清理旧用户 store: ${oldestKey}`)
+    if (!oldestKey) {
+      // 候选只剩当前用户（如 maxStores=1 且身份活跃、或 maxStores=0）：
+      // 强行淘汰会破坏身份语义，只能接受 stores 暂时超出上限 1 个——
+      // 但这打破了容量契约，必须告警而非静默
+      logger.warn('StoreManager', `无可淘汰的旧 store，store 数将超出上限 ${this.maxStores}（当前用户的 store 不可被淘汰）`)
+      return
     }
+
+    this.stores.get(oldestKey)?.destroy()
+    this.stores.delete(oldestKey)
+    logger.log('StoreManager', `清理旧用户 store: ${oldestKey}`)
   }
 }
 

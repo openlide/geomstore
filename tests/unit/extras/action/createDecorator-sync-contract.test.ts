@@ -108,4 +108,121 @@ describe('createDecorator 返回值类型契约', () => {
 
     expect(() => createDecorator()({}, 'accessor', descriptor)).toThrow(TypeError)
   })
+
+  it('before 是 async 回调时先等它 settle，其 rejection 走 onError', async () => {
+    const order: string[] = []
+    const onError = jest.fn()
+
+    class Guarded {
+      @createDecorator({
+        before: async () => {
+          await Promise.resolve()
+          order.push('before')
+        },
+        onError,
+      })
+      run(): string {
+        order.push('run')
+        return 'ok'
+      }
+    }
+
+    await expect(new Guarded().run()).resolves.toBe('ok')
+    expect(order).toEqual(['before', 'run'])
+
+    const failing: Array<() => string> = []
+    class GuardedFails {
+      @createDecorator({
+        before: async () => {
+          throw new Error('guard rejected')
+        },
+        onError,
+      })
+      run(): string {
+        failing.push(() => 'should not run')
+        return 'never'
+      }
+    }
+
+    await expect(new GuardedFails().run()).rejects.toThrow('guard rejected')
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'guard rejected' }))
+    expect(failing).toHaveLength(0)
+  })
+
+  it('before 同步抛错时不调用被装饰方法', () => {
+    const onError = jest.fn()
+    const runBody = jest.fn(() => 'ok')
+
+    class SyncGuard {
+      @createDecorator({
+        before: () => {
+          throw new Error('guard threw')
+        },
+        onError,
+      })
+      run(): string {
+        return runBody()
+      }
+    }
+
+    expect(() => new SyncGuard().run()).toThrow('guard threw')
+    expect(runBody).not.toHaveBeenCalled()
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'guard threw' }))
+  })
+
+  it('after 返回 Promise：异步方法时被等待，同步方法时只兜住 rejection', async () => {
+    const seen: string[] = []
+    const errSpy = jest.spyOn(console, 'error').mockImplementation(() => {})
+
+    class AsyncTail {
+      @createDecorator({
+        after: async () => {
+          await Promise.resolve()
+          seen.push('after')
+        },
+      })
+      async run(): Promise<string> {
+        return 'async'
+      }
+    }
+
+    await new AsyncTail().run()
+    expect(seen).toEqual(['after'])
+
+    class SyncTail {
+      @createDecorator({
+        after: () =>
+          Promise.reject(new Error('after rejected')),
+      })
+      run(): string {
+        return 'sync'
+      }
+    }
+
+    // 同步契约优先：返回值仍是同步的原值，rejection 就地记日志而非外抛
+    expect(new SyncTail().run()).toBe('sync')
+    // 兜底 catch 落在 rejection 之后，需要让出一次宏任务才会执行
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(errSpy).toHaveBeenCalledWith('[Action] async after callback rejected:', expect.any(Error))
+    errSpy.mockRestore()
+  })
+
+  it('onError 自身抛错不顶替原始失败', () => {
+    const errSpy = jest.spyOn(console, 'error').mockImplementation(() => {})
+
+    class Noisy {
+      @createDecorator({
+        onError: () => {
+          throw new Error('onError boom')
+        },
+      })
+      run(): number {
+        throw new Error('original')
+      }
+    }
+
+    expect(() => new Noisy().run()).toThrow('original')
+    expect(errSpy).toHaveBeenCalledWith('[Action] onError callback threw:', expect.any(Error))
+    errSpy.mockRestore()
+  })
 })

@@ -172,6 +172,13 @@ export class SubscriptionManager<S extends State = State> implements Subscriptio
     if (this._listeners.size === 0) {
       return
     }
+    // 零拷贝的前提是「没有可写订阅者」：此时载荷被所有回调共享，
+    // 任一可写回调就地修改载荷即直接改到活状态，且其他监听器同时看到半成品。
+    // Store 侧按 hasWritableListeners() 传值不会触发，此告警只为兜住 notify() 的
+    // 直接调用方与将来的新调用点——违规只存在于类型层面，运行时此前毫无信号
+    if (!cloneOnNotify && this._writableCount > 0 && !isProduction()) {
+      console.warn(`[GeomStore][${this._storeName}] cloneOnNotify=false 与可写订阅者共存：监听器可修改共享载荷，存在数据污染风险`)
+    }
     // 仅在循环前克隆一次，避免对每个监听器重复深拷贝整棵状态树
     // （cloneOnNotify=true 默认开启，单次克隆已能保证监听器间的引用隔离）
     const payload = cloneOnNotify ? deepCloneState(state) : state

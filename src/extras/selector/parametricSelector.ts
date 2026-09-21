@@ -38,8 +38,7 @@ import { getStateVersion } from '../../core/store/stateVersion.js'
  *   { ttl: 10000 } // 自定义缓存有效期
  * )
  *
- * const getState = (state) => state
- * const getUser = getUserById(getState)
+ * const getUser = getUserById(store.state)
  *
  * // 使用不同的参数
  * const user1 = getUser('user1')
@@ -125,10 +124,16 @@ export function createParametricSelector<S extends State, P, R>(
           cache.version = version
           cache.snapshot = state
         }
-      } else if (!deepEqual(cache.snapshot, state)) {
-        // 回退：无版本标记（普通对象），沿用快照 + deepEqual 校验
+      } else if (cache.version !== undefined || !deepEqual(cache.snapshot, state)) {
+        // 回退：无版本标记（普通对象），沿用快照 + deepEqual 校验；
+        // 但「版本化缓存 vs 已失去版本标记的状态」必须按 miss 处理——版本化条目的 snapshot
+        // 存的是活引用，deepEqual(自身, 自身) 恒相等，会把该 state 下的参数缓存钉在 TTL 内
+        // 一直命中陈旧值（与 createSelector.isCacheHit 拒绝版本化条目匹配无版本输入同理）。
+        // 此处一并把 version 降级为 undefined：否则该 state 之后每次调用都走本分支，
+        // 反复重建快照、缓存形同虚设
         cache.objectParamsCache = new WeakMap()
         cache.primitiveParamsCache = new Map()
+        cache.version = version
         cache.snapshot = clone(state)
       }
 

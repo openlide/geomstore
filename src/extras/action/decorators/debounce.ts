@@ -79,8 +79,15 @@ export function withDebounce(delay: number = 300): MethodDecorator {
   }
 
   return function (_target: unknown, propertyKey: string | symbol, descriptor: PropertyDescriptor): PropertyDescriptor {
-    const originalMethod = descriptor.value
+    const originalMethod = descriptor.value as ((...args: unknown[]) => unknown) | undefined
     const methodKey = propertyKey
+
+    // 访问器描述符 / 非函数属性：value 为 undefined，晚到失败会以
+    // `Cannot read properties of undefined (reading 'apply')` 的形式出现在定时器回调里，
+    // 还被下方的 catch 吞成「所有 pending 调用都 reject」，故在装饰阶段就报错
+    if (typeof originalMethod !== 'function') {
+      throw new TypeError(`[withDebounce] can only decorate a method, but "${String(methodKey)}" is not a function`)
+    }
 
     descriptor.value = function (this: unknown, ...args: unknown[]) {
       const state = getState(this, methodKey)
@@ -98,6 +105,8 @@ export function withDebounce(delay: number = 300): MethodDecorator {
         state.timeoutId = setTimeout(async () => {
           const resolves = state.pendingResolves
           const rejects = state.pendingRejects
+          // 只有存活到现在的这一个定时器会触发，其读取的正是最后一次调用的 args
+          // （上面刚同步写入），不存在「pendingArgs 为空 → 回退旧 args」的分支
           const runArgs = state.pendingArgs
           // 清空 pending 队列与定时器引用，防止重复结算
           state.pendingResolves = []
@@ -105,7 +114,7 @@ export function withDebounce(delay: number = 300): MethodDecorator {
           state.pendingArgs = []
           state.timeoutId = null
           try {
-            const result = await originalMethod.apply(this, runArgs.length ? runArgs : args)
+            const result = await originalMethod.apply(this, runArgs)
             resolves.forEach((r) => r(result))
           } catch (error) {
             rejects.forEach((r) => r(error))

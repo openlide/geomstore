@@ -6,6 +6,7 @@
  */
 
 import type { ActionLoaderOptions } from '../../types/action.js'
+import { toError } from './async-core.js'
 
 /**
  * Action加载状态管理器
@@ -39,17 +40,14 @@ import type { ActionLoaderOptions } from '../../types/action.js'
  */
 export class ActionLoader {
   /**
-   * 加载状态映射
-   * @private
-   * @type {Map<string, boolean>}
-   */
-  private loadingStates: Map<string, boolean> = new Map()
-
-  /**
    * loading 引用计数（按 loading 键）：同一 action 重叠调用时，
    * 首个调用置 true、最后一个完成才置 false，避免共享布尔键的提前翻转。
    * 可注入共享存储（withLoading 场景）：同宿主上不同选项签名的装饰器
-   * 对同一 loading 键的计数必须集中，否则仍会互相提前翻转
+   * 对同一 loading 键的计数必须集中，否则仍会互相提前翻转。
+   *
+   * 该计数同时是 loading 状态的**唯一来源**：此前另有实例私有的布尔镜像，
+   * 共享计数时另一实例的 increment 不会写本实例的镜像，本实例 decrement 到
+   * 非零也不复位它，于是 `isLoading()` 会永久返回 true。
    * @private
    */
   private loadingRefCounts: Map<string, number>
@@ -67,6 +65,16 @@ export class ActionLoader {
    * @type {Map<string, unknown>}
    */
   private errorData: Map<string, unknown> = new Map()
+
+  /**
+   * 最近一次 `wrap` 注入的 setState
+   *
+   * `clear()` 与换键的 `setOptions()` 据此给旧键补写复位值：内部记账被清空后已无
+   * 在途调用来纠正 store，`loading: true` 会永久卡住。
+   * 需要复位的键直接取自下面的几张表（键即状态键），无需另设登记表。
+   * @private
+   */
+  private lastSetState: ((key: string, value: unknown) => void) | undefined
 
   /**
    * 配置选项
@@ -111,11 +119,15 @@ export class ActionLoader {
    *
    * 执行时会自动设置loading状态，成功后清除loading和error，失败时设置error
    *
-   * @template T - Action函数类型
+   * @template T - Action函数类型（参数类型不限，返回值须为 Promise）
    * @param {T} action - 要包装的异步Action函数
    * @param {string} actionName - Action名称（用于状态键）
    * @param {(key: string, value: unknown) => void} setState - 设置状态的函数
-   * @returns {T} 包装后的Action
+   * @returns {T} 包装后的Action（签名与被包装者一致）
+   *
+   * @remarks 约束用 `(...args: never[]) => Promise<unknown>` 而非 `unknown[]`：按参数逆变，
+   * `unknown[]` 会拒掉类文档示例里 `(userId: string) => Promise<User>` 这类带具体参数类型的
+   * action（调用方被迫写 `as any`），`never[]` 则放行且保留 T 的推导。
    *
    * @example
    * ```typescript
@@ -136,8 +148,11 @@ export class ActionLoader {
    * // state.error = null
    * ```
    */
-  wrap<T extends (...args: unknown[]) => Promise<unknown>>(action: T, actionName: string, setState: (key: string, value: unknown) => void): T {
-    return (async (...args: unknown[]) => {
+  wrap<T extends (...args: never[]) => Promise<unknown>>(action: T, actionName: string, setState: (key: string, value: unknown) => void): T {
+    // 记住最近一次注入的 setState：clear() 与换键的 setOptions() 要靠它给旧键补写复位值
+    this.lastSetState = setState
+
+    const wrapped = async (...args: Parameters<T>): Promise<unknown> => {
       // 设置loading状态（引用计数）。increment 在 try 之外且内部先计数再 setState：
       // setState 同步抛错（如 store 已销毁）时计数残留 +1，loading 永远无法回 false，
       // 失败时回滚计数
@@ -167,11 +182,16 @@ export class ActionLoader {
           this.safeRunStateEffect(() => this.decrementLoading(actionName, setState))
         }
         // 错误状态管理独立于 loading 开关：即使 autoLoading 关闭也应记录错误
-        this.safeRunStateEffect(() => this.setError(actionName, error as Error, setState))
+        this.safeRunStateEffect(() => this.setError(actionName, toError(error), setState))
 
         throw error
       }
-    }) as T
+    }
+
+    // 参数逆变让「具体参数类型的 action」无法直接赋给 unknown[] 形参，故按 Parameters<T>
+    // 声明包装函数、返回 Promise<unknown>，最后经 unknown 转成 T：包装前后运行时是同一个
+    // 函数对象，类型层面只是把返回值的 resolve 值收敛为 unknown
+    return wrapped as unknown as T
   }
 
   /**
@@ -205,7 +225,6 @@ export class ActionLoader {
     const count = (this.loadingRefCounts.get(key) ?? 0) + 1
     this.loadingRefCounts.set(key, count)
     if (count === 1) {
-      this.loadingStates.set(key, true)
       setState(key, true)
     }
   }
@@ -220,7 +239,6 @@ export class ActionLoader {
     const count = Math.max(0, (this.loadingRefCounts.get(key) ?? 1) - 1)
     this.loadingRefCounts.set(key, count)
     if (count === 0) {
-      this.loadingStates.set(key, false)
       setState(key, false)
     }
   }
@@ -314,7 +332,9 @@ export class ActionLoader {
    * ```
    */
   isLoading(actionName: string): boolean {
-    return this.loadingStates.get(this.getLoadingKey(actionName)) ?? false
+    // 直接以（可能是宿主共享的）引用计数为准：本实例只记自己的 increment 的话，
+    // 同键的另一实例先加计数、本实例后减到非零时 isLoading() 会永久为 true
+    return (this.loadingRefCounts.get(this.getLoadingKey(actionName)) ?? 0) > 0
   }
 
   /**
@@ -366,7 +386,12 @@ export class ActionLoader {
    * ```
    */
   getAllLoading(): Record<string, boolean> {
-    return Object.fromEntries(this.loadingStates.entries())
+    const states: Record<string, boolean> = {}
+    for (const [key, count] of this.loadingRefCounts) {
+      states[key] = count > 0
+    }
+
+    return states
   }
 
   /**
@@ -391,16 +416,61 @@ export class ActionLoader {
   /**
    * 清除所有状态
    *
-   * 清除所有记录的loading、error和errorData状态
+   * 既丢内部记账，也把宿主 store 里的派生状态复位（loading→false、error/errorData→null）：
+   * 只清内部的话，store 会永久停在最后一次写入的值上（典型表现 `loading: true` 卡死），
+   * 此后已没有在途调用来纠正它。
+   *
+   * 注意：注入的共享 loading 计数会被一并清零，同宿主上其他 loader 实例的进行中调用
+   * 因此失去计数（与 `setOptions` 换选项时的处理口径一致）。
+   *
+   * @param {(key: string, value: unknown) => void} [setState] - 复位写入用的 setState，
+   *   缺省复用最近一次 `wrap` 注入的那个
    *
    * @example
    * ```typescript
-   * // 重置所有状态
+   * // 重置所有状态（含 store 侧）
    * loader.clear()
    * ```
    */
-  clear(): void {
-    this.loadingStates.clear()
+  clear(setState?: (key: string, value: unknown) => void): void {
+    this.resetDerivedState(setState)
+    this.clearInternalRecords()
+    // 记账已空，无需再保留宿主侧的写入函数（它通常 bind 了 store，会拖住宿主不被回收）
+    this.lastSetState = undefined
+  }
+
+  /**
+   * 给本实例写过的状态键补写复位值
+   *
+   * @private
+   */
+  private resetDerivedState(setState?: (key: string, value: unknown) => void): void {
+    const write = setState ?? this.lastSetState
+    if (!write) {
+      // 从未 wrap 过：没有 setState 可用，也就没写过宿主状态
+      return
+    }
+    for (const [key, count] of this.loadingRefCounts) {
+      if (count > 0) {
+        this.safeRunStateEffect(() => write(key, false))
+      }
+    }
+    for (const [key, error] of this.errors) {
+      if (error !== null) {
+        this.safeRunStateEffect(() => write(key, null))
+      }
+    }
+    for (const key of this.errorData.keys()) {
+      this.safeRunStateEffect(() => write(key, null))
+    }
+  }
+
+  /**
+   * 丢弃内部记账（store 侧的复位由 `resetDerivedState` 负责）
+   *
+   * @private
+   */
+  private clearInternalRecords(): void {
     this.loadingRefCounts.clear()
     this.errors.clear()
     this.errorData.clear()
@@ -423,6 +493,7 @@ export class ActionLoader {
    */
   setOptions(options: Partial<ActionLoaderOptions>): void {
     const previousAutoLoading = this.options.autoLoading
+    const previousKeys = [this.options.loadingKey, this.options.errorKey, this.options.errorDataKey, this.options.perActionKeys].join('|')
     Object.assign(this.options, {
       loadingKey: options.loadingKey ?? this.options.loadingKey,
       errorKey: options.errorKey ?? this.options.errorKey,
@@ -430,12 +501,15 @@ export class ActionLoader {
       autoLoading: options.autoLoading ?? this.options.autoLoading,
       perActionKeys: options.perActionKeys ?? this.options.perActionKeys,
     })
-    // 中途切换 autoLoading 会使进行中调用的 increment/decrement 不对称，
-    // 残留计数会永久占用 loading 状态：切换时重置计数与状态，代价是
-    // 切换瞬间进行中的调用不再参与计数（可接受，切换本身即行为变更点）
-    if (previousAutoLoading !== this.options.autoLoading) {
-      this.loadingRefCounts.clear()
-      this.loadingStates.clear()
+    const keysChanged = [this.options.loadingKey, this.options.errorKey, this.options.errorDataKey, this.options.perActionKeys].join('|') !== previousKeys
+
+    // 中途切换 autoLoading、或改任何一个状态键名，都会让进行中的调用「按旧键 increment、
+    // 按新键 decrement」：旧键的计数/错误条目既等不到归零写入，新键又走 `?? 1` 兜底，
+    // 结果旧键在 store 里永久停在 true。故两种情况都先给旧键补写复位值，再丢弃旧记账。
+    // 代价：切换瞬间进行中的调用不再参与计数（切换本身即行为变更点）
+    if (keysChanged || previousAutoLoading !== this.options.autoLoading) {
+      this.resetDerivedState()
+      this.clearInternalRecords()
     }
   }
 }

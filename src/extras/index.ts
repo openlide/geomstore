@@ -9,8 +9,9 @@
  * 2. 动态导入按需加载：
  *    `const { SnapshotManager } = await import('@openlide/geomstore/extras/snapshot')`
  *
- * 从本入口（`@openlide/geomstore/extras`）引入会一并拉入全部可选能力，
- * 仅在「确实都要用」或开发调试时使用。
+ * 从本入口（`@openlide/geomstore/extras`）引入会一并拉入本文件聚合的可选能力
+ * （插件 / 性能监控 / 快照 / Action 增强 / 企业微信集成）；选择器与错误处理**不在**本入口
+ * 聚合，请走各自的子入口 `@openlide/geomstore/extras/selector`、`/extras/error`。
  *
  * @remarks v0.4.0 起快照 / 选择器 / Action 增强的实现已由 `src/core` 物理下沉至
  * `src/extras`，与各自子入口同层；核心主入口（`@openlide/geomstore` 与
@@ -46,10 +47,33 @@ export type {
 
 // ==================== Action 增强 ====================
 export { ActionExecutor, ActionLoader, withLoading, ActionUtils } from './action/index.js'
-export type { ActionUtilsOptions } from './action/index.js'
+export type { ActionUtilsOptions, ActionStats } from './action/index.js'
 export { withLog, withDebounce, withThrottle, withCache, withRetry, withTimeout, createDecorator } from './action/index.js'
-export type { DecoratorOptions, CacheDecoratorOptions, RetryDecoratorOptions, ThrottleDecoratorOptions } from './action/index.js'
+export type { DecoratorOptions, CacheDecoratorOptions, RetryDecoratorOptions, ThrottleDecoratorOptions, LogDecoratorOptions } from './action/index.js'
 export type { AsyncActions, ActionResult, ActionLoaderOptions, ActionDecorator, ActionExecutionContext } from '../types/action.js'
 
 // ==================== 企业微信集成 ====================
-export * from '../integrations/enterprise/index.js'
+// 显式清单而非 `export *`：本入口其余段落都是策展式再导出，wildcard 会把上游
+// 新增符号未经评审地并入公开 API，且同名冲突在编译期不报错（静默丢失）
+export {
+  createUserStore,
+  StoreManager,
+  storeManager,
+  initHotUpdate,
+  restoreFromHotUpdate,
+  OfflineManager,
+  initBackgroundSync,
+  unregisterBackgroundSync,
+  createEnterpriseApp,
+} from '../integrations/enterprise/index.js'
+export type {
+  UserInfo,
+  UserPreferences,
+  UserState,
+  UserStoreConfig,
+  BackupData,
+  HotUpdateConfig,
+  OfflineAction,
+  BackgroundSyncConfig,
+  EnterpriseAppConfig,
+} from '../integrations/enterprise/index.js'

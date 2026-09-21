@@ -114,12 +114,13 @@ export class ErrorBoundary<S = unknown, F = undefined> {
    * // safeResult will be undefined, error is handled
    * ```
    */
-  execute<T>(fn: () => T, currentState?: S): T | F {
+  execute<T>(fn: () => T, currentState?: S): T | F | undefined {
     try {
       return fn()
     } catch (error) {
-      // 返回类型 T | F 与配置完全一致：配了 fallback 返回 F，否则 undefined
-      return this.handleError(error, currentState) as T | F
+      // 可显式配 recoverable: true 而不配 fallback，此时 handleError 返回 undefined，
+      // 返回类型必须含 undefined，否则调用方按 T | F 消费会在远端炸出二次异常
+      return this.handleError(error, currentState)
     }
   }
 
@@ -146,12 +147,12 @@ export class ErrorBoundary<S = unknown, F = undefined> {
    * }, state)
    * ```
    */
-  async executeAsync<T>(fn: () => Promise<T>, currentState?: S): Promise<T | F> {
+  async executeAsync<T>(fn: () => Promise<T>, currentState?: S): Promise<T | F | undefined> {
     try {
       return await fn()
     } catch (error) {
-      // 同 execute：返回类型与配置一致（T | F）
-      return this.handleError(error, currentState) as T | F
+      // 同 execute：可恢复且未配 fallback 时返回 undefined，返回类型必须含 undefined
+      return this.handleError(error, currentState)
     }
   }
 
@@ -360,14 +361,24 @@ export function withErrorBoundary(options?: ErrorBoundaryOptions) {
   return function (_target: unknown, _propertyKey: string | symbol, descriptor: PropertyDescriptor): PropertyDescriptor {
     const originalMethod = descriptor.value
 
+    // 访问器描述符（get/set）与非函数属性的 value 是 undefined：晚到失败只会抛出
+    // `originalMethod.apply is not a function`，故在装饰阶段拒绝
+    if (typeof originalMethod !== 'function') {
+      throw new TypeError('[withErrorBoundary] can only decorate a method, but the descriptor.value is not a function')
+    }
+
     descriptor.value = function (this: ThisParameterType<typeof originalMethod>, ...args: unknown[]) {
       const boundary = getBoundary(this)
       // 同步阶段（含 async 方法的同步抛出）由 execute 包裹
       const result = boundary.execute(() => originalMethod.apply(this, args))
-      // async 方法返回的 Promise 其 rejection 会绕过同步 try/catch，
-      // 需改用 executeAsync 包裹，避免成为 unhandled rejection
-      if (result instanceof Promise) {
-        return boundary.executeAsync(() => result)
+      // Promise rejection（含 async 方法的 rejection）会绕过同步 try/catch，
+      // 需改用 executeAsync 包裹，避免成为 unhandled rejection。
+      // 用 then 鸭子类型而非 instanceof Promise：跨 realm Promise（iframe/worker）
+      // 与自定义 thenable 的 instanceof 为 false，其 rejection 会被漏掉
+      const isThenable =
+        result !== null && (typeof result === 'object' || typeof result === 'function') && typeof (result as { then?: unknown }).then === 'function'
+      if (isThenable) {
+        return boundary.executeAsync(() => result as Promise<unknown>)
       }
       return result
     }

@@ -40,6 +40,15 @@ export interface HotUpdateConfig<S extends State = State> {
 
 const DEFAULT_BACKUP_KEY = 'store_backup_before_update'
 
+/**
+ * 派生备份存储键：initHotUpdate 与 restoreFromHotUpdate 必须同口径，
+ * 两处各自内联字面量时任一侧独立改动会让写入与读取寻址不同键（静默无源恢复）
+ */
+function resolveBackupKey<S extends State>(store: Store<S>, backupKey?: string): string {
+  // 默认按 store 名派生：多账号/多 Store 实例并存时热更新备份互不覆盖
+  return backupKey ?? `${DEFAULT_BACKUP_KEY}_${store.name}`
+}
+
 /** 待更新重启标记键：确认更新时写入，用于区分「更新后首启」与「普通重启」 */
 function pendingLaunchKey(backupKey: string): string {
   return `${backupKey}__pending_update_launch`
@@ -73,8 +82,7 @@ let hotUpdateManagerInstalled: unknown = null
 
 export function initHotUpdate<S extends State = State>(config: HotUpdateConfig<S>): void {
   const { store, backupKey, onBeforeUpdate } = config
-  // 默认按 store 名派生备份键：多账号/多 Store 实例并存时热更新备份互不覆盖
-  const resolvedBackupKey = backupKey ?? `${DEFAULT_BACKUP_KEY}_${store.name}`
+  const resolvedBackupKey = resolveBackupKey(store, backupKey)
   hotUpdateRegistration = { store: store as unknown as Store<State>, backupKey: resolvedBackupKey, onBeforeUpdate }
 
   const updateManager = wx.getUpdateManager()
@@ -141,8 +149,7 @@ export function initHotUpdate<S extends State = State>(config: HotUpdateConfig<S
  * 从热更新备份恢复状态
  */
 export function restoreFromHotUpdate<S extends State = State>(store: Store<S>, backupKey?: string): boolean {
-  // 默认按 store 名派生备份键，与 initHotUpdate 保持一致
-  const resolvedBackupKey = backupKey ?? `${DEFAULT_BACKUP_KEY}_${store.name}`
+  const resolvedBackupKey = resolveBackupKey(store, backupKey)
   const markerKey = pendingLaunchKey(resolvedBackupKey)
   const backup = storage.get<BackupData>(resolvedBackupKey)
   if (!backup) {
@@ -151,11 +158,14 @@ export function restoreFromHotUpdate<S extends State = State>(store: Store<S>, b
     return false
   }
 
-  const backupAge = Date.now() - backup.timestamp
+  // payload 来自 storage，形状不可信：timestamp 缺失/非有限值时 age 为 NaN，
+  // 而 NaN > BACKUP_EXPIRY_MS 为 false，过期门禁会被损坏备份静默绕过——
+  // 按「无限旧」处理，与正常过期同路径清理
+  const backupAge = Number.isFinite(backup.timestamp) ? Date.now() - backup.timestamp : Number.POSITIVE_INFINITY
 
   // 备份超过过期时间，清理并返回
   if (backupAge > BACKUP_EXPIRY_MS) {
-    logger.warn('HotUpdate', '备份数据已过期（超过1小时）')
+    logger.warn('HotUpdate', '备份数据已过期或时间戳无效（视为过期）')
     storage.remove(resolvedBackupKey)
     storage.remove(markerKey)
     return false
@@ -182,7 +192,10 @@ export function restoreFromHotUpdate<S extends State = State>(store: Store<S>, b
 
   // 版本比对：备份 version 与本库版本常量（而非宿主 app 版本）比对。
   // 硬门禁会在库升级时白丢用户数据，而合并语义本身已能容忍结构漂移，
-  // 故版本不一致只告警、不拦截，仍按下方 $patch 合并语义恢复
+  // 故版本不一致只告警、不拦截，仍按下方 $patch 合并语义恢复。
+  // 声明类型上 version 非可选，但 payload 来自 storage 不可信：旧版本备份可能
+  // 根本没有该字段（静态视角的「恒真」在运行时不成立），缺字段时按「版本未知」
+  // 静默跳过，删掉此守卫会把缺字段误报成 "(undefined) 不一致"
   if (backup.version !== undefined && backup.version !== LIBRARY_VERSION) {
     logger.warn('HotUpdate', `备份版本(${backup.version})与当前库版本(${LIBRARY_VERSION})不一致，仍按合并语义恢复`)
   }

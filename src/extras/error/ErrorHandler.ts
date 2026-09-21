@@ -7,6 +7,9 @@
 
 import { createErrorContext, defaultErrorHandler, type ErrorContext, type ErrorHandler, type ErrorLevel, type OperationType } from '../../types/error.js'
 
+/** errorLog 条目上限的默认值：字段初始化与 setMaxLogSize 的非有限值回退共用 */
+const DEFAULT_MAX_LOG_SIZE = 100
+
 /**
  * 错误处理器类
  *
@@ -31,9 +34,6 @@ import { createErrorContext, defaultErrorHandler, type ErrorContext, type ErrorH
  * console.log(`Total errors: ${stats.total}`)
  * ```
  */
-/** errorLog 条目上限的默认值：字段初始化与 setMaxLogSize 的非有限值回退共用 */
-const DEFAULT_MAX_LOG_SIZE = 100
-
 export class ErrorHandlerImpl {
   /**
    * 错误处理函数
@@ -163,9 +163,22 @@ export class ErrorHandlerImpl {
   }
 
   /**
+   * 拷贝一条错误上下文
+   *
+   * 内部 errorLog 存的若是交给调用方的同一个对象，一句 `ctx.level = 'critical'`
+   * 或 `ctx.error = ...` 就会污染此后所有查询与统计，故对外一律给副本。
+   * 浅拷贝已足够：`error`/`payload` 按约定是外部持有的不可变引用。
+   *
+   * @private
+   */
+  private copyContext(context: ErrorContext): ErrorContext {
+    return { ...context }
+  }
+
+  /**
    * 获取错误日志
    *
-   * 返回所有错误上下文的副本
+   * 返回所有错误上下文的副本（数组与条目均可安全修改，不影响内部状态）
    *
    * @returns {ErrorContext[]} 错误日志数组的副本
    *
@@ -178,7 +191,7 @@ export class ErrorHandlerImpl {
    * ```
    */
   getErrorLog(): ErrorContext[] {
-    return [...this.errorLog]
+    return this.errorLog.map((context) => this.copyContext(context))
   }
 
   /**
@@ -195,7 +208,9 @@ export class ErrorHandlerImpl {
    * ```
    */
   getLastError(): ErrorContext | undefined {
-    return this.errorLog[this.errorLog.length - 1]
+    const last = this.errorLog[this.errorLog.length - 1]
+
+    return last ? this.copyContext(last) : undefined
   }
 
   /**
@@ -252,7 +267,7 @@ export class ErrorHandlerImpl {
    * ```
    */
   getErrorsByOperation(operation: OperationType): ErrorContext[] {
-    return this.errorLog.filter((ctx) => ctx.operation === operation)
+    return this.errorLog.filter((ctx) => ctx.operation === operation).map((ctx) => this.copyContext(ctx))
   }
 
   /**
@@ -272,7 +287,7 @@ export class ErrorHandlerImpl {
    * ```
    */
   getErrorsByLevel(level: ErrorLevel): ErrorContext[] {
-    return this.errorLog.filter((ctx) => ctx.level === level)
+    return this.errorLog.filter((ctx) => ctx.level === level).map((ctx) => this.copyContext(ctx))
   }
 
   /**

@@ -1,7 +1,7 @@
 /**
  * GeomStore - 快照同步克隆引擎
  *
- * 自 SnapshotManager.ts 拆出：迭代式深度克隆及其前置公共判定。
+ * 自 SnapshotManager.ts 拆出：递归式深度克隆及其前置公共判定。
  * 全部为纯函数（不依赖管理器实例状态），由 SnapshotManager 的
  * createSnapshot / processNodeAsync 传入已解析的 options 与账本对象调用。
  *
@@ -82,6 +82,42 @@ export function makeCloneError(path: string, error: unknown): SnapshotError {
 }
 
 /**
+ * cloneError 的统一降级 / 中止处理（同步三处 catch 与异步两处 catch 共用）。
+ *
+ * 收敛四件事，避免同一策略在各处漂移：计一次克隆操作 → 落账 cloneError（静默丢弃会让
+ * 隔离降级对调用方不可见，也让 success 判定认不出失败）→ 咨询 onError → 用户拒绝继续时
+ * 抛 SnapshotAbortError。中止信号本身必须原样上抛：它是用户在更深层做出的决定，
+ * 二次咨询 onError 会把「中止」被中途改答降级为静默丢子树且快照仍标记成功。
+ *
+ * @param error catch 到的原始抛出物
+ * @param target 落账位置：path 为该节点的快照路径，value 为供 onError 判定的当前值
+ * @throws {SnapshotAbortError} error 本身是中止信号，或 onError 返回 false
+ */
+export function handleCloneError(
+  error: unknown,
+  target: { path: string; depth: number; value: unknown },
+  options: Pick<Required<SnapshotOptions>, 'onError'>,
+  errors: SnapshotError[],
+  stats: SnapshotStats,
+): void {
+  if (error instanceof SnapshotAbortError) {
+    throw error
+  }
+  stats.cloneOperations++
+  const snapshotError = makeCloneError(target.path, error)
+  errors.push(snapshotError)
+  const shouldContinue = options.onError(snapshotError, {
+    path: target.path,
+    depth: target.depth,
+    value: target.value,
+    recoverable: true,
+  })
+  if (!shouldContinue) {
+    throw new SnapshotAbortError(error)
+  }
+}
+
+/**
  * 调用自定义克隆器的结果
  * - `value`：克隆器命中并返回了非 undefined 结果
  * - `skip`：克隆器抛错，但 onError 选择继续 → 调用方须丢弃该节点
@@ -93,9 +129,10 @@ export type CustomCloneOutcome = { kind: 'value'; value: unknown } | { kind: 'sk
  * 调用用户自定义克隆器（同步 cloneDeep / 异步 processNodeAsync 共用）。
  *
  * 收敛两件事，避免两条路径行为漂移：
- * 1. **抛错语义**：克隆器抛错时统一落账 cloneError、咨询 onError；继续则返回 `skip`，
- *    中止则抛 SnapshotAbortError（不再让原始异常直接冲出克隆过程、绕过降级契约）。
- * 2. **账本口径**：`stats.cloneOperations` 与 errors 的累加位置唯一。
+ * 1. **抛错语义**：克隆器抛错时交由 {@link handleCloneError} 统一落账 cloneError、咨询
+ *    onError；继续则返回 `skip`，中止则抛 SnapshotAbortError（不再让原始异常直接冲出
+ *    克隆过程、绕过降级契约）。
+ * 2. **账本口径**：`stats.cloneOperations` 与 errors 的累加只在 handleCloneError 一处发生。
  *
  * @param value 当前节点原值
  * @param context 克隆上下文
@@ -116,19 +153,8 @@ export function invokeCustomCloner(
   try {
     customResult = options.customCloner(value, context)
   } catch (error) {
-    stats.cloneOperations++
-    // 错误必须落账：静默丢弃会让隔离降级对调用方不可见
-    const snapshotError = makeCloneError(context.path, error)
-    errors.push(snapshotError)
-    const shouldContinue = options.onError(snapshotError, {
-      path: context.path,
-      depth: context.depth,
-      value,
-      recoverable: true,
-    })
-    if (!shouldContinue) {
-      throw new SnapshotAbortError(error)
-    }
+    // 抛错语义与账本口径统一走 handleCloneError：继续则丢弃该节点，中止则上抛
+    handleCloneError(error, { path: context.path, depth: context.depth, value }, options, errors, stats)
     return { kind: 'skip' }
   }
 
@@ -188,7 +214,11 @@ export function clonePrelude(
   counters.estimatedSize += estimateNodeSize(value)
   counters.maxDepthReached = Math.max(counters.maxDepthReached, context.depth)
 
-  // 基本类型直接返回
+  // 原语与函数直返：null / string / number / boolean / symbol / bigint 不可变，共享无副作用。
+  // 函数是唯一的例外取舍——typeof 为 'function' 而非 'object'，在此按引用放行：
+  // 状态里挂回调/方法引用是常见用法，丢弃会让快照失去可调用性；这与全库统一口径一致
+  // （见 core/utils/clone.ts「函数等不可克隆值保留原引用」）。代价是往快照中的函数挂属性
+  // （fn.meta = …）会写到活状态上；函数属性不属于状态数据，不在快照隔离契约的覆盖范围内
   if (value === null || typeof value !== 'object') {
     return { done: true, value }
   }
@@ -226,7 +256,15 @@ export function clonePrelude(
 }
 
 /**
- * 深度克隆（迭代实现）
+ * 深度克隆（递归实现）
+ *
+ * 每遇到一个子容器就递归调用自身，故调用栈深度 = 数据深度。层数由 maxDepth 界定
+ * （clonePrelude 在超限处直接返回占位值），默认 100 层远低于引擎栈上限；
+ * 但把 maxDepth 抬到数千以上时深链结构仍会 RangeError: Maximum call stack size exceeded——
+ * 溢出点总在递归深处，只有恰好落在某个属性的 try 内才会被记成一条 cloneError，
+ * 快照因此在该层被静默截断（实测 3000 层输入约在 2000 层断掉，success 为 false），
+ * 而非按 onError 的降级意愿继续。需要处理超深结构时走异步路径
+ * （clone-async：容器子值入队而非递归，单节点工作量有界）。
  */
 export function cloneDeep<T>(
   value: T,
@@ -389,19 +427,9 @@ export function cloneDeep<T>(
   try {
     keys = options.includeNonEnumerable ? Object.getOwnPropertyNames(value) : Object.keys(value)
   } catch (error) {
-    // 中止信号直接上抛：这是用户在更深层做出的决定，二次咨询 onError
-    // 会把「中止」被中途改答降级为静默丢子树且快照仍标记成功
-    if (error instanceof SnapshotAbortError) {
-      throw error
-    }
-    stats.cloneOperations++
-    // 错误必须落账：静默丢弃会让克隆降级对调用方不可见（与异步路径同口径）
-    const snapshotError = makeCloneError(context.path, error)
-    errors.push(snapshotError)
-    const shouldContinue = options.onError(snapshotError, { path: context.path, depth: context.depth, value, recoverable: true })
-    if (!shouldContinue) {
-      throw new SnapshotAbortError(error)
-    }
+    // 中止信号在 handleCloneError 内原样上抛：这是用户在更深层做出的决定，
+    // 二次咨询 onError 会把「中止」被中途改答降级为静默丢子树且快照仍标记成功
+    handleCloneError(error, { path: context.path, depth: context.depth, value }, options, errors, stats)
     return cloned
   }
 
@@ -445,29 +473,22 @@ export function cloneDeep<T>(
         ...normalizeDescriptorFlags(descriptor, isAccessor),
       })
     } catch (error) {
-      // 中止信号直接上抛（见上方 keys catch 的说明）
-      if (error instanceof SnapshotAbortError) {
-        throw error
-      }
-      stats.cloneOperations++
-      // 错误必须落账：静默丢弃会让克隆降级对调用方不可见（与异步路径同口径），
-      // 也让 success 判定能识别 cloneError
-      const snapshotError = makeCloneError(`${context.path}.${key}`, error)
-      errors.push(snapshotError)
-      const shouldContinue = options.onError(snapshotError, {
-        path: `${context.path}.${key}`,
-        depth: context.depth,
-        // 描述符可用时直接取 value：访问器描述符没有 value 字段、恒为 undefined，
-        // 与原「识别访问器后显式返回 undefined」等价，故无需再区分描述符种类；
-        // 访问器 getter 已证明会抛错，不经 safeReadProperty 二次触发；
-        // 仅当描述符不可得（查询本身抛错）时才兜底读取
-        value: descriptor ? descriptor.value : safeReadProperty(value as Record<string, unknown>, key),
-        recoverable: true,
-      })
-
-      if (!shouldContinue) {
-        throw new SnapshotAbortError(error)
-      }
+      // 中止信号在 handleCloneError 内原样上抛（见上方 keys catch 的说明）
+      handleCloneError(
+        error,
+        {
+          path: `${context.path}.${key}`,
+          depth: context.depth,
+          // 描述符可用时直接取 value：访问器描述符没有 value 字段、恒为 undefined，
+          // 与原「识别访问器后显式返回 undefined」等价，故无需再区分描述符种类；
+          // 访问器 getter 已证明会抛错，不经 safeReadProperty 二次触发；
+          // 仅当描述符不可得（查询本身抛错）时才兜底读取
+          value: descriptor ? descriptor.value : safeReadProperty(value as Record<string, unknown>, key),
+        },
+        options,
+        errors,
+        stats,
+      )
     }
   }
 

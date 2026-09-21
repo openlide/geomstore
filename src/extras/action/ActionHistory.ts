@@ -67,6 +67,9 @@ export class ActionHistoryTracker {
    * @returns {ActionResult[]} 执行历史数组。传入 actionName 时按时间正序（最早在前，
    *   保持插入顺序）；未传时聚合所有 Action 并按 startTime 倒序（最新在前）
    *
+   * @remarks 判定「是否指定」用 `!== undefined` 而非真值：空串是合法 Action 名
+   * （`String(actionName)` 对 `{'': fn}` 就会产出它），按真值会让该桶只写不读。
+   *
    * @example
    * ```typescript
    * // 获取特定Action的历史
@@ -81,7 +84,7 @@ export class ActionHistoryTracker {
    * ```
    */
   getHistory(actionName?: string): ActionResult[] {
-    if (actionName) {
+    if (actionName !== undefined) {
       // 返回副本：直接返回内部数组会让外部 push/splice 污染历史与 getStats 统计
       return [...(this.actionResults.get(actionName) ?? [])]
     }
@@ -137,6 +140,9 @@ export class ActionHistoryTracker {
    *
    * @param {string} [actionName] - Action名称，如果未指定则清除所有历史
    *
+   * @remarks 同 getHistory：以 `!== undefined` 区分「不传」与「传空串」，
+   * 否则 `clear('')` 会清掉全部历史。
+   *
    * @example
    * ```typescript
    * // 清除特定Action的历史
@@ -147,7 +153,7 @@ export class ActionHistoryTracker {
    * ```
    */
   clear(actionName?: string): void {
-    if (actionName) {
+    if (actionName !== undefined) {
       this.actionResults.delete(actionName)
     } else {
       this.actionResults.clear()

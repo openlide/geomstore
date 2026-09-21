@@ -18,12 +18,14 @@
  *   它们直接作用于 Store action 定义、按宿主实例隔离、与 dispatch 生命周期一致。
  * - 二者在 retry/timeout 上能力重叠。以装饰器作为单方法场景的主导方案；
  *   仅在需要并行/串行编排或聚合统计时再用本执行器，避免同一逻辑两套实现长期漂移。
+ * - 历史记录按「一次逻辑调用一条」记账：executeWithRetry 的逐次尝试、executeWithTimeout
+ *   超时后底层 action 的迟到结算都不写入历史，故 getStats 统计的是调用而非尝试。
  *
  */
 
 import type { AsyncActions, ActionResult } from '../../types/action.js'
 import type { Actions } from '../../types/store.js'
-import { retryWithBackoff, raceWithTimeout } from './async-core.js'
+import { retryWithBackoff, raceWithTimeout, toError } from './async-core.js'
 import { ActionHistoryTracker, type ActionStats } from './ActionHistory.js'
 
 /**
@@ -105,13 +107,39 @@ export class ActionExecutor<A extends Actions = AsyncActions> {
    * ```
    */
   async execute<K extends keyof A>(actions: A, actionName: K, ...args: Parameters<A[K]>): Promise<Awaited<ReturnType<A[K]>>> {
+    return this.recordOutcome(actionName, () => this.run(actions, actionName, args))
+  }
+
+  /**
+   * 执行 Action 但不写历史
+   *
+   * 重试/超时等「一次逻辑调用可能对应多次底层执行」的路径用它，再由 `recordOutcome`
+   * 就整体结果记一条：若直接用 `execute`，3 次重试会落 4 条记录，`getStats().total`
+   * 变成尝试次数、`successRate` 对最终成功的调用报出 25%，中间失败还会挤掉其他
+   * Action 的真实记录（历史按 maxHistory 有界）。
+   *
+   * @private
+   */
+  private async run<K extends keyof A>(actions: A, actionName: K, args: Parameters<A[K]>): Promise<Awaited<ReturnType<A[K]>>> {
+    return await actions[actionName](...args)
+  }
+
+  /**
+   * 围绕一次「逻辑调用」记录恰好一条历史
+   *
+   * `run` 只负责执行、不记账，记账统一收口在这里：错误经 `toError` 规范化后写入
+   * `ActionResult.error`，向外抛出的仍是原始错误值。
+   *
+   * @private
+   */
+  private async recordOutcome<K extends keyof A>(actionName: K, run: () => Promise<Awaited<ReturnType<A[K]>>>): Promise<Awaited<ReturnType<A[K]>>> {
     const startTime = Date.now()
 
     try {
-      const result = await actions[actionName](...args)
+      // await 已解开 Promise，result 即 Awaited<ReturnType<A[K]>>，无需断言
+      const result = await run()
       const endTime = Date.now()
 
-      // 记录成功结果
       this.recordResult(
         {
           success: true,
@@ -123,16 +151,14 @@ export class ActionExecutor<A extends Actions = AsyncActions> {
         String(actionName),
       )
 
-      // await 已解开 Promise，result 即 Awaited<ReturnType<A[K]>>，无需断言
       return result
     } catch (error) {
       const endTime = Date.now()
 
-      // 记录失败结果
       this.recordResult(
         {
           success: false,
-          error: error as Error,
+          error: toError(error),
           startTime,
           endTime,
           duration: endTime - startTime,
@@ -172,7 +198,7 @@ export class ActionExecutor<A extends Actions = AsyncActions> {
    * ```
    */
   async executeParallel<K extends keyof A>(actions: A, tasks: Array<{ action: K; args: Parameters<A[K]> }>): Promise<Array<Awaited<ReturnType<A[K]>> | Error>> {
-    return Promise.all(tasks.map((task) => this.execute(actions, task.action, ...task.args).catch((error) => error)))
+    return Promise.all(tasks.map((task) => this.execute(actions, task.action, ...task.args).catch((error) => toError(error))))
   }
 
   /**
@@ -213,7 +239,8 @@ export class ActionExecutor<A extends Actions = AsyncActions> {
         const result = await this.execute(actions, task.action, ...task.args)
         results.push(result)
       } catch (error) {
-        results.push(error as Error)
+        // 声明的失败侧类型是 Error，故规范化（抛出的可能字符串/普通对象）
+        results.push(toError(error))
       }
     }
 
@@ -235,6 +262,9 @@ export class ActionExecutor<A extends Actions = AsyncActions> {
    * @param {(error: Error, attempt: number) => void} [options.onRetry] - 重试回调
    * @returns {Promise<Awaited<ReturnType<A[K]>>>} Action执行结果
    * @throws {Error} 如果所有重试都失败
+   *
+   * @remarks 历史按「一次逻辑调用」记账：逐次重试不单独入历史，`getStats()` 的 total
+   * 与 `successRate` 因此反映调用结果而非单次尝试结果。
    *
    * @example
    * ```typescript
@@ -267,8 +297,9 @@ export class ActionExecutor<A extends Actions = AsyncActions> {
     } = {},
   ): Promise<Awaited<ReturnType<A[K]>>> {
     const { retries = 3, delay = 100, onRetry } = options
-    // 复用公共内核，与 withRetry 装饰器同一实现，避免退避语义漂移
-    return retryWithBackoff(() => this.execute(actions, actionName, ...args), { retries, delay, onRetry })
+    // 复用公共内核，与 withRetry 装饰器同一实现，避免退避语义漂移。
+    // 逐次尝试走不记账的 run()，整体结果只记一条历史
+    return this.recordOutcome(actionName, () => retryWithBackoff(() => this.run(actions, actionName, args), { retries, delay, onRetry }))
   }
 
   /**
@@ -280,9 +311,14 @@ export class ActionExecutor<A extends Actions = AsyncActions> {
    * @param {A} actions - Actions对象
    * @param {K} actionName - Action名称
    * @param {Parameters<A[K]>} args - Action参数
-   * @param {number} timeout - 超时时间（毫秒）
+   * @param {number} timeout - 超时时间（毫秒，必须为大于 0 的有限数值）
    * @returns {Promise<Awaited<ReturnType<A[K]>>>} Action执行结果
    * @throws {Error} 如果超时或Action执行失败
+   * @throws {RangeError} timeout 非法
+   *
+   * @remarks Promise 无法取消：超时只让本方法提前 reject，底层 action 仍会执行到结束，
+   * 其迟到结果被丢弃且不写入历史（本方法按「一次调用一条记录」记为超时失败）。
+   * 需要真正中断请在 action 内部使用 AbortController 等取消机制。
    *
    * @example
    * ```typescript
@@ -307,7 +343,11 @@ export class ActionExecutor<A extends Actions = AsyncActions> {
   async executeWithTimeout<K extends keyof A>(actions: A, actionName: K, args: Parameters<A[K]>, timeout: number): Promise<Awaited<ReturnType<A[K]>>> {
     // 复用公共内核，与 withTimeout 装饰器同一实现
     // （Promise.race 会消费落败方迟到 reject，无需额外兜底 catch）
-    return raceWithTimeout(this.execute(actions, actionName, ...args), timeout, `Action timeout after ${timeout}ms`)
+    //
+    // 记账挂在 race 之外：超时先落地时本次调用即以 timeout 失败入历史，底层 action
+    // 稍后结算不会再写一条（Promise 无法取消，见 JSDoc）——否则 getHistory/getStats
+    // 会报出调用方从未观察到的结果
+    return this.recordOutcome(actionName, () => raceWithTimeout(this.run(actions, actionName, args), timeout, `Action timeout after ${timeout}ms`))
   }
 
   /**

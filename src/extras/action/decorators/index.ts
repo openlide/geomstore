@@ -13,10 +13,14 @@
  */
 
 export { withLog } from './log.js'
+export type { LogDecoratorOptions, LogSink, LogPhase } from './log.js'
 export { withDebounce } from './debounce.js'
 export { withThrottle } from './throttle.js'
 export type { ThrottleDecoratorOptions } from './throttle.js'
 export { withCache } from './cache.js'
+export type { CacheDecoratorOptions } from './cache.js'
 export { withRetry } from './retry.js'
+export type { RetryDecoratorOptions } from './retry.js'
 export { withTimeout } from './timeout.js'
 export { createDecorator } from './common.js'
+export type { DecoratorOptions } from './common.js'

@@ -14,9 +14,23 @@ import type { ErrorContext, ErrorReporter } from '../../../types/error.js'
  *
  * 唯一产出方是 `HttpReporter#buildRequestBody`，其实现为 `JSON.stringify(对象字面量)`，
  * 结果至少为 `'{}'` —— 因此「body 恒为非空合法 JSON 文本」这一前提由类型而非注释承载：
- * 解析端（wx.request 适配器的 data 字段）可直接 `JSON.parse`，无需空串兜底分支。
+ * wx.request 分支直接把该 JSON 字符串作为 data 发送（wx 对字符串 data 原样发送，且
+ * content-type 默认即 application/json），免去 parse→再序列化往返。HttpRequestImpl 保持
+ * string 签名以便外部注入实现自行反序列化。
  */
 type JsonBody = string & { readonly __jsonBodyBrand: 'JsonBody' }
+
+/**
+ * HttpReporter 构造配置：标准 RequestInit 之外增加 `timeout`。
+ *
+ * fetch 规范无请求超时字段，小程序 wx.request 却有原生 `timeout`；不显式建模的话
+ * 调用方只能靠 as 断言传入、且 wx 分支透传与否无从谈起。非小程序环境下 timeout
+ * 作为未知键随 `{ ...options }` 进入 fetch 初始化并被忽略，无副作用
+ */
+export interface HttpReporterOptions extends RequestInit {
+  /** 请求超时毫秒数（仅 wx.request 分支生效；fetch 分支请用 AbortController/外部实现） */
+  timeout?: number
+}
 
 /**
  * HTTP请求实现：适配不同运行环境（小程序 wx.request / 浏览器 fetch / 自定义注入）
@@ -29,10 +43,13 @@ export type HttpRequestImpl = (url: string, body: string, method: string, header
  * 微信小程序无全局 fetch，直接使用会导致错误上报静默失败（仅 console.error），
  * 因此优先检测并适配 wx.request，其次回退到全局 fetch。
  *
- * @param options - 构造函数传入的 RequestInit 配置（fetch 分支需完整透传，
- *   避免 credentials/mode/keepalive 等配置被静默丢弃）
+ * 环境能力差异：wx.request 无 credentials/mode/keepalive 等概念（cookie 由平台
+ * 自动携带），故 wx 分支仅生效 method/header/data/timeout，其余 RequestInit 字段
+ * 被忽略；fetch 分支透传完整 RequestInit。需要精确控制请求行为时注入自定义 requestImpl。
+ *
+ * @param options - 构造函数传入的 {@link HttpReporterOptions} 配置
  */
-function createDefaultRequest(options: RequestInit): HttpRequestImpl {
+function createDefaultRequest(options: HttpReporterOptions): HttpRequestImpl {
   const wxApi = (globalThis as { wx?: { request?: (options: unknown) => void } }).wx
   const request = wxApi?.request
   if (typeof request === 'function') {
@@ -42,9 +59,13 @@ function createDefaultRequest(options: RequestInit): HttpRequestImpl {
           url,
           method: method as 'POST',
           header: headers,
-          // body 只可能来自 HttpReporter#buildRequestBody（JsonBody：非空合法 JSON），
-          // 故此处直接解析；HttpRequestImpl 保持 string 以便外部注入实现
-          data: JSON.parse(body),
+          // 透传 timeout：缺 timeout 的挂起请求只能靠监控层 race 释放 flush，
+          // wx.request 本体永不终止（泄漏平台请求资源）；未配置时不加键，
+          // 保持既有调用形态
+          ...(options.timeout !== undefined ? { timeout: options.timeout } : {}),
+          // body 恒为 buildRequestBody 产出的 JSON 文本（JsonBody 品牌），字符串
+          // 原样发送即可，无需 parse 后让 wx 再序列化一次
+          data: body,
           // wx.request 的 success 回调在任何 HTTP 状态（含 4xx/5xx）都会触发，
           // 必须校验 statusCode，否则上报失败（服务端拒绝/鉴权失效）被当作成功静默丢失
           success: (res: { statusCode: number }) => {
@@ -78,13 +99,14 @@ function createDefaultRequest(options: RequestInit): HttpRequestImpl {
  * 将错误通过HTTP发送到远程服务器。
  * 默认自动适配运行环境（小程序 wx.request / 浏览器 fetch），
  * 也可通过构造参数注入自定义请求实现。
+ * 注意：环境能力差异见 createDefaultRequest —— wx 分支仅 method/header/data/timeout 生效。
  */
 export class HttpReporter implements ErrorReporter {
   private readonly requestImpl: HttpRequestImpl
 
   constructor(
     private readonly endpoint: string,
-    private readonly options: RequestInit = {
+    private readonly options: HttpReporterOptions = {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -162,19 +184,24 @@ export class HttpReporter implements ErrorReporter {
     const headers = this.options.headers
     if (!headers) return {}
 
-    if (typeof Headers !== 'undefined' && headers instanceof Headers) {
-      const result: Record<string, string> = {}
-      headers.forEach((value, key) => {
-        result[key] = value
-      })
-      return result
-    }
-
+    // 数组分支必须先于鸭子类型判定：Array.prototype.forEach 同样是函数，
+    // 后置会让 string[][] 被当成 Headers 走 (value, key) 回调
     if (Array.isArray(headers)) {
       const result: Record<string, string> = {}
       for (const [key, value] of headers) {
         result[key] = value
       }
+      return result
+    }
+
+    // 鸭子类型识别 Headers，而非比对全局构造器：小程序运行时无全局 Headers，
+    // 跨 realm / polyfill 实例也 instanceof 不中；Headers 无自有可枚举属性，
+    // 落到末尾的展开分支只会得到 `{}`，把 Authorization / Content-Type 静默丢空
+    if (typeof (headers as Headers).forEach === 'function') {
+      const result: Record<string, string> = {}
+      ;(headers as Headers).forEach((value, key) => {
+        result[key] = value
+      })
       return result
     }
 

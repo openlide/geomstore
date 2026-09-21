@@ -8,7 +8,7 @@
 import { createStore } from '../../core/store/index.js'
 import type { Store, State } from '../../types/store.js'
 import { persistencePlugin } from '../../plugins/builtin.js'
-import { DEFAULT_DEBOUNCE_MS, type WxApi } from './env.js'
+import { logger, DEFAULT_DEBOUNCE_MS, type WxApi } from './env.js'
 
 // 本模块直接调用 wx（网络），故保留模块级 ambient 声明
 declare const wx: WxApi
@@ -53,21 +53,37 @@ export interface UserState extends State {
  * `createUserStore` 的配置项
  */
 export interface UserStoreConfig {
-  /** 用户唯一标识：参与 Store 名称与持久化键（`user-store-${userId}`） */
+  /** 用户唯一标识：参与 Store 名称与持久化键（`user-store-${userId}`），不可为空/纯空白 */
   userId: string
+  /** 用户信息同步接口地址；缺省用模块默认 `DEFAULT_SYNC_URL`，便于按环境/宿主注入 */
+  syncUrl?: string
   /** 初始状态覆盖项（可选） */
   initialState?: Partial<UserState>
 }
+
+/** 用户隔离 Store 名称 / 持久化键的前缀 */
+const USER_STORE_PREFIX = 'user-store-'
+
+/**
+ * 派生用户 Store 的名称与持久化键：与 StoreManager.logout 删除的键同源，
+ * 两处各自硬编码字面量时任一侧改动都会让登出清不掉持久化数据
+ */
+export function userStoreKey(userId: string): string {
+  return `${USER_STORE_PREFIX}${userId}`
+}
+
+/** 用户信息同步接口默认地址（业务 URL 不落码到调用点，可经 UserStoreConfig.syncUrl 注入） */
+const DEFAULT_SYNC_URL = '/api/user/sync'
 
 /**
  * 从服务端拉取用户信息
  * 使用 wx.request（微信小程序网络 API），避免依赖 Node/DOM 的 fetch；
  * wx.request 在任意 HTTP 状态码下都会触发 success，非 2xx 视为请求失败
  */
-function requestUserInfo(): Promise<UserInfo> {
+function requestUserInfo(url: string): Promise<UserInfo> {
   return new Promise<UserInfo>((resolve, reject) => {
     wx.request({
-      url: '/api/user/sync',
+      url,
       success: (res) => {
         if (res.statusCode < 200 || res.statusCode >= 300) {
           reject(new Error(`sync failed with status ${res.statusCode}`))
@@ -95,10 +111,16 @@ function requestUserInfo(): Promise<UserInfo> {
  * 登出时 StoreManager 按同一键清理持久化数据，保证键的写入与删除一致
  */
 export function createUserStore(config: UserStoreConfig): Store<UserState> {
-  const { userId, initialState = {} } = config
+  const { userId, syncUrl = DEFAULT_SYNC_URL, initialState = {} } = config
+
+  // 空/纯空白 userId 会生成 `user-store-` 这类畸形键：不同账号在 storage 与
+  // StoreManager 的 Map 上碰撞同一键，即跨账号数据泄漏，必须在入口拒绝
+  if (typeof userId !== 'string' || userId.trim() === '') {
+    throw new Error('[UserStore] userId 不能为空')
+  }
 
   const store = createStore<UserState>({
-    name: `user-store-${userId}`,
+    name: userStoreKey(userId),
     state: {
       userInfo: null,
       preferences: {},
@@ -117,9 +139,16 @@ export function createUserStore(config: UserStoreConfig): Store<UserState> {
         })
       },
       async syncWithServer() {
-        // 先请求后写入：请求失败（reject）时不污染状态
-        const userInfo = await requestUserInfo()
-        this.$patch({ userInfo, lastSyncTime: Date.now() })
+        // 先请求后写入：请求失败（reject）时不污染状态。
+        // catch 记日志后原样 rethrow：调用方仍需感知失败做业务兜底，
+        // 但无日志会让网络失败在监控里完全不可见
+        try {
+          const userInfo = await requestUserInfo(syncUrl)
+          this.$patch({ userInfo, lastSyncTime: Date.now() })
+        } catch (error) {
+          logger.error('UserStore', '同步用户信息失败:', error)
+          throw error
+        }
       },
     },
     enableCache: true,

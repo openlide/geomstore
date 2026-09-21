@@ -199,11 +199,11 @@ describe('Action Decorators', () => {
       expect(result).toBe(42)
     })
 
-    it('DECORATOR-DB-005: 当 runArgs 为空数组时应该使用 args 作为 fallback', async () => {
+    it('DECORATOR-DB-005: 无参数调用时应以空参数数组执行原方法', async () => {
       jest.useFakeTimers()
 
-      // 构造一个场景：pendingArgs 被清空后（空数组），fallback 到原始 args
-      // 通过直接操作内部逻辑来触发 runArgs.length 为 falsy 的分支
+      // 原实现的 `runArgs.length ? runArgs : args` 是死分支（pendingArgs 与闭包 args
+      // 恒为同一数组），断言的是「空参数原样传给原方法」这一真实语义
       class EmptyArgsClass {
         @withDebounce(50)
         async method(...args: unknown[]) {

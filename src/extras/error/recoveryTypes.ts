@@ -20,7 +20,9 @@ export const MAX_RETRY_KEYS = 1000
  * - RETRY: 延迟后重抛原错误，由调用方重试（库内无原操作引用，无法自动重试）
  * - FALLBACK: 使用回退值
  * - IGNORE: 忽略错误
- * - RESTART: 重启相关组件
+ * - RESTART: 重启相关组件。刻意不接受任何配置、结果恒为 undefined：与 RETRY 同理，
+ *   库内不持有组件引用，无法自行重启；undefined 即「需要调用方重启」的信号，
+ *   重启动作与重启对象由调用方决定，故不提供 restartFn/restartTarget 之类的钩子
  * - RECOVER: 执行自定义恢复逻辑
  */
 export enum RecoveryStrategy {
@@ -42,13 +44,29 @@ export interface RecoveryConfig {
   /** 恢复策略 */
   strategy: RecoveryStrategy
 
-  /** 最大重试次数（仅RETRY策略） */
+  /**
+   * 最大重试次数（仅 RETRY 策略）
+   *
+   * 缺省默认 3（ErrorRecovery.configure / executeRetryStrategy 静默补值，读本接口即知实际额度）。
+   * 取值范围：正整数。0 会使首次失败直接命中「Max retries exceeded」分支而完全放弃重试；
+   * 负数与 0 同（`currentAttempt >= maxRetries` 恒成立），均非「无限重试」语义
+   */
   maxRetries?: number
 
-  /** 重试延迟（毫秒）（仅RETRY策略） */
+  /**
+   * 重试延迟（毫秒）（仅 RETRY 策略）
+   *
+   * 缺省默认 1000。取值范围：>= 0。0 表示不等待立即重试；负数传入 setTimeout 会被
+   * 归一为 0（同样是立即重试），如需退避请配 exponentialBackoff
+   */
   retryDelay?: number
 
-  /** 是否使用指数退避（仅RETRY策略） */
+  /**
+   * 是否使用指数退避（仅 RETRY 策略）
+   *
+   * 缺省默认 true。为 true 时实际延迟为 `retryDelay * 2^已试次数`；
+   * 为 false 时每次固定 retryDelay
+   */
   exponentialBackoff?: boolean
 
   /** 回退值（仅FALLBACK策略） */

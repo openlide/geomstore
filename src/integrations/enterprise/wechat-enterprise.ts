@@ -77,7 +77,17 @@ export function createEnterpriseApp(config: EnterpriseAppConfig = {}) {
   // 必须显式恢复身份，否则 StoreManager.logout() 的 `if (!this.currentUserId) return`
   // 会早退，导致 store.destroy() 与持久化键 user-store-<id> 都不被清理。
   // 冷启动本就是一次「切换到持久化的用户」，switchUser 语义正确
-  const store = currentUserId ? storeManager.switchUser(currentUserId) : null
+  let store: Store<UserState> | null = null
+  if (currentUserId) {
+    try {
+      store = storeManager.switchUser(currentUserId)
+    } catch (error) {
+      // 历史脏标识（如旧版未校验时写入的空白 userId）会在 createUserStore 的
+      // 入口校验处抛错：冷启动不能因身份损坏而整体崩溃，清键后按未登录处理
+      logger.error('App', '冷启动恢复身份失败，已清除损坏的用户标识:', error)
+      storage.remove(CURRENT_USER_KEY)
+    }
+  }
 
   // 离线管理器实例（延迟初始化）
   let offlineManager: OfflineManager<UserState> | null = null
@@ -122,7 +132,8 @@ export function createEnterpriseApp(config: EnterpriseAppConfig = {}) {
     },
 
     login(userId: string) {
-      storage.set(CURRENT_USER_KEY, userId)
+      // 身份持久化由 switchUser 统一完成，此处不再重复写 CURRENT_USER_KEY：
+      // 两处写入时任一侧改动都会让内存身份与 storage 身份分叉
       const previousStore = this.globalData.store
       const newStore = storeManager.switchUser(userId)
       this.globalData.store = newStore

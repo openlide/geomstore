@@ -3,6 +3,7 @@
  *
  */
 
+import { toError } from '../async-core.js'
 /**
  * async 函数原型引用
  *
@@ -32,6 +33,11 @@ export function isAsyncFunction(fn: unknown): boolean {
 
 /**
  * 装饰器选项
+ *
+ * @remarks 三个回调都可以写成 `async`（TS 允许 async 函数满足 `=> void` 签名）：
+ * `before` 返回 Promise 时整次调用降级为异步，被装饰方法一定等它 settle 之后才执行，
+ * 其 rejection 走 `onError`；`after` 返回 Promise 时只有在被装饰方法本身是异步时才会被
+ * 等待（同步方法必须保持同步返回，此时该 Promise 的 rejection 只记录日志不外抛）。
  */
 export interface DecoratorOptions {
   /** 执行前的回调 */
@@ -40,6 +46,11 @@ export interface DecoratorOptions {
   after?: (result: unknown) => void
   /** 执行失败的回调 */
   onError?: (error: Error) => void
+}
+
+/** 带 then 函数的对象：用户自带 thenable 同样要等，不能只认 Promise 实例 */
+function isThenable(value: unknown): value is PromiseLike<unknown> {
+  return (typeof value === 'object' || typeof value === 'function') && value !== null && typeof (value as PromiseLike<unknown>).then === 'function'
 }
 
 /**
@@ -53,6 +64,8 @@ export interface DecoratorOptions {
  *
  * @remarks 返回值类型跟随被装饰方法：同步方法仍同步返回，异步（或返回 Promise）方法
  * 返回 Promise；`after` 在结果确定后触发，`onError` 在同步抛错或 Promise reject 时触发。
+ * `before`/`after` 返回 Promise 时按 {@link DecoratorOptions} 的约定接续，不会并发执行、
+ * 也不会留下 unhandled rejection；`onError` 自身抛错不会顶替原始失败。
  *
  * @example
  * ```typescript
@@ -86,44 +99,93 @@ export function createDecorator(options: DecoratorOptions = {}): MethodDecorator
       throw new TypeError('[createDecorator] can only decorate a method whose descriptor.value is a function')
     }
 
-    const wrapper = function (this: unknown, ...args: unknown[]): unknown {
-      let result: unknown
+    /** 把抛出的值交给 onError，并保证回调自身的异常不顶替原始失败 */
+    const reportError = (error: unknown): void => {
+      if (!options.onError) {
+        return
+      }
       try {
-        if (options.before) {
-          options.before(...args)
-        }
-        result = originalMethod.apply(this, args)
-      } catch (error) {
-        if (options.onError) {
-          options.onError(error as Error)
-        }
-        throw error
+        options.onError(toError(error))
+      } catch (callbackError) {
+        console.error('[Action] onError callback threw:', callbackError)
+      }
+    }
+
+    /**
+     * 触发 after 并处理其返回的 Promise
+     *
+     * @param awaitTail - 异步路径为 true（把尾随 Promise 接回返回值）；同步路径为 false，
+     * 此时不能改判为 Promise 返回（会破坏同步契约），只能就地兜住 rejection
+     */
+    const callAfter = (result: unknown, awaitTail: boolean): unknown => {
+      if (!options.after) {
+        return result
       }
 
-      if (result instanceof Promise) {
-        // 异步结果：after/onError 挂到结算之后，返回值仍是 Promise（不吞 rejection）
-        return result.then(
-          (value) => {
-            if (options.after) {
-              options.after(value)
-            }
-            return value
-          },
-          (error) => {
-            if (options.onError) {
-              options.onError(error as Error)
-            }
-            throw error
-          },
-        )
+      const afterResult = options.after(result)
+      if (!isThenable(afterResult)) {
+        return result
+      }
+      const tail = Promise.resolve(afterResult).then(() => result)
+      if (!awaitTail) {
+        tail.catch((error) => {
+          console.error('[Action] async after callback rejected:', error)
+        })
       }
 
-      // 同步结果原样返回：此前无条件用 async 包装，同步方法的返回值会被变成 Promise，
-      // 破坏 `const v = obj.method()` 这类按同步契约取值的调用方
-      if (options.after) {
-        options.after(result)
+      return awaitTail ? tail : result
+    }
+
+    const wrapper = function (this: unknown, ...args: unknown[]): unknown {
+      /** 执行被装饰方法并接上 after/onError */
+      const invokeOriginal = (): unknown => {
+        let result: unknown
+        try {
+          result = originalMethod.apply(this, args)
+        } catch (error) {
+          reportError(error)
+          throw error
+        }
+
+        if (isThenable(result)) {
+          // 异步结果：after/onError 挂到结算之后，返回值仍是 Promise（不吞 rejection）
+          return Promise.resolve(result).then(
+            (value) => callAfter(value, true),
+            (error) => {
+              reportError(error)
+              throw error
+            },
+          )
+        }
+
+        // 同步结果原样返回：此前无条件用 async 包装，同步方法的返回值会被变成 Promise，
+        // 破坏 `const v = obj.method()` 这类按同步契约取值的调用方
+        return callAfter(result, false)
       }
-      return result
+
+      if (options.before) {
+        let beforeResult: unknown
+        try {
+          beforeResult = options.before(...args)
+        } catch (error) {
+          reportError(error)
+          throw error
+        }
+
+        // before 是 async 回调时，TS 的 `=> void` 签名挡不住它：不接续就会与被装饰方法
+        // 并发执行（违背「执行前」语义），其 rejection 还会变成 unhandled rejection
+        if (isThenable(beforeResult)) {
+          return Promise.resolve(beforeResult).then(
+            () => invokeOriginal(),
+            (error) => {
+              reportError(error)
+              throw error
+            },
+          )
+        }
+      }
+
+      return invokeOriginal()
     }
 
     // 保留原方法的 name/length：装饰器换实现时这两项元信息默认丢失，

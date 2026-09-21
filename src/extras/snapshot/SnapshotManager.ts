@@ -2,8 +2,8 @@
  * GeomStore - 增强型快照管理器
  *
  * 提供高性能的状态快照功能，支持：
- * - 迭代式深度克隆（支持循环引用检测）
- * - 异步快照（非阻塞操作）
+ * - 同步深度克隆（递归实现，深度受 maxDepth 界定，支持循环引用检测）
+ * - 异步快照（分节点入队、批间让出控制权，不阻塞主线程）
  * - 进度回调与错误处理
  * - 增量快照对比
  *
@@ -289,7 +289,10 @@ export class SnapshotManager {
     const totalCount = estimateNodeCount(data)
 
     // 报告进度
+    // 进度回调抛过的标记：抛错即记一次并停用，避免同一上报异常按批次刷爆错误账本
+    let progressFailed = false
     const reportProgress = (currentPath: string) => {
+      if (progressFailed) return
       const elapsed = Date.now() - startTime
       const percentage = Math.min(100, (processedCount / totalCount) * 100)
       // 无分支的剩余时间估算，与原先 `percentage > 0 ? (elapsed / percentage) * (100 - percentage) : 0`
@@ -299,14 +302,27 @@ export class SnapshotManager {
       const perPercent = (elapsed * Math.sign(percentage)) / Math.max(percentage, Number.MIN_VALUE)
       const estimatedRemaining = perPercent * (100 - percentage)
 
-      opts.onProgress({
-        processed: processedCount,
-        total: totalCount,
-        percentage: Math.round(percentage * 100) / 100,
-        currentPath,
-        elapsedTime: elapsed,
-        estimatedTimeRemaining: Math.round(estimatedRemaining),
-      })
+      try {
+        opts.onProgress({
+          processed: processedCount,
+          total: totalCount,
+          percentage: Math.round(percentage * 100) / 100,
+          currentPath,
+          elapsedTime: elapsed,
+          estimatedTimeRemaining: Math.round(estimatedRemaining),
+        })
+      } catch (error) {
+        // onProgress 是「上报」代码而非决策代码：它抛错若向外传播，会穿过 processQueue 的
+        // finally 落到外层 catch，把一份完好克隆降级为失败结果（data 变 undefined）。
+        // 故就地吞掉并记一条 unknown（不参与 success 判定），克隆结果不受影响
+        progressFailed = true
+        errors.push({
+          type: 'unknown',
+          message: `onProgress callback failed: ${error instanceof Error ? error.message : String(error)}`,
+          path: currentPath,
+          originalError: error instanceof Error ? error : undefined,
+        })
+      }
     }
 
     // 入队（超时后不再接受新任务，避免队列无限增长）
@@ -456,7 +472,10 @@ export class SnapshotManager {
         timestamp: startTime,
         dataType: this.getDataType(data),
         size: counters.estimatedSize,
-        nodeCount: processedCount,
+        // 与同步路径同口径取 counters.nodeCount：此前用 processedCount，它按「处理过的任务数」
+        // 计数，会把 maxDepth 截断（clonePrelude 在自增 nodeCount 之前返回）与克隆失败的节点
+        // 一并算进来，同一份输入两条路径的 metadata.nodeCount 对不上
+        nodeCount: counters.nodeCount,
         maxDepth: counters.maxDepthReached,
         hasCircular: counters.hasCircular,
       }

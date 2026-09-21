@@ -15,6 +15,8 @@ import { MetricsCollector, PerformanceAnalyzer, computePerformanceStats } from '
 import { PerformanceMonitor } from '@/core/performance/PerformanceMonitor.js'
 import { ActionManager, GetterManager } from '@/core/store/ActionManager.js'
 import { StoreCacheManager } from '@/core/store/StoreCache.js'
+import { SubscriptionManager } from '@/core/store/SubscriptionManager.js'
+import { getStateVersion } from '@/core/store/stateVersion.js'
 import { LRUCache } from '@/core/cache/LRUCache.js'
 import { createPluginUninstaller } from '@/core/store/pluginSupport.js'
 import { StateProxyManager, createProxyCache } from '@/core/store/StateProxy.js'
@@ -593,8 +595,7 @@ describe('Store 状态替换与销毁', () => {
 })
 
 describe('缓存统计键列表', () => {
-  it('#82 非字符串键被字符串化，需以 keys() 取回原始键', () => {
-    const cache = new LRUCache<string | number | symbol, number>({ capacity: 5 })
+  it('#82 非字符串键被字符串化，需以 keys() 取回原始键', () => {    const cache = new LRUCache<string | number | symbol, number>({ capacity: 5 })
     cache.set(1, 1)
     cache.set('1', 2)
     cache.set('原始', 3)
@@ -602,5 +603,81 @@ describe('缓存统计键列表', () => {
     // keys 是「最近使用优先」的字符串化视图：数字 1 与字符串 '1' 在此不可区分
     expect(cache.getStats().keys).toEqual(['原始', '1', '1'])
     expect(cache.keys()).toEqual(['原始', '1', 1])
+  })
+
+  it('#115 onEvict 回填被逐出的键不会递归淘汰直到栈溢出', () => {
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation()
+    const cache = new LRUCache<number, number>({
+      capacity: 1,
+      onEvict: (key, value) => {
+        cache.set(key, value)
+      },
+    })
+
+    const writes = 200
+    for (let i = 0; i < writes; i++) {
+      cache.set(i, i)
+    }
+
+    // 决定性判据是「没有被淘汰回调里的异常」：没有重入保护时，回调内的 set() 会再开一层
+    // 淘汰、再触发回调，一路递归到 RangeError，而该异常正好被 evictLRU 的 try 吞成
+    // console.error（实测 200 次写入 = 199 次 RangeError 告警），所以 expect().not.toThrow()
+    // 这种断言证明不了收敛，必须直接盯住这条被吞掉的异常
+    expect(errorSpy).not.toHaveBeenCalled()
+    // 自相矛盾的回调（逐出即回填）无法同时满足容量：单帧淘汰预算有界，尺寸最多随写入线性缓增
+    expect(cache.size()).toBeLessThanOrEqual(writes + 1)
+    expect(cache.getStats().evictions).toBeGreaterThan(0)
+    errorSpy.mockRestore()
+  })
+})
+
+describe('计时配对与通知隔离', () => {
+  it('#135 计时条目缺失时降级为可观测日志，而非无声丢弃这次测量', () => {
+    const debugSpy = jest.spyOn(console, 'debug').mockImplementation()
+    const monitor = new PerformanceMonitor()
+    const end = monitor.start('slowOp')
+
+    // 模拟 pruneStaleOperations() 抢先摘除条目（end() 再也取不到起始时间）
+    ;(monitor as unknown as { currentOperations: Map<string, unknown> }).currentOperations.clear()
+    end()
+
+    expect(debugSpy).toHaveBeenCalledWith(expect.stringContaining('slowOp'))
+    expect(monitor.getMetrics()).toHaveLength(0)
+    debugSpy.mockRestore()
+  })
+
+  it('#147 cloneOnNotify=false 与可写订阅者共存时给出契约违规告警', () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation()
+    const manager = new SubscriptionManager<State>({ storeName: 's147' })
+    manager.add(() => {})
+
+    manager.notify({ a: 1 }, false)
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('cloneOnNotify=false'))
+
+    // 纯只读订阅走零拷贝是设计内的快路径，不应告警
+    const readOnly = new SubscriptionManager<State>({ storeName: 's147' })
+    readOnly.add(() => {}, { readOnly: true })
+    warnSpy.mockClear()
+    readOnly.notify({ a: 1 }, false)
+    expect(warnSpy).not.toHaveBeenCalled()
+    warnSpy.mockRestore()
+  })
+
+  it('#174 版本号读取抛错或非有限值时回退 undefined 而不是外溢', () => {
+    const STATE_VERSION = Symbol.for('geomstore.stateVersion')
+    const throwing = {} as Record<symbol, unknown>
+    Object.defineProperty(throwing, STATE_VERSION, {
+      get() {
+        throw new Error('accessor boom')
+      },
+    })
+    expect(() => getStateVersion(throwing)).not.toThrow()
+    expect(getStateVersion(throwing)).toBeUndefined()
+
+    // NaN 也满足 typeof === 'number'，但 NaN !== NaN 会让「版本未变」永远判假
+    const notANumber = {} as Record<symbol, unknown>
+    Object.defineProperty(notANumber, STATE_VERSION, { get: () => Number.NaN })
+    expect(getStateVersion(notANumber)).toBeUndefined()
+    expect(getStateVersion({ [STATE_VERSION]: 3 })).toBe(3)
   })
 })

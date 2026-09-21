@@ -24,6 +24,16 @@ export interface CacheDecoratorOptions {
 /** 单宿主缓存条目上限，防止参数空间大的方法导致 Map 无限增长 */
 const MAX_CACHE_ENTRIES = 1000
 
+/**
+ * 在途占位条目的最短生存时间（毫秒）
+ *
+ * 占位条目若不过期，被装饰方法返回的 Promise 永不结算（请求被丢弃、宿主挂起等）时
+ * 该条目会永久驻留：既回收不掉（过期清理只看 `expiry <= at`），又让此后所有同参调用
+ * 一直拿到同一个永不结算的 Promise——相当于该方法永久失效。取 60s 与 wx.request 的
+ * 默认超时同量级：正常的在途请求在此之前完成，异常请求的占位则会被回收。
+ */
+const MIN_IN_FLIGHT_TTL = 60_000
+
 /** symbolIds 表上限：动态创建的 Symbol 参数（请求令牌等）不可 GC，强引用表会无限增长 */
 const MAX_SYMBOL_IDS = 1000
 
@@ -68,8 +78,9 @@ function identityId(value: object): number {
  * 因此标记后的结构再经 JSON.stringify 仍是注入的。
  *
  * Map/Set 保留 `__map`/`__set` 包装与插入序（插入序不同的等价 Map 生成不同键，
- * 仅损失命中率不会串用结果——保守正确性优先）；叶子已带类型标记，
- * 用户自带的 `__map`/`__set` 键也无法伪造这两种包装。
+ * 仅损失命中率不会串用结果——保守正确性优先）；包装用「首元素为裸 `__map` 的数组」
+ * 而非对象字面量：数组元素位置的字符串一律被标记成 `s:"..."`，用户参数无法伪造出裸标记，
+ * 故 `{ __map: [...] }` 这类自带键的对象不会与 Map 撞键。
  *
  * @private
  */
@@ -116,10 +127,12 @@ function sortKeysDeep(value: unknown): unknown {
     for (const [key, val] of value) {
       entries.push([sortKeysDeep(key), sortKeysDeep(val)])
     }
-    return { __map: entries }
+    // 数组包装而非对象字面量：`{ __map: ... }` 会被参数 `{ __map: [[1,2]] }` 原样伪造
+    // （对象键不参与类型标记），导致 Map 与该技术对象撞键、直接返回彼此的缓存结果
+    return ['__map', entries]
   }
   if (value instanceof Set) {
-    return { __set: [...value].map(sortKeysDeep) }
+    return ['__set', [...value].map(sortKeysDeep)]
   }
 
   const record = value as Record<string, unknown>
@@ -139,6 +152,22 @@ function sortKeysDeep(value: unknown): unknown {
     sorted[key] = sortKeysDeep(record[key])
   }
   return sorted
+}
+
+/** 缓存条目：`pending` 非空即在途占位（同参并发复用它，值由结算后回填） */
+interface CacheEntry {
+  value: unknown
+  expiry: number
+  pending?: Promise<unknown>
+}
+
+/** 写入前回收过期条目（含已超时的在途占位），避免长生命周期宿主上 Map 持续累积 */
+function reclaimExpired(cache: Map<string, CacheEntry>, at: number): void {
+  for (const [entryKey, entry] of cache) {
+    if (entry.expiry <= at) {
+      cache.delete(entryKey)
+    }
+  }
 }
 
 /**
@@ -192,14 +221,16 @@ function defaultKeyFn(...args: unknown[]): string {
  */
 export function withCache(options: CacheDecoratorOptions = {}): MethodDecorator {
   const { ttl = 5000, keyFn } = options
+  // 在途占位条目的过期时刻：至少给到 MIN_IN_FLIGHT_TTL，短 TTL 不应让在途请求提前失去去重
+  const inFlightExpiry = Math.max(ttl, MIN_IN_FLIGHT_TTL)
 
   // 按宿主对象隔离缓存，避免多实例共享缓存条目。宿主包含函数（类/静态方法场景）。
   // entry.pending：异步方法进行中的 Promise（in-flight 去重标记），
   // 并发的同参调用复用同一 Promise，避免重复执行（如重复发请求）
-  const store = new WeakMap<object, Map<string, { value: unknown; expiry: number; pending?: Promise<unknown> }>>()
+  const store = new WeakMap<object, Map<string, CacheEntry>>()
   let nextMethodId = 0
 
-  const getCache = (host: unknown): Map<string, { value: unknown; expiry: number; pending?: Promise<unknown> }> => {
+  const getCache = (host: unknown): Map<string, CacheEntry> => {
     if ((typeof host !== 'object' && typeof host !== 'function') || host === null) {
       // 宿主不是对象或函数时返回一次性 Map（不跨调用串扰）
       return new Map()
@@ -220,22 +251,17 @@ export function withCache(options: CacheDecoratorOptions = {}): MethodDecorator 
     const isAsyncMethod = isAsyncFunction(originalMethod)
     let observesPromise = false
 
-    const writeCache = (
-      cache: Map<string, { value: unknown; expiry: number; pending?: Promise<unknown> }>,
-      key: string,
-      value: unknown,
-      at: number,
-    ): unknown => {
-      // 写入前回收过期条目，避免长生命周期宿主上 Map 持续累积
+    const writeCache = (cache: Map<string, CacheEntry>, key: string, value: unknown, at: number): unknown => {
+      reclaimExpired(cache, at)
+      // 容量保护：仍超限时淘汰最早写入的已完成条目（Map 保持插入顺序）。
+      // 在途占位条目跳过——删掉它会让同参并发调用 miss 并重复执行原方法（重复发请求），
+      // 去重能力比「淘汰最旧」优先；占位条目自身受 inFlightExpiry 约束，不会无限堆积
       for (const [entryKey, entry] of cache) {
-        if (entry.expiry <= at) {
-          cache.delete(entryKey)
-        }
-      }
-      // 容量保护：仍超限时淘汰最早写入的条目（Map 保持插入顺序）
-      for (const entryKey of cache.keys()) {
         if (cache.size < MAX_CACHE_ENTRIES) {
           break
+        }
+        if (entry.pending) {
+          continue
         }
         cache.delete(entryKey)
       }
@@ -284,20 +310,21 @@ export function withCache(options: CacheDecoratorOptions = {}): MethodDecorator 
           },
           (error) => {
             // 失败不缓存：仅当条目仍是本次调用写入的 pending 时删除，
-            // 避免误删期间已被重试调用覆盖的新条目
-            // 可选链替代 `entry && entry.pending === pending`：语义等价（entry 缺失时
-            // 比较结果为 false，同样不删除）
-            /* istanbul ignore else -- 并发同参调用复用同一 pending、无逐出路径，
-               条目不可能在结算前被替换或删除，故该 false 侧不可达 */
+            // 避免误删期间已被重试调用覆盖的新条目。
+            // 条目也可能已消失：占位条目到 inFlightExpiry 会被回收（永不结算的请求），
+            // 或被同参的新调用替换 —— 此时更不该删掉别人的条目
             if (cache.get(key)?.pending === pending) {
               cache.delete(key)
             }
             throw error
           },
         )
-        // 先占位再返回：占位条目不过期（等待中的请求没有 TTL 语义），
-        // 并发同参调用经 pending 分支复用同一 Promise
-        cache.set(key, { value: undefined, expiry: Number.MAX_SAFE_INTEGER, pending })
+        // 先占位再返回：并发同参调用经 pending 分支复用同一 Promise。
+        // 占位条目必须有有限期限：MAX_SAFE_INTEGER 会让永不结算的请求（被丢弃的请求、
+        // 宿主挂起）把条目永久留在 Map 里，且此后所有同参调用都一直拿到这个永不结算的
+        // Promise——等于该方法永久失效
+        reclaimExpired(cache, now)
+        cache.set(key, { value: undefined, expiry: now + inFlightExpiry, pending })
         return pending
       }
       return writeCache(cache, key, result, now)

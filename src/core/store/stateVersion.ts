@@ -58,6 +58,15 @@ export function getStateVersion(state: unknown): number | undefined {
   if (state === null || typeof state !== 'object') {
     return undefined
   }
-  const version = (state as Record<symbol, unknown>)[STATE_VERSION]
-  return typeof version === 'number' ? version : undefined
+  try {
+    const version = (state as Record<symbol, unknown>)[STATE_VERSION]
+    // 只接受有限数值：NaN/Infinity 也满足 typeof === 'number'，
+    // 而 NaN !== NaN 会让每次比较都判为「版本已变」，等于把快捷路径变成强制回退
+    return typeof version === 'number' && Number.isFinite(version) ? version : undefined
+  } catch {
+    // 读取本身抛错（状态保护 Proxy 的 get 陷阱或 defineProperty 装的 getter 闭包抛出）：
+    // 本函数是「拿不到版本就回退 deepEqual」的降级入口，在 createSelector 缓存命中判定、
+    // 脏追踪 report 等热线上被调用，异常外溢会把降级路径变成崩溃路径
+    return undefined
+  }
 }

@@ -123,9 +123,26 @@ describe('extras/snapshot 容错与中止传播', () => {
       expect(() => processNodeAsync(task, asyncOptions(), [], makeStats(), makeCounters(), () => {})).toThrow(SnapshotAbortError)
     })
 
-    it('ownKeys 陷阱抛错时降级为记录错误并继续（异步键枚举路径不识别中止信号）', () => {
+    it('ownKeys 陷阱抛出 SnapshotAbortError 时原样上抛（异步键枚举与同步同口径）', () => {
       const errors: SnapshotError[] = []
       const task: AsyncCloneTask = { value: abortingOwnKeysHost(), context: makeContext() }
+
+      // 降级/中止逻辑抽为 handleCloneError 后两条路径共用：中止信号不再被异步侧漏判
+      expect(() => processNodeAsync(task, asyncOptions(), errors, makeStats(), makeCounters(), () => {})).toThrow(SnapshotAbortError)
+      expect(errors).toHaveLength(0)
+    })
+
+    it('ownKeys 陷阱抛出普通错误时降级为记录错误并继续', () => {
+      const errors: SnapshotError[] = []
+      const hostile = new Proxy(
+        {},
+        {
+          ownKeys(): string[] {
+            throw new Error('ownKeys boom')
+          },
+        },
+      )
+      const task: AsyncCloneTask = { value: hostile, context: makeContext() }
 
       const result = processNodeAsync(task, asyncOptions(), errors, makeStats(), makeCounters(), () => {})
 

@@ -92,6 +92,16 @@ export const logger = {
  * 存储工具
  */
 export const storage = {
+  /**
+   * 读取并解码 storage 值。
+   *
+   * 与 set 对 number/boolean 原始值不严格对称（契约）：历史格式只有「字符串原样存」
+   * 一种写法，无法区分 login 写入的裸 userId "1001" 与 JSON 化的数字 1001，
+   * 若把前者解析为 number 会造成 Map/storage 键类型漂移、多账号隔离失效，
+   * 故解析出 number/boolean 时按原始字符串返回。调用方对这两类原始值
+   * 只可依赖存在性/真值（如热更新标记），不可依赖 `<T>` 保型；
+   * 对象/数组与字符串经 JSON 往返均类型无损，现有库内调用点全部落在此范围内
+   */
   get: <T>(key: string): T | null => {
     try {
       const value = wx.getStorageSync(key)
@@ -109,7 +119,10 @@ export const storage = {
       } catch {
         return value as T
       }
-    } catch {
+    } catch (error) {
+      // 与 set/remove 同口径记日志：静默转 null 会让调用方无法区分
+      // 「存储坏了」与「没有值」，登录态与账号隔离状态可能被无声丢弃
+      logger.error('Storage', `读取 storage 失败: ${key}`, error)
       return null
     }
   },
@@ -119,7 +132,15 @@ export const storage = {
   // 用返回值判断，保持「备份失败不写标记」的既有契约
   set: (key: string, value: unknown): boolean => {
     try {
-      wx.setStorageSync(key, typeof value === 'string' ? value : JSON.stringify(value))
+      // JSON.stringify 对 undefined/函数/symbol 不抛错而是返回 undefined：
+      // 直接透传给 setStorageSync 在小程序端要么报错要么静默丢值，
+      // 而函数照常返回 true 会谎报写入成功（热更新备份等路径依赖返回值判失败）
+      const serialized = typeof value === 'string' ? value : JSON.stringify(value)
+      if (serialized === undefined) {
+        logger.error('Storage', `值不可序列化（undefined/函数/symbol），拒绝写入: ${key}`)
+        return false
+      }
+      wx.setStorageSync(key, serialized)
       return true
     } catch (error) {
       logger.error('Storage', `写入 storage 失败: ${key}`, error)

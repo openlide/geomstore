@@ -1073,10 +1073,11 @@ describe('企业级方案 - 并发与边界情况', () => {
     expect(() => storeManager.logout()).not.toThrow()
   })
 
-  it('ENTERPRISE-031: 空用户ID应该正常处理', () => {
-    // 空字符串用户ID
-    const store = storeManager.getUserStore('')
-    expect(store.name).toBe('user-store-')
+  it('ENTERPRISE-031 (#337 行为变更): 空用户ID 在入口抛错而非生成畸形键', () => {
+    // 旧断言固化了 getUserStore('') 产出 `user-store-` 键的行为：
+    // 该键会让所有空/空白账号在 storage 与 Map 上碰撞同一持久化键（跨账号泄漏），
+    // createUserStore 入口校验后改为抛错（见 ocr-medium-round4-p1 #337）
+    expect(() => storeManager.getUserStore('')).toThrow(/userId 不能为空/)
   })
 
   it('ENTERPRISE-032: Store 销毁后不应该影响其他 Store', () => {
