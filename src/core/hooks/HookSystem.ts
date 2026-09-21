@@ -111,7 +111,13 @@ export function usePlugin<S extends State, A extends Actions, G extends Getters<
       }
     }
   } catch (error) {
-    console.error(`[GeomStore] Failed to install plugin "${plugin.name}":`, error)
+    // 兜底分支自身不得再抛：install 失败很可能源于 plugin 为 null/形状非法
+    // （store.use 读取 plugin.install 时即抛 TypeError），直接取 plugin.name 会抛出
+    // 第二个 TypeError 顶掉原始错误，调用方只看到「Cannot read properties of undefined」
+    const pluginName = (plugin as { name?: string } | null | undefined)?.name ?? 'unknown'
+    console.error(`[GeomStore] Failed to install plugin "${pluginName}":`, error)
+    // 失败以 console.error 上报并返回空卸载函数（既有契约 PLUGIN-002）：
+    // 此处不抛错是为了让「可选插件」失败不拖垮 Store 初始化
     return () => {}
   }
 }

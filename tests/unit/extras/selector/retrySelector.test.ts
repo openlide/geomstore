@@ -184,6 +184,6 @@ describe('annotateAttempts 对不可标注抛出值的安全性', () => {
       throw frozen
     })
 
-    await expect(createRetrySelectorAsync(selector as Selector<S, number>, { retries: 1, delay: 0 })(state)).rejects.toBe(frozen)
+    await expect(createRetrySelectorAsync(selector as unknown as Selector<S, number>, { retries: 1, delay: 0 })(state)).rejects.toBe(frozen)
   })
 })

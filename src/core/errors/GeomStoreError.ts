@@ -117,8 +117,11 @@ export class GeomStoreError extends Error {
    * ```
    */
   getFriendlyMessage(): string {
-    const storeName = this.context?.storeName as string
-    const operation = this.context?.operation as string
+    // context 是 Record<string, unknown>：storeName/operation 可能不是字符串。
+    // 此前的 `as string` 断言会让 { storeName: { name: 'x' } } 输出 "[object Object]"、
+    // 让数字 0 被后续真值判断吞掉，故按类型收窄，非字符串一律视为缺失
+    const storeName = typeof this.context?.storeName === 'string' ? this.context.storeName : undefined
+    const operation = typeof this.context?.operation === 'string' ? this.context.operation : undefined
 
     if (storeName && operation) {
       return `${this.message} in store '${storeName}': ${operation}`

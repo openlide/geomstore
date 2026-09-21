@@ -237,7 +237,7 @@ describe('WxStorageBackend.getItem 的缺失键口径', () => {
   })
 
   const wxWith = (getStorageSync: (key: string) => unknown) => {
-    ;(globalThis as { wx?: unknown }).wx = { getStorageSync }
+    (globalThis as { wx?: unknown }).wx = { getStorageSync }
   }
 
   it('wx 对不存在的键返回空字符串时按 null 处理', async () => {

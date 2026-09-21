@@ -98,24 +98,26 @@ export class StateProxyManager<S extends State = State> {
           // 拒绝路径总是抛错；生产 warn/silent 处理后放行写入
           self._handleIllegalMutation(formatPath(key), value)
         }
-        (obj as unknown as Record<string | symbol, unknown>)[key] = value
-        return true
+        // Reflect.set 而非 `obj[key] = value`：写陷阱必须如实报告底层是否写成功。
+        // 目标被 Object.freeze（deepFreezeState 的快照副本）或属性不可写时，
+        // 模块级严格码里的裸赋值会直接抛 TypeError（与 warn/silent「放行不抛」的承诺相反），
+        // 而非严格模式下静默失败却返回 true 又违反 Proxy [[Set]] 不变量
+        return Reflect.set(obj, key, value)
       },
       deleteProperty(obj: T, key: string | symbol): boolean {
         if (!self._isInternalAccess()) {
           // 拒绝路径总是抛错；生产 warn/silent 处理后放行删除
           self._handleIllegalMutation(formatPath(key), undefined, 'delete')
         }
-        delete (obj as unknown as Record<string | symbol, unknown>)[key]
-        return true
+        // 不可配置属性上 `delete` 会失败，恒返回 true 违反 Proxy 不变量（引擎抛 TypeError）
+        return Reflect.deleteProperty(obj, key)
       },
       defineProperty(obj: T, key: string | symbol, descriptor: PropertyDescriptor): boolean {
         if (!self._isInternalAccess()) {
           // 拒绝路径总是抛错；生产 warn/silent 处理后放行定义
           self._handleIllegalMutation(formatPath(key), descriptor.value, 'defineProperty')
         }
-        Object.defineProperty(obj, key, descriptor)
-        return true
+        return Reflect.defineProperty(obj, key, descriptor)
       },
     }
   }
@@ -184,6 +186,13 @@ export class StateProxyManager<S extends State = State> {
    *
    * 深代理的 get 与写入陷阱总以非空 path 调用；浅代理只用于状态根、以空串调用。
    * 抽为共用方法既消除三处重复的字面量，也让两侧分支都被真实调用覆盖。
+   *
+   * 已知限制：Proxy 缓存按「对象身份」而非「对象+路径」建，嵌套 path 在创建时
+   * 就固化进陷阱闭包。同一对象被多条路径引用（`state.a.child === state.b.child`）时，
+   * 报错里的路径是按先访问到的那条拼的，可能与实际写入路径不同——仅影响告警文案。
+   * 不按路径二级缓存是有意取舍：别名读取会每次 miss 重建代理，
+   * 既让 `state.a.child === state.b.child` 的引用相等失效（选择器按引用做记忆化会失真），
+   * 又把每次读取变成一次分配。
    */
   private _joinPath(path: string, key: string | symbol): string {
     return path === '' ? String(key) : `${path}.${String(key)}`
@@ -196,6 +205,10 @@ export class StateProxyManager<S extends State = State> {
    * （"Cannot read private member …" / "this is not a typed array"）。
    * 数组与普通对象的方法对代理接收者没有这类要求，保持原样返回，
    * 避免每次属性访问都产生一次绑定分配。
+   *
+   * 有意的保护豁免：绑定到裸对象后，方法内部的写入（`this.count++`）不经过
+   * set/deleteProperty/defineProperty 陷阱，既不被拦截也不被计数。改绑代理接收者
+   * 会把上述品牌检查场景直接抛错，代价更高；此类状态请通过 setState/$patch 修改。
    */
   private _bindMethod(owner: object | null, value: unknown): unknown {
     if (typeof value !== 'function' || owner === null) {

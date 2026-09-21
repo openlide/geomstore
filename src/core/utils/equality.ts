@@ -17,7 +17,8 @@
  * @param a - 第一个值
  * @param b - 第二个值
  * @param maxDepth - 最大递归深度（默认1000），超限时返回 false
- * @returns 是否相等
+ * @returns 是否相等。比较范围：原型一致 + 自有可枚举字符串键逐项（数组含 length）；
+ *   symbol 键与不可枚举属性不参与比较（状态上的版本号标记即属此类，不应影响相等判定）
  */
 export function deepEqual(a: unknown, b: unknown, maxDepth: number = 1000): boolean {
   // 使用「对象对」集合记录已比较过的组合，正确处理循环引用与别名图
@@ -134,6 +135,15 @@ function compareWithSeenPairs(a: unknown, b: unknown, maxDepth: number, seenPair
     // 对象或数组
     const recA = currentA as Record<string, unknown>
     const recB = currentB as Record<string, unknown>
+
+    // 原型必须一致：`class Foo { a = 1 }` 的实例与 `{ a: 1 }` 字面量自有键相同，
+    // 但二者语义不同（前者带 Foo 的行为），作为缓存比较器时判等会让选择器返回陈旧值。
+    // 注：本函数只比自有可枚举**字符串**键，symbol 键与不可枚举属性的差异不纳入比较
+    if (Object.getPrototypeOf(currentA) !== Object.getPrototypeOf(currentB)) return false
+
+    // 数组以 length 为准：稀疏数组的空洞索引不出现在 Object.keys 中，
+    // 只比键集会让 deepEqual(new Array(3), []) 误判为相等
+    if (Array.isArray(recA) && recA.length !== (recB as unknown as unknown[]).length) return false
 
     const keysA = Object.keys(recA)
     const keysB = Object.keys(recB)

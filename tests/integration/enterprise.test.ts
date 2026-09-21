@@ -1169,7 +1169,7 @@ describe('企业级方案 - 网络同步', () => {
   it('ENTERPRISE-066: 响应缺少 userInfo 时应该 reject 且不写入 undefined', async () => {
     // 修复前 `r.data?.userInfo as UserInfo` 会把 undefined 伪装成 UserInfo 兑现，
     // syncWithServer 随之写入 userInfo: undefined，破坏 UserInfo | null 契约
-    ;(mockWx.request as jest.Mock).mockImplementation((options: any) => {
+    (mockWx.request as jest.Mock).mockImplementation((options: any) => {
       options.success({ statusCode: 200, data: {} })
     })
     const store = createUserStore({ userId: 'sync-user-no-payload' })

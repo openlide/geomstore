@@ -40,23 +40,29 @@ export function computePerformanceStats(metrics: PerformanceMetrics[]): Performa
   const avgDuration = totalDuration / metrics.length
   const thresholdExceeded = metrics.filter((m) => m.exceedThreshold).length
 
-  // 按操作分组（单次遍历，避免 O(n×k) 的重复 filter）
-  const byOperation: Record<string, { count: number; avgDuration: number; maxDuration: number }> = {}
+  // 按操作分组（单次遍历，避免 O(n×k) 的重复 filter）。
+  // 累加器用 Map 而非 Record：operation 名来自业务，可为 '__proto__'/'constructor' 等，
+  // 普通对象上 `if (!acc[op])` 会命中原型成员从而跳过初始化，随后 `acc[op].count++`
+  // 直接写脏 Object.prototype（全局污染），或在 push 路径抛 TypeError。
+  // 结果经 Object.fromEntries 落回普通对象（按键定义为自有属性，不触发 __proto__ setter）
+  const byOperation = new Map<string, { count: number; avgDuration: number; maxDuration: number }>()
   // 累加器：记录每个操作的总时长
-  const opSums: Record<string, number> = {}
+  const opSums = new Map<string, number>()
   for (const metric of metrics) {
     const op = metric.operation
-    if (!byOperation[op]) {
-      byOperation[op] = { count: 0, avgDuration: 0, maxDuration: 0 }
-      opSums[op] = 0
+    let entry = byOperation.get(op)
+    if (!entry) {
+      entry = { count: 0, avgDuration: 0, maxDuration: 0 }
+      byOperation.set(op, entry)
+      opSums.set(op, 0)
     }
-    byOperation[op].count++
-    byOperation[op].maxDuration = Math.max(byOperation[op].maxDuration, metric.duration)
-    opSums[op] += metric.duration
+    entry.count++
+    entry.maxDuration = Math.max(entry.maxDuration, metric.duration)
+    opSums.set(op, (opSums.get(op) as number) + metric.duration)
   }
   // 计算平均值
-  for (const op in byOperation) {
-    byOperation[op].avgDuration = opSums[op] / byOperation[op].count
+  for (const [op, entry] of byOperation) {
+    entry.avgDuration = (opSums.get(op) as number) / entry.count
   }
 
   return {
@@ -65,7 +71,7 @@ export function computePerformanceStats(metrics: PerformanceMetrics[]): Performa
     minDuration,
     totalCount: metrics.length,
     thresholdExceeded,
-    byOperation,
+    byOperation: Object.fromEntries(byOperation),
   }
 }
 
@@ -78,8 +84,19 @@ export class MetricsCollector {
   /** 默认指标容量上限：超出后淘汰最旧条目，防止长生命周期采集无限增长 */
   static readonly DEFAULT_MAX_SIZE = 10000
 
-  /** 性能指标数组 */
-  private metrics: PerformanceMetrics[] = []
+  /**
+   * 环形缓冲：定长数组 + 最旧元素游标 + 有效长度。
+   *
+   * 取代「push + 满员后 splice(0, 1)」：满员后每条指标都要前移整个 10000 元素数组
+   * （O(n)），而采集器正处在被监控操作的热路径上。环形写入是 O(1)。
+   */
+  private buffer: PerformanceMetrics[] = []
+
+  /** 最旧元素下标（缓冲未满时恒为 0） */
+  private oldest = 0
+
+  /** 有效条目数 */
+  private _count = 0
 
   /** 容量上限 */
   private readonly _maxSize: number
@@ -88,7 +105,9 @@ export class MetricsCollector {
    * @param maxSize - 容量上限（默认 10000，超出后淘汰最旧条目）
    */
   constructor(maxSize: number = MetricsCollector.DEFAULT_MAX_SIZE) {
-    this._maxSize = maxSize
+    // 环形写入依赖整数下标：NaN/负数/小数会让 `length % maxSize` 取到空洞下标，
+    // 静默丢数据或无界增长，故与 PerformanceMonitor.normalizeMaxSize 同口径规范化
+    this._maxSize = Number.isFinite(maxSize) ? Math.max(0, Math.floor(maxSize)) : MetricsCollector.DEFAULT_MAX_SIZE
   }
 
   /**
@@ -99,8 +118,17 @@ export class MetricsCollector {
    * @param {PerformanceMetrics} metrics - 性能指标
    */
   collect(metrics: PerformanceMetrics): void {
-    this.metrics.push(metrics)
-    this._trim()
+    if (this._maxSize === 0) {
+      return
+    }
+    if (this._count < this._maxSize) {
+      this.buffer.push(metrics)
+      this._count++
+      return
+    }
+    // 满员：覆盖最旧槽位并把游标前移，写入顺序仍等价于「淘汰最旧、保留最新」
+    this.buffer[this.oldest] = metrics
+    this.oldest = (this.oldest + 1) % this._maxSize
   }
 
   /**
@@ -111,23 +139,26 @@ export class MetricsCollector {
    * @param {PerformanceMetrics[]} metricsList - 性能指标数组
    */
   collectBatch(metricsList: PerformanceMetrics[]): void {
-    // 循环写入而非 push(...list)：spread 展开为函数参数，
+    // 逐条写入而非 push(...list)：spread 展开为函数参数，
     // 大数组（实测 20 万条）直接抛 RangeError 栈溢出
     for (const metric of metricsList) {
-      this.metrics.push(metric)
+      this.collect(metric)
     }
-    this._trim()
   }
 
   /**
-   * 超出容量上限时淘汰最旧条目
+   * 按写入顺序展开环形缓冲
+   *
+   * 读取路径统一走此方法，调用方拿不到内部数组，
+   * 也就无法通过原地改写缓冲数组绕过容量约束
    *
    * @private
    */
-  private _trim(): void {
-    if (this.metrics.length > this._maxSize) {
-      this.metrics.splice(0, this.metrics.length - this._maxSize)
+  private _ordered(): PerformanceMetrics[] {
+    if (this._count === 0 || this.oldest === 0) {
+      return this.buffer.slice()
     }
+    return this.buffer.slice(this.oldest).concat(this.buffer.slice(0, this.oldest))
   }
 
   /**
@@ -138,12 +169,14 @@ export class MetricsCollector {
    * @returns {PerformanceMetrics[]} 指标数组副本
    */
   getAll(): PerformanceMetrics[] {
-    return [...this.metrics]
+    return this._ordered()
   }
 
   /** 清空所有指标 */
   clear(): void {
-    this.metrics = []
+    this.buffer = []
+    this.oldest = 0
+    this._count = 0
   }
 
   /**
@@ -152,7 +185,7 @@ export class MetricsCollector {
    * @returns {number} 已收集的指标数量
    */
   count(): number {
-    return this.metrics.length
+    return this._count
   }
 
   /**
@@ -163,7 +196,7 @@ export class MetricsCollector {
    * @returns {PerformanceStats} 性能统计对象
    */
   calculateStats(): PerformanceStats {
-    return computePerformanceStats(this.metrics)
+    return computePerformanceStats(this._ordered())
   }
 
   /**
@@ -176,8 +209,7 @@ export class MetricsCollector {
    */
   filter(predicate: (metrics: PerformanceMetrics) => boolean): MetricsCollector {
     const collector = new MetricsCollector(this._maxSize)
-    const filtered = this.metrics.filter(predicate)
-    collector.collectBatch(filtered)
+    collector.collectBatch(this._ordered().filter(predicate))
     return collector
   }
 
@@ -216,7 +248,7 @@ export class MetricsCollector {
    */
   sortByDuration(ascending: boolean = false): MetricsCollector {
     const collector = new MetricsCollector(this._maxSize)
-    const sorted = [...this.metrics].sort((a, b) => (ascending ? a.duration - b.duration : b.duration - a.duration))
+    const sorted = this._ordered().sort((a, b) => (ascending ? a.duration - b.duration : b.duration - a.duration))
     collector.collectBatch(sorted)
     return collector
   }
@@ -230,14 +262,16 @@ export class MetricsCollector {
    * @returns {number} 指定百分位数的持续时间
    */
   getPercentile(percentile: number): number {
-    if (this.metrics.length === 0) return 0
+    if (this._count === 0) return 0
 
     // 边界校验：负数会取到负索引（undefined），>100 无意义，直接抛错而非静默失真
     if (!Number.isFinite(percentile) || percentile < 0 || percentile > 100) {
       throw new RangeError(`[GeomStore] getPercentile: percentile must be between 0 and 100, got ${percentile}`)
     }
 
-    const sorted = [...this.metrics].map((m) => m.duration).sort((a, b) => a - b)
+    const sorted = this._ordered()
+      .map((m) => m.duration)
+      .sort((a, b) => a - b)
 
     const index = Math.min(Math.floor((percentile / 100) * sorted.length), sorted.length - 1)
     return sorted[index]
@@ -252,22 +286,24 @@ export class MetricsCollector {
    * @returns {Array<{operation: string, count: number, avgDuration: number}>} 热路径数组
    */
   getHotPaths(limit: number = 5): Array<{ operation: string; count: number; avgDuration: number }> {
-    const operationCounts: Record<string, { count: number; totalDuration: number }> = {}
+    // Map 累加：操作名可为 '__proto__'，普通对象累加会命中原型成员（同 computePerformanceStats）
+    const operationCounts = new Map<string, { count: number; totalDuration: number }>()
 
-    for (const metric of this.metrics) {
-      if (!operationCounts[metric.operation]) {
-        operationCounts[metric.operation] = { count: 0, totalDuration: 0 }
+    for (const metric of this._ordered()) {
+      let entry = operationCounts.get(metric.operation)
+      if (!entry) {
+        entry = { count: 0, totalDuration: 0 }
+        operationCounts.set(metric.operation, entry)
       }
-      operationCounts[metric.operation].count++
-      operationCounts[metric.operation].totalDuration += metric.duration
+      entry.count++
+      entry.totalDuration += metric.duration
     }
 
-    return Object.entries(operationCounts)
-      .map(([operation, data]) => ({
-        operation,
-        count: data.count,
-        avgDuration: data.totalDuration / data.count,
-      }))
+    return Array.from(operationCounts, ([operation, data]) => ({
+      operation,
+      count: data.count,
+      avgDuration: data.totalDuration / data.count,
+    }))
       .sort((a, b) => b.count - a.count)
       .slice(0, limit)
   }
@@ -298,42 +334,43 @@ export class PerformanceAnalyzer {
     maxDuration: number
     severity: 'low' | 'medium' | 'high'
   }> {
-    const byOperation: Record<string, PerformanceMetrics[]> = {}
+    // Map 分组：操作名可为 '__proto__'，普通对象累加会命中原型成员（同 computePerformanceStats）
+    const byOperation = new Map<string, PerformanceMetrics[]>()
 
     for (const metric of metrics) {
-      if (!byOperation[metric.operation]) {
-        byOperation[metric.operation] = []
+      let ops = byOperation.get(metric.operation)
+      if (!ops) {
+        ops = []
+        byOperation.set(metric.operation, ops)
       }
-      byOperation[metric.operation].push(metric)
+      ops.push(metric)
     }
 
-    return Object.entries(byOperation)
-      .map(([operation, ops]) => {
-        const count = ops.length
-        let totalDuration = 0
-        let maxDuration = -Infinity
-        for (const o of ops) {
-          totalDuration += o.duration
-          if (o.duration > maxDuration) maxDuration = o.duration
-        }
-        const avgDuration = totalDuration / count
+    return Array.from(byOperation, ([operation, ops]) => {
+      const count = ops.length
+      let totalDuration = 0
+      let maxDuration = -Infinity
+      for (const o of ops) {
+        totalDuration += o.duration
+        if (o.duration > maxDuration) maxDuration = o.duration
+      }
+      const avgDuration = totalDuration / count
 
-        let severity: 'low' | 'medium' | 'high' = 'low'
-        if (avgDuration > threshold * 3) {
-          severity = 'high'
-        } else if (avgDuration > threshold * 2) {
-          severity = 'medium'
-        }
+      let severity: 'low' | 'medium' | 'high' = 'low'
+      if (avgDuration > threshold * 3) {
+        severity = 'high'
+      } else if (avgDuration > threshold * 2) {
+        severity = 'medium'
+      }
 
-        return {
-          operation,
-          count,
-          avgDuration,
-          maxDuration,
-          severity,
-        }
-      })
-      .sort((a, b) => b.avgDuration - a.avgDuration)
+      return {
+        operation,
+        count,
+        avgDuration,
+        maxDuration,
+        severity,
+      }
+    }).sort((a, b) => b.avgDuration - a.avgDuration)
   }
 
   /**
@@ -344,7 +381,8 @@ export class PerformanceAnalyzer {
    * @param {PerformanceMetrics[]} currentMetrics - 当前性能指标
    * @param {PerformanceMetrics[]} baselineMetrics - 基准性能指标
    * @param {number} [threshold=0.2] - 退化阈值（比例，0.2 表示 20%）
-   * @returns {Array<{operation: string, baselineDuration: number, currentDuration: number, change: number, changePercent: number}>} 退化列表
+   * @returns {Array<{operation: string, baselineDuration: number, currentDuration: number, change: number, changePercent: number}>} 退化列表。
+   *   基线为 0 而当前有耗时时无比例可算，changePercent 取 Infinity 哨兵（幅度按无限恶化处理）
    */
   static detectRegression(
     currentMetrics: PerformanceMetrics[],
@@ -374,7 +412,14 @@ export class PerformanceAnalyzer {
       // 0 基线且当前恶化时按无限恶化处理
       if (baselineDuration !== undefined) {
         const change = currentDuration - baselineDuration
-        const changePercent = baselineDuration > 0 ? change / baselineDuration : currentDuration > 0 ? Infinity : 0
+        let changePercent: number
+        if (baselineDuration > 0) {
+          changePercent = change / baselineDuration
+        } else {
+          // 0 基线无法按比例放大：只要当前有耗时即按「无限恶化」计（Infinity 哨兵，
+          // 见 @returns 说明），当前同样为 0 才是真无变化
+          changePercent = currentDuration > 0 ? Infinity : 0
+        }
 
         if (changePercent > threshold) {
           regressions.push({
@@ -388,7 +433,9 @@ export class PerformanceAnalyzer {
       }
     }
 
-    return regressions.sort((a, b) => b.changePercent - a.changePercent)
+    // 两条 0 基线退化同为 Infinity 时相减得 NaN，排序结果未定义；
+    // 等值先判 0，保持入参顺序（均为无限恶化，谁前谁后无意义）
+    return regressions.sort((a, b) => (a.changePercent === b.changePercent ? 0 : b.changePercent - a.changePercent))
   }
 
   /**
@@ -399,22 +446,26 @@ export class PerformanceAnalyzer {
    * @returns {Record<string, number>} 按操作分组的平均持续时间
    */
   private static calculateAvgDurations(metrics: PerformanceMetrics[]): Record<string, number> {
-    const byOperation: Record<string, { sum: number; count: number }> = {}
+    // Map 累加后由 Object.fromEntries 落回普通对象：普通对象按操作名累加时，
+    // '__proto__'/'constructor' 之类的操作名会命中原型成员，写入即污染 Object.prototype
+    const byOperation = new Map<string, { sum: number; count: number }>()
 
     for (const metric of metrics) {
-      if (!byOperation[metric.operation]) {
-        byOperation[metric.operation] = { sum: 0, count: 0 }
+      let entry = byOperation.get(metric.operation)
+      if (!entry) {
+        entry = { sum: 0, count: 0 }
+        byOperation.set(metric.operation, entry)
       }
-      byOperation[metric.operation].sum += metric.duration
-      byOperation[metric.operation].count++
+      entry.sum += metric.duration
+      entry.count++
     }
 
-    const result: Record<string, number> = {}
-    for (const [op, data] of Object.entries(byOperation)) {
-      result[op] = data.sum / data.count
+    const result = new Map<string, number>()
+    for (const [op, data] of byOperation) {
+      result.set(op, data.sum / data.count)
     }
 
-    return result
+    return Object.fromEntries(result)
   }
 }
 

@@ -382,6 +382,11 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
 
     this._hooks.emit('beforeReplaceState', resolvedState)
 
+    // 旧键集必须在替换前取：只标新状态的键，被这次替换删掉的键就永远
+    // 不被标记为脏，isStateKeyDirty 对它是 false——集成层据此跳过 setData，
+    // 视图会一直留着已消失键的值
+    const previousKeys = Object.keys(this._state) as Array<keyof S>
+
     this._withInternalAccess(() => {
       // 整树替换：旧状态的键（含 action 内已 delete 的键）不再存在于新状态，
       // 直接整表清空再由下方按新状态回填。仅按旧状态键清理会漏掉
@@ -408,7 +413,10 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
     // 脏跟踪代理缓存指向旧状态对象树，一并重建
     this._dirtyProxyCache = createDirtyTrackingCache()
     this._mutationCount++
-    // 整树替换：所有键均视为已变更
+    // 整树替换：新键与「被替换掉的旧键」都视为已变更（后者是消失型变更）
+    for (const key of previousKeys) {
+      this._markDirtyKey(key)
+    }
     Object.keys(this._state).forEach((key) => {
       this._markDirtyKey(key as keyof S)
     })
@@ -651,7 +659,10 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
       this._plugins = []
       this._pluginUninstallFns.clear()
       this._pluginInstallations.clear()
-      this._proxyCache = createProxyCache()
+      // 走重建而非直接换 _proxyCache：StateProxyManager 在构造时就把缓存捕获成
+      // readonly 字段，只替换 this._proxyCache 清不掉管理器实际使用的那份，
+      // 旧状态树的 Proxy 仍可通过 _stateProxyManager 被引用
+      this._rebuildStateProxyManager()
     } catch (error) {
       console.error('[GeomStore] Error during Store destruction:', error)
       // 即使出错也标记为销毁，防止半销毁状态
@@ -944,6 +955,10 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
       return
     }
 
+    // 目标集合在扫描前一次性建好：_reachesAny 每个顶层键调用一次，
+    // 在函数内 new Set 会把 O(N × graph) 的扫描再叠上 O(N × K) 的构建与分配
+    const targetSet = new Set(targets)
+
     for (const rootKey of Reflect.ownKeys(this._state) as Array<keyof S>) {
       if (patched.has(rootKey)) {
         continue
@@ -952,7 +967,7 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
       if (!descriptor || !('value' in descriptor)) {
         continue
       }
-      if (this._reachesAny(descriptor.value, targets)) {
+      if (this._reachesAny(descriptor.value, targetSet)) {
         this._markDirtyKey(rootKey)
       }
     }
@@ -964,14 +979,13 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
    * 迭代实现（与脏追踪代理的归属解析同口径）：不进入内建对象、不求值访问器，
    * 命中即提前返回。
    */
-  private _reachesAny(value: unknown, targets: object[]): boolean {
-    if (targets.includes(value as object)) {
+  private _reachesAny(value: unknown, targets: ReadonlySet<object>): boolean {
+    if (targets.has(value as object)) {
       return true
     }
     if (value === null || typeof value !== 'object') {
       return false
     }
-    const targetSet = new Set(targets)
     const pending: unknown[] = [value]
     const seen = new Set<object>()
     while (pending.length > 0) {
@@ -980,7 +994,7 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
         continue
       }
       seen.add(current)
-      if (targetSet.has(current)) {
+      if (targets.has(current)) {
         return true
       }
       if (current instanceof Map) {

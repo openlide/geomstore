@@ -118,9 +118,11 @@ export class StoreRegistry {
   /**
    * 批量注册Store
    *
-   * 将多个Store实例批量注册到注册表中
+   * 将多个Store实例批量注册到注册表中。整体语义为「全成功或全不注册」：
+   * 先整体校验再写入，任一条目非法都会在改动注册表之前抛出，不会留下半注册状态
    *
    * @param {Record<string, Store>} stores - Store名称到实例的映射
+   * @throws {Error} 任一名称或 store 无效（此时注册表未被修改）
    *
    * @example
    * ```typescript
@@ -137,6 +139,17 @@ export class StoreRegistry {
    * ```
    */
   registerAll(stores: Record<string, Store>): void {
+    // 预校验：逐条 register 时首条非法会让之前的条目已注册、之后的被静默跳过，
+    // 调用方无法得知注册表停在哪一半（Object.entries 顺序也不保证与入参语义一致）
+    for (const [name, store] of Object.entries(stores)) {
+      if (!name || typeof name !== 'string') {
+        throw new Error('[StoreRegistry] Store name must be a non-empty string')
+      }
+      if (!store || typeof store.getState !== 'function') {
+        throw new Error(`[StoreRegistry] Invalid store object for name "${name}"`)
+      }
+    }
+
     for (const [name, store] of Object.entries(stores)) {
       this.register(name, store)
     }
@@ -166,11 +179,14 @@ export class StoreRegistry {
       return
     }
 
-    // 清理store
-    try {
-      store.destroy()
-    } catch (error) {
-      console.error(`[StoreRegistry] Error destroying store "${name}":`, error)
+    // 清理store：已在外部销毁的实例不再二次 destroy（与 register 的覆盖分支同口径），
+    // 但无论如何都要从注册表摘除
+    if (!store.destroyed) {
+      try {
+        store.destroy()
+      } catch (error) {
+        console.error(`[StoreRegistry] Error destroying store "${name}":`, error)
+      }
     }
 
     this.stores.delete(name)
@@ -293,16 +309,24 @@ export class StoreRegistry {
    * ```
    */
   clear(): void {
-    for (const [name, store] of this.stores.entries()) {
+    // 先摘链再逐个销毁：destroy() 实现可能重入 unregister()/register()，
+    // 实时迭代 this.stores 会让重入的写入被本循环再次访问（同一实例销毁两次、
+    // 或新注册的实例被连带销毁）；清空后重入的注销只会命中空表，语义可预期
+    const entries = Array.from(this.stores.entries())
+    this.stores.clear()
+    this.defaultStore = undefined
+
+    for (const [name, store] of entries) {
+      // 已在外部销毁的实例跳过：与 register() 的覆盖分支同口径，避免二次 destroy
+      if (store.destroyed) {
+        continue
+      }
       try {
         store.destroy()
       } catch (error) {
         console.error(`[StoreRegistry] Error destroying store "${name}":`, error)
       }
     }
-
-    this.stores.clear()
-    this.defaultStore = undefined
   }
 
   /**
@@ -406,8 +430,16 @@ export class StoreRegistry {
 
     this.stores.forEach((store, name) => {
       try {
-        // 深拷贝状态，避免快照与原始状态共享引用
-        snapshot[name] = deepCloneState(store.getState())
+        // 深拷贝状态，避免快照与原始状态共享引用。
+        // 以 DefineOwnProperty 语义写入：store 名可合法为 '__proto__'，
+        // snapshot[name] = ... 走 [[Set]] 会触发 Object.prototype 的 __proto__ setter，
+        // 该条目被静默丢弃且快照原型被替换（getAll 用 Object.fromEntries 已规避同类问题）
+        Object.defineProperty(snapshot, name, {
+          value: deepCloneState(store.getState()),
+          writable: true,
+          enumerable: true,
+          configurable: true,
+        })
       } catch (error) {
         console.error(`[StoreRegistry] Error creating snapshot for store "${name}":`, error)
       }
@@ -433,17 +465,29 @@ export class StoreRegistry {
    * ```
    */
   restoreSnapshot(snapshot: Record<string, unknown>): void {
+    const restored = new Set<string>()
+
     for (const [name, state] of Object.entries(snapshot)) {
       const store = this.get(name)
-      if (store) {
-        try {
-          store.$replaceState(state as State)
-        } catch (error) {
-          console.error(`[StoreRegistry] Error restoring store "${name}":`, error)
-        }
-      } else {
-        console.warn(`[StoreRegistry] Store "${name}" not found in snapshot`)
+      if (!store) {
+        console.warn(`[StoreRegistry] Store "${name}" in snapshot is not registered, skipped`)
+        continue
       }
+      // 状态形状由 $replaceState 校验（非纯对象/数组直接抛错），此处不重复判定；
+      // 抛错被捕获并记录，避免一个 store 的坏数据中断其余恢复
+      try {
+        store.$replaceState(state as State)
+        restored.add(name)
+      } catch (error) {
+        console.error(`[StoreRegistry] Error restoring store "${name}":`, error)
+      }
+    }
+
+    // 部分恢复显式化：快照未覆盖的注册 store 保持当前值，调用方需要知道
+    // 这次恢复不是全量的（createSnapshot 抛错被跳过的 store 会落进这里）
+    const skipped = this.getNames().filter((name) => !restored.has(name))
+    if (skipped.length > 0) {
+      console.warn(`[StoreRegistry] restoreSnapshot 未覆盖 ${skipped.length} 个已注册 store，其状态保持不变: [${skipped.join(', ')}]`)
     }
   }
 }

@@ -60,6 +60,11 @@ export function isPromise(value: unknown): value is Promise<unknown> {
 
 /**
  * 浅比较两个值
+ *
+ * 语义边界：只有「双方都是纯对象」或「双方都是数组」时才按自有可枚举键逐项浅比较；
+ * 其余对象（类实例、Error/URL/Promise/装箱原始值等）没有可信的浅层身份，
+ * 要求引用相等。这类值本函数判不等（保守方向：最多让 createSelector 多做一次
+ * 结果分发，不会把陈旧值当新值返回）。
  */
 export function shallowEqual(a: unknown, b: unknown): boolean {
   if (a === b) return true
@@ -83,6 +88,17 @@ export function shallowEqual(a: unknown, b: unknown): boolean {
   ) {
     return deepEqual(a, b)
   }
+
+  // 数组与普通对象键集可能一致（[] 与 {}、[1] 与 {0:1}）：
+  // 不校验类别会误判浅相等，导致 createSelector 返回陈旧值
+  const aIsArray = Array.isArray(a)
+  if (aIsArray !== Array.isArray(b)) return false
+  if (aIsArray && (a as unknown[]).length !== (b as unknown[]).length) return false
+
+  // 结构判定取代类型白名单：白名单列不全（Error/URL/ArrayBuffer 视图/Promise 的
+  // 自有可枚举键同样为空，两份不同实例会被键比较判为相等）。
+  // 两侧同为纯对象或同为数组才按键比较，否则只认引用相等（上面已判过 !==）
+  if (!aIsArray && !(isPlainObject(a) && isPlainObject(b))) return false
 
   const keysA = Object.keys(a as Record<string, unknown>)
   const keysB = Object.keys(b as Record<string, unknown>)
@@ -322,6 +338,17 @@ export function clone<T>(obj: T, options?: { mode?: CloneMode }): T {
     return obj
   }
 
+  // json 模式先判：它的契约是「JSON 往返产出纯数据副本」，Date/RegExp 必须在
+  // 顶层与嵌套处口径一致（此前 Date/RegExp 特判在前，顶层 Date 返回 Date 实例、
+  // 嵌套 Date 序列化成字符串，同一模式两套结果）
+  if (mode === 'json') {
+    try {
+      return JSON.parse(JSON.stringify(obj))
+    } catch {
+      return obj
+    }
+  }
+
   // 处理特殊对象类型
   if (obj instanceof Date) {
     return new Date(obj.getTime()) as T
@@ -342,14 +369,6 @@ export function clone<T>(obj: T, options?: { mode?: CloneMode }): T {
       return new Set(obj) as T
     }
     return { ...obj }
-  }
-
-  if (mode === 'json') {
-    try {
-      return JSON.parse(JSON.stringify(obj))
-    } catch {
-      return obj
-    }
   }
 
   // deep 与 safe 共用递归克隆器（支持 Map/Set 与循环引用）：

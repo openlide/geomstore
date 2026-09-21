@@ -12,6 +12,22 @@ import type { Store } from '../../types/store.js'
 import { isProduction } from '../store/utils.js'
 
 /**
+ * 以 DefineOwnProperty 语义写入合并结果的动态键。
+ *
+ * 键可能来自用户状态（`JSON.parse('{"__proto__":{...}}')` 的自有键）或 store 名：
+ * `target[key] = value` 走 [[Set]]，'__proto__' 键会触发 Object.prototype 的 setter，
+ * 该键被静默丢弃并把合并结果的原型换掉。仅该键走 defineProperty，
+ * 普通键保持赋值写法（合并路径在 getState/通知热线上，避免每条键都做属性定义）。
+ */
+function assignMerged(target: Record<string, unknown>, key: string, value: unknown): void {
+  if (key === '__proto__') {
+    Object.defineProperty(target, key, { value, writable: true, enumerable: true, configurable: true })
+    return
+  }
+  target[key] = value
+}
+
+/**
  * 命名空间模式：按 store.name 归并各子 store 视图。
  *
  * @param pick - 从子 store 取值的方法（getState / state / $snapshot）
@@ -20,7 +36,7 @@ import { isProduction } from '../store/utils.js'
 export function mergeNamespaced(stores: readonly Store[], pick: (store: Store) => Record<string, unknown>, freeze: boolean = false): Record<string, unknown> {
   const result: Record<string, unknown> = {}
   for (const store of stores) {
-    result[store.name] = pick(store)
+    assignMerged(result, store.name, pick(store))
   }
   return freeze ? (Object.freeze(result) as Record<string, unknown>) : result
 }
@@ -56,11 +72,13 @@ export function mergeStateMaps(
                 `"${store.name}" wins in merged state/snapshot. Consider using namespaced mode for disambiguation.`,
             )
           }
-        } else {
-          keyOwners.set(key, store.name)
         }
+        // 冲突与否都要推进归属：告警要反映「上一个写入者 → 当前写入者」。
+        // 只在非冲突分支记录会让所有者永远停在第一个 store，A/B/C 同名键时
+        // 报成 (A,B) 与 (A,C)，真正被 C 覆盖的 B 从不出现在告警里
+        keyOwners.set(key, store.name)
       }
-      result[key] = source[key]
+      assignMerged(result, key, source[key])
     }
   }
   return result

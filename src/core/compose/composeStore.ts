@@ -11,6 +11,7 @@ import type { Plugin } from '../../types/plugin.js'
 import type { ComposeOptions, StoreTreeNode, StoreLike, ExtractStates, ExtractActions, ExtractGetters } from '../../types/compose.js'
 import { HookSystem } from '../hooks/index.js'
 import { isProduction } from '../store/utils.js'
+import { deepCloneState } from '../utils/clone.js'
 import { getStateVersion } from '../store/stateVersion.js'
 import { ALL_HOOK_NAMES, dispatchByNamespace, findTargetStoreWithKey, parseActionName } from './helpers.js'
 import { mergeNamespaced, mergeStateMaps } from './merge.js'
@@ -46,11 +47,13 @@ class ComposedStore<S extends State = State> implements Store<S> {
 
   /** 防抖相关：实例级统一调度，避免多个订阅者各自维护标志导致非首个订阅者丢通知 */
   private _notificationScheduled: boolean = false
-  /** 当前活跃的订阅者：监听器 → 注册次数。
+  /** 当前活跃的订阅者：监听器 → 注册次数与其中可写份数。
    *  与 SubscriptionManager 同语义——同一函数注册 N 次通知 N 次，退订只减一，
    *  减到 0 才真正移除。此前用 Set 会使「退订其中一份」直接删除整个监听器，
    *  用户仍持有的另一份退订句柄静默失效、永不再收到通知。 */
-  private _composedListeners: Map<StateListener<S>, number> = new Map()
+  private _composedListeners: Map<StateListener<S>, { total: number; writable: number }> = new Map()
+  /** 可写（非只读）注册总次数：>0 时通知载荷必须是深拷贝（见 _notifyListeners 的隔离说明） */
+  private _composedWritableCount = 0
   /** 对子 Store 的订阅句柄（destroy 时统一退订，避免闭包残留） */
   private _storeUnsubscribers: Array<() => void> = []
   /** 子 store 单路合并订阅是否已建立（构造期为缓存失效建立，组合层订阅复用，避免重复占额度） */
@@ -206,7 +209,8 @@ class ComposedStore<S extends State = State> implements Store<S> {
       for (const store of this._stores) {
         established.push(
           // 标记为只读订阅：回调仅做缓存失效与通知调度，从不写入子 store 状态。
-          // 使子 store 在「仅组合层订阅」场景下走零拷贝路径，省去每次通知的整树深拷贝
+          // 使子 store 在「仅组合层订阅」场景下走零拷贝路径，省去每次通知的整树深拷贝；
+          // 组合层自己的可写监听器由 _notifyListeners 单独深拷贝载荷做隔离
           store.subscribe(
             () => {
               this._invalidateMergedCache()
@@ -486,14 +490,19 @@ class ComposedStore<S extends State = State> implements Store<S> {
    */
   private _notifyListeners(): void {
     if (this.destroyed) return
-    const state = this.getState()
+    // 载荷隔离：子 store 是以 readOnly 订阅的（组合层回调本身从不写子 store），
+    // 因此子 store 会跳过深拷贝、把活的内部状态对象交给组合层合并。
+    // 组合层若把它原样广播给可写（用户）监听器，监听器就地改载荷就等于直接改子 store 状态，
+    // 且绕过子 store 的通知/钩子——存在可写订阅者时由组合层自己做一次深拷贝，
+    // 与 Store._notifyListeners 的 hasWritableListeners() 判据同口径
+    const state = this._composedWritableCount > 0 ? deepCloneState(this.getState()) : this.getState()
     // 迭代前快照，防止订阅者在回调中退订导致集合变更
     const entries = [...this._composedListeners]
     this._notifying = true
     try {
-      for (const [listener, count] of entries) {
+      for (const [listener, entry] of entries) {
         // 按注册次数展开：重复注册的监听器每次通知收到多次回调（与 SubscriptionManager 同语义）
-        for (let i = 0; i < count; i++) {
+        for (let i = 0; i < entry.total; i++) {
           try {
             listener(state)
           } catch (error) {
@@ -555,17 +564,25 @@ class ComposedStore<S extends State = State> implements Store<S> {
     }
   }
 
-  subscribe(listener: StateListener<S>): () => void {
+  subscribe(listener: StateListener<S>, options?: { readOnly?: boolean }): () => void {
     this._ensureAlive('subscribe')
+    const readOnly = options?.readOnly ?? false
 
     // 重复订阅只递增计数：与 SubscriptionManager.add 一致，
     // 不参与子 store 订阅的建立（子 store 侧本就单路复用一份）
-    const existingCount = this._composedListeners.get(listener)
-    if (existingCount !== undefined) {
-      this._composedListeners.set(listener, existingCount + 1)
-      return this._createUnsubscribe(listener)
+    const existing = this._composedListeners.get(listener)
+    if (existing !== undefined) {
+      existing.total += 1
+      if (!readOnly) {
+        existing.writable += 1
+        this._composedWritableCount += 1
+      }
+      return this._createUnsubscribe(listener, readOnly)
     }
-    this._composedListeners.set(listener, 1)
+    this._composedListeners.set(listener, { total: 1, writable: readOnly ? 0 : 1 })
+    if (!readOnly) {
+      this._composedWritableCount += 1
+    }
 
     // 单路复用：首个组合层监听器进入时对每个子 store 只建一份订阅（与构造期缓存失效
     // 订阅共用同一条，不重复占额度）。此前每个监听器都重复订阅全部子 store，N 个监听器
@@ -576,13 +593,16 @@ class ComposedStore<S extends State = State> implements Store<S> {
       // 子 store 订阅失败（如已被独立销毁）：回滚已入集合的监听器，
       // 避免监听器收不到通知、也无法退订的半订阅状态
       this._composedListeners.delete(listener)
+      if (!readOnly) {
+        this._composedWritableCount -= 1
+      }
       throw error
     }
 
     // 与普通 Store.subscribe 保持一致：订阅时不立即回调，
     // 仅在子 store 状态变化时通知，避免带副作用的监听器在订阅时被意外执行
 
-    return this._createUnsubscribe(listener)
+    return this._createUnsubscribe(listener, readOnly)
   }
 
   /**
@@ -618,22 +638,32 @@ class ComposedStore<S extends State = State> implements Store<S> {
    *  且 _childSubscriptionsReady 保持 true 使重新订阅无法重建通知（静默失效）。
    *  子 store 订阅与构造期建立对称，统一在 destroy() 释放。
    */
-  private _createUnsubscribe(listener: StateListener<S>): () => void {
+  private _createUnsubscribe(listener: StateListener<S>, readOnly: boolean): () => void {
     let active = true
     return () => {
       if (!active) return
       active = false
-      this._releaseListener(listener)
+      this._releaseListener(listener, readOnly)
     }
   }
 
-  private _releaseListener(listener: StateListener<S>): void {
-    const count = this._composedListeners.get(listener)
-    if (count === undefined) {
+  /**
+   * 释放一份监听器注册：同一监听器减到 0 才真正移除。
+   *
+   * 句柄捕获自己那一次注册的 readOnly 标记：同一函数可能既被只读注册（视图绑定）
+   * 又被可写注册（用户订阅），退订时必须按各自的标记回收可写计数。
+   */
+  private _releaseListener(listener: StateListener<S>, readOnly: boolean): void {
+    const entry = this._composedListeners.get(listener)
+    if (entry === undefined) {
       return
     }
-    if (count > 1) {
-      this._composedListeners.set(listener, count - 1)
+    if (!readOnly) {
+      entry.writable -= 1
+      this._composedWritableCount -= 1
+    }
+    if (entry.total > 1) {
+      entry.total -= 1
       return
     }
     this._composedListeners.delete(listener)
@@ -700,6 +730,7 @@ class ComposedStore<S extends State = State> implements Store<S> {
       }
     }
     this._composedListeners.clear()
+    this._composedWritableCount = 0
     this.hooks.clear()
     this.destroyed = true
   }

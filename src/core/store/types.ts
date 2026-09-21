@@ -44,8 +44,10 @@ export interface SubscriptionManagerInterface<S extends State = State> {
 
 /**
  * 批量更新管理器接口
+ *
+ * 无类型参数：批量语义与状态类型无关（BatchManager 只调度通知时机）
  */
-export interface BatchManagerInterface<_S extends State = State> {
+export interface BatchManagerInterface {
   /** 开始批量更新 */
   start(): void
   /** 结束批量更新 */

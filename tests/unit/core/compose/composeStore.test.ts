@@ -1007,10 +1007,10 @@ describe('composeStore', () => {
       const listenerB = jest.fn()
 
       // 绕过 subscribe 的同步初始通知，直接注册会抛错的监听器
-      // （_composedListeners 为 Map<listener, 注册次数>，与 SubscriptionManager 同语义）
+      // （_composedListeners 为 Map<listener, {total, writable}>，与 SubscriptionManager 同语义）
       ;(composed as any)._composedListeners.set(() => {
         throw new Error('listener boom')
-      }, 1)
+      }, { total: 1, writable: 0 })
       composed.subscribe(listenerB)
       listenerB.mockClear()
 

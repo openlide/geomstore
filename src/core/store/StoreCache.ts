@@ -11,6 +11,7 @@
 
 import type { State, CacheStats } from '../../types/store.js'
 import type { LRUCache } from '../cache/LRUCache.js'
+import { isProduction } from './utils.js'
 
 /**
  * 缓存管理器配置
@@ -72,34 +73,21 @@ export class StoreCacheManager<S extends State = State> {
       // 只在 TTL > 0 时检查过期
       if (this._ttl > 0) {
         const timestamp = this._timestamps.get(key)
-        if (timestamp && Date.now() - timestamp > this._ttl) {
+        // 时间戳缺失（含 0）按已过期处理：新鲜度未知时宁可回读状态源，
+        // 也不能像真值判断那样静默跳过检查、把这条旧值无限读下去
+        if (timestamp === undefined || Date.now() - timestamp > this._ttl) {
           // 缓存已过期，刷新
           const value = getState()
-          // 只缓存非 undefined 值，避免将 undefined 值当作有效缓存
-          if (value !== undefined) {
-            this._cache.set(key, value)
-            this._timestamps.set(key, Date.now())
-          } else {
-            // 值是 undefined，删除缓存条目
-            this._cache.delete(key)
-            this._timestamps.delete(key)
-          }
+          this._writeEntry(key, value, Date.now())
           return value
         }
       }
       return cachedValue as S[K]
     }
 
-    // 缓存未命中，从状态获取并缓存
+    // 缓存未命中，从状态获取并缓存（统一走 _writeEntry，避免同一套写入语义多处漂移）
     const value = getState()
-    // 只缓存非 undefined 值
-    if (value !== undefined) {
-      this._cache.set(key, value)
-      // 只在 TTL > 0 时记录时间戳
-      if (this._ttl > 0) {
-        this._timestamps.set(key, Date.now())
-      }
-    }
+    this._writeEntry(key, value, Date.now())
     return value
   }
 
@@ -107,20 +95,8 @@ export class StoreCacheManager<S extends State = State> {
    * 更新缓存值
    */
   set<K extends keyof S>(key: K, value: S[K]): void {
-    if (this._enabled) {
-      if (!this._cacheKeys || this._cacheKeys.has(key)) {
-        // 与 get/refreshFromState 保持一致：undefined 值不缓存，并清理旧条目
-        if (value !== undefined) {
-          this._cache.set(key, value)
-          // 只在 TTL > 0 时记录时间戳
-          if (this._ttl > 0) {
-            this._timestamps.set(key, Date.now())
-          }
-        } else {
-          this._cache.delete(key)
-          this._timestamps.delete(key)
-        }
-      }
+    if (this._enabled && (!this._cacheKeys || this._cacheKeys.has(key))) {
+      this._writeEntry(key, value, Date.now())
     }
   }
 
@@ -130,6 +106,13 @@ export class StoreCacheManager<S extends State = State> {
   enable(keys: Array<keyof S> | undefined, getState: (key: keyof S) => S[keyof S], stateKeys?: Array<keyof S>): void {
     this._enabled = true
     this._cacheKeys = keys ? new Set(keys) : undefined
+    // 空键集是「缓存全部关闭」而非「缓存全部键」：_cacheKeys 非 undefined 会让 get/set
+    // 把所有键都过滤掉，而 enabled 仍报 true，配置与观测不一致最难排查。
+    // 不把它当作未指定 keys——显式传空数组通常来自一个算出空集的配置，
+    // 反向解释成全量缓存会引入用户没要的旧值风险
+    if (keys && keys.length === 0 && !isProduction()) {
+      console.warn('[GeomStore] cacheKeys 为空数组：缓存不会命中任何键，enableCache 形同关闭（需要缓存全部键请传 undefined）')
+    }
     // 重新配置即重建：先清掉上一轮键集的残留条目。否则收窄 cacheKeys 后旧条目仍
     // 留在 LRU 里占用容量（导致新键集内的有效键被提前淘汰）并被 getStats() 报告，
     // 而 get() 已因 _cacheKeys 过滤永远读不到它们。清空后条目立即从状态源回填，无数据丢失
@@ -198,19 +181,7 @@ export class StoreCacheManager<S extends State = State> {
     }
 
     for (const key of keys) {
-      const value = getState(key)
-      // 与 get/set 保持一致：undefined 值不缓存，并清理旧条目
-      if (value !== undefined) {
-        this._cache.set(key, value)
-        // 与 set/_writeEntry 对齐：TTL=0（永不过期）不写时间戳，
-        // 否则 get() 的过期判定会把条目永久判为过期，每次 get 都回读状态源
-        if (this._ttl > 0) {
-          this._timestamps.set(key, now)
-        }
-      } else {
-        this._cache.delete(key)
-        this._timestamps.delete(key)
-      }
+      this._writeEntry(key, getState(key), now)
     }
   }
 

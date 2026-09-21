@@ -53,7 +53,13 @@ export interface LRUCacheStats {
   missRate: number
   /** 淘汰的缓存项数量 */
   evictions: number
-  /** 当前缓存键列表（按最近使用顺序） */
+  /**
+   * 当前缓存键列表（按最近使用顺序）
+   *
+   * 键经 `String(key)` 序列化：非字符串键会丢失类型信息，对象键会塌缩为
+   * `[object Object]`、数字 1 与字符串 '1' 不可区分。仅用于调试展示，
+   * 不得用作键的身份判定（需要原始键请用 `LRUCache.keys()`）。
+   */
   keys: string[]
   /** 平均访问时间（毫秒） */
   avgAccessTime: number

@@ -153,47 +153,14 @@ export class ActionManager<S extends State = State, A extends Actions = Actions>
     const mutationsBefore = this._notifyOnlyOnChange ? this._getMutationCount() : 0
     // 先设置 dispatching 状态，再触发钩子，确保监听器能获取正确的状态
     this._enterDispatch()
-    this._hooks.emit('beforeDispatch', name, args)
+    let result: unknown
     try {
+      // beforeDispatch 与 action 调用同属「dispatch 事务」：hooks 是注入的 IHookSystem，
+      // 接口不保证 emit 内部吞掉处理器异常。emit 放在 try 之外时，钩子抛错会让
+      // _dispatchDepth 永不递减、dispatching 永为 true，此后该 Store 的所有通知都被守卫吞掉
+      this._hooks.emit('beforeDispatch', name, args)
       // boundActions 在 initialize 时已经包装了 _withInternalAccess，此处无需再次包装
-      const result = this._boundActions[name](...args)
-      this._exitDispatch()
-      this._hooks.emit('afterDispatch', name, args, result)
-      // 同步刷新缓存：action 可能通过 this.state.xxx = ... 直接变异状态，
-      // 绕过 setState/$patch 导致缓存陈旧，此处按状态源强制回写
-      this._safeRefreshCache()
-      // 异步 action：通知统一延迟到 Promise 结束（fulfill 或 reject）时补发。
-      // 同步段不单独通知——其变更会被完成时的补发覆盖，否则与续段 setState 的
-      // 自发通知、完成补发叠加成三重通知。
-      // await 之后的续段运行在内部访问作用域之外，对裸状态的直接写入既无通知也无计数：
-      // - 默认模式无任何变更跟踪，完成时无条件补发（裸写入不可检测，宁多勿漏）
-      // - onlyOnChange 模式按「计数 > 已通知覆盖计数」精确补发：
-      //   续段 setState 已自发通知过的（计数已被覆盖）不再重复
-      const onSettled = (): void => {
-        this._safeRefreshCache()
-        // 外层 dispatch 或 batch 进行中时跳过，由其收尾统一通知
-        if (this._dispatchDepth > 0 || this._isInBatch?.()) return
-        if (!this._notifyOnlyOnChange || this._getMutationCount() > (this._getLastNotifiedMutationCount?.() ?? -1)) {
-          this._notifyListeners()
-        }
-      }
-      if (result instanceof Promise) {
-        // 异步失败同样触发 onError 钩子：reject 是 action 最常见的失败形态
-        // （网络请求等），监控/上报插件对其不可失明——与同步 catch 路径对称。
-        // 拒绝值保持原始错误不包装，不改变调用方捕获到的异常类型
-        result.then(onSettled, (error) => {
-          this._hooks.emit('onError', error)
-          onSettled()
-        })
-        return result
-      }
-      // 同步 action：仅最外层 dispatch 且不在 batch 中时通知——
-      // 内层 dispatch 结束时深度仍大于 0，提前通知会让监听器收到
-      // 外层 action 尚未完成的中间状态；batch 中则由收尾统一通知
-      if (this._dispatchDepth === 0 && !this._isInBatch?.() && (!this._notifyOnlyOnChange || this._getMutationCount() > mutationsBefore)) {
-        this._notifyListeners()
-      }
-      return result
+      result = this._boundActions[name](...args)
     } catch (error) {
       this._exitDispatch()
       this._hooks.emit('onError', error)
@@ -215,6 +182,51 @@ export class ActionManager<S extends State = State, A extends Actions = Actions>
         originalErrorObject: error,
       })
     }
+
+    // action 已成功返回：dispatch 计数就此复位一次。其后的收尾步骤（afterDispatch 钩子、
+    // 通知）若抛错，不得再走一遍 _exitDispatch——嵌套 dispatch 会多减一层深度，
+    // 外层 action 仍在执行却提前复位 dispatching，其后续 setState 会以中间态通知监听器；
+    // 那类失败也不该被重新包装成 ACTION_EXECUTION_ERROR（action 本身已经执行完成）
+    this._exitDispatch()
+    this._hooks.emit('afterDispatch', name, args, result)
+    // 同步刷新缓存：action 可能通过 this.state.xxx = ... 直接变异状态，
+    // 绕过 setState/$patch 导致缓存陈旧，此处按状态源强制回写
+    this._safeRefreshCache()
+    // 异步 action：通知统一延迟到 Promise 结束（fulfill 或 reject）时补发。
+    // 同步段不单独通知——其变更会被完成时的补发覆盖，否则与续段 setState 的
+    // 自发通知、完成补发叠加成三重通知。
+    // await 之后的续段运行在内部访问作用域之外，对裸状态的直接写入既无通知也无计数：
+    // - 默认模式无任何变更跟踪，完成时无条件补发（裸写入不可检测，宁多勿漏）
+    // - onlyOnChange 模式按「计数 > 已通知覆盖计数」精确补发：
+    //   续段 setState 已自发通知过的（计数已被覆盖）不再重复
+    const onSettled = (): void => {
+      this._safeRefreshCache()
+      // 外层 dispatch 或 batch 进行中时跳过，由其收尾统一通知
+      if (this._dispatchDepth > 0 || this._isInBatch?.()) return
+      if (!this._notifyOnlyOnChange || this._getMutationCount() > (this._getLastNotifiedMutationCount?.() ?? -1)) {
+        this._notifyListeners()
+      }
+    }
+    // 鸭子类型判定 thenable：instanceof Promise 跨 realm（iframe / node:vm）或另一份
+    // bundle 里的 Promise 子类都会判假，被当作同步结果处理时，await 之后的状态变更
+    // 永远等不到补发通知
+    if (result !== null && typeof result === 'object' && typeof (result as { then?: unknown }).then === 'function') {
+      // 异步失败同样触发 onError 钩子：reject 是 action 最常见的失败形态
+      // （网络请求等），监控/上报插件对其不可失明——与同步 catch 路径对称。
+      // 拒绝值保持原始错误不包装，不改变调用方捕获到的异常类型
+      (result as PromiseLike<unknown>).then(onSettled, (error) => {
+        this._hooks.emit('onError', error)
+        onSettled()
+      })
+      return result
+    }
+    // 同步 action：仅最外层 dispatch 且不在 batch 中时通知——
+    // 内层 dispatch 结束时深度仍大于 0，提前通知会让监听器收到
+    // 外层 action 尚未完成的中间状态；batch 中则由收尾统一通知
+    if (this._dispatchDepth === 0 && !this._isInBatch?.() && (!this._notifyOnlyOnChange || this._getMutationCount() > mutationsBefore)) {
+      this._notifyListeners()
+    }
+    return result
   }
 
   /**
@@ -271,9 +283,12 @@ export class GetterManager<S extends State = State, G extends Record<string, (st
 
   /**
    * 获取 Getters 对象
+   *
+   * 初始化前返回空对象（与 ActionManager.actions 同口径）：直接把 null 断言成 G
+   * 会让 store.getters.foo 在离成因很远的地方抛「Cannot read properties of null」
    */
   get getters(): G {
-    return this._getters as G
+    return (this._getters ?? ({} as G)) as G
   }
 
   /**

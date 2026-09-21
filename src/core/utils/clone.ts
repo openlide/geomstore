@@ -78,11 +78,22 @@ function fallbackClone<T>(value: T, seen?: WeakMap<object, unknown>): T {
     return value
   }
 
-  const obj: Record<string, unknown> = {}
+  // 克隆进同类原型：Object.create(null) 的状态映射若克隆成 {}，副本会白得一份
+  // Object.prototype（'toString' in clone / clone.hasOwnProperty 行为与源不一致）
+  const obj = Object.create(proto) as Record<string, unknown>
   visited.set(value as object, obj)
   const keys = Object.keys(value as object)
   for (let i = 0; i < keys.length; i++) {
-    obj[keys[i]] = fallbackClone((value as Record<string, unknown>)[keys[i]], visited)
+    const key = keys[i]
+    const child = fallbackClone((value as Record<string, unknown>)[key], visited)
+    if (key === '__proto__') {
+      // 自有 '__proto__' 键（JSON.parse 产出）必须复刻为自有属性：
+      // obj[key] = child 走 [[Set]] 会触发原型 setter，键被丢弃、副本原型被换掉，
+      // 注入的属性反而变成继承属性（deepMerge 的 defineProperty 防护也会因此失效）
+      Object.defineProperty(obj, key, { value: child, writable: true, enumerable: true, configurable: true })
+    } else {
+      obj[key] = child
+    }
   }
   return obj as T
 }

@@ -42,8 +42,11 @@ export function createPluginUninstaller<S extends State>(
       return
     }
     consumed = true
-    // 代际校验：旧安装的句柄不得动到之后的重新安装
-    if (installations.get(plugin) !== installation) {
+    // 代际校验：旧安装的句柄不得动到之后的重新安装。
+    // 令牌必须非空且与映射一致——缺省参数（`installations.get(plugin)` 未命中时也是
+    // undefined）会让 `undefined === undefined` 成立，句柄退化成「无校验卸载」
+    const current = installations.get(plugin)
+    if (installation === undefined || current !== installation) {
       return
     }
 

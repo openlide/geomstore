@@ -148,8 +148,10 @@ export function dispatchByNamespace<T>(
 /**
  * 查找目标store并提取实际的键
  *
- * 修复：非命名空间模式下，如果多个 store 包含相同的 key，
- * 抛出错误以避免非确定性行为
+ * 非命名空间模式下多个 store 含同名键属歧义配置：此处按「取第一个匹配 store +
+ * 开发模式告警」处理（与 merge.ts 的同名键覆盖告警同口径），不抛错——
+ * 歧义本身不破坏正确性（合并视图同样取后者覆盖），抛错会让只读路径
+ * （getState / 渲染）在既有工程上直接崩。需要确定性路由请用命名空间模式。
  */
 export function findTargetStoreWithKey(key: string, stores: Store[], namespace?: string | boolean): [Store | undefined, string] {
   if (namespace) {
@@ -166,7 +168,6 @@ export function findTargetStoreWithKey(key: string, stores: Store[], namespace?:
     return [targetStore, actualKey]
   } else {
     // 非命名空间模式：直接查找
-    // 修复：检查是否有多个 store 包含相同的 key，避免非确定性行为
     const matchingStores = stores.filter((s) => {
       const state = s.getState()
       // own property 判定：`in` 会命中 Object 原型链（'toString'/'constructor' 等），

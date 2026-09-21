@@ -121,8 +121,8 @@ export class PerformanceMonitor implements PerformanceMonitorInterface {
    */
   constructor(options: PerformanceOptions = {}) {
     this.options = {
-      sampleRate: options.sampleRate ?? 1.0,
-      threshold: options.threshold ?? 16,
+      sampleRate: PerformanceMonitor.normalizeSampleRate(options.sampleRate, 1.0),
+      threshold: PerformanceMonitor.normalizeThreshold(options.threshold, 16),
       logger: options.logger ?? this.defaultLogger.bind(this),
       maxSize: PerformanceMonitor.normalizeMaxSize(options.maxSize, PerformanceMonitor.DEFAULT_MAX_SIZE),
       trackMemory: options.trackMemory ?? false,
@@ -131,6 +131,32 @@ export class PerformanceMonitor implements PerformanceMonitorInterface {
 
   /** 默认指标容量上限 */
   private static readonly DEFAULT_MAX_SIZE = 1000
+
+  /**
+   * 规范化采样率
+   *
+   * `Math.random() > NaN` 恒为 false，未校验的 NaN 会让「采样」变成 100% 记录；
+   * 负值则让所有操作都被跳过。文档口径是 0-1，故统一夹到该区间，非有限值回退默认。
+   *
+   * @private
+   */
+  private static normalizeSampleRate(value: number | undefined, fallback: number): number {
+    if (value === undefined || !Number.isFinite(value)) return fallback
+    return Math.min(1, Math.max(0, value))
+  }
+
+  /**
+   * 规范化阈值
+   *
+   * NaN 阈值会让 `duration > NaN` 恒为 false，超阈值预警静默失效；负值等价于 0
+   * （凡有耗时的操作都预警），夹到 0 保持「预警不被关掉」的直觉语义。
+   *
+   * @private
+   */
+  private static normalizeThreshold(value: number | undefined, fallback: number): number {
+    if (value === undefined || !Number.isFinite(value)) return fallback
+    return Math.max(0, value)
+  }
 
   /**
    * 规范化容量上限
@@ -208,10 +234,10 @@ export class PerformanceMonitor implements PerformanceMonitorInterface {
 
     return () => {
       const endTime = this._getTimestamp()
-      const startTime = this.currentOperations.get(key)
+      const recordedStartTime = this.currentOperations.get(key)
 
-      if (startTime !== undefined) {
-        const duration = endTime - startTime
+      if (recordedStartTime !== undefined) {
+        const duration = endTime - recordedStartTime
         this.record({
           operation,
           type,
@@ -250,10 +276,8 @@ export class PerformanceMonitor implements PerformanceMonitorInterface {
     // 无关；放在采样之后会让 sampleRate 很低（尤其为 0）时清理永不执行，泄漏照旧
     this.pruneStaleOperations()
 
-    // 采样
-    if (Math.random() > this.options.sampleRate) {
-      return
-    }
+    // 采样只决定是否**留存**这条指标；阈值预警不受采样影响（见下方 logger 调用）
+    const sampled = Math.random() <= this.options.sampleRate
 
     // 添加内存使用信息：写入副本而非调用方传入的对象，
     // 避免副作用泄漏到调用方（复用/比较该对象的代码受影响）
@@ -272,15 +296,19 @@ export class PerformanceMonitor implements PerformanceMonitorInterface {
     }
 
     // 记录指标
-    this.metrics.push(record)
+    if (sampled) {
+      this.metrics.push(record)
 
-    // 限制数量：一次性 splice 裁剪（容量已由构造器/setOptions 规范化，
-    // 这里不再需要 while+shift 逐步收敛）
-    this.trimToMaxSize()
+      // 限制数量：一次性 splice 裁剪（容量已由构造器/setOptions 规范化，
+      // 这里不再需要 while+shift 逐步收敛）
+      this.trimToMaxSize()
+    }
 
-    // 日志记录
+    // 日志记录：threshold 的契约是「超过此值会触发警告」，若与采样同生灭，
+    // sampleRate<1 时超阈值操作只有被抽到的才预警、sampleRate=0 时预警整体失效——
+    // 而预警正是低采样场景下唯一还该保留的信号
     if (metrics.exceedThreshold) {
-      this.options.logger(metrics)
+      this.options.logger(record)
     }
   }
 
@@ -314,7 +342,9 @@ export class PerformanceMonitor implements PerformanceMonitorInterface {
    * ```
    */
   getMetrics(): PerformanceMetrics[] {
-    return [...this.metrics]
+    // 元素逐个复制：数组浅拷贝仍指向内部同一批指标对象，
+    // 调用方改 m.duration 会污染内部数据与后续 getStats()/exportJSON()
+    return this.metrics.map((m) => ({ ...m }))
   }
 
   /** 清理超时未结束的计时条目（调用方遗漏 end() 时的兜底，防止 Map 无限增长） */
@@ -405,8 +435,8 @@ export class PerformanceMonitor implements PerformanceMonitorInterface {
    */
   setOptions(options: PerformanceOptions): void {
     Object.assign(this.options, {
-      sampleRate: options.sampleRate ?? this.options.sampleRate,
-      threshold: options.threshold ?? this.options.threshold,
+      sampleRate: PerformanceMonitor.normalizeSampleRate(options.sampleRate, this.options.sampleRate),
+      threshold: PerformanceMonitor.normalizeThreshold(options.threshold, this.options.threshold),
       logger: options.logger ?? this.options.logger,
       maxSize: PerformanceMonitor.normalizeMaxSize(options.maxSize, this.options.maxSize),
       trackMemory: options.trackMemory ?? this.options.trackMemory,
@@ -448,7 +478,8 @@ export class PerformanceMonitor implements PerformanceMonitorInterface {
    * ```
    */
   getMetricsByType(type: MetricType): PerformanceMetrics[] {
-    return this.metrics.filter((m) => m.type === type)
+    // 元素副本：filter 只复制数组外壳，返回原对象会让调用方改写内部指标
+    return this.metrics.filter((m) => m.type === type).map((m) => ({ ...m }))
   }
 
   /**
@@ -477,7 +508,8 @@ export class PerformanceMonitor implements PerformanceMonitorInterface {
    * ```
    */
   getMetricsByOperation(operation: string): PerformanceMetrics[] {
-    return this.metrics.filter((m) => m.operation === operation)
+    // 元素副本：filter 只复制数组外壳，返回原对象会让调用方改写内部指标
+    return this.metrics.filter((m) => m.operation === operation).map((m) => ({ ...m }))
   }
 
   /**
@@ -500,12 +532,13 @@ export class PerformanceMonitor implements PerformanceMonitorInterface {
    * ```
    */
   getRecentMetrics(count: number = 10): PerformanceMetrics[] {
-    // slice(-0) === slice(0)，会把「最近 0 条」变成返回全部；
-    // 负数则退化为从头截断（slice(5)），与「最近 N 条」语义相反；NaN 同样返回全部
-    if (!Number.isFinite(count) || count <= 0) {
+    // 先取整再判空：Math.floor(0.5) === 0 而 slice(-0) === slice(0)，
+    // (0,1) 之间的小数会让「最近 0.5 条」返回全部指标
+    const n = Math.floor(count)
+    if (!Number.isFinite(count) || n <= 0) {
       return []
     }
-    return this.metrics.slice(-Math.floor(count))
+    return this.metrics.slice(-n).map((m) => ({ ...m }))
   }
 
   /**

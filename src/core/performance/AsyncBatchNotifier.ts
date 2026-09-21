@@ -97,13 +97,16 @@ export class AsyncBatchNotifier<S> {
     this.latestState = null
 
     // hasPendingState 为 true 时，latestState 必为 notify 写入的有效状态（即使 S 允许为 null）
-    this.listeners.forEach((listener) => {
+    // 遍历快照：Set.forEach 会访问迭代期间新增的元素（删除后再加还可能重复访问），
+    // 而本类是公开导出、监听器内重入 notify/subscribe/clear 是预期用法——
+    // 直接在活集合上迭代会让新订阅者被同一批次以陈旧状态回调
+    for (const listener of Array.from(this.listeners)) {
       try {
         listener(state as S)
       } catch (error) {
         console.error('[AsyncBatchNotifier] Error in listener:', error)
       }
-    })
+    }
   }
 
   /**

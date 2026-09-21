@@ -49,6 +49,13 @@ import type { StoreConfig, State, Actions, Getters } from '../../types/store.js'
  *   的返回值类型，getter 上下文因此获得精确的 State 类型，彻底去除隐式 any。
  * - 重载配置通过 `Omit<StoreConfig, 'state'>` 剥离 `state` 后再固定其类型，
  *   避免与 `StoreConfig.state?: S` 交叉成 `S & (() => S)` 引发推断歧义。
+ *
+ * 显式泛型调用 `createStore<AppState>({...})` 的已知限制（TypeScript 语义，非本库缺陷）：
+ * 类型参数只要显式给出一个，其余未给出的就落到默认值而**不参与推断**——`A` 退化为
+ * `Actions`（`keyof A` 塌成 string）、`G` 退化为 `Getters<S>`。因此该写法下
+ * `dispatch('拼错的action')` 不再报错、`getter('x')` 退化为 unknown，
+ * 失去上面两型别名的全部约束。需要精确的 action/getter 类型请省略泛型、
+ * 由 state/actions/getters 字面量反推（推荐写法），或显式写全三个类型参数。
  */
 /**
  * 工厂函数形式配置：state 类型固定为 `() => S`。
@@ -77,5 +84,10 @@ export function createStore<S extends State, A extends Actions = Actions, G exte
 export function createStore<S extends State, A extends Actions = Actions, G extends Getters<S> = Getters<S>>(
   options: Omit<StoreConfig<S | (() => S), A, G>, 'state'> & { state: S | (() => S) },
 ): Store<S, A, G> {
+  // Store 构造器的 `options = {}` 默认值只对 undefined 生效：null 会一路走到
+  // `options.name` 抛出与配置无关的 TypeError，故两个假值都在这里以同一口径失败
+  if (options === null || options === undefined || typeof options !== 'object') {
+    throw new TypeError('[GeomStore] createStore: options must be a valid object')
+  }
   return new Store(options)
 }

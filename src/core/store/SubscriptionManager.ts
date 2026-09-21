@@ -78,6 +78,10 @@ export class SubscriptionManager<S extends State = State> implements Subscriptio
    * - evict-oldest：警告并驱逐最早的订阅者（默认）
    * - throw：抛出错误，避免订阅者无声丢失状态更新
    *
+   * 上限是对「新增订阅」的门禁，不是 size 的硬保证：重复注册免检，
+   * 因而 size（按注册次数计）可高于 maxSubscribers；此时新订阅仍会驱逐一份名额，
+   * 总量维持在被重复注册抬到的水平而不再增长。需要硬上限请按 size 自行校验
+   *
    * @param options.readOnly 标记为只读订阅（仅读取状态、不修改），可让 Store 在仅有只读订阅时跳过深拷贝
    */
   add(listener: StateListener<S>, options?: { readOnly?: boolean }): object {

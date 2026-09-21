@@ -59,6 +59,12 @@ export function createDirtyTrackingProxy(root: object, cache: DirtyTrackingCache
     if (!owners) rebuildOwners()
     const keys = new Set(owners?.get(target))
     if (target === root && key !== undefined) keys.add(key)
+    // 归属解析不出来（对象经访问器取出、挂在函数值上等索引刻意不覆盖的位置）时
+    // 保守标记全部顶层键：只 bump 计数而不标脏键会让集成层按「未变化」跳过 setData，
+    // 变更对所有页面永久不可见——宁可多报也不能漏报
+    if (keys.size === 0) {
+      for (const rootKey of Reflect.ownKeys(root)) keys.add(rootKey)
+    }
     onMutate(keys)
     indexedVersion = getStateVersion(root)
   }
@@ -96,6 +102,10 @@ export function createDirtyTrackingProxy(root: object, cache: DirtyTrackingCache
           }
         }
         const raw = Reflect.get(obj, key, obj)
+        // 有意以原始 target 作为接收者（而非 receiver/代理）：类实例的访问器与方法
+        // 常读 #private 字段、类型化数组内部槽位，代理接收者会让它们直接抛错
+        // （与下方 bindMethods 同一取舍）。代价是访问器内部对裸对象的写入不被归因，
+        // 此类写入由 report 的「归属解析不出即标记全部顶层键」兜底
         if (bindMethods && typeof raw === 'function' && key !== 'constructor') {
           if (methods.has(key)) return methods.get(key)
           const invoke = (...args: unknown[]): unknown => {
