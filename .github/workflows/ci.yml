@@ -36,6 +36,9 @@ jobs:
       - name: Typecheck (src)
         run: pnpm run typecheck
 
+      - name: Typecheck (tests)
+        run: pnpm run typecheck:tests
+
       - name: Typecheck (examples)
         run: pnpm run typecheck:examples
 

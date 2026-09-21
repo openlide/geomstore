@@ -124,9 +124,26 @@ export class PerformanceMonitor implements PerformanceMonitorInterface {
       sampleRate: options.sampleRate ?? 1.0,
       threshold: options.threshold ?? 16,
       logger: options.logger ?? this.defaultLogger.bind(this),
-      maxSize: options.maxSize ?? 1000,
+      maxSize: PerformanceMonitor.normalizeMaxSize(options.maxSize, PerformanceMonitor.DEFAULT_MAX_SIZE),
       trackMemory: options.trackMemory ?? false,
     }
+  }
+
+  /** 默认指标容量上限 */
+  private static readonly DEFAULT_MAX_SIZE = 1000
+
+  /**
+   * 规范化容量上限
+   *
+   * maxSize 直接来自调用方，未校验会让 `while (length > maxSize) shift()`
+   * 在负数时于空数组上死循环、NaN 时条件恒 false 使缓冲永不收敛，
+   * 故统一收敛为「有限、非负、整数」。
+   *
+   * @private
+   */
+  private static normalizeMaxSize(value: number | undefined, fallback: number): number {
+    if (value === undefined || !Number.isFinite(value)) return fallback
+    return Math.max(0, Math.floor(value))
   }
 
   /**
@@ -257,15 +274,25 @@ export class PerformanceMonitor implements PerformanceMonitorInterface {
     // 记录指标
     this.metrics.push(record)
 
-    // 限制数量：用 while 而非单次 shift，保证任何时刻都收敛到 maxSize
-    // （setOptions 缩小容量后残留的旧记录不应让本缓冲长期超限）
-    while (this.metrics.length > this.options.maxSize) {
-      this.metrics.shift()
-    }
+    // 限制数量：一次性 splice 裁剪（容量已由构造器/setOptions 规范化，
+    // 这里不再需要 while+shift 逐步收敛）
+    this.trimToMaxSize()
 
     // 日志记录
     if (metrics.exceedThreshold) {
       this.options.logger(metrics)
+    }
+  }
+
+  /**
+   * 超出容量上限时淘汰最旧条目
+   *
+   * @private
+   */
+  private trimToMaxSize(): void {
+    const overflow = this.metrics.length - this.options.maxSize
+    if (overflow > 0) {
+      this.metrics.splice(0, overflow)
     }
   }
 
@@ -381,14 +408,12 @@ export class PerformanceMonitor implements PerformanceMonitorInterface {
       sampleRate: options.sampleRate ?? this.options.sampleRate,
       threshold: options.threshold ?? this.options.threshold,
       logger: options.logger ?? this.options.logger,
-      maxSize: options.maxSize ?? this.options.maxSize,
+      maxSize: PerformanceMonitor.normalizeMaxSize(options.maxSize, this.options.maxSize),
       trackMemory: options.trackMemory ?? this.options.trackMemory,
     })
     // 缩小容量时立即裁剪：仅靠 record 路径的逐条淘汰，缓冲区会长期保留
     // 超过新上限的旧记录（每次写入只挤掉一条，长度停在旧上限）
-    while (this.metrics.length > this.options.maxSize) {
-      this.metrics.shift()
-    }
+    this.trimToMaxSize()
   }
 
   /**

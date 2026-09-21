@@ -69,12 +69,19 @@ function requestUserInfo(): Promise<UserInfo> {
     wx.request({
       url: '/api/user/sync',
       success: (res) => {
-        const r = res as { statusCode?: number; data?: { userInfo?: UserInfo } }
-        if (r.statusCode !== undefined && (r.statusCode < 200 || r.statusCode >= 300)) {
-          reject(new Error(`sync failed with status ${r.statusCode}`))
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          reject(new Error(`sync failed with status ${res.statusCode}`))
           return
         }
-        resolve(r.data?.userInfo as UserInfo)
+        // 响应体来自服务端，形状不可信：缺 userInfo 时必须 reject，
+        // 直接断言会把 undefined 写进 userInfo: UserInfo | null 的契约里
+        const payload = res.data as { userInfo?: unknown } | null
+        const userInfo = payload && typeof payload === 'object' ? payload.userInfo : undefined
+        if (!userInfo || typeof userInfo !== 'object' || Array.isArray(userInfo)) {
+          reject(new Error('sync failed: response body has no userInfo object'))
+          return
+        }
+        resolve(userInfo as UserInfo)
       },
       fail: reject,
     })

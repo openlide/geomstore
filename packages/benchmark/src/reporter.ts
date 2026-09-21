@@ -11,6 +11,21 @@ import { benchmarkUtils } from './utils.js'
 export type ReportFormat = 'markdown' | 'json' | 'html'
 
 /**
+ * HTML 文本转义
+ *
+ * 场景名、建议文案与 metadata 来自配置或运行时环境，未转义直接拼进模板即为
+ * HTML 注入点（`<script>` 或破坏结构）。数值字段无需转义。
+ */
+function escapeHtml(value: unknown): string {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
+/**
  * 基准测试报告生成器
  */
 export class BenchmarkReporter {
@@ -114,7 +129,7 @@ export class BenchmarkReporter {
 
         return `
         <div class="result ${statusClass}">
-          <h3>${statusIcon} ${r.scenario}</h3>
+          <h3>${statusIcon} ${escapeHtml(r.scenario)}</h3>
           <div class="metrics">
             <div class="metric">
               <span class="label">迭代次数</span>
@@ -162,7 +177,7 @@ export class BenchmarkReporter {
 </head>
 <body>
   <h1>GeomStore 基准测试报告</h1>
-  <p>生成时间: ${report.metadata.timestamp} | Node.js: ${report.metadata.nodeVersion} | 平台: ${report.metadata.platform}</p>
+  <p>生成时间: ${escapeHtml(report.metadata.timestamp)} | Node.js: ${escapeHtml(report.metadata.nodeVersion)} | 平台: ${escapeHtml(report.metadata.platform)}</p>
   
   <div class="summary">
     <h2>概览</h2>
@@ -181,7 +196,7 @@ export class BenchmarkReporter {
   <div class="recommendations">
     <h2>建议</h2>
     <ul>
-      ${report.recommendations.map((r) => `<li>${r}</li>`).join('\n')}
+      ${report.recommendations.map((r) => `<li>${escapeHtml(r)}</li>`).join('\n')}
     </ul>
   </div>
 </body>

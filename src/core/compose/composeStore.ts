@@ -61,6 +61,15 @@ class ComposedStore<S extends State = State> implements Store<S> {
   private _hookUnsubscribers: Array<() => void> = []
   /** 自上次通知以来发生变更的子 store 名集合：命名空间模式下供 isStateKeyDirty 精确跳过 setData */
   private _dirtyStores: Set<string> = new Set()
+
+  /**
+   * 通知期间新产生的脏子 store（回调内的重入写入）：与 Store._deferredDirtyKeys 同语义，
+   * 不能随本轮收尾一起清空，否则下一轮 isStateKeyDirty 会把已变更的子 store 判为未变化
+   */
+  private _deferredDirtyStores: Set<string> = new Set()
+
+  /** 是否正在通知：决定脏子 store 标记是否需要同时留给下一轮 */
+  private _notifying = false
   /** 合并状态缓存：非命名空间/命名空间两种读取形态各缓存一份，子 store 变化时失效 */
   private _mergedCache: Record<string, unknown> | null = null
   /** 只读冻结形态的合并状态缓存（对应 state getter），与 _mergedCache 独立以免冻结影响 getState 消费者 */
@@ -201,7 +210,7 @@ class ComposedStore<S extends State = State> implements Store<S> {
           store.subscribe(
             () => {
               this._invalidateMergedCache()
-              this._dirtyStores.add(store.name)
+              this._markDirtyStore(store.name)
               this._scheduleNotify()
             },
             { readOnly: true },
@@ -480,22 +489,39 @@ class ComposedStore<S extends State = State> implements Store<S> {
     const state = this.getState()
     // 迭代前快照，防止订阅者在回调中退订导致集合变更
     const entries = [...this._composedListeners]
-    for (const [listener, count] of entries) {
-      // 按注册次数展开：重复注册的监听器每次通知收到多次回调（与 SubscriptionManager 同语义）
-      for (let i = 0; i < count; i++) {
-        try {
-          listener(state)
-        } catch (error) {
-          // 单个 listener 抛错不应中断其余监听器的通知，
-          // 否则错误会冒泡进微任务回调成为 uncaught exception（与 SubscriptionManager 隔离语义一致）
-          if (!isProduction()) {
-            console.error('[GeomStore] Error in composed state listener:', error)
+    this._notifying = true
+    try {
+      for (const [listener, count] of entries) {
+        // 按注册次数展开：重复注册的监听器每次通知收到多次回调（与 SubscriptionManager 同语义）
+        for (let i = 0; i < count; i++) {
+          try {
+            listener(state)
+          } catch (error) {
+            // 单个 listener 抛错不应中断其余监听器的通知，
+            // 否则错误会冒泡进微任务回调成为 uncaught exception（与 SubscriptionManager 隔离语义一致）
+            if (!isProduction()) {
+              console.error('[GeomStore] Error in composed state listener:', error)
+            }
           }
         }
       }
+    } finally {
+      this._notifying = false
     }
-    // 通知结束清空脏子 store 集合（与 Store._dirtyKeys 语义对齐）
-    this._dirtyStores.clear()
+    // 通知结束只作废本轮已广播的脏标记（与 Store._dirtyKeys 语义对齐）：
+    // 回调内重入写入产生的脏标记留给下一轮，否则集成层会跳过该子 store 的 setData
+    this._dirtyStores = this._deferredDirtyStores
+    this._deferredDirtyStores = new Set()
+  }
+
+  /**
+   * 标记子 store 为脏；通知进行中（回调内的重入写入）同时记入下一轮集合
+   */
+  private _markDirtyStore(name: string): void {
+    this._dirtyStores.add(name)
+    if (this._notifying) {
+      this._deferredDirtyStores.add(name)
+    }
   }
 
   /**

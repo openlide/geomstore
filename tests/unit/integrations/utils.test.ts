@@ -205,6 +205,39 @@ describe('integrations/utils', () => {
       expect(store.getState().count).toBe(42)
       expect(store.getState().name).toBe('updated')
     })
+
+    it('UTIL-010a: 原型链键名写成自有属性，解绑后不残留', () => {
+      const store = createStore({ state: { count: 0 } })
+      const target: Record<string, unknown> = {}
+      const protoSpy = jest.spyOn(console, 'warn').mockImplementation(() => {})
+
+      // 计算键才会产出自有属性（字面量里的 `__proto__: x` 是设原型，不是建键）
+      const unbinds = bindActions(target, { ['__proto__']: 'noop' }, store)
+
+      // 直接赋值会走 __proto__ 的 setter 污染原型链；defineProperty 只写自有属性
+      expect(Object.prototype.hasOwnProperty.call(target, '__proto__')).toBe(true)
+      expect(Object.getPrototypeOf(target)).toBe(Object.prototype)
+
+      unbinds[0]()
+      expect(Object.prototype.hasOwnProperty.call(target, '__proto__')).toBe(false)
+      protoSpy.mockRestore()
+    })
+
+    it('UTIL-010b: 覆盖宿主已有成员时告警并在解绑后恢复原值', () => {
+      const store = createStore({ state: { count: 0 } })
+      const original = () => 'original'
+      const target: Record<string, unknown> = { update: original }
+      const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {})
+
+      const unbinds = bindActions(target, { update: 'noop' }, store)
+
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('宿主已有成员 "update"'))
+      expect(target.update).not.toBe(original)
+
+      unbinds[0]()
+      expect(target.update).toBe(original)
+      warnSpy.mockRestore()
+    })
   })
 
   describe('performAutoInject', () => {

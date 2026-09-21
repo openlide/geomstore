@@ -119,7 +119,7 @@ export class ErrorBoundary<S = unknown, F = undefined> {
       return fn()
     } catch (error) {
       // 返回类型 T | F 与配置完全一致：配了 fallback 返回 F，否则 undefined
-      return this.handleError(error as Error, currentState) as T | F
+      return this.handleError(error, currentState) as T | F
     }
   }
 
@@ -151,7 +151,7 @@ export class ErrorBoundary<S = unknown, F = undefined> {
       return await fn()
     } catch (error) {
       // 同 execute：返回类型与配置一致（T | F）
-      return this.handleError(error as Error, currentState) as T | F
+      return this.handleError(error, currentState) as T | F
     }
   }
 
@@ -159,12 +159,16 @@ export class ErrorBoundary<S = unknown, F = undefined> {
    * 处理错误
    *
    * @private
-   * @param {Error} error - 错误对象
+   * @param {unknown} rawError - 被捕获的原始抛出值（非 Error 会归一化为 Error 记录）
    * @param {S} [currentState] - 当前状态
    * @returns {S | undefined} 回退状态（若配置）；未配置回退时返回 undefined
    * @throws {Error} 如果错误且不可恢复
    */
-  private handleError(error: Error, currentState?: S): F | undefined {
+  private handleError(rawError: unknown, currentState?: S): F | undefined {
+    // 归一化：`throw 'str'` / `throw 42` 会让 errorHistory（声明为 Error[]）与
+    // onError/fallback 拿到非 Error，下游读 .message/.stack 得到 undefined。
+    // 重抛时仍用原始值，保持「原样向上抛」的既有捕获方语义
+    const error: Error = rawError instanceof Error ? rawError : new Error(String(rawError))
     // 记录错误
     this.errorHistory.push(error)
     // 上限保护：与 ErrorHandler.maxLogSize 同口径，高频失败场景下
@@ -184,7 +188,7 @@ export class ErrorBoundary<S = unknown, F = undefined> {
 
     // 如果不可恢复，重新抛出
     if (!this.recoverable) {
-      throw error
+      throw rawError
     }
 
     // 返回回退状态：支持固定值与根据错误/当前状态动态计算
@@ -199,7 +203,7 @@ export class ErrorBoundary<S = unknown, F = undefined> {
           return (this.fallback as (error: Error, currentState: S | undefined) => F)(error, currentState)
         } catch (fallbackError) {
           console.error('[ErrorBoundary] Error in fallback function:', fallbackError)
-          throw error
+          throw rawError
         }
       }
       return this.fallback

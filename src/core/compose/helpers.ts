@@ -90,7 +90,9 @@ export function dispatchByNamespace<T>(
     for (const key in data) {
       const value = data[key]
       const targetStore = findTargetStore(key, stores, namespace)
-      if (targetStore && !options?.warnMissingKeys) {
+      // 嵌套归属判断只看数据形状，不看 options：warnMissingKeys 是开发模式下
+      // $replaceState 的告警开关，把它当作路由开关会让同一份写入在开发/生产走不同分支
+      if (targetStore) {
         const nested = (targetStore as { stores?: Record<string, unknown> }).stores
         const separator = key.indexOf('/')
         if (nested && separator > 0) {

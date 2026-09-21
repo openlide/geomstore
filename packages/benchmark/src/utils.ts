@@ -162,10 +162,13 @@ export class BenchmarkUtils implements IBenchmarkUtils {
     for (let i = 0; i < Math.min(concurrency, total); i++) {
       workers.push(
         (async () => {
-          while (completed < total) {
+          while (true) {
+            // 同步预约槽位：先读 completed、await 之后再自增会让多个 worker 同时通过
+            // `completed < total` 判断，实际执行次数超过 total，结果条数与时序都不确定
+            const index = completed++
+            if (index >= total) return
             const { result, duration } = await this.measureTimeAsync(async () => await fn())
-            results.push({ result, duration })
-            completed++
+            results[index] = { result, duration }
           }
         })()
       )

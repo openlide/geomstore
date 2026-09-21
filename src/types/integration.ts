@@ -35,22 +35,29 @@ export interface ConnectOptions<S extends State = State, A extends Actions = Act
  *
  * 数组形式：`mapState: ['count', 'name']` → `{ count: number, name: string }`
  * 对象形式（别名映射）：`mapState: { myCount: 'count' }` → `{ myCount: number }`（值受 keyof S 约束，类型精确）
+ *
+ * `mapState` 可选且未声明时（`M` 为约束类型 `ConnectOptions<…>` 即此情形）其类型含 `undefined`，
+ * `Extract<…, readonly unknown[]>` 会保留联合里的数组成员，于是「未声明」被当成「全量映射」，
+ * 与 ExtractPageData 承诺的「未映射键带 | undefined」相反（编译通过、运行时 undefined）。
+ * 故先排除未声明，返回 `object` 让 Partial<S> 的口径生效。
  */
 type ExtractMappedState<
   S extends State = State,
   M extends { mapState?: readonly (keyof S)[] | Record<string, keyof S> } = { mapState?: readonly (keyof S)[] | Record<string, keyof S> },
 > =
-  Extract<M['mapState'], readonly unknown[]> extends infer Arr
-    ? [Arr] extends [never]
-      ? Extract<M['mapState'], Record<string, keyof S>> extends infer R
-        ? [R] extends [never]
-          ? object
-          : { [P in keyof R & string]: S[R[P] & keyof S] }
-        : object
-      : Arr extends readonly unknown[]
-        ? { [P in Arr[number] & keyof S]: S[P] }
-        : object
-    : object
+  undefined extends M['mapState']
+    ? object
+    : Extract<M['mapState'], readonly unknown[]> extends infer Arr
+      ? [Arr] extends [never]
+        ? Extract<M['mapState'], Record<string, keyof S>> extends infer R
+          ? [R] extends [never]
+            ? object
+            : { [P in keyof R & string]: S[R[P] & keyof S] }
+          : object
+        : Arr extends readonly unknown[]
+          ? { [P in Arr[number] & keyof S]: S[P] }
+          : object
+      : object
 
 /**
  * 从映射数组提取计算属性类型
@@ -62,17 +69,19 @@ type ExtractMappedGetters<
   M extends { mapGetters?: readonly PropertyKey[] | Record<string, PropertyKey> } = { mapGetters?: readonly PropertyKey[] | Record<string, PropertyKey> },
   G extends { [K: string]: (state: never) => unknown } = { [K: string]: (state: never) => unknown },
 > =
-  Extract<M['mapGetters'], readonly PropertyKey[]> extends infer Arr
-    ? [Arr] extends [never]
-      ? Extract<M['mapGetters'], Record<PropertyKey, PropertyKey>> extends infer R
-        ? [R] extends [never]
-          ? object
-          : { [P in keyof R & string]: ReturnType<G[Extract<R[P], keyof G>]> }
-        : object
-      : Arr extends readonly unknown[]
-        ? { [P in Arr[number] & keyof G]: ReturnType<G[P]> }
-        : object
-    : object
+  undefined extends M['mapGetters']
+    ? object
+    : Extract<M['mapGetters'], readonly PropertyKey[]> extends infer Arr
+      ? [Arr] extends [never]
+        ? Extract<M['mapGetters'], Record<PropertyKey, PropertyKey>> extends infer R
+          ? [R] extends [never]
+            ? object
+            : { [P in keyof R & string]: ReturnType<G[Extract<R[P], keyof G>]> }
+          : object
+        : Arr extends readonly unknown[]
+          ? { [P in Arr[number] & keyof G]: ReturnType<G[P]> }
+          : object
+      : object
 
 /**
  * 从映射配置提取 actions 类型（精确签名）
@@ -84,19 +93,21 @@ export type ExtractMappedActions<
   A extends Actions = Actions,
   M extends { mapActions?: readonly (keyof A)[] | Record<string, keyof A> } = { mapActions?: readonly (keyof A)[] | Record<string, keyof A> },
 > =
-  Extract<M['mapActions'], readonly unknown[]> extends infer Arr
-    ? [Arr] extends [never]
-      ? Extract<M['mapActions'], Record<string, keyof A>> extends infer R
-        ? [R] extends [never]
-          ? object
-          : {
-              [P in keyof R & string]: (...args: InferActionArgs<A, R[P] & keyof A>) => InferActionReturn<A, R[P] & keyof A>
-            }
-        : object
-      : Arr extends readonly unknown[]
-        ? { [P in Arr[number] & keyof A]: (...args: InferActionArgs<A, P>) => InferActionReturn<A, P> }
-        : object
-    : object
+  undefined extends M['mapActions']
+    ? object
+    : Extract<M['mapActions'], readonly unknown[]> extends infer Arr
+      ? [Arr] extends [never]
+        ? Extract<M['mapActions'], Record<string, keyof A>> extends infer R
+          ? [R] extends [never]
+            ? object
+            : {
+                [P in keyof R & string]: (...args: InferActionArgs<A, R[P] & keyof A>) => InferActionReturn<A, R[P] & keyof A>
+              }
+          : object
+        : Arr extends readonly unknown[]
+          ? { [P in Arr[number] & keyof A]: (...args: InferActionArgs<A, P>) => InferActionReturn<A, P> }
+          : object
+      : object
 
 /**
  * 从 ConnectOptions 提取完整的页面 data 类型

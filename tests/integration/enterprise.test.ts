@@ -1166,6 +1166,19 @@ describe('企业级方案 - 网络同步', () => {
     expect(store.state.lastSyncTime).toBeNull()
   })
 
+  it('ENTERPRISE-066: 响应缺少 userInfo 时应该 reject 且不写入 undefined', async () => {
+    // 修复前 `r.data?.userInfo as UserInfo` 会把 undefined 伪装成 UserInfo 兑现，
+    // syncWithServer 随之写入 userInfo: undefined，破坏 UserInfo | null 契约
+    ;(mockWx.request as jest.Mock).mockImplementation((options: any) => {
+      options.success({ statusCode: 200, data: {} })
+    })
+    const store = createUserStore({ userId: 'sync-user-no-payload' })
+
+    await expect(store.dispatch('syncWithServer')).rejects.toThrow(/no userInfo object/)
+    expect(store.state.userInfo).toBeNull()
+    expect(store.state.lastSyncTime).toBeNull()
+  })
+
   it('ENTERPRISE-050: App 未定义时 initBackgroundSync 应该安全返回', () => {
     // 本 describe 未 mock App（后台/前台 describe 才 mock）
     const store = createUserStore({ userId: 'no-app-user' })

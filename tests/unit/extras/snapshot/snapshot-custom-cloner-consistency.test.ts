@@ -118,7 +118,7 @@ describe('自定义克隆器抛错：两条路径语义一致', () => {
     expect(result.errors.some((error) => error.message.includes('custom cloner boom'))).toBe(true)
   })
 
-  it('onError 自身抛错时按 unknown 记录并兜底返回原始入参（含非 Error 抛出物）', () => {
+  it('onError 自身抛错时按 unknown 记录并返回空数据（不回传活引用）', () => {
     const source = { a: { b: 1 } }
 
     const result = createSnapshot(source, {
@@ -133,8 +133,9 @@ describe('自定义克隆器抛错：两条路径语义一致', () => {
 
     expect(result.success).toBe(false)
     expect(result.errors.some((error) => error.type === 'unknown' && error.message === 'Unknown error')).toBe(true)
-    // 兜底路径返回原始入参（不做隔离降级承诺）
-    expect(result.data).toEqual(source)
+    // 失败快照不得回传调用方的原始引用（隔离契约）：与 SKIP 降级路径同为 undefined，
+    // 调用方须按 success:false 处理
+    expect(result.data).toBeUndefined()
   })
 
   it('onError 抛非 Error 时逃逸到队列兜底记录（异步，覆盖 String(error) 侧）', async () => {

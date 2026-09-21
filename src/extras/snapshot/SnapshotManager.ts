@@ -163,7 +163,9 @@ export class SnapshotManager {
       })
 
       return {
-        data: data as T,
+        // 失败快照不得回传调用方的原始引用：那会打破快照隔离契约，让调用方
+        // 经返回值改到宿主持有的活状态（与 SKIP 哨兵降级路径同语义）
+        data: undefined as T,
         metadata: {
           id,
           timestamp: startTime,
@@ -478,7 +480,8 @@ export class SnapshotManager {
       })
 
       return {
-        data: data as T,
+        // 同 createSnapshot 的失败路径：中止/异常时返回 undefined 而非原始引用
+        data: undefined as T,
         metadata: {
           id,
           timestamp: startTime,

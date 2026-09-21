@@ -25,6 +25,8 @@
     "verbatimModuleSyntax": false,
     "experimentalDecorators": true,
     "emitDecoratorMetadata": true,
+    // 基线默认只做类型检查；上面的 emit 相关选项（declaration/sourceMap/outDir/rootDir）
+    // 由 tsconfig.build.json 以 "noEmit": false 启用，不是无效配置
     "noEmit": true,
     "incremental": false,
     "types": ["node", "jest"],

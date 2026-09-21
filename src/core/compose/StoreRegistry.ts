@@ -91,10 +91,15 @@ export class StoreRegistry {
     }
 
     if (existingStore) {
-      // 销毁旧 store，避免内存泄漏
+      // 销毁旧 store，避免内存泄漏。与 unregister/clear 一致地加保护：
+      // 旧实例 destroy() 抛出不得中断覆盖注册，否则注册表停留在半销毁实例上
       if (typeof existingStore.destroy === 'function' && !existingStore.destroyed) {
         console.warn(`[StoreRegistry] Store "${name}" already registered, destroying old store and overwriting`)
-        existingStore.destroy()
+        try {
+          existingStore.destroy()
+        } catch (error) {
+          console.error(`[StoreRegistry] Error destroying old store "${name}":`, error)
+        }
       } else {
         console.warn(`[StoreRegistry] Store "${name}" already registered, overwriting`)
       }

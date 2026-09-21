@@ -51,7 +51,14 @@ function removeDirTree(dir) {
 if (!fs.existsSync(distDir)) {
   console.log('[clean-dist] dist not present; nothing to clean')
 } else {
-  const before = countFiles(distDir)
+  // 统计仅用于日志，且发生在删除之前：readdirSync 抛错（EACCES/ENOTDIR/Windows 占用）
+  // 若不被兜住会让整个 prebuild 中断，违背本脚本「清理失败只告警不中断构建」的承诺
+  let before = 0
+  try {
+    before = countFiles(distDir)
+  } catch (error) {
+    console.warn(`[clean-dist] WARN: 无法统计 dist 文件数（${error instanceof Error ? error.message : String(error)}）。`)
+  }
   try {
     removeDirTree(distDir)
     fs.rmdirSync(distDir)

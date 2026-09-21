@@ -74,6 +74,39 @@ describe('composeStore 合并缓存降级', () => {
     expect(composed.isStateKeyDirty('name')).toBe(true)
   })
 
+  it('通知回调内的重入写入把脏子 store 留给下一轮，不被收尾清空', async () => {
+    let childCallback: (() => void) | undefined
+    const child = fakeChild({ name: 'user', state: { name: 'Alice' }, onSubscribe: (cb) => { childCallback = cb } })
+    const composed = composeStore([child], { namespace: true })
+    const flush = async () => {
+      for (let i = 0; i < 4; i++) await Promise.resolve()
+    }
+
+    let notified = 0
+    const dirtyAtNotify: boolean[] = []
+    composed.subscribe(() => {
+      dirtyAtNotify.push(composed.isStateKeyDirty('user'))
+      notified++
+      if (notified === 1) {
+        // 第一轮广播期间子 store 再次变更（重入写入）：它会排入第二轮通知，
+        // 修复前本轮收尾的 clear() 会连带抹掉它的脏标记，第二轮据此跳过 setData
+        child.state.name = 'Bob'
+        childCallback?.()
+      }
+    })
+
+    child.state.name = 'Alice2'
+    childCallback?.()
+    await flush()
+    await flush()
+
+    expect(notified).toBeGreaterThanOrEqual(2)
+    // 两轮通知各自都把自己要渲染的子 store 视为脏：第二轮不因第一轮收尾而漏更新
+    expect(dirtyAtNotify).toEqual([true, true])
+    // 两轮都完成后脏集合才被清空
+    expect(composed.isStateKeyDirty('user')).toBe(false)
+  })
+
   it('销毁后子 store 变更不再触发组合层调度', () => {
     let childCallback: (() => void) | undefined
     const child = fakeChild({

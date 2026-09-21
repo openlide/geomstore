@@ -137,12 +137,14 @@ export class ErrorRecovery {
       throw error
     }
 
-    // 构建恢复上下文
+    // 构建恢复上下文：受控字段（error/config 由本方法按 error.code 查表得到）必须后写，
+    // 否则调用方传入的 Partial<RecoveryContext> 可覆盖它们，使实际执行的策略与
+    // error.code 查到的不一致，重试记账的 getRetryKey 也会错位
     const recoveryContext: RecoveryContext = {
+      ...context,
       error,
       config,
       attempt: 0,
-      ...context,
     }
 
     // 根据策略执行恢复

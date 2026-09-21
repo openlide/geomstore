@@ -126,18 +126,21 @@ export interface AppOptions {
  * app.subscribe(callback)   // 订阅状态变化
  * ```
  */
-export function withAppStore<S extends State = State, A extends Actions = Actions, G extends Getters<S> = Getters<S>>(
+export function withAppStore<S extends State, A extends Actions, G extends Getters<S>, O extends ConnectOptions<S, A, G>>(
   store: Store<S, A, G>,
-  options: ConnectOptions<S, A, G> = {},
+  options: O = {} as O,
 ) {
   // 解析映射与注入配置（与 Page/Component 集成共用 resolveMappings）
   const { stateMapping, gettersMapping, actionsMapping, injectMapping } = resolveMappings(options)
 
   // 与 withPageStore 同款注入：WithPageThis 既为 C 提供推断位点（传入的字面量反向推断出 C，
   // 返回类型据此保留自定义生命周期/字段），又把顶层方法的 this 重写为注入后的实例类型；
-  // AppThis 交叉 C，从而保留 globalData 的自定义字段
+  // AppThis 交叉 C，从而保留 globalData 的自定义字段。
+  // M 位点用推断出的 O（而非写死的 ConnectOptions）：写死时 AppThis 只能按「未声明映射」
+  // 处理，要么把全部 state/action 都声称为已注入（编译通过、运行时 undefined），
+  // 要么一个都不给——只有按调用实参推断才能给出精确的 this 成员
   return function <C extends AppOptions>(
-    AppConfig: WithPageThis<C, AppThis<S, A, G, ConnectOptions<S, A, G>, C>> & ThisType<AppThis<S, A, G, ConnectOptions<S, A, G>, C>>,
+    AppConfig: WithPageThis<C, AppThis<S, A, G, O, C>> & ThisType<AppThis<S, A, G, O, C>>,
   ): C {
     // 订阅清理列表：App 生命周期贯穿整个小程序运行期，
     // 仅在订阅建立前重置（防止重复绑定），不在 onHide 等生命周期中清理

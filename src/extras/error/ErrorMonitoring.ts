@@ -185,8 +185,19 @@ export class ErrorMonitoring {
               return 'fail' as const
             },
           )
-        const timeout = this.delay(this.reportTimeout)
-        return Promise.race([task, timeout.promise.then(() => 'timeout' as const)])
+        // reportTimeout <= 0 表示「不超时」（见构造器注释）：此时不得创建定时器，
+        // 否则 setTimeout(resolve, 0) 在下一个宏任务先到期，任何真实异步上报
+        // （网络请求）都会被误判超时 → 重入队 → 按 maxFlushRetries 丢弃
+        let settled: Promise<'ok' | 'fail' | 'timeout'>
+        let cancelTimeout: () => void = () => {}
+        if (this.reportTimeout > 0) {
+          const timeout = this.delay(this.reportTimeout)
+          cancelTimeout = timeout.cancel
+          settled = Promise.race([task, timeout.promise.then(() => 'timeout' as const)])
+        } else {
+          settled = task
+        }
+        return settled
           .then((outcome) => {
             if (outcome === 'ok') {
               anyReporterSucceeded = true
@@ -195,7 +206,7 @@ export class ErrorMonitoring {
             }
           })
           // 上报先落地（成功/失败）时取消未到期的超时定时器，避免句柄残留
-          .finally(() => timeout.cancel())
+          .finally(cancelTimeout)
       })
       await Promise.allSettled(promises)
 

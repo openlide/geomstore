@@ -31,13 +31,20 @@ export interface AsyncRetrySelectorOptions extends RetrySelectorOptions {
 
 /** 在错误对象上以不可枚举属性标注总尝试次数，供调用方排障 */
 function annotateAttempts(error: Error, attempts: number): Error {
-  if (!(error as Error & { attempts?: number }).attempts) {
-    Object.defineProperty(error, 'attempts', {
-      value: attempts,
-      enumerable: false,
-      configurable: true,
-      writable: true,
-    })
+  // 选择器可以合法地 `throw 'boom'` / `throw 42`，或重抛冻结的 Error：
+  // 此时 defineProperty 抛 TypeError，会用标注失败顶替真正的原始错误
+  const annotatable = typeof error === 'object' && error !== null && Object.isExtensible(error)
+  if (annotatable && !(error as Error & { attempts?: number }).attempts) {
+    try {
+      Object.defineProperty(error, 'attempts', {
+        value: attempts,
+        enumerable: false,
+        configurable: true,
+        writable: true,
+      })
+    } catch {
+      // 标注只是排障附加信息，失败不得掩盖原始错误
+    }
   }
   return error
 }

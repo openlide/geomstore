@@ -156,6 +156,9 @@ export class ResultBuilder {
     const totalHits = enabledStats.reduce((sum, s) => sum + s.hits, 0)
     const totalMisses = enabledStats.reduce((sum, s) => sum + s.misses, 0)
     const total = totalHits + totalMisses
+    // evictions 是可选字段：任一参与合并的结果带该字段时求和后保留，
+    // 全部缺失则维持 undefined（而非把「未统计」写成「0 次淘汰」）
+    const hasEvictions = enabledStats.some((s) => s.evictions !== undefined)
     return {
       enabled: true,
       totalAccesses: total,
@@ -163,6 +166,7 @@ export class ResultBuilder {
       misses: totalMisses,
       hitRate: total > 0 ? (totalHits / total) * 100 : 0,
       missRate: total > 0 ? (totalMisses / total) * 100 : 0,
+      ...(hasEvictions ? { evictions: enabledStats.reduce((sum, s) => sum + (s.evictions ?? 0), 0) } : {}),
     }
   }
 

@@ -51,6 +51,9 @@ export interface DecoratorOptions {
  * @param {DecoratorOptions} [options={}] - 装饰器选项
  * @returns {MethodDecorator} 方法装饰器
  *
+ * @remarks 返回值类型跟随被装饰方法：同步方法仍同步返回，异步（或返回 Promise）方法
+ * 返回 Promise；`after` 在结果确定后触发，`onError` 在同步抛错或 Promise reject 时触发。
+ *
  * @example
  * ```typescript
  * const auditDecorator = createDecorator({
@@ -77,26 +80,58 @@ export function createDecorator(options: DecoratorOptions = {}): MethodDecorator
   return function (_target: unknown, _propertyKey: string | symbol, descriptor: PropertyDescriptor): PropertyDescriptor {
     const originalMethod = descriptor.value
 
-    descriptor.value = async function (this: unknown, ...args: unknown[]) {
+    // 访问器描述符（get/set）或 value 非函数：装饰无意义，早失败优于运行时
+    // `originalMethod.apply is not a function`
+    if (typeof originalMethod !== 'function') {
+      throw new TypeError('[createDecorator] can only decorate a method whose descriptor.value is a function')
+    }
+
+    const wrapper = function (this: unknown, ...args: unknown[]): unknown {
+      let result: unknown
       try {
         if (options.before) {
           options.before(...args)
         }
-
-        const result = await originalMethod.apply(this, args)
-
-        if (options.after) {
-          options.after(result)
-        }
-
-        return result
+        result = originalMethod.apply(this, args)
       } catch (error) {
         if (options.onError) {
           options.onError(error as Error)
         }
         throw error
       }
+
+      if (result instanceof Promise) {
+        // 异步结果：after/onError 挂到结算之后，返回值仍是 Promise（不吞 rejection）
+        return result.then(
+          (value) => {
+            if (options.after) {
+              options.after(value)
+            }
+            return value
+          },
+          (error) => {
+            if (options.onError) {
+              options.onError(error as Error)
+            }
+            throw error
+          },
+        )
+      }
+
+      // 同步结果原样返回：此前无条件用 async 包装，同步方法的返回值会被变成 Promise，
+      // 破坏 `const v = obj.method()` 这类按同步契约取值的调用方
+      if (options.after) {
+        options.after(result)
+      }
+      return result
     }
+
+    // 保留原方法的 name/length：装饰器换实现时这两项元信息默认丢失，
+    // 依赖 arity 或函数名的调用方（框架、日志、反射式装饰）会看到错误签名
+    Object.defineProperty(wrapper, 'name', { value: originalMethod.name, configurable: true })
+    Object.defineProperty(wrapper, 'length', { value: originalMethod.length, configurable: true })
+
+    descriptor.value = wrapper
 
     return descriptor
   }

@@ -2,7 +2,7 @@
  * with-app-store 集成测试
  */
 
-import { createStore, withAppStore } from '@/index.js'
+import { createStore, withAppStore, type Store } from '@/index.js'
 
 describe('withAppStore', () => {
   type AppState = {
@@ -12,7 +12,9 @@ describe('withAppStore', () => {
     error: string | null
   }
 
-  let store: any
+  // 以 Store<AppState> 而非 any 声明：withAppStore 的映射名合法性、注入到 this 的
+  // 成员集合都由 S/A/G 推断得出，any 会让这些约束整体退化为 never
+  let store: Store<AppState>
   let mockAppConfig: any
 
   beforeEach(() => {

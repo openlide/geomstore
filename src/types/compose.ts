@@ -88,7 +88,12 @@ export type ExtractActions<Stores extends readonly StoreLike[]> = Stores extends
 
 /**
  * 从 Store 元组提取联合 Getters 类型
+ *
+ * `StoreLike.getters` 是可选的，故 `First['getters']` 含 `undefined`：
+ * 直接与基例 `Record<never, never>`（即 `{}`）求交会塌成 `never`，而 `never & X = never`，
+ * 只要元组里最后一个 store 未声明 getters，整个 G 就退化为 `never`（`keyof G` 变成
+ * `string | number | symbol`），getter 的类型安全静默失效。故先排除「未声明」再交。
  */
 export type ExtractGetters<Stores extends readonly StoreLike[]> = Stores extends readonly [infer First extends StoreLike, ...infer Rest extends StoreLike[]]
-  ? First['getters'] & ExtractGetters<Rest>
+  ? (undefined extends First['getters'] ? Record<never, never> : First['getters']) & ExtractGetters<Rest>
   : Record<never, never>

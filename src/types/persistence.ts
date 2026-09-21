@@ -53,11 +53,11 @@ export interface PersistenceOptions<S extends State = State> {
 export class WxStorageBackend implements StorageBackend {
   /** 经 globalThis 读取 wx，避免直接引用未声明的小程序全局标识符 */
   private get wxApi():
-    | { getStorageSync?: (k: string) => string | undefined; setStorageSync?: (k: string, v: string) => void; removeStorageSync?: (k: string) => void }
+    | { getStorageSync?: (k: string) => unknown; setStorageSync?: (k: string, v: string) => void; removeStorageSync?: (k: string) => void }
     | undefined {
     return (
       globalThis as {
-        wx?: { getStorageSync?: (k: string) => string | undefined; setStorageSync?: (k: string, v: string) => void; removeStorageSync?: (k: string) => void }
+        wx?: { getStorageSync?: (k: string) => unknown; setStorageSync?: (k: string, v: string) => void; removeStorageSync?: (k: string) => void }
       }
     ).wx
   }
@@ -65,7 +65,10 @@ export class WxStorageBackend implements StorageBackend {
   getItem(key: string): string | null {
     try {
       const value = this.wxApi?.getStorageSync?.(key)
-      return value === undefined ? null : value
+      // 微信 getStorageSync 对不存在的键返回空字符串（而非 undefined），且写入非字符串
+      // 载荷时会原样返回该值：只把 undefined 当缺失会让下游 JSON.parse('') 抛错，
+      // 并把非字符串值泄漏进 string | null 的返回契约
+      return typeof value === 'string' && value !== '' ? value : null
     } catch (error) {
       console.error('[WxStorage] getItem error:', error)
       return null

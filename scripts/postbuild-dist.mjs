@@ -36,9 +36,20 @@ function collectFiles(dir, ext, files = []) {
 }
 
 let removedMaps = 0
+const mapFailures = []
 for (const mapFile of collectFiles(distDir, '.map')) {
-  fs.rmSync(mapFile)
-  removedMaps++
+  // 逐个兜错：Windows 上文件被编辑器/杀毒进程占用时 rmSync 抛错，
+  // 未捕获会让 postbuild 中断，把一次成功的 tsc 构建整体判为失败
+  try {
+    fs.rmSync(mapFile)
+    removedMaps++
+  } catch (error) {
+    mapFailures.push(`${path.relative(distDir, mapFile)}: ${error instanceof Error ? error.message : String(error)}`)
+  }
+}
+
+if (mapFailures.length > 0) {
+  console.warn(`[postbuild] WARN: ${mapFailures.length} 个 sourcemap 未能删除（构建产物仍可用）：\n  ${mapFailures.join('\n  ')}`)
 }
 
 console.log(`[postbuild] dist module-type marker written; removed ${removedMaps} sourcemap files`)

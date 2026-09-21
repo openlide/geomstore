@@ -16,13 +16,14 @@ import { GeomStoreError, isGeomStoreError } from '../../core/errors/GeomStoreErr
  */
 export class ErrorAggregator {
   /**
-   * 各 Store 的错误发生次数
+   * 按错误组保存的「Store → 该组内该 Store 的次数」
    *
-   * 单独按次计数：错误组会把同一站点在不同 Store 的报错合并为一条，
-   * 若按组计数求和（组 count 累加给每个受影响 Store），跨 Store 的组
-   * 会把整组次数重复计入每个 Store，byStore 之和超过 totalErrors
+   * 单独按次计数而非按组求和：错误组会把同一站点在不同 Store 的报错合并为一条，
+   * 若把组 count 累加给每个受影响 Store，跨 Store 的组会重复计入，byStore 之和超过 totalErrors。
+   * 计数随组一起存放，组被 maxGroups 驱逐时同步消失，因此
+   * `sum(byStore) === totalErrors` 在驱逐后依旧成立（此前独立累计的口径会永久偏离）。
    */
-  private readonly storeCounts: Map<string, number> = new Map()
+  private readonly storeHits: Map<string, Map<string, number>> = new Map()
 
   private groups = new Map<string, ErrorGroup>()
   private readonly maxGroups: number
@@ -42,7 +43,7 @@ export class ErrorAggregator {
     const error = context.error as GeomStoreError
     const code = isGeomStoreError(error) ? error.code : 'UNKNOWN'
     const now = context.timestamp || Date.now()
-    this.storeCounts.set(context.storeName, (this.storeCounts.get(context.storeName) ?? 0) + 1)
+    this._countStoreHit(groupId, context.storeName)
 
     // 检查是否已存在该组
     const group = this.groups.get(groupId)
@@ -102,6 +103,20 @@ export class ErrorAggregator {
   }
 
   /**
+   * 记录一次「组内某 Store」的错误计数
+   *
+   * @private
+   */
+  private _countStoreHit(groupId: string, storeName: string): void {
+    let perStore = this.storeHits.get(groupId)
+    if (!perStore) {
+      perStore = new Map()
+      this.storeHits.set(groupId, perStore)
+    }
+    perStore.set(storeName, (perStore.get(storeName) ?? 0) + 1)
+  }
+
+  /**
    * 清理旧的错误组
    *
    * @private
@@ -109,7 +124,11 @@ export class ErrorAggregator {
   private cleanupOldGroups(): void {
     const groups = this.getGroups()
     const toDelete = groups.slice(this.maxGroups)
-    toDelete.forEach((group) => this.groups.delete(group.groupId))
+    toDelete.forEach((group) => {
+      this.groups.delete(group.groupId)
+      // 组与其按 Store 的计数同生命周期：只删组会让 byStore 继续累计已消失的组
+      this.storeHits.delete(group.groupId)
+    })
   }
 
   /**
@@ -142,7 +161,7 @@ export class ErrorAggregator {
    */
   clear(): void {
     this.groups.clear()
-    this.storeCounts.clear()
+    this.storeHits.clear()
   }
 
   /**
@@ -163,9 +182,24 @@ export class ErrorAggregator {
         },
         {} as Record<string, number>,
       ),
-      // 按 Store 的实际发生次数统计（而非把组 count 累加给每个受影响 Store），
-      // 保证 byStore 各项之和等于 totalErrors
-      byStore: Object.fromEntries(this.storeCounts) as Record<string, number>,
+      // 按 Store 汇总组内计数（而非把组 count 累加给每个受影响 Store），
+      // 且组被驱逐时计数同步消失，保证 byStore 各项之和恒等于 totalErrors
+      byStore: this._byStoreCounts(),
     }
+  }
+
+  /**
+   * 汇总现存各组的按 Store 计数
+   *
+   * @private
+   */
+  private _byStoreCounts(): Record<string, number> {
+    const counts: Record<string, number> = {}
+    for (const perStore of this.storeHits.values()) {
+      for (const [storeName, count] of perStore) {
+        counts[storeName] = (counts[storeName] || 0) + count
+      }
+    }
+    return counts
   }
 }

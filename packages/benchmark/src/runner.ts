@@ -87,66 +87,71 @@ export class BenchmarkRunner {
 
     const store = this.createTestStore(datasetConfig.stateKeys, scenario)
 
-    const initialMemory = benchmarkUtils.getMemorySnapshot()
-    let peakMemory = initialMemory.heapUsed
+    // 场景主体整体置于 try：迭代、getCacheStats() 或 checkThresholds() 任一抛错时
+    // 也必须销毁 store，否则其订阅与定时器会泄漏并污染后续场景的内存测量
+    try {
+      const initialMemory = benchmarkUtils.getMemorySnapshot()
+      let peakMemory = initialMemory.heapUsed
 
-    if (scenario.warmup && scenario.warmupIterations) {
-      await this.runWarmupIterations(store, scenario.warmupIterations)
-    }
-
-    for (let i = 0; i < scenario.iterations; i++) {
-      const iterationStart = performance.now()
-      const { duration, memoryAfter } = await this.runBenchmarkIteration(store, i, scenario)
-
-      durations.push(duration)
-      timestamps.push(iterationStart)
-
-      if (memoryAfter > peakMemory) {
-        peakMemory = memoryAfter
+      if (scenario.warmup && scenario.warmupIterations) {
+        await this.runWarmupIterations(store, scenario.warmupIterations)
       }
-      memSnapshots.push(benchmarkUtils.getMemorySnapshot())
-    }
 
-    const finalMemory = benchmarkUtils.getMemorySnapshot()
-    const cacheStats = store.getCacheStats()
-    const timeStats = benchmarkUtils.calculateTimeStats(durations)
+      for (let i = 0; i < scenario.iterations; i++) {
+        const iterationStart = performance.now()
+        const { duration, memoryAfter } = await this.runBenchmarkIteration(store, i, scenario)
 
-    const totalTime = timeStats.total / 1000
-    const throughput = {
-      opsPerSecond: scenario.iterations / totalTime,
-      peakInstantRate: this.calculatePeakInstantRate(timestamps),
-    }
+        durations.push(duration)
+        timestamps.push(iterationStart)
 
-    const result: BenchmarkResult = {
-      scenario: scenario.name,
-      datasetSize: scenario.datasetSize,
-      iterations: scenario.iterations,
-      results: {
-        executionTime: timeStats,
-        memory: {
-          initial: initialMemory.heapUsed,
-          peak: peakMemory,
-          final: finalMemory.heapUsed,
-          delta: peakMemory - initialMemory.heapUsed,
-          avg: memSnapshots.reduce((sum, s) => sum + s.heapUsed, 0) / memSnapshots.length,
+        if (memoryAfter > peakMemory) {
+          peakMemory = memoryAfter
+        }
+        memSnapshots.push(benchmarkUtils.getMemorySnapshot())
+      }
+
+      const finalMemory = benchmarkUtils.getMemorySnapshot()
+      const cacheStats = store.getCacheStats()
+      const timeStats = benchmarkUtils.calculateTimeStats(durations)
+
+      const totalTime = timeStats.total / 1000
+      const throughput = {
+        opsPerSecond: scenario.iterations / totalTime,
+        peakInstantRate: this.calculatePeakInstantRate(timestamps),
+      }
+
+      const result: BenchmarkResult = {
+        scenario: scenario.name,
+        datasetSize: scenario.datasetSize,
+        iterations: scenario.iterations,
+        results: {
+          executionTime: timeStats,
+          memory: {
+            initial: initialMemory.heapUsed,
+            peak: peakMemory,
+            final: finalMemory.heapUsed,
+            delta: peakMemory - initialMemory.heapUsed,
+            avg: memSnapshots.reduce((sum, s) => sum + s.heapUsed, 0) / memSnapshots.length,
+          },
+          throughput,
+          cache: {
+            enabled: cacheStats.enabled,
+            totalAccesses: cacheStats.hits + cacheStats.misses,
+            hits: cacheStats.hits,
+            misses: cacheStats.misses,
+            hitRate: cacheStats.hits + cacheStats.misses > 0 ? (cacheStats.hits / (cacheStats.hits + cacheStats.misses)) * 100 : 0,
+            missRate: cacheStats.hits + cacheStats.misses > 0 ? (cacheStats.misses / (cacheStats.hits + cacheStats.misses)) * 100 : 0,
+            evictions: cacheStats.evictions,
+          },
         },
-        throughput,
-        cache: {
-          enabled: cacheStats.enabled,
-          totalAccesses: cacheStats.hits + cacheStats.misses,
-          hits: cacheStats.hits,
-          misses: cacheStats.misses,
-          hitRate: cacheStats.hits + cacheStats.misses > 0 ? (cacheStats.hits / (cacheStats.hits + cacheStats.misses)) * 100 : 0,
-          missRate: cacheStats.hits + cacheStats.misses > 0 ? (cacheStats.misses / (cacheStats.hits + cacheStats.misses)) * 100 : 0,
-          evictions: cacheStats.evictions,
-        },
-      },
-      passed: true,
-    }
+        passed: true,
+      }
 
-    result.passed = this.checkThresholds(result, scenario)
-    store.destroy()
-    return result
+      result.passed = this.checkThresholds(result, scenario)
+      return result
+    } finally {
+      store.destroy()
+    }
   }
 
   private calculatePeakInstantRate(timestamps: number[]): number {

@@ -206,12 +206,32 @@ export function bindActions<S extends State = State>(target: Record<string, unkn
   const unbinds: Array<() => void> = []
 
   Object.entries(mappings).forEach(([localName, actionName]) => {
-    target[localName] = (...args: unknown[]) => {
-      return store.dispatch(actionName, ...args)
+    // 以自有属性写入而非 `target[localName] = ...`：后者遇到 '__proto__'/'constructor'
+    // 这类键会沿原型链写入（污染宿主构造器），也无法在解绑时恢复被覆盖的原成员
+    const hadExisting = Object.prototype.hasOwnProperty.call(target, localName)
+    const original = hadExisting ? target[localName] : undefined
+    if (hadExisting) {
+      console.warn(`[bindActions] 宿主已有成员 "${localName}"，将被 action "${actionName}" 覆盖，解绑时恢复原值`)
     }
 
+    Object.defineProperty(target, localName, {
+      value: (...args: unknown[]) => store.dispatch(actionName, ...args),
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    })
+
     unbinds.push(() => {
-      delete target[localName]
+      if (hadExisting) {
+        Object.defineProperty(target, localName, {
+          value: original,
+          writable: true,
+          enumerable: true,
+          configurable: true,
+        })
+      } else {
+        delete target[localName]
+      }
     })
   })
 

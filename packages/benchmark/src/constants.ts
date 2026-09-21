@@ -49,17 +49,31 @@ export const MEMORY_THRESHOLDS = {
 } as const
 
 /**
- * 吞吐量阈值配置（操作/秒）
+ * 吞吐量安全系数：由 TIME_THRESHOLDS 推导下限时的余量
+ *
+ * 原先两组阈值各写各的，AVG 与对应 MIN 恰好互为倒数（0.01 ↔ 100000）甚至互相矛盾
+ * （GETTER_AVG 0.05ms ⇒ 20000 ops/s，却要求 GETTER_MIN 50000），零余量让测量抖动
+ * 就能使两项检查给出相反结论。现由耗时阈值单向推导，并留出 50% 抖动余量。
+ */
+const THROUGHPUT_SAFETY_FACTOR = 0.5
+
+/** 由平均耗时阈值（ms/op）推导吞吐量下限（ops/s） */
+function deriveThroughputMin(avgMs: number): number {
+  return Math.floor((1000 / avgMs) * THROUGHPUT_SAFETY_FACTOR)
+}
+
+/**
+ * 吞吐量阈值配置（操作/秒）——全部由 TIME_THRESHOLDS 推导，勿手工赋值
  */
 export const THROUGHPUT_THRESHOLDS = {
   /** setState 最小吞吐量 */
-  SET_STATE_MIN: 10000,
+  SET_STATE_MIN: deriveThroughputMin(TIME_THRESHOLDS.SET_STATE_AVG),
   /** dispatch 最小吞吐量 */
-  DISPATCH_MIN: 5000,
+  DISPATCH_MIN: deriveThroughputMin(TIME_THRESHOLDS.DISPATCH_AVG),
   /** getter 最小吞吐量 */
-  GETTER_MIN: 50000,
+  GETTER_MIN: deriveThroughputMin(TIME_THRESHOLDS.GETTER_AVG),
   /** 缓存操作最小吞吐量 */
-  CACHE_MIN: 100000,
+  CACHE_MIN: deriveThroughputMin(TIME_THRESHOLDS.CACHE_AVG),
 } as const
 
 /**

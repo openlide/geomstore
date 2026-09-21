@@ -7,7 +7,7 @@
   "documentSelectors": ["**/*.wxml", "**/*.wxss"],
   "jsxSingleQuote": false,
   "bracketSpacing": true,
-  "jsxBracketSameLine": true,
+  "bracketSameLine": true,
   "arrowParens": "always",
   "quoteProps": "as-needed",
   "requirePragma": false,

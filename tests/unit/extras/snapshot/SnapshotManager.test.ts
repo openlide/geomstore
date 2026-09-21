@@ -984,7 +984,7 @@ describe('SnapshotManager', () => {
       expect(result.success).toBe(false)
     })
 
-    test('同步克隆 onError 返回 false 时应该抛出并返回原数据', () => {
+    test('同步克隆 onError 返回 false 时应该中止且失败结果不回传活引用', () => {
       const manager = new SnapshotManager()
       let calls = 0
       const evil = new Proxy(
@@ -1004,7 +1004,8 @@ describe('SnapshotManager', () => {
       const result = manager.createSnapshot({ evil }, { onError: () => false })
 
       expect(result.success).toBe(false)
-      expect(result.data).toEqual({ evil })
+      // 中止路径不返回调用方传入的活引用（隔离契约），只留 success:false 供判定
+      expect(result.data).toBeUndefined()
     })
 
     test('异步克隆 onError 返回 false 时中止快照并返回失败结果', async () => {
@@ -1024,11 +1025,12 @@ describe('SnapshotManager', () => {
         },
       )
 
-      // onError(false)：中止整个快照（与同步路径 success:false 语义一致），失败结果携带原始数据
+      // onError(false)：中止整个快照（与同步路径 success:false 语义一致），
+      // 失败结果不回传原始引用
       const result = await manager.createSnapshotAsync(evil, { onError: () => false })
 
       expect(result.success).toBe(false)
-      expect(result.data).toBe(evil)
+      expect(result.data).toBeUndefined()
     })
   })
 

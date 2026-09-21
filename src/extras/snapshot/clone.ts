@@ -297,7 +297,9 @@ export function cloneDeep<T>(
         v,
         {
           ...context,
-          path: `${context.path}[${k}]`,
+          // String(k) 而非模板插值 Symbol 键：ToString(Symbol) 会抛 TypeError，
+          // 让含 Symbol 键的 Map 克隆直接失败并越过 onError 降级契约
+          path: `${context.path}[${String(k)}]`,
           depth: context.depth + 1,
         },
         options,

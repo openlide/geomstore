@@ -11,7 +11,9 @@
  *
  * `.d.ts` 一律不动（小程序运行时不解析类型文件，压缩无收益且会破坏类型）。
  *
- * 压缩器按优先级自动探测：esbuild → terser → uglify-js。
+ * 压缩器按优先级自动探测：esbuild → terser。
+ * （不再兜底 uglify-js：它不支持 ESM/ES2015+ 语法，也忽略 terser 专有的 `module` 选项，
+ * 对 tsc 产出的 ESM 几乎必然抛错，兜底分支形同虚设。）
  *
  * 探测不到压缩器时的行为由 `--strict` 决定：
  * - 默认（宽松，供本地 `build:min`）：告警并跳过，不阻塞开发链路；
@@ -52,28 +54,33 @@ function tryRequire(name) {
 
 const kb = (n) => `${(n / 1024).toFixed(1)} KB`
 
+/** 统一写盘：所有压缩结果先在内存中备齐，再一次性落盘 */
+function writeAll(outputs) {
+  for (const { file, code } of outputs) {
+    fs.writeFileSync(file, code)
+  }
+}
+
 async function minifyWithEsbuild(esbuild, files) {
-  await Promise.all(
+  // 先全部转换、后统一写盘：中途抛错（语法异常、ENOSPC、EACCES）时 dist 保持原样，
+  // 不会留下「一半已压缩、一半未压缩」且仍被报告为成功的半成品
+  const outputs = await Promise.all(
     files.map(async (file) => {
       const source = fs.readFileSync(file, 'utf8')
       const result = await esbuild.transform(source, { loader: 'js', minify: true, target: 'es2020' })
-      fs.writeFileSync(file, result.code)
+      return { file, code: result.code }
     }),
   )
+  writeAll(outputs)
 }
 
 async function minifyWithTerser(terser, files) {
+  const outputs = []
   for (const file of files) {
     const result = await terser.minify(fs.readFileSync(file, 'utf8'), { module: true })
-    if (result.code) fs.writeFileSync(file, result.code)
+    if (result.code) outputs.push({ file, code: result.code })
   }
-}
-
-function minifyWithUglify(uglify, files) {
-  for (const file of files) {
-    const result = uglify.minify(fs.readFileSync(file, 'utf8'), { module: true })
-    if (result.code) fs.writeFileSync(file, result.code)
-  }
+  writeAll(outputs)
 }
 
 async function main() {
@@ -90,7 +97,6 @@ async function main() {
 
   const esbuild = tryRequire('esbuild')
   const terser = tryRequire('terser')
-  const uglify = tryRequire('uglify-js')
 
   if (esbuild) {
     await minifyWithEsbuild(esbuild, files)
@@ -98,9 +104,6 @@ async function main() {
   } else if (terser) {
     await minifyWithTerser(terser, files)
     console.log('[minify-dist] minifier: terser')
-  } else if (uglify) {
-    minifyWithUglify(uglify, files)
-    console.log('[minify-dist] minifier: uglify-js')
   } else {
     const hint = '[minify-dist] no minifier found. Install one first, e.g. `pnpm add -D terser`.'
     if (strict) {

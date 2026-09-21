@@ -37,14 +37,19 @@ export class ConsoleReporter implements ErrorReporter {
   async report(context: ErrorContext): Promise<void> {
     if (consoleSupportsGroup()) {
       console.group(`${this.prefix} ${context.level.toUpperCase()}`)
-      console.error('Error:', context.error)
-      console.error('Store:', context.storeName)
-      console.error('Operation:', context.operation)
-      if (context.payload) {
-        console.error('Payload:', context.payload)
+      try {
+        console.error('Error:', context.error)
+        console.error('Store:', context.storeName)
+        console.error('Operation:', context.operation)
+        if (context.payload) {
+          console.error('Payload:', context.payload)
+        }
+        console.error('Timestamp:', new Date(context.timestamp ?? Date.now()).toISOString())
+      } finally {
+        // 组必须闭合：console.error 抛错（自定义 console/被 stub 的测试环境）时
+        // 少一次 groupEnd 会让后续所有输出留在已打开的分组里
+        console.groupEnd()
       }
-      console.error('Timestamp:', new Date(context.timestamp ?? Date.now()).toISOString())
-      console.groupEnd()
       return
     }
 
@@ -62,10 +67,13 @@ export class ConsoleReporter implements ErrorReporter {
   async reportBatch(contexts: ErrorContext[]): Promise<void> {
     if (consoleSupportsGroup()) {
       console.group(`${this.prefix} Batch Report (${contexts.length} errors)`)
-      contexts.forEach((ctx, index) => {
-        console.error(`[${index + 1}] ${ctx.level} in ${ctx.storeName}:`, ctx.error)
-      })
-      console.groupEnd()
+      try {
+        contexts.forEach((ctx, index) => {
+          console.error(`[${index + 1}] ${ctx.level} in ${ctx.storeName}:`, ctx.error)
+        })
+      } finally {
+        console.groupEnd()
+      }
       return
     }
 
