@@ -118,7 +118,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### 第五轮复审（`ocrreview.md`，376 条 = critical 2 / high 12 / medium 167 / low 195）
 
-同一份 `[Unreleased]` 之内、独立成块：本轮审查对象就是上面这些第四轮 + Wave E 改动之后的代码。逐条判定与证据在 `.ocr-fix/verdicts5/*.md`（19 个分片，其中 core-store-p1 因两度中断拆成 A/B 两份，另有主会话的 `hot-p0.md`），跨分片交接与裁决集中在 `.ocr-fix/verdicts5/main-followups.md`。计数：**376 条全部逐条判定 —— FIXED 365 / 判误报 7 / 明确不修 3（R5-296、R5-317、R5-346）/ 待人工 1（R5-365：第三方 GitHub Action 钉 SHA，需外网核验 tag→commit，盲填会直接挂 CI）**。判误报与不修都带命令级证据；分片台账原先记作「交主会话」的 5 条已按最终去向改判（R5-175 / R5-355 落地为 FIXED，R5-317 / R5-346 改判 REJECT 并在各自台账写明改判理由），`.ocr-fix/decisions5.md` 由脚本按改判后的台账重算。下面只列用户可感知的语义变化。
+与上面第四轮 + Wave E 的条目同属 0.6.0、独立成块：本轮审查对象就是那些改动之后的代码。逐条判定与证据在 `.ocr-fix/verdicts5/*.md`（19 个分片，其中 core-store-p1 因两度中断拆成 A/B 两份，另有主会话的 `hot-p0.md`），跨分片交接与裁决集中在 `.ocr-fix/verdicts5/main-followups.md`。计数：**376 条全部逐条判定 —— FIXED 366 / 判误报 7 / 明确不修 3（R5-296、R5-317、R5-346）**。判误报与不修都带命令级证据；分片台账原先记作「交主会话」的 5 条已按最终去向改判（R5-175 / R5-355 落地为 FIXED，R5-317 / R5-346 改判 REJECT 并在各自台账写明改判理由，R5-365 于发布后补做完成），`.ocr-fix/decisions5.md` 由脚本按改判后的台账重算。下面只列用户可感知的语义变化。
 
 #### Breaking（对外契约与类型面）
 
@@ -196,6 +196,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `jest.config.js` 删掉死掉的 `@tests/*` 别名单边映射（R5-003）；`tsconfig.typecheck.json` 不再整组重写 `exclude`（R5-010）；`@eslint/js` 补为显式 devDependency（R5-011）；`.npmignore` / `.prettierignore` / `.gitignore` 收口（审查素材与本地台账整目录忽略、判定台账白名单放开；`coverage-*.json` 锚定到根）。
 - **`examples/` 不再是「本地试验目录」**：取消整目录忽略并把 9 个源文件纳管（R5-373）——CI 的 `typecheck:examples` 依赖 `examples/global.d.ts` 声明 `App` / `Page` / `Component`，干净检出必报 4 条 `TS2304`。
 - `packages/benchmark` 定性为仓库内部工具（`private: true` 且无发布通道）：删除全部发布元数据与硬 `peerDependencies`、devDeps 与根包对齐（R5-006 / R5-008 / R5-009）；根 `package.json` 删除 npm 风格的 `workspaces`（pnpm 下是死配置，只会让 npm/yarn 与 pnpm 得出两套拓扑），并在 `pnpm-workspace.yaml` 注释里写清子包如何编译。阈值口径同步改为从配置推导（`DISPATCH_AVG 0.2→0.5`、`REPLACE_STATE_AVG 0.3→1.0`、`DISPATCH_MIN 2500→1000`）。
+- **CI 的第三方 Action 全部钉到完整 commit SHA**（R5-365，发布后补做）：`actions/checkout@11d5960a…` (# v4.4.0)、`actions/setup-node@49933ea5…` (# v4.4.0)、`actions/upload-artifact@ea165f8d…` (# v4.6.2)、`pnpm/action-setup@b906affc…` (# v4.3.0)。取的是「当时 `v4` ref 实际解析到的 commit」，故**零行为变化**；四个值都用 `/repos/<r>/tags` 与 `/repos/<r>/commits/<sha>` 双向核对过（`pnpm/action-setup` 的 `v4` 是 annotated tag，需再剥一层）。升级姿势写在 `ci.yml` 头部注释。同处改掉一条已失真注释：`actions: write` 并非 upload-artifact 文档要求的前置权限（已核 v4.6.2 README），该收窄是「拿不准就按最小面授予」的处置。
 
 #### 文档与 skill 同步
 

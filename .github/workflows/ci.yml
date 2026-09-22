@@ -13,11 +13,21 @@ on:
   pull_request:
   workflow_dispatch:
 
+# 第三方 Action 一律钉到**完整 commit SHA**（行尾注释保留语义版本）。理由：`@v4` 是会被
+# 维护者移动的分支/标签 ref，钉 tag 等于允许上游在一次 CI 运行里改变执行代码。
+# SHA 是按「当前 `vN` ref 实际解析到的那个 commit」取的，所以这次改动零行为变化；
+# 四个 ref 各自的 commit 同时是其最新补丁标签（checkout v4.4.0 / setup-node v4.4.0 /
+# upload-artifact v4.6.2 / pnpm action-setup v4.3.0）。
+# 升级姿势：`gh release list -R <owner>/<repo>` 看新版本 → 用
+# `GET /repos/<owner>/<repo>/git/ref/tags/<新tag>` 拿 SHA（annotated tag 要再经
+# `/git/tags/<sha>` 剥一层才得到 commit）→ 逐处替换 SHA 并改行尾注释。
+
 # 最小权限：工作流级只保留读取仓库；Actions 域的写权限单独下放给唯一真正需要它的
 # job（见 jobs.verify.permissions），跑 PR head 代码的其它 job 不再继承。
-# 注：actions: write 是 upload-artifact 的前置权限这一说法本轮仍无法在本沙箱离线核实
-# （无外网，GitHub docs / api 均不可达），故按「拿不准就收窄到单个 job」处置：
-# 删掉仓库级授予，只在上传制品的 job 上保留，行为不变、爆炸半径变小。
+# 注：actions/upload-artifact 的文档（已核 v4.6.2 的 README）**没有**把 `actions: write`
+# 列为上传制品的前置权限——文中唯一提到写权限的地方是「有仓库写权限的用户才能看到删除图钉」。
+# 所以这条收窄不是「文档要求的必需权限」，而是「拿不准就按最小面授予」的处置；
+# 若上传步骤因权限失败，信号会直接出现在那条 step 上。
 permissions:
   contents: read
 
@@ -31,13 +41,13 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
 
       - name: Setup Node.js 22
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: pnpm
@@ -79,13 +89,13 @@ jobs:
         node-version: [22, 24]
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
 
       - name: Setup Node.js ${{ matrix.node-version }}
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: ${{ matrix.node-version }}
           cache: pnpm
@@ -137,7 +147,7 @@ jobs:
 
       - name: Upload coverage report
         if: matrix.node-version == 22
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: coverage-report
           path: coverage/lcov-report

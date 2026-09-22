@@ -381,3 +381,17 @@ core-store-p1-B 判它是「SubscriptionManager 载荷身份的中间态」，�
   utils → store 的分层倒置。本轮刻意不改，避免把「跨 realm」与「原型一致性」两件事搅在一次提交里。
 - 文档同步：`docs/API.md`（`deepEqual` 行重写）、`docs/MIGRATION.md`（需要改代码一节新增一条）、
   `CONTRIBUTING.md` 易错点、`SKILL.md` 选择器段、CHANGELOG 的 Breaking 与「明确不修」两条同时更新。
+
+## R5-365（CI Action 钉 SHA）—— 0.6.0 发布后补做完成
+
+第四、五两轮都把它记作「本环境无核验通道，盲填会挂 CI」。0.6.0 发布后复测：
+`api.github.com` 可达（`git` 到 github.com:443 仍被重置），于是改走 REST 取映射并落了钉：
+`actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0`、
+`actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0`、
+`actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2`、
+`pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0`。
+双向核对：`/tags` 里指向该 commit 的标签名 == 行尾注释版本；`/commits/<sha>` 确认是真实 commit；
+`git/ref/tags/v4` 的 peel 结果 == 所钉 SHA ⇒ 零行为变化。`js-yaml` 解析通过（7 处 uses 全为 40 位 SHA）。
+同处改掉一条失真注释：`actions: write` 不是 upload-artifact 的前置权限（已核 v4.6.2 README），
+文件头原来写着「GitHub docs / api 均不可达」也已按现状更正。
+**未做**：Dependabot / renovate 的 tags→SHA 自动更新。

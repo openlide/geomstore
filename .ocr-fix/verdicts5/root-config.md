@@ -84,11 +84,26 @@ NEEDS-MAIN: 请执行 `git add examples/` —— 取消忽略后可见 9 个未�
 验证：`node -e require('js-yaml').load(...)` 解析后 `permissions` = `{contents: "read"}`，`jobs.verify.permissions` = `{contents:"read", actions:"write"}`，`jobs.verify-static.permissions` = undefined（继承工作流的最小权限）；报告说的「步骤级收窄」在 GitHub Actions 里做不到（permissions 只能挂在 workflow/job 两级），故取 job 级。
 涉及文件：.github/workflows/ci.yml。
 
-### R5-365  verdict=NEEDS-MAIN  第三方 action 仍未钉 SHA，本环境无任何可达的核验通道，盲填会直接挂 CI
+### R5-365  verdict=FIXED  第三方 action 钉 SHA（本会话环境拦断，0.6.0 发布后补做）
 现状：`.github/workflows/ci.yml` 三处 `uses` 为 `actions/checkout@v4`、`pnpm/action-setup@v4`、`actions/setup-node@v4`、`actions/upload-artifact@v4`，其中只有 `pnpm/action-setup` 非 actions/* 首方 org。文件未改。
 为什么不改（与第四轮 #442 同因，非偷懒）：需要 `refs/tags/v4` → 40 位 commit SHA 的权威映射，本会话内 `git ls-remote https://github.com/pnpm/action-setup refs/tags/v4*`、WebFetch(api.github.com)、WebSearch 三种通道均被环境策略拦断，拿不到可核对的 SHA；填错一个字符 CI 立刻 `Unable to resolve action`。缓解事实：pnpm 本体已由 `package.json > packageManager` 的 `pnpm@12.3.4+sha512...` 钉死。
 NEEDS-MAIN: `.github/workflows/ci.yml` —— 在有外网的机器上 `git ls-remote https://github.com/pnpm/action-setup "refs/tags/v4"`（annotated tag 需再解 `v4^{}` 指向的 commit），把第 37 行与第 77 行的 `pnpm/action-setup@v4` 换成 `pnpm/action-setup@<40位SHA> # v4.x.y`，并建议配 Dependabot/renovate 管 tags→SHA 更新。
 涉及文件：无（.github/workflows/ci.yml 待主会话补）。
+
+**主会话补做（2026-09-23，`npm publish` 之后）**：环境的 `api.github.com` 已可达（`git` 走 443 到 github.com 仍被重置，故改用 REST API 取映射，**没有任何一个 SHA 是凭记忆填的**）。
+按「当前 `v4` ref 实际解析到的 commit」钉，四个值分别是
+`actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0`、
+`actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0`、
+`actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2`、
+`pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0`（后者的 `v4` 是 annotated tag，
+经 `/git/tags/f40ffcd9…` 剥一层才拿到 commit）。
+每个值都做了双向核对：① `/repos/<r>/tags` 里指向该 commit 的标签名正是行尾注释的版本号；
+② 再取 `/repos/<r>/commits/<sha>` 确认 SHA 是真实 commit。**结论是零行为变化**（钉的就是今天 `@v4` 会拉到的代码）。
+验证：`js-yaml` 解析改后文件 → `jobs: verify-static, verify`，7 处 `uses` 全部为 40 位 SHA。
+顺带改掉文件头那条已失真的注释（原写「GitHub docs / api 均不可达」，且把 `actions: write` 说成
+upload-artifact 的前置权限）——已核 v4.6.2 的 README 并无此前置要求，权限收窄改记为「拿不准就按最小面授予」。
+升级姿势与取 SHA 的命令写在 ci.yml 的头部注释里。
+（未做：Dependabot/renovate 的 tags→SHA 自动更新，属另一件事。）
 
 ### R5-366  verdict=FIXED  冒烟步骤改走 Node 真实 exports 解析（自引用 import），并遍历 exports 表全部子路径
 改了什么：删掉 `import.meta.resolve("./") + new URL("./" + exp[key].default ...)` 的手工拼路径，改 `const s = await import(name)` 与 `await import(name + "/extras/error")`；另加一段对 `Object.keys(exp)` 的遍历，除 `.` 与 `./package.json` 外每个子路径都必须被 Node 解析出非空模块（键名/条件顺序/default 缺失都会当场红），并显式校验 key 以 `./` 开头。
