@@ -2,7 +2,7 @@
  * 内置插件与插件工具（可选能力，按需动态引入）
  *
  * - `loggerPlugin`：Action 调用日志
- * - `persistencePlugin`：状态持久化（`StorageBackend` 可替换，默认提供 `WxStorageBackend`）
+ * - `persistencePlugin`：状态持久化（`StorageBackend` 可替换，内置可直接传 `new WxStorageBackend()`）
  * - `devtoolsPlugin` / `timeTravelPlugin`：开发期调试与时间旅行
  *
  * @example
@@ -17,6 +17,6 @@
  */
 export { loggerPlugin, persistencePlugin, devtoolsPlugin, builtinPlugins } from '../plugins/builtin.js'
 export type { PersistenceOptions, StorageBackend } from '../types/persistence.js'
-export { WxStorageBackend } from '../types/persistence.js'
+export { WxStorageBackend } from '../plugins/WxStorageBackend.js'
 export { timeTravelPlugin } from '../plugins/devtools/index.js'
 export type { TimeTravelOptions } from '../plugins/devtools/index.js'

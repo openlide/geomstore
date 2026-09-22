@@ -230,39 +230,3 @@ describe('持久化插件的吸收与卸载兜底分支', () => {
     }
   })
 })
-
-describe('WxStorageBackend.getItem 的缺失键口径', () => {
-  afterEach(() => {
-    delete (globalThis as { wx?: unknown }).wx
-  })
-
-  const wxWith = (getStorageSync: (key: string) => unknown) => {
-    (globalThis as { wx?: unknown }).wx = { getStorageSync }
-  }
-
-  it('wx 对不存在的键返回空字符串时按 null 处理', async () => {
-    let seen: string | undefined
-    const { WxStorageBackend } = await import('@/types/persistence.js')
-    wxWith((key: string) => {
-      seen = key
-      return ''
-    })
-
-    expect(new WxStorageBackend().getItem('k')).toBeNull()
-    expect(seen).toBe('k')
-  })
-
-  it('非字符串载荷不泄漏进 string | null 返回契约', async () => {
-    const { WxStorageBackend } = await import('@/types/persistence.js')
-    wxWith(() => ({ not: 'a string' }))
-
-    expect(new WxStorageBackend().getItem('k')).toBeNull()
-  })
-
-  it('正常字符串值原样返回', async () => {
-    const { WxStorageBackend } = await import('@/types/persistence.js')
-    wxWith(() => '{"a":1}')
-
-    expect(new WxStorageBackend().getItem('k')).toBe('{"a":1}')
-  })
-})

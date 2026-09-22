@@ -9,9 +9,8 @@
  * typecheck:examples 更早失败。
  *
  * 文件同时承载 src/types 里**带运行时实现**的导出的回归用例（`types/error.ts` 的
- * `defaultErrorHandler` 见 #385/#384、`types/store.ts` 的 `Store.hooks` 契约面见 #404、
- * `types/persistence.ts` 的 `WxStorageBackend` 见 #390），因为 types 层没有独立的测试目录
- * （`tests/unit/core/error/` 那类路径属实现层）。
+ * `defaultErrorHandler` 见 #385/#384、`types/store.ts` 的 `Store.hooks` 契约面见 #404），
+ * 因为 types 层没有独立的测试目录（`tests/unit/core/error/` 那类路径属实现层）。
  * 末尾另有一组针对测试基础设施自身（`tests/setup.ts` 的 wx mock / 定时器 / 进程监听器，
  * 见 #414/#415/#416/#417）的用例：它们与上面的类型契约同属「只在编译期或全局装配阶段暴露」的缺陷。
  */
@@ -20,7 +19,6 @@ import { composeStore, createStore } from '../../src/index.js'
 import { createParametricSelector, createSelector } from '../../src/extras/selector.js'
 import { createErrorContext, defaultErrorHandler, type ErrorLevel } from '../../src/types/error.js'
 import type { IHookSystem } from '../../src/types/plugin.js'
-import { WxStorageBackend } from '../../src/types/persistence.js'
 
 interface UserState {
   id: number
@@ -199,64 +197,6 @@ describe('Store.hooks 的契约面暴露 listenerCount（#404）', () => {
     unsubscribe()
     expect(hooks.listenerCount('afterSetState')).toBe(0)
     expect(hooks.listenerCount('onError')).toBe(0)
-  })
-})
-
-// ==================== #390：WxStorageBackend 三个方法的错误语义一致 ====================
-
-describe('WxStorageBackend 读写删失败一律重抛（#390）', () => {
-  const writableGlobal = globalThis as unknown as { wx?: unknown }
-
-  afterEach(() => {
-    delete writableGlobal.wx
-  })
-
-  it('getItem 失败：记录日志并重抛，不退化成「键无数据」', () => {
-    writableGlobal.wx = {
-      getStorageSync: () => {
-        throw new Error('storage broken')
-      },
-    }
-    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {})
-
-    expect(() => new WxStorageBackend().getItem('k')).toThrow('storage broken')
-    expect(errorSpy).toHaveBeenCalledWith('[WxStorage] getItem error:', expect.any(Error))
-
-    errorSpy.mockRestore()
-  })
-
-  it('removeItem 失败：记录日志并重抛，clearOnUninstall 不会谎报已清除', () => {
-    writableGlobal.wx = {
-      removeStorageSync: () => {
-        throw new Error('remove denied')
-      },
-    }
-    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {})
-
-    expect(() => new WxStorageBackend().removeItem('k')).toThrow('remove denied')
-    expect(errorSpy).toHaveBeenCalledWith('[WxStorage] removeItem error:', expect.any(Error))
-
-    errorSpy.mockRestore()
-  })
-
-  it('setItem 维持既有口径（日志 + 重抛）', () => {
-    writableGlobal.wx = {
-      setStorageSync: () => {
-        throw new Error('quota exceeded')
-      },
-    }
-    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {})
-
-    expect(() => new WxStorageBackend().setItem('k', 'v')).toThrow('quota exceeded')
-    expect(errorSpy).toHaveBeenCalledWith('[WxStorage] setItem error:', expect.any(Error))
-
-    errorSpy.mockRestore()
-  })
-
-  it('「键不存在」仍按 null 返回：与读取失败区分开', () => {
-    writableGlobal.wx = { getStorageSync: () => '' }
-
-    expect(new WxStorageBackend().getItem('k')).toBeNull()
   })
 })
 

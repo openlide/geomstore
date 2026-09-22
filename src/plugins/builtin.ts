@@ -142,6 +142,10 @@ function installPersistence<S extends State>(store: Store<S>, options: Persisten
   // 解析存储后端：传入 storage 时必须完整实现三个同步方法（缺一即在安装期抛错），
   // 否则使用微信小程序的 wx.getStorageSync / setStorageSync / removeStorageSync；
   // 非微信环境（如测试/Node）wx 不存在，降级为内存存储避免 ReferenceError
+  //
+  // 默认路径是下面这段内联适配器，**不**实例化同目录的 `WxStorageBackend`：那个类是给
+  // 调用方显式 `storage: new WxStorageBackend()` 用的公开后端（两者对缺失键的归一化口径
+  // 也不同——本处的 `getItem` 只把 `undefined`/`null` 视为无数据）
   const userStorage = options.storage
   let storageAdapter: StorageBackend
   if (userStorage !== undefined && userStorage !== null) {

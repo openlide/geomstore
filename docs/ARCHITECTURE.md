@@ -65,7 +65,7 @@ src/
       reporters/  2 文件        ConsoleReporter / HttpReporter
   integrations/   4 文件        withPageStore / withComponentStore / withAppStore / utils
     enterprise/   8 文件        账号态、离线队列、后台同步、热更新
-  plugins/        3 文件        builtin（logger/persistence/devtools）/ globalRegistry
+  plugins/        4 文件        builtin（logger/persistence/devtools）/ WxStorageBackend / globalRegistry
     devtools/     2 文件        timeTravelPlugin
     performance/  2 文件        analyzerPlugin
   types/         10 文件        公共契约（store/action/selector/error/…）

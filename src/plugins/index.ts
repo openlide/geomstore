@@ -12,6 +12,9 @@
 // 内置插件
 export { loggerPlugin, persistencePlugin, devtoolsPlugin, builtinPlugins } from './builtin.js'
 export type { PersistenceOptions, StorageBackend } from '../types/persistence.js'
+// 同目录的 `WxStorageBackend.ts`（内置微信后端实现）**不**在本入口给出值导出：
+// 本入口对应的 `@openlide/geomstore/plugins` 只是 prepack 生成的兼容别名，
+// 该类的公开面一直固定在 `extras/plugins` 与 `extras` 两个子入口，此处不扩面
 
 // 钩子系统（实现位于 core/hooks，此处保留插件层入口便于发现性）
 export { HookSystem, usePlugin } from '../core/hooks/index.js'
