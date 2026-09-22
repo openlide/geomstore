@@ -69,11 +69,17 @@ export function withRetry(options: RetryDecoratorOptions = {}): MethodDecorator 
   const { retries = 3, delay = 100, shouldRetry } = options
 
   return function (_target: unknown, _propertyKey: string | symbol, descriptor: PropertyDescriptor): PropertyDescriptor {
-    const originalMethod = descriptor.value
+    const originalMethod = descriptor.value as ((...args: unknown[]) => unknown) | undefined
+
+    // 访问器描述符（get/set）与非函数属性的 value 是 undefined：晚到失败只会抛出
+    // `originalMethod.apply is not a function`，故在装饰阶段拒绝（与 withDebounce/withTimeout 一致）
+    if (typeof originalMethod !== 'function') {
+      throw new TypeError('[withRetry] can only decorate a method, but the descriptor.value is not a function')
+    }
 
     descriptor.value = async function (this: unknown, ...args: unknown[]) {
       // 复用公共内核，与 AsyncActionSupport.executeWithRetry 同一实现，避免退避语义漂移
-      return retryWithBackoff(() => originalMethod.apply(this, args), { retries, delay, shouldRetry })
+      return retryWithBackoff(async () => await originalMethod.apply(this, args), { retries, delay, shouldRetry })
     }
 
     return descriptor
