@@ -7,6 +7,9 @@
  * - `ActionUtils`：Action 元信息与依赖注入工具
  * - 装饰器族（`withLog` / `withDebounce` / `withThrottle` / `withCache` /
  *   `withRetry` / `withTimeout` / `createDecorator`）由本入口统一再导出
+ * - 防抖/节流挂起调用的宿主级收尾入口（`cancelDebouncedCalls` / `flushDebouncedCalls` /
+ *   `disposeDebouncedState` / `cancelThrottledCalls` / `flushThrottledCalls` /
+ *   `disposeThrottledState`）
  *
  * @example
  * ```ts
@@ -18,5 +21,7 @@
 export { ActionExecutor, ActionLoader, withLoading, ActionUtils } from './action/index.js'
 export type { ActionUtilsOptions } from './action/index.js'
 export { withLog, withDebounce, withThrottle, withCache, withRetry, withTimeout, createDecorator } from './action/index.js'
+// 防抖/节流挂起调用的宿主级收尾入口（cancel 丢弃 / flush 立即执行 / dispose 释放状态）
+export { cancelDebouncedCalls, flushDebouncedCalls, disposeDebouncedState, cancelThrottledCalls, flushThrottledCalls, disposeThrottledState } from './action/index.js'
 export type { DecoratorOptions, CacheDecoratorOptions, RetryDecoratorOptions, ThrottleDecoratorOptions } from './action/index.js'
 export type { AsyncActions, ActionResult, ActionLoaderOptions, ActionDecorator, ActionExecutionContext } from '../types/action.js'
