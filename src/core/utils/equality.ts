@@ -43,7 +43,10 @@ interface Comparison {
  * @param a - 第一个值
  * @param b - 第二个值
  * @param maxDepth - 最大递归深度（默认1000），超限时返回 false
- * @returns 是否相等。比较范围：原型一致 + 自有可枚举字符串键逐项（数组含 length）；
+ * @returns 是否相等。比较范围：**原型一致**（前置条件，故 `class MyMap extends Map` 的
+ *   空实例与空 `Map` 判不等、`Foo` 实例与同键字面量判不等）+ 自有可枚举字符串键逐项
+ *   （数组含 length）；内建类型按内容比——Date 比时间值、RegExp 比 source+flags、
+ *   Map 比键集与值、Set 比无序元素、装箱原始值（`new Number(1)` 一类）比 `valueOf()`。
  *   symbol 键与不可枚举属性不参与比较（状态上的版本号标记即属此类，不应影响相等判定）
  *
  * @remarks **Map 的键按引用（SameValueZero）匹配，只有值做深度比较**——这是有意的
@@ -138,62 +141,84 @@ function compareWithSeenPairs(a: unknown, b: unknown, comparison: Comparison, pa
       pairLog.push({ key: objA, partner: objB })
     }
 
+    // 原型必须一致，且**必须先于下面所有内建分支**判定：
+    // `class Foo { a = 1 }` 的实例与 `{ a: 1 }` 字面量自有键相同，但二者语义不同
+    // （前者带 Foo 的行为），作为缓存比较器时判等会让选择器返回陈旧值。
+    // Date/RegExp/Map/Set 的按内容分支若在原型检查之后，空 `MyMap` 与空 `Map` 会因
+    // 「两侧都 instanceof Map 且 size 相等」直接 continue 而漏掉这条检查。
+    // 注：本函数只比自有可枚举**字符串**键，symbol 键与不可枚举属性的差异不纳入比较。
+    if (Object.getPrototypeOf(currentA) !== Object.getPrototypeOf(currentB)) return false
+
+    // 装箱原始值（`new Number(...)` / `Object(Symbol(...))` / `Object(10n)` 等）：
+    // Object.keys 对它们恒为空（String 只有索引键），只比键集会把
+    // `new Number(1)` 与 `new Number(2)` 判等。先比内部的原始值；**不 continue**——
+    // 装箱类的子类实例可以另带自有属性，那些仍要走下面的通用键比较。
+    // instanceof 而非「原型 ∈ 五个包装原型」：后者会漏掉 `class MyNum extends Number`，
+    // 而它的 [[NumberData]] 同样是它身份的一部分。
+    if (currentA instanceof Number || currentA instanceof String || currentA instanceof Boolean || currentA instanceof BigInt || currentA instanceof Symbol) {
+      const other = currentB as { valueOf(): unknown }
+      if (!Object.is(currentA.valueOf(), other.valueOf())) {
+        return false
+      }
+    }
+
     // 内建对象按内容比较：Object.keys 对 Date/Map/Set/RegExp 恒为空，
-    // 直接走通用对象比较会把内容不同的实例误判为相等
-    if (currentA instanceof Date || currentB instanceof Date) {
-      if (!(currentA instanceof Date && currentB instanceof Date) || currentA.getTime() !== currentB.getTime()) {
+    // 直接走通用对象比较会把内容不同的实例误判为相等。
+    // 双方原型已在上面判等，故按 A 侧分派即覆盖 B 侧（instanceof 沿 getPrototypeOf 走，
+    // 同原型 ⇒ 同一条链 ⇒ 同结论）；下面的 as 只是把这条不变量转交给类型系统。
+    if (currentA instanceof Date) {
+      if (currentA.getTime() !== (currentB as Date).getTime()) {
         return false
       }
       continue
     }
 
-    if (currentA instanceof RegExp || currentB instanceof RegExp) {
-      if (!(currentA instanceof RegExp && currentB instanceof RegExp) || currentA.source !== currentB.source || currentA.flags !== currentB.flags) {
+    if (currentA instanceof RegExp) {
+      const other = currentB as RegExp
+      if (currentA.source !== other.source || currentA.flags !== other.flags) {
         return false
       }
       continue
     }
 
-    if (currentA instanceof Map || currentB instanceof Map) {
-      if (!(currentA instanceof Map && currentB instanceof Map) || currentA.size !== currentB.size) {
+    if (currentA instanceof Map) {
+      const other = currentB as Map<unknown, unknown>
+      if (currentA.size !== other.size) {
         return false
       }
       for (const [key, value] of currentA) {
         // 键按引用相等匹配（对象键的深匹配超出本工具职责，限制与规避方式见
         // deepEqual 的 @remarks——反序列化出来的等效对象键会造出永不命中的假不等）；
         // 值递归比较
-        if (!currentB.has(key)) {
+        if (!other.has(key)) {
           return false
         }
-        stack.push({ a: value, b: currentB.get(key), depth: depth + 1 })
+        stack.push({ a: value, b: other.get(key), depth: depth + 1 })
       }
       continue
     }
 
-    if (currentA instanceof Set || currentB instanceof Set) {
-      if (!(currentA instanceof Set && currentB instanceof Set) || currentA.size !== currentB.size) {
+    if (currentA instanceof Set) {
+      const other = currentB as Set<unknown>
+      if (currentA.size !== other.size) {
         return false
       }
       // Set 是集合，比较应与插入顺序无关；配对表共享以支持循环元素。
       // depth 必须透传：Set 元素是外层树的一层，不带上就会让深度预算在每个 Set
       // 边界重新计数，与上面 Map 分支的 depth + 1 语义分叉
-      if (!setsEqual(currentA, currentB, comparison, depth, pairLog)) {
+      if (!setsEqual(currentA, other, comparison, depth, pairLog)) {
         return false
       }
       continue
     }
 
-    // 数组检查
+    // 数组检查：原型一致仍可能一侧是数组、另一侧是 Object.create(Array.prototype)，
+    // 后者没有 [[Length]] 语义，isArray 判的是对象本身而非原型链
     if (Array.isArray(currentA) !== Array.isArray(currentB)) return false
 
     // 对象或数组
     const recA = currentA as Record<string, unknown>
     const recB = currentB as Record<string, unknown>
-
-    // 原型必须一致：`class Foo { a = 1 }` 的实例与 `{ a: 1 }` 字面量自有键相同，
-    // 但二者语义不同（前者带 Foo 的行为），作为缓存比较器时判等会让选择器返回陈旧值。
-    // 注：本函数只比自有可枚举**字符串**键，symbol 键与不可枚举属性的差异不纳入比较
-    if (Object.getPrototypeOf(currentA) !== Object.getPrototypeOf(currentB)) return false
 
     // 数组以 length 为准：稀疏数组的空洞索引不出现在 Object.keys 中，
     // 只比键集会让 deepEqual(new Array(3), []) 误判为相等

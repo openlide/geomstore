@@ -143,7 +143,7 @@ import type { CloneMode } from '@openlide/geomstore'
 
 | 函数 | 说明 |
 | --- | --- |
-| `shallowEqual` / `deepEqual` | 仅比较**自有属性**；`shallowEqual` 对 Date/RegExp/Map/Set 按内容比较。`deepEqual(a, b, maxDepth?)` 为迭代实现（栈安全），默认深度预算 1000，**超出即判不等**并在一次顶层调用内只告警一次（告警状态随每次比较创建，重入的 `deepEqual` 各自计一条）；深度沿 Set 元素同样累加（不跨 Set 归零），`symbol` 与不可枚举属性不参与比较。**自反性优先于深度预算**：`deepEqual(x, x, n)`（含同一原始值）在任意 `n` 下都为 `true`，此前同一引用恰好落在 `maxDepth` 上会被判「已变更」，让选择器缓存白算一次 |
+| `shallowEqual` / `deepEqual` | 仅比较**自有属性**；`shallowEqual` 对 Date/RegExp/Map/Set 按内容比较。`deepEqual(a, b, maxDepth?)` 为迭代实现（栈安全），默认深度预算 1000，**超出即判不等**并在一次顶层调用内只告警一次（告警状态随每次比较创建，重入的 `deepEqual` 各自计一条）；深度沿 Set 元素同样累加（不跨 Set 归零），`symbol` 与不可枚举属性不参与比较。内建类型一律**先判原型一致、再判内容**：Date 比时间值、RegExp 比 `source`+`flags`、Map 比键集（键按引用）与值、Set 比无序元素、**装箱原始值比 `valueOf()`**（`new Number(1)` 与 `new Number(2)` 判不等；`Object.keys` 对它们是空的，只比键集会漏）。原型优先的直接后果是**子类实例与基类实例判不等**（空的 `class MyMap extends Map` ≠ 空的 `new Map()`），而它正是默认比较器最关键的一条——判错方向的「假相等」会让选择器命中并返回陈旧值。**自反性优先于深度预算**：`deepEqual(x, x, n)`（含同一原始值）在任意 `n` 下都为 `true`，此前同一引用恰好落在 `maxDepth` 上会被判「已变更」，让选择器缓存白算一次 |
 | `deepMerge(target, ...sources)` | 仅对纯对象递归；其余类型整体替换；内置循环引用防护（WeakMap 配对跟踪）。整体替换走 `clone` 默认档，因此类实例 / `Promise` / WeakMap 等不可安全克隆的值是**按引用**并入 `target` 的（`$patch` 的共享来源即此处） |
 | `clone(value, mode?)` | `mode`: `'deep'`（默认）/ `'shallow'` / `'safe'`（尽力且绝不抛错）/ `'json'`（有损）。`'deep'` 下数组保留**空洞**与非下标的自有属性（副本与源在 `deepEqual` 下等价，此前 `length` 相同但槽位性质不同、附加属性丢失）；Date/RegExp/Map/Set/Array 的**子类**实例按引用返回（其构造参数与内部槽位不可知，重建必然得到丢方法的残缺副本），即克隆后与活状态共享同一实例。`'shallow'` 只展开有「保类型的一层展开」办法的容器：类实例 / Error / WeakMap / Promise 返回**原引用**（不再是丢掉全部方法的空壳），null 原型对象的副本仍保留 null 原型 |
 | `uniqueId(prefix?)` | 递增唯一 ID |

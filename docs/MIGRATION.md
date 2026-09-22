@@ -57,6 +57,7 @@
 - **`ErrorRecovery` 的上限语义**（R5-201 / R5-203 / R5-205）：抛 `Max retries (n) exceeded` 时**保留**计数与周期窗，同一故障周期内的后续 `recover()` 持续被拦截（旧行为是清键 → 紧接着下一次又领到一整个新额度，防重试风暴只对触发超限那一次生效）；抛出物由裸 `Error` 变为 `GeomStoreError`（`code: INTERNAL_ERROR`、带 `cause`，`context.retryKey` 指明被用满的是哪一份额度，两个来源都缺时键名为 `<code>:unattributed`）。按 `message` 前缀匹配的调用方不受影响，要按类型分支处理超限的请改读 `code`。
 - **越界的 `stateProtection.productionHandler` 改为建店即失败**（R5-115）：非 `'error' | 'warn' | 'silent'` 的取值让 `createStore` 当场抛 `TypeError`（此前留到很远的一次非法写入才以别的面目炸）。
 - **以 `Object.prototype` 成员名当错误码时**（R5-204）：`ErrorRecovery.getConfig('constructor')` 由「返回原型链成员」变为 `undefined`，`recover()` 改报「No recovery strategy configured for error code: constructor」。策略表已换成 `Map`。
+- **`deepEqual` 改为「原型一致」先于一切内建内容判定，并新增装箱原始值一档**（第五轮登记的语义债，不属 376 条）：空的 `class MyMap extends Map` 实例此前与空 `new Map()` 判等（`Set` / `Date` / `RegExp` 同理），`new Number(1)` 与 `new Number(2)` 判等（`String` / `Boolean` / `BigInt` / `Symbol` 同理），现在都判不等。两类状态若混在一条选择器链上，此前是「命中并返回陈旧值」，现在会正确地重算——**性能敏感路径请复核**：把子类实例与基类实例当同一状态来源的写法（例如自己 `new` 一个 `Map` 子类再和反序列化出来的基类 `Map` 比），现在要显式统一成同一个类。装箱原始值不建议放进状态：`clone` 对它们保留原引用，比较又只看 `valueOf`，既拿不到子类语义也拿不到不可变性。
 
 #### 断言 / 监控需要复核（无需改代码）
 

@@ -83,6 +83,7 @@ node --input-type=module -e 'const s = await import("./dist/index.js"); console.
 - 易错点（写文档时特别容易写错，均有测试兜底）：
   - `store.subscribe(listener, options?)` 的监听器是 **`(state: S) => void`**，没有 `prevState`；载荷**按注册的可写性分配**——每个可写注册一份独立深拷贝、只读注册共用一份，只有全只读时才零拷贝（`notify.clone` 未显式配置＝自动），别写成「默认总是深拷贝」或「本轮共用一份克隆」。`maxSubscribers` 是覆盖每一次注册的硬上界，`evict-oldest` 触发时会发一条 `onError`
   - `store.$snapshot()` 是**部分冻结**（纯对象 / 数组链只读，Date/RegExp/Map/Set 与非纯对象触达的节点仍可变），别写成「递归深冻结」
+  - `deepEqual` **先判原型一致，再走内建内容分支**：子类实例与基类实例一律判不等（空 `MyMap extends Map` ≠ 空 `Map`），装箱原始值按 `Object.is(a.valueOf(), b.valueOf())` 判（`new Number(1)` ≠ `new Number(2)`），且比完**不跳过**通用键比较（装箱子类可另带自有属性）。别把口径写回「按自有可枚举键比较，内建类型特殊处理」——那描述的正是判错方向的旧实现（假相等 → 选择器返回陈旧值）；跨 realm 的 `Map` / `Set` 仍按 `instanceof` 判，未与 `StateProxy` 的 `isMapLike` / `isSetLike` 标签并集统一
   - 快照 `onError` 按**真值**解释（判定是 `if (!shouldContinue)`）：`void` / `undefined` 等同拒绝继续；`cloneError` 与 `circular` 的拒绝后果不同（前者整次失败、后者落占位并继续），失败 / 中止时 `data` 为 `undefined`（类型面就是 `T | undefined`）。`errors` 是**完整账本**（`circular`、`maxDepth` 都入账），但只有 `cloneError` 参与 `success`
   - `createSelector(单个选择器函数, 选项?)`，没有「输入函数 + 结果函数」的双函数重载；选项名是 `cacheSize` / `cacheTTL`（不是 `maxCacheSize`），且只在 `cache: true` 时被读取；两者都过归一化（`cacheTTL` 拒绝 `NaN` / `<= 0` 回落 5000、**有意**放行 `Infinity`，别和 `cacheSize` 强行统一成一个函数）。无版本号状态的失效凭证是显式选项 `snapshotState`（默认 `true`＝内容快照），**不要**把「传 `equalityFn: (a, b) => a === b`」写成免克隆出口
   - `withThrottle(interval, options)` 的间隔是**第一个位置参数**；`withLog(name?, options?)` 的名称在第一位；`createDecorator(options?)` 传的是 `{ before, after, onError }`

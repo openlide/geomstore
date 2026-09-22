@@ -360,3 +360,24 @@ core-store-p1-B 判它是「SubscriptionManager 载荷身份的中间态」，�
 3. **两条 REJECT 的取舍**（`retrySelector` 的 `NO_ERROR` 哨兵、`StoreConfig`/`ConfigState` 属类型内部面，
    不该进 SKILL.md 用法指南）：**维持 REJECT**。SKILL.md 的定位是「怎么写对」，
    哨兵与深路径别名既无调用方写法可教、也不写会误导。
+
+## 第五轮登记的两处 `deepEqual` 语义债 —— 用户拍板后已单独修（2026-09-23，`b83d2df` 之后）
+
+- **已修 (b)**：`src/core/utils/equality.ts` 的原型一致性检查提到所有内建内容分支**之前**，
+  并新增装箱原始值一档（`Object.is(a.valueOf(), b.valueOf())`，比完不 `continue`，
+  因为装箱子类可另带自有属性）。于是空 `MyMap extends Map` ≠ 空 `Map`（`Set`/`Date`/`RegExp` 同理）、
+  `new Number(1)` ≠ `new Number(2)`（`String`/`Boolean`/`BigInt`/`Symbol` 同理）。
+  顺带删掉四处「双侧 instanceof」守卫（原型一致后按 A 侧分派即覆盖 B 侧），
+  全库分支总数由 3390 降到 3376、`equality.ts` 自身 100 / 98.92 / 100 / 100。
+- **判别性证据**：`tests/unit/core/utils/equality-builtin-classes.test.ts`（20 例）对**旧实现**跑
+  → 10 failed / 10 passed，失败全部是 `Expected: false, Received: true` 方向（假相等，
+  即「选择器命中并返回陈旧值」那一侧）；对新实现 20 例全绿。
+- **仍未修 (a)**：`shallowEqual({}, Object.create(null)) === true` 与本函数的原型口径不一致。
+  它是主入口公开导出（`src/core/index.ts`），统一口径 = 一次独立行为变更，且 `src/` 内零调用方；
+  要动就单开一条（或直接删导出），不搭这次车。
+- **仍未修**：R5-119 的另一半——跨 realm 的 `Map`/`Set` 判定未与 `StateProxy` 的
+  `isMapLike` / `isSetLike`（`instanceof` ∪ `Object.prototype.toString` 标签并集）统一。
+  理由不变：共用要把标签判据下沉到 `core/utils`，反向 import `core/store/StateProxy` 会造成
+  utils → store 的分层倒置。本轮刻意不改，避免把「跨 realm」与「原型一致性」两件事搅在一次提交里。
+- 文档同步：`docs/API.md`（`deepEqual` 行重写）、`docs/MIGRATION.md`（需要改代码一节新增一条）、
+  `CONTRIBUTING.md` 易错点、`SKILL.md` 选择器段、CHANGELOG 的 Breaking 与「明确不修」两条同时更新。

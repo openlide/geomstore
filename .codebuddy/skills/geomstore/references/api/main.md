@@ -2030,7 +2030,10 @@ export declare function createStoreTree(stores: Store[], options?: ComposeOption
  * @param a - 第一个值
  * @param b - 第二个值
  * @param maxDepth - 最大递归深度（默认1000），超限时返回 false
- * @returns 是否相等。比较范围：原型一致 + 自有可枚举字符串键逐项（数组含 length）；
+ * @returns 是否相等。比较范围：**原型一致**（前置条件，故 `class MyMap extends Map` 的
+ *   空实例与空 `Map` 判不等、`Foo` 实例与同键字面量判不等）+ 自有可枚举字符串键逐项
+ *   （数组含 length）；内建类型按内容比——Date 比时间值、RegExp 比 source+flags、
+ *   Map 比键集与值、Set 比无序元素、装箱原始值（`new Number(1)` 一类）比 `valueOf()`。
  *   symbol 键与不可枚举属性不参与比较（状态上的版本号标记即属此类，不应影响相等判定）
  *
  * @remarks **Map 的键按引用（SameValueZero）匹配，只有值做深度比较**——这是有意的
