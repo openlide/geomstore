@@ -16,6 +16,9 @@
 
 export { SnapshotManager, createSnapshot, createSnapshotAsync } from './SnapshotManager.js'
 
+// 公开类型直接从定义处再导出：不经 SnapshotManager.js 的过渡性再导出中转
+// （那份中转只为兼容既有导入路径），否则它哪天删掉某个名字，本入口的类型面
+// 会静默缺项、发布的 extras/snapshot 声明随之破裂
 export type {
   SnapshotOptions,
   CloneContext,
@@ -26,7 +29,8 @@ export type {
   SnapshotMetadata,
   SnapshotStats,
   AsyncSnapshotOptions,
-  SnapshotDiff,
-} from './SnapshotManager.js'
+} from './types.js'
+
+export type { SnapshotDiff } from './diff.js'
 
 export { default } from './SnapshotManager.js'

@@ -78,7 +78,8 @@ function collectMapFiles(dir, files = []) {
 
 let removedMaps = 0
 const mapFailures = []
-for (const mapFile of collectMapFiles(distDir)) {
+const foundMaps = collectMapFiles(distDir)
+for (const mapFile of foundMaps) {
   // 逐个兜错：Windows 上文件被编辑器/杀毒进程占用时 rmSync 抛错，
   // 未捕获会让 postbuild 中断，把一次成功的 tsc 构建整体判为失败
   try {
@@ -89,8 +90,23 @@ for (const mapFile of collectMapFiles(distDir)) {
   }
 }
 
+// 后置校验：removedMaps 计的是「尝试删除的次数」，为 0 既可能是「本就没有 map」（当前
+// tsconfig.build.json 关掉了 sourceMap/declarationMap，这是常态），也可能是「全都没删掉」。
+// 重新扫一遍 dist，以「实际还剩多少 map」为准出日志。
+const leftoverMaps = collectMapFiles(distDir)
+
 if (mapFailures.length > 0) {
   console.warn(`[postbuild] WARN: ${mapFailures.length} 个 sourcemap 未能删除（构建产物仍可用）：\n  ${mapFailures.join('\n  ')}`)
 }
+if (leftoverMaps.length > 0 && mapFailures.length === 0) {
+  // 删除一个没抛错却仍留有 map：只可能是外部进程并发写入或链接目标，属于必须人看的情况
+  console.warn(
+    `[postbuild] WARN: 删除未抛错但 dist 下仍有 ${leftoverMaps.length} 个 sourcemap：\n  ` +
+      leftoverMaps.map((f) => path.relative(distDir, f)).join('\n  '),
+  )
+}
 
-console.log(`[postbuild] dist module-type marker merged into dist/package.json; removed ${removedMaps} sourcemap files`)
+console.log(
+  `[postbuild] dist module-type marker merged into dist/package.json; ` +
+    `sourcemap check: found ${foundMaps.length}, removed ${removedMaps}, remaining ${leftoverMaps.length}`,
+)

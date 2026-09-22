@@ -9,6 +9,10 @@ export const WARMUP_ITERATIONS = 100
 
 /**
  * 默认迭代次数
+ *
+ * 只是对外导出的参考值，包内没有任何读取方：`defaultBenchmarkConfig.scenarios` 的迭代数
+ * 是逐条字面量，runner 判档位取 `scenario.datasetSize`，都不读这个常量。它恰好与
+ * `DATASET_SIZE_THRESHOLDS.LARGE_MAX` 同为 10000，改它不会重分类任何默认场景（详见该表注释）。
  */
 export const DEFAULT_ITERATIONS = 10000
 
@@ -61,17 +65,27 @@ export const TIME_THRESHOLDS = {
 } as const
 
 /**
+ * 字节单位
+ *
+ * 内存阈值里有两处「1KB」（每状态项 / 每缓存项）和一处「10MB」，原先各写各的
+ * `1024` / `1024 * 1024` 字面量：调一处、忘另一处就会静默脱钩，写成 `10 * MB`
+ * 也和注释里的「10MB」对得上了。
+ */
+const KB = 1024
+const MB = 1024 * KB
+
+/**
  * 内存阈值配置（字节）
  */
 export const MEMORY_THRESHOLDS = {
   /** 单个 Store 最大内存 */
-  PER_STORE: 10 * 1024 * 1024, // 10MB
+  PER_STORE: 10 * MB, // 10MB
   /** 每个状态项最大内存 */
-  PER_STATE_ITEM: 1024, // 1KB
+  PER_STATE_ITEM: KB, // 1KB
   /** 每个订阅者最大内存 */
   PER_SUBSCRIBER: 512, // 512B
   /** 缓存每项最大内存 */
-  PER_CACHE_ITEM: 1024, // 1KB
+  PER_CACHE_ITEM: KB, // 1KB
 } as const
 
 /**
@@ -116,13 +130,17 @@ export const CACHE_THRESHOLDS = {
 
 /**
  * 数据集规模阈值
+ *
+ * 唯一的读取方是 `ResultBuilder.inferDatasetSize`：它只在结果自己不带 datasetSize 时
+ * （createErrorResult / mergeResults）按迭代数兜底推断档位。runner 正常产出的结果直接取
+ * `scenario.datasetSize`，不经过这张表，所以「默认跑正好压在 large/xlarge 边界」不成立。
  */
 export const DATASET_SIZE_THRESHOLDS = {
   /** 小型数据集最大迭代数 */
   SMALL_MAX: 1000,
   /** 中型数据集最大迭代数 */
   MEDIUM_MAX: 5000,
-  /** 大型数据集最大迭代数 */
+  /** 大型数据集最大迭代数：边界取闭区间，等于此值仍判 large */
   LARGE_MAX: 10000,
 } as const
 

@@ -31,6 +31,18 @@ import { getStateVersion } from '../../core/store/stateVersion.js'
  * 就地变异时校验会因引用相等判定「未变化」，TTL 内返回陈旧值。规避：用 setState/$patch
  * 整体替换该字段。
  *
+ * 参数缓存两侧的形状**不对称**（有意保留，调用侧需知悉）：
+ * - 原始类型参数走 Map：受 `maxEntries` 约束，写入接近上限时清扫过期项并按插入序淘汰。
+ * - 对象参数走 WeakMap：过期条目只在读取侧按 TTL 判 miss（随后覆写），**没有后台清扫**，
+ *   也**不受 `maxEntries` 约束**（该上限只作用于上面那条 Map）。因此对象的条目只在
+ *   「参数对象自身被 GC」时释放——长寿命的参数对象会一直带着它最后一次算出的 value 与 timestamp。
+ * - 复用同一个参数对象、原地改它的内容：WeakMap 的键引用不变，TTL 内命中的是改内容**之前**
+ *   的结果（失效凭证只有 state 侧的版本/快照，参数侧没有）。规避：每次传新对象，
+ *   或把参与派生的值作为原始类型参数传入。
+ *
+ * 不给对象侧补容量上限的原因：WeakMap 既无 size 也无法迭代，要计数就得另存一份键列表，
+ * 那会把弱引用换成强引用、反而造成本要避免的泄漏。
+ *
  * @example
  * ```typescript
  * const getUserById = createParametricSelector(

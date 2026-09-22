@@ -69,8 +69,15 @@ export interface CloneContext {
   parent: unknown
   /** 属性键 */
   key: string | number
-  /** 已访问的弱引用集合（用于循环检测） */
-  visited: WeakMap<object, unknown>
+  /**
+   * 已访问节点登记表：源对象 → 该节点**已建好的克隆**（不是 WeakSet 式的纯成员集合）。
+   *
+   * 循环检测命中时读回的是这个克隆本身，从而让环上的多处引用指向同一实例
+   * （clone.ts / clone-async.ts 每建好一个容器壳就 `set(value, cloned)`）。
+   * 值限定为 object：写入方只有 Date/RegExp 之外的容器与对象壳，原语与自定义克隆器
+   * 的返回值都不登记；此前记作 unknown 会让读回方无从知道拿到的是可用克隆
+   */
+  visited: WeakMap<object, object>
 }
 
 /**
@@ -79,9 +86,15 @@ export interface CloneContext {
 export interface SnapshotProgress {
   /** 已处理节点数 */
   processed: number
-  /** 总节点数（预估） */
+  /**
+   * 总节点数（预估）：由入口的一次有界前序遍历得出（估算深度上限独立于 maxDepth），
+   * 深于该上限的结构按叶子截断计数，故对深层数据**系统性偏小**
+   */
   total: number
-  /** 进度百分比 */
+  /**
+   * 进度百分比（0-100）：processed / total 的近似值，上限截到 100。
+   * total 偏小的深层数据会提前到 100（见 {@link SnapshotProgress#total}），不可当完成判据
+   */
   percentage: number
   /** 当前处理路径 */
   currentPath: string
@@ -195,8 +208,6 @@ export interface SnapshotStats {
 export interface AsyncSnapshotOptions extends SnapshotOptions {
   /** 异步模式 */
   async: true
-  /** 每批次处理节点数 */
-  batchSize?: number
   /** 每批次间隔（毫秒） */
   batchInterval?: number
   /** 超时时间（毫秒） */

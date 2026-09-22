@@ -104,7 +104,7 @@ export class SnapshotManager {
 
     // 循环引用检测始终启用（成本极低）：detectCircular 选项仅控制是否上报错误，
     // 关闭时发现循环直接复用已克隆引用，避免无限递归栈溢出破坏快照隔离契约
-    const visited = new WeakMap<object, unknown>()
+    const visited = new WeakMap<object, object>()
 
     // 节点计数器 - 使用闭包共享状态
     const counters = {
@@ -224,7 +224,7 @@ export class SnapshotManager {
     // 以 queueHead 游标消费而非 Array#shift（后者 O(n)，大批量入队下整体退化为 O(n²)）
     const queue: AsyncCloneTask[] = []
     let queueHead = 0
-    const visited = new WeakMap<object, unknown>()
+    const visited = new WeakMap<object, object>()
 
     let processedCount = 0
     let hasTimedOut = false
@@ -258,8 +258,15 @@ export class SnapshotManager {
     // 计算预估总节点数
     // 经属性描述符读取：直接求值会额外触发 getter（副作用双调用），
     // getter 抛错时整个异步快照在入口即失败，不走 onError 降级路径
+    //
+    // 估算深度上限（MAX_ESTIMATE_DEPTH）刻意不跟随 opts.maxDepth：本函数是入口处的一次
+    // 额外前序遍历，抬到 maxDepth（默认 100）等于把「估算」做成与克隆同量级的第二遍扫描，
+    // 而它的唯一用途是给进度条一个分母。代价写清楚：深于该上限的结构被按叶子截断计数，
+    // totalCount 因此系统性偏小，percentage 会提前饱和到 100、estimatedTimeRemaining 随之
+    // 归零 —— 进度只可作近似观测，完成判据始终是 promise 落定与 result.success
+    const MAX_ESTIMATE_DEPTH = 10
     const estimateNodeCount = (obj: unknown, depth = 0): number => {
-      if (depth > 10 || obj === null || typeof obj !== 'object') return 1
+      if (depth > MAX_ESTIMATE_DEPTH || obj === null || typeof obj !== 'object') return 1
       if (Array.isArray(obj)) {
         // 数组元素读取同样可能触发 Proxy 陷阱抛错：与对象分支同口径按叶子计数
         try {
@@ -327,7 +334,14 @@ export class SnapshotManager {
 
     // 入队（超时后不再接受新任务，避免队列无限增长）
     const enqueue = (task: AsyncCloneTask): void => {
-      /* istanbul ignore else -- 任务处理是同步的：hasTimedOut 为真时外层循环已退出，不会再走到入队 */
+      // 守卫保留、不删：hasTimedOut 由 setTimeout 回调置位，回调只在调用栈空时执行，
+      // 而 enqueue 的全部调用点都在 processNodeAsync 内部、每批的 for 循环里（该循环
+      // 不含 await，唯一的 await 在批末且被外层 while 的 !hasTimedOut 重新判定），
+      // 所以「入队时已超时」在**当下的调用形状**下走不到 —— 这是实现细节而非逻辑不变量：
+      // 一旦 processNodeAsync 改成真异步（批内出现 await），定时器就能在批中途翻转
+      // hasTimedOut，本分支随即成为「超时后丢弃剩余任务」的生效点。
+      // 因此下面的 ignore 只声明「当前测试覆盖不到 else 单侧」，不是「else 是死代码」
+      /* istanbul ignore else -- 依赖「批内无 await」的调用形状，见上；未来批内让出即生效 */
       if (!hasTimedOut) queue.push(task)
     }
 
@@ -566,15 +580,23 @@ export class SnapshotManager {
   /**
    * 获取数据类型
    *
+   * 原型不可探测的值（Proxy 的 getPrototypeOf 陷阱抛错）按 `typeof` 归类：
+   * 本方法在结果组装阶段被调用（成功路径与失败路径各一次），抛出会把 cloneDeep
+   * 已按 onError 契约降级好的结果整个变成异常，等于在出口处重新制造 #288 那个洞
+   *
    * @private
    */
   private getDataType(value: unknown): string {
     if (value === null) return 'null'
     if (Array.isArray(value)) return 'array'
-    if (value instanceof Date) return 'date'
-    if (value instanceof RegExp) return 'regexp'
-    if (value instanceof Map) return 'map'
-    if (value instanceof Set) return 'set'
+    try {
+      if (value instanceof Date) return 'date'
+      if (value instanceof RegExp) return 'regexp'
+      if (value instanceof Map) return 'map'
+      if (value instanceof Set) return 'set'
+    } catch {
+      return typeof value
+    }
     return typeof value
   }
 }

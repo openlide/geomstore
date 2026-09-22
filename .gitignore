@@ -38,7 +38,9 @@ coverage-*.json
 examples/
 
 # Environment variables
+# .env.* 覆盖 .env.local / .env.production / .env.development / .env.test 等全部变体；
+# 仅允许签入模板文件 .env.example（不含真实凭据）
 .env
-.env.local
-.env.*.local
+.env.*
+!.env.example
 

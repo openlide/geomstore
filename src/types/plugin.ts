@@ -100,12 +100,35 @@ export type HookHandler<TArgs extends unknown[] = unknown[]> = (...args: TArgs) 
 export interface IHookSystem {
   /** 注册钩子处理器，返回取消注册函数；处理器形参由 HookArgsMap 按钩子名给出 */
   on<K extends HookName>(hookName: K, handler: HookHandlerFor<K>): () => void
-  /** 触发钩子：实参元组由 HookArgsMap 按钩子名给出，顺序/个数不符即编译报错 */
+  /**
+   * 触发钩子：实参元组由 HookArgsMap 按钩子名给出，顺序/个数不符即编译报错
+   *
+   * **处理器抛错时的语义**（插件作者据此决定要不要自己兜异常）：
+   * - 单个处理器抛错既不中断本次触发的其余处理器，也**不会传播给 `emit` 的调用方**
+   *   （返回 `void`，实现按快照逐个 try/catch）。
+   * - 错误先 `console.error` 记录，再转投 `onError` 钩子（`emit('onError', error, hookName)`），
+   *   故 `onError` 是钩子系统唯一的上报通道；要接监控系统，注册 `onError` 处理器即可。
+   * - `onError` 自身抛错只落 `console.error`，不再递归转投自己。
+   * - 需要「让抛错冒泡到业务调用方」的语义不能靠钩子实现，请走 action 的错误边界。
+   */
   emit<K extends HookName>(hookName: K, ...args: HookArgsMap[K]): void
   /** 清除钩子（指定名称或全部） */
   clear(hookName?: HookName): void
-  /** 查询钩子数量：传入 hookName 返回该钩子的 handler 数，不传返回已注册的钩子名称数 */
+  /**
+   * 计数，**量纲随入参变化**：传 `hookName` 返回该钩子的 handler 数，不传返回已注册的钩子名称数。
+   *
+   * 双语义易误用（无参时的「种类数」和有参时的「监听器数」不是同一个量），
+   * 只想数某个钩子上挂了几个处理器时请改用无歧义的 {@link IHookSystem.listenerCount}。
+   * 本方法保留：已随 `IHookSystem` 发布，且 `size()` 的无参语义有既有调用方。
+   */
   size(hookName?: HookName): number
+  /**
+   * 指定钩子当前的处理器数量（未注册返回 0），语义单一。
+   *
+   * `size(hookName)` 的明确别名：本方法此前只在实现类 `HookSystem` 上存在，
+   * 而 `Store.hooks` 的声明类型是本接口，插件作者经 `store.hooks` 拿不到它。
+   */
+  listenerCount(hookName: HookName): number
 }
 
 /**

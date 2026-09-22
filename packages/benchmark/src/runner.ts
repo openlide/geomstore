@@ -6,7 +6,7 @@ import os from 'node:os'
 
 declare const process: { version: string; platform: string; arch: string }
 
-import type { BenchmarkResult, BenchmarkReport, BenchmarkScenario, BenchmarkConfig, DatasetSize, MemorySnapshot, State, BenchmarkStore } from './types/index.js'
+import type { BenchmarkResult, BenchmarkReport, BenchmarkScenario, BenchmarkConfig, BenchmarkConfigOverride, DatasetSize, MemorySnapshot, State, BenchmarkStore } from './types/index.js'
 import { benchmarkUtils } from './utils.js'
 import { defaultBenchmarkConfig, mergeConfig } from './config.js'
 import { ResultBuilder, buildCacheResult, emptyCacheResult } from './helpers.js'
@@ -53,18 +53,52 @@ const CACHE_SCENARIO_MIN_HIT_RATE = 20
 const MIN_PASS_RATIO = 0.67
 
 /**
+ * 按下标环形取键：`items[index % items.length]`
+ *
+ * 这处「取第 index 次要操作的键」原本在 setState 分支、getCached 分支、$patch 的连续键、
+ * dispatch 的动作名以及 runWarmupIterations 里各写了一遍，取模与空数组守卫散成五个版本，
+ * 改一处就会漏其余。空键集在这里统一兜底为 `undefined`（`i % 0` 得 NaN、取出 undefined
+ * 再喂给 setState 就是拿假数据做测量），调用方按返回值是否存在决定这一轮做不做。
+ */
+function pickKey<T>(items: readonly T[], index: number): T | undefined {
+  if (items.length === 0) return undefined
+  return items[index % items.length]
+}
+
+/**
+ * 一次阈值评估的结果
+ */
+interface ThresholdEvaluation {
+  /** 是否达到 `MIN_PASS_RATIO` 规定的达标项占比 */
+  passed: boolean
+  /**
+   * 未达标项对应的建议文案
+   *
+   * 与 `passed` 用同一份放宽后的阈值算出，判定与建议不会再各说各话；
+   * 判定通过时恒为空数组。
+   */
+  issues: string[]
+}
+
+/**
  * 基准测试运行器
  */
 export class BenchmarkRunner {
   private results: BenchmarkResult[] = []
   private config: BenchmarkConfig
-  private memorySnapshots: MemorySnapshot[] = []
+  /**
+   * 结果 → 未达标项建议
+   *
+   * 键用结果对象本身而不是场景名：同名场景重复跑（并发/多次 merge）时按名字回查会张冠李戴。
+   * 与 `results` 同生命周期，runAll 开头一起清空。
+   */
+  private readonly thresholdIssues = new Map<BenchmarkResult, string[]>()
   private startTime = 0
   private createStore: <S extends State>(config: { state: S; actions?: Record<string, () => unknown>; enableCache?: boolean; cacheConfig?: { capacity?: number; ttl?: number }; cacheKeys?: string[] }) => BenchmarkStore<S>
 
   constructor(
     createStore: <S extends State>(config: { state: S; actions?: Record<string, () => unknown>; enableCache?: boolean; cacheConfig?: { capacity?: number; ttl?: number }; cacheKeys?: string[] }) => BenchmarkStore<S>,
-    config?: Partial<BenchmarkConfig>
+    config?: BenchmarkConfigOverride
   ) {
     this.config = mergeConfig(defaultBenchmarkConfig, config)
     this.createStore = createStore
@@ -73,12 +107,12 @@ export class BenchmarkRunner {
   async runAll(): Promise<BenchmarkReport> {
     this.startTime = Date.now()
     this.results = []
-    this.memorySnapshots = []
+    this.thresholdIssues.clear()
 
     console.log('\n=== GeomStore 基准测试开始 ===\n')
 
     if (this.config.general.enableWarmup) {
-      await this.runWarmup()
+      this.runWarmup()
     }
 
     for (const scenario of this.config.scenarios) {
@@ -90,7 +124,6 @@ export class BenchmarkRunner {
       try {
         const result = await this.runScenario(scenario)
         this.results.push(result)
-        this.memorySnapshots.push(benchmarkUtils.getMemorySnapshot())
         console.log(`✓ 场景 "${scenario.name}" 完成`)
       } catch (error) {
         console.error(`✗ 场景 "${scenario.name}" 失败:`, error)
@@ -103,7 +136,8 @@ export class BenchmarkRunner {
     return report
   }
 
-  private async runWarmup(): Promise<void> {
+  /** 整轮开始前的统一预热：同步执行（体内没有任何 await，标 async 只会多一次 promise 跳） */
+  private runWarmup(): void {
     console.log('预热中...\n')
     const iterations = this.config.general.warmupIterations
 
@@ -127,6 +161,13 @@ export class BenchmarkRunner {
     if (!datasetConfig || datasetConfig.stateKeys <= 0) {
       throw new Error(`场景 "${scenario.name}" 的数据集配置无效: ${scenario.datasetSize}`)
     }
+    // 迭代数同样要在测量前校验：0 轮时 durations / memSnapshots 都是空数组，
+    // `0 / (0/1000)` 与 `0 / 0` 让 opsPerSecond、memory.avg 双双变 NaN（实测），
+    // NaN 参与门限比较恒为 false，整个场景会被判成「什么都不达标」。
+    // 非整数 / NaN / Infinity 同理——按 dataset 校验的同一口径抛错计入 errors
+    if (!Number.isInteger(scenario.iterations) || scenario.iterations < 1) {
+      throw new Error(`场景 "${scenario.name}" 的 iterations 无效: ${scenario.iterations}`)
+    }
 
     const durations: number[] = []
     const timestamps: number[] = []
@@ -134,19 +175,19 @@ export class BenchmarkRunner {
 
     const store = this.createTestStore(datasetConfig.stateKeys, scenario)
 
-    // 场景主体整体置于 try：迭代、getCacheStats() 或 checkThresholds() 任一抛错时
+    // 场景主体整体置于 try：迭代、getCacheStats() 或阈值检查任一抛错时
     // 也必须销毁 store，否则其订阅与定时器会泄漏并污染后续场景的内存测量
     try {
       const initialMemory = benchmarkUtils.getMemorySnapshot()
       let peakMemory = initialMemory.heapUsed
 
       if (scenario.warmup && scenario.warmupIterations) {
-        await this.runWarmupIterations(store, scenario.warmupIterations)
+        this.runWarmupIterations(store, scenario.warmupIterations)
       }
 
       for (let i = 0; i < scenario.iterations; i++) {
         const iterationStart = performance.now()
-        const { duration, memoryAfter } = await this.runBenchmarkIteration(store, i, scenario)
+        const { duration, memoryAfter } = this.runBenchmarkIteration(store, i, scenario)
 
         durations.push(duration)
         timestamps.push(iterationStart)
@@ -162,11 +203,16 @@ export class BenchmarkRunner {
 
       const totalTime = timeStats.total / 1000
       const throughput = {
-        opsPerSecond: scenario.iterations / totalTime,
+        // iterations >= 1 已在入口校验，但 totalTime 仍可能整轮为 0（计时精度低于单次操作耗时），
+        // 那时 `n / 0` 是 Infinity；与 helpers.calculateThroughput 的兜底口径保持一致。
+        // memSnapshots 与 durations 逐轮同步 push，长度 === iterations >= 1，均值不会 0/0
+        opsPerSecond: totalTime > 0 ? scenario.iterations / totalTime : 0,
         peakInstantRate: this.calculatePeakInstantRate(timestamps),
       }
 
-      const result: BenchmarkResult = {
+      // passed 不给占位值：先测量、再一次成型。原先 `passed: true` 建好即被下一行的
+      // checkThresholds 覆盖，是纯死状态，还会让「忘了赋值」看起来像通过
+      const measured: Omit<BenchmarkResult, 'passed'> = {
         scenario: scenario.name,
         datasetSize: scenario.datasetSize,
         iterations: scenario.iterations,
@@ -186,10 +232,11 @@ export class BenchmarkRunner {
           // getCacheStats 是可选契约：被适配的库没有缓存时省略它，此处按「缓存未启用」上报
           cache: store.getCacheStats ? buildCacheResult(store.getCacheStats()) : emptyCacheResult(),
         },
-        passed: true,
       }
 
-      result.passed = this.checkThresholds(result, scenario)
+      const evaluation = this.checkThresholds(measured, scenario)
+      const result: BenchmarkResult = { ...measured, passed: evaluation.passed }
+      this.thresholdIssues.set(result, evaluation.issues)
       return result
     } finally {
       store.destroy()
@@ -239,23 +286,29 @@ export class BenchmarkRunner {
     return store
   }
 
-  private async runWarmupIterations(store: BenchmarkStore, iterations: number): Promise<void> {
+  /** 场景正式计数前的额外预热轮（同步：体内没有 await） */
+  private runWarmupIterations(store: BenchmarkStore, iterations: number): void {
     for (let i = 0; i < iterations; i++) {
       const state = store.getState()
       const keys = Object.keys(state)
-      if (keys.length > 0) {
-        const key = keys[i % keys.length]
-        store.setState(key, Math.random())
-        store.getState()
-      }
+      const key = pickKey(keys, i)
+      if (key === undefined) continue // 空数据集：这一轮没有可写的键，与原先的 keys.length > 0 守卫同语义
+      store.setState(key, Math.random())
+      store.getState()
     }
   }
 
-  private async runBenchmarkIteration(
+  /**
+   * 单次测量轮
+   *
+   * 同步：`measureTime` / `getMemorySnapshot` 都是同步 API，标成 async 只会让热循环里
+   * 每轮多分配一个 promise、多一次 microtask 跳，还误导调用方「这里有异步工作」。
+   */
+  private runBenchmarkIteration(
     store: BenchmarkStore,
     index: number,
     scenario: BenchmarkScenario
-  ): Promise<{ duration: number; memoryAfter: number }> {
+  ): { duration: number; memoryAfter: number } {
     const { duration } = benchmarkUtils.measureTime(() => {
       const state = store.getState()
       const keys = Object.keys(state)
@@ -268,49 +321,51 @@ export class BenchmarkRunner {
         // 空状态还会取到 undefined 键并喂给 setState；这一轮什么都不测，直接收尾
         if (keySpaceSize < 1) return store.getState()
         const isRead = Math.random() < readWriteRatio
-
-        if (isRead) {
-          const keyIndex = Math.floor(Math.random() * keySpaceSize)
-          const key = keys[keyIndex]
-          store.getCached?.(key)
-        } else {
-          const keyIndex = Math.floor(Math.random() * keySpaceSize)
-          const key = keys[keyIndex]
-          store.setState(key, Math.random())
+        const key = pickKey(keys, Math.floor(Math.random() * keySpaceSize))
+        if (key !== undefined) {
+          if (isRead) {
+            store.getCached?.(key)
+          } else {
+            store.setState(key, Math.random())
+          }
         }
       } else {
         const operation = index % 4
 
         switch (operation) {
-          case 0:
-            if (keys.length > 0) {
-              const key = keys[index % keys.length]
+          case 0: {
+            const key = pickKey(keys, index)
+            if (key !== undefined) {
               store.setState(key, Math.random())
             }
             break
+          }
 
           case 1: {
             const patch: Record<string, unknown> = {}
             for (let i = 0; i < Math.min(5, keys.length); i++) {
-              const key = keys[(index + i) % keys.length]
-              patch[key] = Math.random()
+              const key = pickKey(keys, index + i)
+              if (key !== undefined) {
+                patch[key] = Math.random()
+              }
             }
             store.$patch(patch)
             break
           }
 
-          case 2:
-            if (keys.length > 0) {
-              const key = keys[index % keys.length]
+          case 2: {
+            const key = pickKey(keys, index)
+            if (key !== undefined) {
               store.getCached?.(key)
             }
             break
+          }
 
           case 3: {
             const actions = store.actions as Record<string, () => unknown>
             const actionNames = Object.keys(actions)
-            if (actionNames.length > 0) {
-              const actionName = actionNames[index % actionNames.length]
+            const actionName = pickKey(actionNames, index)
+            if (actionName !== undefined) {
               store.dispatch(actionName)
             }
             break
@@ -329,9 +384,21 @@ export class BenchmarkRunner {
     return ResultBuilder.createErrorResult(scenario.name, scenario.iterations, error instanceof Error ? error : String(error))
   }
 
-  private checkThresholds(result: BenchmarkResult, scenario: BenchmarkScenario): boolean {
+  /**
+   * 阈值判定，并顺带产出未达标项的建议文案
+   *
+   * 建议与判定共用同一份放宽后的阈值（`SIZE_MULTIPLIERS` / `QUICK_MODE_HEADROOM` /
+   * `TIME_HEADROOM` / `THROUGHPUT_RELAXATION` / 缓存场景专用下限）：原先
+   * `generateRecommendations` 拿裸配置值比较，同一场景可以「判定用 10ms 门限、建议用 0.1ms
+   * 门限」，于是不达标却给不出建议、或给出的原因与实际判据对不上。
+   */
+  private checkThresholds(
+    result: Pick<BenchmarkResult, 'results'>,
+    scenario: BenchmarkScenario
+  ): ThresholdEvaluation {
     const thresholds = this.config.thresholds
     const r = result.results
+    const issues: string[] = []
 
     const sizeMultiplier = SIZE_MULTIPLIERS[scenario.datasetSize]
     const modeMultiplier = scenario.name.startsWith('quick-') ? QUICK_MODE_HEADROOM : 1
@@ -339,22 +406,50 @@ export class BenchmarkRunner {
     const details: Array<{ passed: boolean }> = []
 
     const timeThreshold = thresholds.operationTime.setState * sizeMultiplier * modeMultiplier * TIME_HEADROOM
-    details.push({ passed: r.executionTime.avg <= timeThreshold })
+    const timePassed = r.executionTime.avg <= timeThreshold
+    details.push({ passed: timePassed })
+    if (!timePassed) {
+      issues.push(
+        `场景 "${scenario.name}" 的平均执行时间 ${benchmarkUtils.formatTime(r.executionTime.avg)} 超过门限 ${benchmarkUtils.formatTime(timeThreshold)}（档位 ×${sizeMultiplier}${modeMultiplier > 1 ? ` × quick 模式 ×${modeMultiplier}` : ''}），建议优化状态更新逻辑。`
+      )
+    }
 
     const memoryThreshold = thresholds.memory.perStore * sizeMultiplier * modeMultiplier
-    details.push({ passed: r.memory.delta <= memoryThreshold })
+    const memoryPassed = r.memory.delta <= memoryThreshold
+    details.push({ passed: memoryPassed })
+    if (!memoryPassed) {
+      // 原先的建议清单里根本没有内存这一档：只栽在内存上的场景会「不通过却零建议」
+      issues.push(
+        `场景 "${scenario.name}" 的峰值内存增量 ${benchmarkUtils.formatBytes(r.memory.delta)} 超过门限 ${benchmarkUtils.formatBytes(memoryThreshold)}，建议检查状态体积与订阅泄漏。`
+      )
+    }
 
     const throughputThreshold = (thresholds.throughput.setState / sizeMultiplier) * THROUGHPUT_RELAXATION
-    details.push({ passed: r.throughput.opsPerSecond >= throughputThreshold })
+    const throughputPassed = r.throughput.opsPerSecond >= throughputThreshold
+    details.push({ passed: throughputPassed })
+    if (!throughputPassed) {
+      issues.push(
+        `场景 "${scenario.name}" 的吞吐量 ${benchmarkUtils.formatNumber(r.throughput.opsPerSecond)} ops/s 低于门限 ${benchmarkUtils.formatNumber(throughputThreshold)} ops/s，建议优化性能。`
+      )
+    }
 
     if (r.cache.enabled) {
       const isCacheTestScenario = scenario.cacheConfig !== undefined
       const hitRateThreshold = isCacheTestScenario ? CACHE_SCENARIO_MIN_HIT_RATE : thresholds.cacheHitRate
-      details.push({ passed: r.cache.hitRate >= hitRateThreshold })
+      const cachePassed = r.cache.hitRate >= hitRateThreshold
+      details.push({ passed: cachePassed })
+      if (!cachePassed) {
+        issues.push(
+          `场景 "${scenario.name}" 的缓存命中率 ${r.cache.hitRate.toFixed(2)}% 低于门限 ${hitRateThreshold}%${isCacheTestScenario ? '（缓存场景按刻意制造未命中的下限判定）' : ''}，建议检查缓存策略。`
+        )
+      }
     }
 
     const passedChecks = details.filter((d) => d.passed).length
-    return passedChecks >= Math.ceil(details.length * MIN_PASS_RATIO)
+    const passed = passedChecks >= Math.ceil(details.length * MIN_PASS_RATIO)
+    // 判定通过就不留建议：缓存场景允许 1 项不达标（MIN_PASS_RATIO），
+    // 那些单项提示留在这里会让「passed 的场景」也往报告里灌告警
+    return { passed, issues: passed ? [] : issues }
   }
 
   private generateReport(): BenchmarkReport {
@@ -391,24 +486,27 @@ export class BenchmarkRunner {
     }
   }
 
+  /**
+   * 汇总建议
+   *
+   * 直接取 `checkThresholds` 判定当时记下的未达标项：门限、放宽系数与判定同源，
+   * 不再在此重算一套裸配置阈值。
+   */
   private generateRecommendations(): string[] {
     const recommendations: string[] = []
 
     for (const result of this.results) {
-      if (!result.passed) {
-        const r = result.results
+      if (result.passed) continue
 
-        if (r.executionTime.avg > this.config.thresholds.operationTime.setState) {
-          recommendations.push(`场景 "${result.scenario}" 的平均执行时间过高 (${benchmarkUtils.formatTime(r.executionTime.avg)})，建议优化状态更新逻辑。`)
-        }
-
-        if (r.cache.enabled && r.cache.hitRate < this.config.thresholds.cacheHitRate) {
-          recommendations.push(`场景 "${result.scenario}" 的缓存命中率较低 (${r.cache.hitRate.toFixed(2)}%)，建议检查缓存策略。`)
-        }
-
-        if (r.throughput.opsPerSecond < this.config.thresholds.throughput.setState / 10) {
-          recommendations.push(`场景 "${result.scenario}" 的吞吐量较低 (${benchmarkUtils.formatNumber(r.throughput.opsPerSecond)} ops/s)，建议优化性能。`)
-        }
+      const issues = this.thresholdIssues.get(result)
+      if (issues && issues.length > 0) {
+        recommendations.push(...issues)
+      } else {
+        // 没有阈值评估记录 = 场景在进入测量前就抛错（runScenario 的 catch 走 createErrorResult）。
+        // 这类结果的耗时/内存/吞吐全是 0，原先会被拿来和裸阈值比较，凭空给一条
+        // 「吞吐量较低」的建议，把真正的运行错误盖掉
+        const reason = result.errors && result.errors.length > 0 ? result.errors.join('；') : '未知原因'
+        recommendations.push(`场景 "${result.scenario}" 未能完成，先按 errors 修复运行错误再解读性能：${reason}`)
       }
     }
 

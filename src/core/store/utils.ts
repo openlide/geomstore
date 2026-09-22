@@ -55,9 +55,15 @@ export function isProduction(): boolean {
 /**
  * 递归冻结状态（用于 $snapshot 等对外暴露的只读副本）
  *
- * 仅冻结纯对象与数组（Date/RegExp/Map/Set 等内建对象的 mutator 方法
- * 不走 [[Set]] 陷阱，Object.freeze 无法阻止，冻结无意义故跳过）；
+ * 只冻结纯对象与数组。跳过内建对象的原因不是「怕改动被共享」，而是 Object.freeze
+ * 根本拦不住它们：Date/RegExp/Map/Set 的 mutator（setTime / set / add / lastIndex）
+ * 走内部槽位而非 [[Set]] 陷阱，冻结后照样能改，冻了等于没冻。
  * 循环引用用 WeakSet 守卫避免重复冻结枝；冻结失败（如 sealed 对象）不拖垮快照。
+ *
+ * @remarks **部分冻结**：返回值只在「纯对象与数组」这条链上是深度只读的。
+ * 经 Date/RegExp/Map/Set 或非纯对象（class 实例/Promise/WeakMap…）触达的节点
+ * 一律保持可变，`Readonly<S>` 因此只是类型层面的承诺，调用方不得据此认为
+ * $snapshot() 的返回值整体深度不可变——要真不可变需自行再处理这些节点。
  *
  * 不变量：冻结范围必须 ⊆ deepCloneState 的隔离范围。
  * 非纯对象（class 实例/Promise/WeakMap 等）在 deepCloneState 中走「保留原引用」
@@ -88,11 +94,17 @@ export function deepFreezeState<T>(value: T, seen?: WeakSet<object>): T {
 
   const proto = Object.getPrototypeOf(value as object)
   const isPlain = proto === Object.prototype || proto === null
-  // 非纯对象整体跳过：deepCloneState 对它们保留原引用（不可安全克隆的降级路径），
-  // 副本与活状态共享同一实例。此前虽不冻结自身、却仍递归冻结其可枚举成员，
-  // 等于经共享引用冻结了活状态——$snapshot() 之后 action 内写入这些成员会抛
-  // TypeError（生产 warn/silent 下静默丢写）。Date/RegExp/Map/Set 的自有可枚举键
-  // 恒为空，跳过与原先「递归零次 + 不冻结」等价，行为不变
+  // 非纯对象整体跳过，两条理由各自成立、不可合并成一句「共享引用」：
+  // 1) class 实例 / Promise / WeakMap 等：deepCloneState 走「保留原引用」降级路径，
+  //    副本与活状态共享同一实例。此前虽不冻结自身、却仍递归冻结其可枚举成员，
+  //    等于经共享引用冻结了活状态——$snapshot() 之后 action 内写入这些成员会抛
+  //    TypeError（生产 warn/silent 下静默丢写）。
+  // 2) Date / RegExp / Map / Set：deepCloneState **会**新建实例（不与活状态共享），
+  //    跳过它们的原因不是别名，而是 Object.freeze 拦不住内部槽位上的 mutator
+  //    （map.set / date.setTime / 改 re.lastIndex 都不走 [[Set]] 陷阱），冻结只是装饰。
+  //    这四类的自有可枚举键一般为空，所以「跳过」与原先的「递归零次 + 不冻结」等价，
+  //    挂了扩展属性的 Date、Map/Set 子类的自有字段是例外——它们一并留为可变，
+  //    见函数文档的「部分冻结」口径
   if (!isPlain) {
     return value
   }
@@ -123,7 +135,15 @@ export function createMutationErrorMessage(path: string, value: unknown, operati
   try {
     serialized = JSON.stringify(value)
   } catch {
-    serialized = String(value)
+    // String() 不是全函数：它会走 Symbol.toPrimitive / toString / valueOf，
+    // 这些钩子自身可以抛（实测 `String(new Proxy(fn, {get(t){ if (t===Symbol.toPrimitive) throw new TypeError() }}))`
+    // → "Cannot convert object to primitive value"）。此处再抛就会把 warn/silent
+    // 的「放行不抛」契约变成崩溃点，故最后一道兜底只用 typeof 拼串（typeof 不会抛）
+    try {
+      serialized = String(value)
+    } catch {
+      serialized = `<unserializable ${typeof value}>`
+    }
   }
   return (
     `[GeomStore] Direct mutation of state "${path}" is prohibited. Use setState() or $patch() methods instead.\n` +

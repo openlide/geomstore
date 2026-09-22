@@ -94,21 +94,44 @@ export const defaultErrorHandler: ErrorHandler = (context: ErrorContext): void =
 
   // 'critical' 与 'warn' 别名此前落入 info 分支：致命错误只打 console.info、
   // 无堆栈，监控台几乎不可见——分别映射到 error / warning 同级处理
-  if (level === 'error' || level === 'critical') {
-    console.error(prefix, `Error in ${operation}:`, error)
-    const stack = describeErrorProperty(error, 'stack')
-    if (stack) {
-      console.error(prefix, 'Stack:', stack)
+  //
+  // 用 switch 而非 if/else 链：链式写法的尾分支既接 'info' 又接「一切未知值」，
+  // ErrorLevel 以后新增级别（或调用方传进契约外的级别）会静默降级成 console.info，
+  // 真实失败在监控台上消失。下面的 default 分支带 never 守卫：新增成员未在此登记即编译报错
+  switch (level) {
+    case 'error':
+    case 'critical': {
+      console.error(prefix, `Error in ${operation}:`, error)
+      const stack = describeErrorProperty(error, 'stack')
+      if (stack) {
+        console.error(prefix, 'Stack:', stack)
+      }
+      break
     }
-  } else if (level === 'warning' || level === 'warn') {
-    console.warn(prefix, `Warning in ${operation}:`, message)
-  } else {
-    console.info(prefix, `Info in ${operation}:`, message)
+    case 'warning':
+    case 'warn':
+      console.warn(prefix, `Warning in ${operation}:`, message)
+      break
+    case 'info':
+      console.info(prefix, `Info in ${operation}:`, message)
+      break
+    default: {
+      // 穷尽性守卫：走到这里说明 level 不在 ErrorLevel 契约内（JS 调用方 / 未收窄的窄化）
+      const _exhaustive: never = level
+      void _exhaustive
+      console.info(prefix, `Info in ${operation}:`, message)
+    }
   }
 }
 
 /**
  * 创建错误上下文
+ *
+ * `timestamp` 的缺省值目前有两处（本工厂的 `Date.now()` 与 `ErrorAggregator.collect` 的
+ * `context.timestamp || Date.now()`）。以本工厂为准：`ErrorContext` 是随包发布的公开类型，
+ * 处理器/订阅方拿到的上下文需要「字段齐全」（`tests/unit/core/error/ErrorHandler.test.ts`
+ * 的「应该生成时间戳」用例即锁住这点），采集器的那一处只是手搓 context 绕过工厂时的兜底。
+ * 单一真相源要把采集器那处删掉（属 `src/extras`，本轮未动），并给测试/回放留出注入时钟的口子。
  */
 export function createErrorContext(storeName: string, operation: OperationType, error: Error, level: ErrorLevel = 'error', payload?: unknown): ErrorContext {
   return {

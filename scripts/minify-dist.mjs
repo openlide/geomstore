@@ -49,11 +49,13 @@ const ECMASCRIPT_TARGET = 2020
 /** terser 固定选项。`module:true` 保证导出名不被改；`mangle.toplevel` 与 esbuild
  *  的标识符压缩力度对齐（esbuild 会压顶层局部名，terser 默认不压）；
  *  `format.comments:false` 对应 esbuild 的 `legalComments:'none'`
- *  （terser 默认仍保留 `/*!` 形式的 legal 注释） */
+ *  （terser 默认仍保留 `/*!` 形式的 legal 注释）。
+ *  注意 `ecma` 只能给 compress/format：terser 的 mangle 选项集里没有它
+ *  （那是 uglify-js 的键），传进去会以 DefaultsError: `ecma` is not a supported option 直接失败 */
 const TERSER_OPTIONS = {
   module: true,
   compress: { ecma: ECMASCRIPT_TARGET },
-  mangle: { ecma: ECMASCRIPT_TARGET, toplevel: true },
+  mangle: { toplevel: true },
   format: { ecma: ECMASCRIPT_TARGET, comments: false },
 }
 

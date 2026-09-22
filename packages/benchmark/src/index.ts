@@ -7,7 +7,7 @@
 // 类型定义
 export type * from './types/index.js'
 
-import type { ActionMap, BenchmarkStore, CacheStats } from './types/index.js'
+import type { State, BenchmarkStore } from './types/index.js'
 
 // 核心类
 export { BenchmarkRunner } from './runner.js'
@@ -31,6 +31,9 @@ export {
 } from './constants.js'
 
 // 工具函数
+// `BenchmarkUtils` 一名只指这个类（值 + 类型）。它原先与 types/index.ts 里的同名接口相撞：
+// 显式导出优先级高于上面的 `export type *`，那份接口在包名下取不到、又被静默遮蔽，
+// 现已把接口改名为 `BenchmarkUtilsContract`（见 types/index.ts）。
 export { benchmarkUtils, BenchmarkUtils } from './utils.js'
 
 // 辅助函数
@@ -46,21 +49,15 @@ export type { TimeStats, MemoryStats, ResultBuilderOptions } from './helpers.js'
 
 /**
  * 创建适配器 - 将 GeomStore Store 适配为 BenchmarkStore
+ *
+ * 入参直接引用 `BenchmarkStore<S>`，不再手抄成员清单：抄的那份与接口各自演化时，
+ * 接口加必填成员只有返回值一侧会报错；而且抄的写法把成员写成了属性式箭头函数
+ * （`strictFunctionTypes` 下参数按逆变严格比对），接口侧是方法简写（双变比对），
+ * 一个已经满足 `BenchmarkStore` 的 store 反而可能被这份参数拒掉。
+ * 报告建议的 `Pick<BenchmarkStore<S>, ...>` 列的是该接口全部成员，与接口本身等价，
+ * 故直接取接口名。
  */
-export function createBenchmarkAdapter<S extends Record<string, unknown>>(
-  store: {
-    getState: () => S
-    setState: <K extends keyof S>(key: K, value: S[K]) => void
-    $patch: (partial: Partial<S>) => void
-    $replaceState: (state: S) => void
-    actions: ActionMap<S>
-    dispatch: (name: string, ...args: unknown[]) => unknown
-    subscribe: (listener: () => void) => () => void
-    getCached?: (key: string) => unknown
-    getCacheStats?: () => CacheStats
-    destroy: () => void
-  }
-): BenchmarkStore<S> {
+export function createBenchmarkAdapter<S extends State>(store: BenchmarkStore<S>): BenchmarkStore<S> {
   const { getCacheStats } = store
   return {
     getState: () => store.getState(),

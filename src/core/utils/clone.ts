@@ -19,6 +19,18 @@
  * - 支持循环引用（WeakMap 守卫，不会栈溢出）
  * - 保留 undefined 属性与 Date/RegExp/Map/Set 实例
  * - 不可克隆对象（WeakMap/Promise/Blob 等）保留原引用，避免崩溃
+ *
+ * 别名（同一对象被多处引用）的保留范围要说清：Map/Set/数组/纯对象在克隆前先把自己
+ * 写进 visited，故多处引用共享同一副本；**Date/RegExp 每次调用都新建实例且不登记
+ * visited**——`{ a: d, b: d }` 与 `[d, d]` 都会得到两个不同 Date（两条路径同样不共享，
+ * 不存在对象/数组之间的口径差异）。这是有意取舍：
+ * - Date/RegExp 无法承载循环引用，登记 visited 只为别名一致性，收益远小于多一次
+ *   WeakMap 读写（克隆在 setState/$patch 热路径上）；
+ * - 由此带来的第二个后果是**实例上的自有可枚举扩展属性会被丢弃**（`d.tag = 1` 不复制），
+ *   RegExp 的 `lastIndex` 也不保留（`new RegExp(source, flags)` 重置为 0）。
+ * State 语义上不该依赖这三者，若确有需求请改用普通对象承载；本轮不改为行为，
+ * 避免让既有快照/比较结果在版本间漂移（deepEqual 的 Date/RegExp 分支同样只看
+ * getTime 与 source/flags，忽略扩展属性，两处的窄口径是一致的）
  */
 export function deepCloneState<T>(state: T): T {
   return fallbackClone(state)
@@ -37,6 +49,7 @@ function fallbackClone<T>(value: T, seen?: WeakMap<object, unknown>): T {
     return cached as T
   }
 
+  // 新建实例、不登记 visited（详见 deepCloneState 的别名/扩展属性口径）
   if (value instanceof Date) {
     return new Date(value.getTime()) as T
   }

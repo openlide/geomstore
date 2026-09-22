@@ -12,20 +12,8 @@
  * @file tests/types/integration-types.typecheck.ts
  */
 
-import type { ExtractMappedActions, PageOwnMethods } from '@/types/integration.js'
-import {
-  withPageStore,
-  withComponentStore,
-  withAppStore,
-  createStore,
-  type State,
-  type Actions,
-  type Getters,
-  type ConnectOptions,
-  type PageThis,
-  type ComponentThis,
-  type ExtractPageData,
-} from '@/index.js'
+import type { AppThis, ComponentConfig, ComponentThis, ExtractMappedActions, ExtractPageData, PageConfig, PageOwnMethods } from '@/types/integration.js'
+import { withPageStore, withComponentStore, withAppStore, createStore, type State, type Actions, type Getters, type PageThis } from '@/index.js'
 
 // ==================== 示例类型 ====================
 
@@ -305,5 +293,56 @@ void [_bareCount, _bareLogin]
 // @ts-expect-error 未传第 5 个泛型 ExtraMethods 时，同页自定义方法在 this 上不可见
 // （withPageStore 当前正是按默认值实例化 PageThis 的；接线属集成层，见本轮待办）
 bareThis.customMethod
+
+// ==================== 注入成员的四处同形（#429） ====================
+
+// `data` / `setData` 由 types/integration.ts 的内部基类型 `InjectedDataShape` 声明一次，
+// 页面/组件 × 实例视角/配置视角 四处复用。任一处退回各写一遍，就可能悄悄漂移成
+// 「声明出运行时不存在的成员」——下面用 Equal 逐对钉住同一形状
+type PageM = { mapState: ['count'] }
+type PgThis = PageThis<UserState, UserActions, Getters<UserState>, PageM>
+type PgCfg = PageConfig<UserState, PageM>
+type CpThis = ComponentThis<UserState, UserActions, Getters<UserState>, PageM>
+type CpCfg = ComponentConfig<UserState, UserActions, Getters<UserState>, PageM>
+
+const _dataIsExtractPageData: [Equal<PgThis['data'], ExtractPageData<UserState, PageM>>, Equal<PgCfg['data'], ExtractPageData<UserState, PageM>>] = [true, true]
+void _dataIsExtractPageData
+const _dataSameAcrossFour: [Equal<CpThis['data'], PgThis['data']>, Equal<CpCfg['data'], PgThis['data']>] = [true, true]
+void _dataSameAcrossFour
+const _setDataSameAcrossFour: [
+  Equal<PgCfg['setData'], PgThis['setData']>,
+  Equal<CpThis['setData'], PgThis['setData']>,
+  Equal<CpCfg['setData'], PgThis['setData']>,
+] = [true, true, true]
+void _setDataSameAcrossFour
+// setData 的确切形状（框架签名，本库不改其语义）
+const _setDataExact: Equal<PgThis['setData'], (data: Record<string, unknown>, callback?: () => void) => void> = true
+void _setDataExact
+// getTabBar 只在页面侧声明（组件侧原本就没有）
+const _getTabBarPageOnly: [PgThis['getTabBar'], PgCfg['getTabBar']] = [undefined, undefined]
+void _getTabBarPageOnly
+// @ts-expect-error 组件两个类型上不声明 getTabBar，避免给出运行时不存在的成员
+type _CpNoTabBar = CpThis['getTabBar']
+
+// ==================== AppThis：action 与调试 API 撞名的优先级（#430） ====================
+
+type ClashActions = { getState: () => string; login: (id: string) => Promise<boolean> }
+type ClashMap = { mapActions: ['getState', 'login'] }
+declare const clashThis: AppThis<UserState, ClashActions, Getters<UserState>, ClashMap>
+
+// 运行时是 bindActions 先、exposeStoreAPI 后（后者无条件覆写同名成员），所以留在实例上的是调试 API。
+// 修复前两侧直接求交：`() => string` 这个 action 签名排在重载集首位，下面这行能编译，
+// 而运行时拿到的是 UserState —— 类型谎报。现在它必须报错。
+// @ts-expect-error getState 归调试 API（返回 S），不再是 action 的 () => string
+const _clashLooksLikeActionString: string = clashThis.getState()
+void _clashLooksLikeActionString
+
+// 正例：调试 API 完整可见，且 getCached 的泛型签名未被映射类型吃掉
+const _clashState: UserState = clashThis.getState()
+const _clashCached: { name: string } | null = clashThis.getCached('userInfo')
+void [_clashState, _clashCached]
+// 未撞名的 action 保持精确签名
+const _clashLogin: Promise<boolean> = clashThis.login('u1')
+void _clashLogin
 
 export {}

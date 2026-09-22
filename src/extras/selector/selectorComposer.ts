@@ -50,7 +50,7 @@ export class SelectorComposer {
    * const selector = SelectorComposer.combine({
    *   selectors: [
    *     (s) => s.base,
-   *     (s) => s.taxRate
+   *     (s) => s.taxRate,
    *     (s) => s.shipping
    *   ],
    *   combiner: (base, tax, shipping) => base * (1 + tax) + shipping
@@ -72,6 +72,23 @@ export class SelectorComposer {
       // 组合结果
       return combiner(...results) as R
     }
+  }
+
+  /**
+   * pipe / createDerived 共用的管道实现
+   *
+   * 两个公开入口只有重载签名不同、运行期行为逐字相同，故各自委托到这里：
+   * 此前 createDerived 写作 `pipe(...(selectors as [never]))`，那个断言把重载契约整个丢掉
+   * （`[never]` 可赋给任意 rest 形参，连第一个参数不是「接受 state 的选择器」都查不出来，
+   * 错误只在运行期暴露）。改为共用实现后两侧都只面对自己的 rest 类型，无需断言。
+   *
+   * @private
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private static runPipe(selectors: Array<(state: any) => any>): (state: any) => any {
+    // 空数组合法：reduce 带初值 state，直接返回该 state（与两个入口的重载 T1 单参形态一致）
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return (state: any) => selectors.reduce((acc, selector) => selector(acc), state)
   }
 
   /**
@@ -112,10 +129,7 @@ export class SelectorComposer {
   // 重载实现签名：对外类型安全由各重载保证，此处放宽为通用函数类型
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   static pipe(...selectors: Array<(state: any) => any>): (state: any) => any {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return (state: any) => {
-      return selectors.reduce((acc, selector) => selector(acc), state)
-    }
+    return SelectorComposer.runPipe(selectors)
   }
 
   /**
@@ -149,7 +163,9 @@ export class SelectorComposer {
   // 重载实现签名：对外类型安全由各重载保证，此处放宽为通用函数类型
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   static createDerived(...selectors: Array<(state: any) => any>): (state: any) => any {
-    return SelectorComposer.pipe(...(selectors as [never]))
+    // 与 pipe 共用 runPipe：不再借 `pipe(...(selectors as [never]))` 转调
+    // （那个断言会让任意调用形状通过类型检查，见 runPipe 的说明）
+    return SelectorComposer.runPipe(selectors)
   }
 
   /**
@@ -165,7 +181,7 @@ export class SelectorComposer {
    * @example
    * ```typescript
    * const selector = SelectorComposer.createArraySelector(
-   *   (item) => item.value * 2
+   *   (item: number) => item * 2
    * )
    *
    * const doubled = selector([1, 2, 3])
@@ -353,6 +369,11 @@ export class SelectorComposer {
       currentState = state
 
       // 如果没有正在进行的Promise，创建一个新的
+      // 残余口径：回调执行 selector(state) 期间的同步重入调用会复用这个尚未清空的
+      // currentPromise，因而拿到上一轮结果而非自己的结果。要消除它就得在回调开头先认领
+      // promise/resolve/reject 槽位，代价是重入调用的返回值若无人 await，其 rejection 会
+      // 变成 unhandled rejection——超出 low 波次的改动幅度，故此处只恢复定时器可清除性
+      // （见 finally 的 firedTimer 比对）
       if (!currentPromise) {
         currentPromise = new Promise<R>((resolve, reject) => {
           currentResolve = resolve
@@ -362,6 +383,11 @@ export class SelectorComposer {
 
       // 设置定时器
       timeoutId = setTimeout(() => {
+        // 记下触发本次回调的定时器 id：回调里的 selector(state) 可能经宿主副作用（store
+        // 订阅等）同步重入本选择器，那次调用会另起一个定时器并覆盖 timeoutId。
+        // 不加这层比对就会把它抹成 null：重入调用的定时器从此失去句柄，后续调用既
+        // clearTimeout 不掉它（防抖窗口失效），它又会在已结算的槽位上空跑一次回调
+        const firedTimer = timeoutId
         try {
           const state = currentState
           if (state === null) {
@@ -382,7 +408,10 @@ export class SelectorComposer {
           currentPromise = null
           currentResolve = null
           currentReject = null
-          timeoutId = null
+          // 只在自己仍是「最后一次排定的定时器」时才清空槽位（见上方 firedTimer）
+          if (timeoutId === firedTimer) {
+            timeoutId = null
+          }
         }
       }, delay)
 

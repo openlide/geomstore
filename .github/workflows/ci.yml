@@ -1,5 +1,12 @@
 name: CI
 
+# 同一分支/PR 上连续推送时，只保留最新一次运行，取消已被取代的全矩阵运行以省 runner。
+# 长期分支（main/master/develop）不取消：那里的运行是「已合入代码的验证记录」，
+# 中途取消会让最新提交失去 CI 结论。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' && github.ref != 'refs/heads/master' && github.ref != 'refs/heads/develop' }}
+
 on:
   push:
     branches: [main, master, develop]

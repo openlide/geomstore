@@ -117,12 +117,26 @@ export class SelectorFactory<S extends State = Record<string, unknown>, R = unkn
    * ```
    */
   execute(state: S): R {
+    return this.resolve(state).value
+  }
+
+  /**
+   * 缓存解析协议：命中查找（当前条目 + 历史回溯）→ 未命中则计算并写入缓存
+   *
+   * execute 与 withCacheResult 共用本方法，两者的差异只在返回包装。此前两处各写一遍
+   * 「findCacheHit → selector → updateCache」，同一套协议要同步维护两份就会漂移
+   * （findCacheHit 抽出之前两者就分叉过一次：withCacheResult 只查当前条目，
+   * 命中 history 时 execute 判命中而它判未命中）。
+   *
+   * @private
+   */
+  private resolve(state: S): SelectorResult<R> {
     // 检查缓存：最近一条优先，其次回溯缓存历史（cacheSize 条目均参与命中，
     // 修复此前仅命中单条缓存导致交替状态输入时每次都 miss、cacheSize 形同虚设的问题）
     if (this.options.cache) {
       const hit = this.findCacheHit(state)
       if (hit) {
-        return hit.value
+        return { value: hit.value, fromCache: true }
       }
     }
 
@@ -134,7 +148,7 @@ export class SelectorFactory<S extends State = Record<string, unknown>, R = unkn
       this.updateCache(state, value)
     }
 
-    return value
+    return { value, fromCache: false }
   }
 
   /**
@@ -254,6 +268,13 @@ export class SelectorFactory<S extends State = Record<string, unknown>, R = unkn
   /**
    * 获取缓存状态
    *
+   * `cacheHit` 的口径要说明白：它返回的是 **当前缓存条目**（`this.cache`，即最近一次写入
+   * 或因命中历史而被提升为当前的那条），与 `hasCache` 同源同值，**不是**「最近一次
+   * 命中的那条」。命中查找走 findCacheHit，它可能返回 cacheHistory 里的任意一条，
+   * 而本方法不记录那次查找的结果。字段名沿用 cacheHit 以保持既有公开面不变
+   * （改名是当前缓存语义的破坏性变更，不属本轮 low），需要真正的「最近命中」请比较
+   * `getCacheStatus().cacheHit` 与调用前后的 `cacheSize`/timestamp 自行推断
+   *
    * @returns {{hasCache: boolean, cacheSize: number, cacheHit?: SelectorCacheItem<R>}} 缓存状态信息
    *
    * @example
@@ -261,7 +282,7 @@ export class SelectorFactory<S extends State = Record<string, unknown>, R = unkn
    * const status = factory.getCacheStatus()
    * console.log('Has cache:', status.hasCache)
    * console.log('Cache size:', status.cacheSize)
-   * console.log('Last cache hit:', status.cacheHit)
+   * console.log('Current cache entry:', status.cacheHit)
    * ```
    */
   getCacheStatus(): {
@@ -296,21 +317,9 @@ export class SelectorFactory<S extends State = Record<string, unknown>, R = unkn
    * ```
    */
   withCacheResult(): Selector<S, SelectorResult<R>> {
-    return (state: S) => {
-      // 与 execute 共用同一套命中查找（含 cacheHistory），保证 fromCache 标记一致
-      if (this.options.cache) {
-        const hit = this.findCacheHit(state)
-        if (hit) {
-          return { value: hit.value, fromCache: true }
-        }
-      }
-
-      const value = this.selector(state)
-      if (this.options.cache) {
-        this.updateCache(state, value)
-      }
-      return { value, fromCache: false }
-    }
+    // 与 execute 共用 resolve（含 cacheHistory 回溯），保证 fromCache 标记与
+    // execute 的命中判定同口径，不再各写一份协议
+    return (state: S) => this.resolve(state)
   }
 }
 
@@ -407,9 +416,18 @@ export { createParametricSelector } from './parametricSelector.js'
  *
  * 从多个选择器组合成一个对象，便于批量获取派生状态
  *
+ * ⚠️ 参数类型把每个键都声明为**可选**（部分映射是受支持的公开用法），实现则按运行期的
+ * `Object.entries` 遍历，且只处理 `typeof === 'function'` 的项：非函数值（`undefined` /
+ * `null` / 手滑写成的字面量）被**静默跳过**，结果对象里根本没有那个键。而返回值被断言成
+ * 完整的 `R`，所以「R 里声明为必填、映射里省略或放了非函数」这种组合不会报错，只表现为
+ * 读出来是 `undefined`。需要这种不匹配可见时：把返回类型显式写成 `Partial<...>`，
+ * 或保证映射与 `R` 的键一一对应。
+ * 之所以不改成强制完整映射（`{ [K in keyof R]: Selector<S, R[K]> }`）或对缺项告警：
+ * 前者是公开类型的破坏性收紧，后者会把合法的稀疏映射变成日志噪音源（每个非函数项一次）
+ *
  * @template S - 状态类型
  * @template R - 返回结构类型（默认从选择器映射推断）
- * @param {[K in keyof R]?: Selector<S, R[K]>} selectors - 选择器映射
+ * @param {[K in keyof R]?: Selector<S, R[K]>} selectors - 选择器映射（非函数项被跳过，见上）
  * @returns {Selector<S, R>} 组合选择器
  *
  * @example

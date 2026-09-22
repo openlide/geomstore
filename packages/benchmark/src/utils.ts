@@ -10,7 +10,29 @@ declare const process: {
   memoryUsage(): { heapTotal: number; heapUsed: number; external: number }
 }
 
-import type { IterationOutcome, MemorySnapshot, BenchmarkUtils as IBenchmarkUtils } from './types/index.js'
+import type { IterationOutcome, MemorySnapshot, BenchmarkUtilsContract } from './types/index.js'
+
+/** 数值升序比较器：`sort()` 默认按字符串比较，`[10, 9]` 会被排成 `[10, 9]` */
+const ASCENDING = (a: number, b: number): number => a - b
+
+/**
+ * 在「已排序」的数组上取百分位
+ *
+ * 与 `BenchmarkUtils.calculatePercentile` 的越界夹取口径完全一致（下标算式一字未改），
+ * 只是不再自己拷贝排序：`calculateTimeStats` 要一次取 p50/p95/p99，共用一份有序数组即可。
+ */
+function percentileOfSorted(sorted: number[], percentile: number): number {
+  if (sorted.length === 0) return 0
+  // 百分位与下标都要夹住：percentile <= 0 时下标算成 -1、> 100 时越出右边界，
+  // 两种越界都让 sorted[index] 取到 undefined，直接违背签名的 number；
+  // NaN 走 Math.min/Math.max 也会得 NaN，单独贴到 0 一侧（±Infinity 仍按夹取走两端）
+  const clamped = Number.isNaN(percentile) ? 0 : Math.min(100, Math.max(0, percentile))
+  const index = Math.min(
+    sorted.length - 1,
+    Math.max(0, Math.ceil((clamped / 100) * sorted.length) - 1)
+  )
+  return sorted[index]
+}
 
 /**
  * 进程真实的 V8 堆上限（字节）
@@ -24,7 +46,7 @@ const HEAP_SIZE_LIMIT = v8.getHeapStatistics().heap_size_limit
 /**
  * 基准测试工具类实现
  */
-export class BenchmarkUtils implements IBenchmarkUtils {
+export class BenchmarkUtils implements BenchmarkUtilsContract {
   measureTime<T>(fn: () => T): { result: T; duration: number } {
     const startTime = performance.now()
     const result = fn()
@@ -68,18 +90,17 @@ export class BenchmarkUtils implements IBenchmarkUtils {
 
   calculatePercentile(values: number[], percentile: number): number {
     if (values.length === 0) return 0
-    const sorted = [...values].sort((a, b) => a - b)
-    // 百分位与下标都要夹住：percentile <= 0 时下标算成 -1、> 100 时越出右边界，
-    // 两种越界都让 sorted[index] 取到 undefined，直接违背签名的 number；
-    // NaN 走 Math.min/Math.max 也会得 NaN，单独贴到 0 一侧（±Infinity 仍按夹取走两端）
-    const clamped = Number.isNaN(percentile) ? 0 : Math.min(100, Math.max(0, percentile))
-    const index = Math.min(
-      sorted.length - 1,
-      Math.max(0, Math.ceil((clamped / 100) * sorted.length) - 1)
-    )
-    return sorted[index]
+    return percentileOfSorted([...values].sort(ASCENDING), percentile)
   }
 
+  /**
+   * 中位数 = 第 50 百分位
+   *
+   * 走百分位的下标口径，偶数长度取「下中位数」而非两中值平均（`[1,2,3,4]` → 2）。
+   * `ResultBuilder.calculateMedian` 取的是平均（同一输入给 2.5）——两处口径确实不同，
+   * 但 BenchmarkResult 的 median/p95/p99 必须同源可比，这里保持百分位口径不动，
+   * 只把差异写清楚，免得有人把两份数当成同一回事对比。
+   */
   calculateMedian(values: number[]): number {
     return this.calculatePercentile(values, 50)
   }
@@ -116,29 +137,47 @@ export class BenchmarkUtils implements IBenchmarkUtils {
     }
   }
 
+  /**
+   * 取若干次采样的平均快照
+   *
+   * `samples` 为 0 / 负数 / NaN 时原先一次循环都不跑：`snapshots[0].heapLimit` 直接
+   * TypeError（实测），三处求平均也全成 0/0 = NaN。夹到至少 1 次，语义退化为「就取当前这一次」。
+   */
   getAverageMemorySnapshot(samples = 10): MemorySnapshot {
+    const count = Number.isFinite(samples) ? Math.max(1, Math.floor(samples)) : 1
     const snapshots: MemorySnapshot[] = []
-    for (let i = 0; i < samples; i++) {
+    for (let i = 0; i < count; i++) {
       snapshots.push(this.getMemorySnapshot())
     }
     return {
       timestamp: Date.now(),
-      heapTotal: Math.round(snapshots.reduce((sum, s) => sum + s.heapTotal, 0) / samples),
-      heapUsed: Math.round(snapshots.reduce((sum, s) => sum + s.heapUsed, 0) / samples),
+      heapTotal: Math.round(snapshots.reduce((sum, s) => sum + s.heapTotal, 0) / count),
+      heapUsed: Math.round(snapshots.reduce((sum, s) => sum + s.heapUsed, 0) / count),
       heapLimit: snapshots[0].heapLimit,
-      external: Math.round(snapshots.reduce((sum, s) => sum + s.external, 0) / samples),
+      external: Math.round(snapshots.reduce((sum, s) => sum + s.external, 0) / count),
     }
   }
 
+  /**
+   * 格式化字节数
+   *
+   * 非有限值没有可显示的量纲，返回 `N/A`：原先 NaN 打成 `NaN B`、Infinity 一路升到
+   * `Infinity TB`（while 循环每轮都满足 `>= 1024`，直到单位耗尽）。
+   * 负值按绝对值选单位、把符号留在前面（-1536 → `-1.50 KB`）：原先 `size >= 1024` 对负数
+   * 恒不成立，实测 `-1536` 会原样打成 `-1536.00 B`；把它夹成 `0.00 B` 又会抹掉
+   * 「内存增量为负」这类真实信号，所以选保号而不是夹零。
+   */
   formatBytes(bytes: number): string {
+    if (!Number.isFinite(bytes)) return 'N/A'
+    const sign = bytes < 0 ? '-' : ''
     const units = ['B', 'KB', 'MB', 'GB', 'TB']
-    let size = bytes
+    let size = Math.abs(bytes)
     let unitIndex = 0
     while (size >= 1024 && unitIndex < units.length - 1) {
       size /= 1024
       unitIndex++
     }
-    return `${size.toFixed(2)} ${units[unitIndex]}`
+    return `${sign}${size.toFixed(2)} ${units[unitIndex]}`
   }
 
   formatTime(ms: number): string {
@@ -230,6 +269,10 @@ export class BenchmarkUtils implements IBenchmarkUtils {
 
     const total = durations.reduce((sum, d) => sum + d, 0)
     const avg = total / durations.length
+    // 分位数只排一次序：原先 calculateMedian 与 calculatePercentile(95)/(99) 各自
+    // `[...values].sort()`，实测一次 calculateTimeStats 触发 3 份拷贝 + 3 次排序
+    // （O(3n log n)），而 xlarge 档的迭代数正是十万量级
+    const sorted = [...durations].sort(ASCENDING)
     // 单次遍历取极值：`Math.min(...durations)` 会把每个元素变成一个实参，实测
     // 12.8 万轮迭代就抛 RangeError: Maximum call stack size exceeded，
     // 而 xlarge 档跑满迭代数正是这个量级
@@ -239,9 +282,9 @@ export class BenchmarkUtils implements IBenchmarkUtils {
       if (d < min) min = d
       if (d > max) max = d
     }
-    const median = this.calculateMedian(durations)
-    const p95 = this.calculatePercentile(durations, 95)
-    const p99 = this.calculatePercentile(durations, 99)
+    const median = percentileOfSorted(sorted, 50)
+    const p95 = percentileOfSorted(sorted, 95)
+    const p99 = percentileOfSorted(sorted, 99)
     const stdDev = this.calculateStandardDeviation(durations, avg)
 
     return { total, avg, min, max, median, p95, p99, stdDev }

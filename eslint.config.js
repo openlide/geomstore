@@ -9,27 +9,15 @@ export default [
   // TypeScript 文件配置
   {
     files: ['**/*.ts'],
+    // 此处刻意不维护 languageOptions.globals：下方已对全部 TS 文件关闭 no-undef，
+    // 而 flat config 里 globals 只被 no-undef 一类规则消费（`npx eslint --print-config
+    // src/index.ts` 实测 no-undef = off），手写清单既不参与任何判定，又要在每次
+    // Node/Jest 升级后手工同步。环境标识符的类型来源是 tsconfig 的 lib + @types。
     languageOptions: {
       parser: tsparser,
       parserOptions: {
         ecmaVersion: 2020,
         sourceType: 'module',
-      },
-      globals: {
-        console: 'readonly',
-        process: 'readonly',
-        Buffer: 'readonly',
-        setTimeout: 'readonly',
-        clearTimeout: 'readonly',
-        setInterval: 'readonly',
-        clearInterval: 'readonly',
-        setImmediate: 'readonly',
-        performance: 'readonly',
-        WeakMap: 'readonly',
-        WeakSet: 'readonly',
-        Proxy: 'readonly',
-        Reflect: 'readonly',
-        Symbol: 'readonly',
       },
     },
     plugins: {
@@ -76,23 +64,8 @@ export default [
   // 测试文件配置
   {
     files: ['tests/**/*.ts'],
-    languageOptions: {
-      globals: {
-        jest: 'readonly',
-        describe: 'readonly',
-        it: 'readonly',
-        test: 'readonly',
-        expect: 'readonly',
-        beforeEach: 'readonly',
-        afterEach: 'readonly',
-        beforeAll: 'readonly',
-        afterAll: 'readonly',
-        xit: 'readonly',
-        xdescribe: 'readonly',
-        fit: 'readonly',
-        fdescribe: 'readonly',
-      },
-    },
+    // globals 同样不维护（理由见上方 `**/*.ts` 块）：jest/describe/it 由 @types/jest
+    // 经 tsconfig 的 types 提供，供 tsc 使用；no-undef 已关闭，ESLint 侧不需要声明。
     rules: {
       '@typescript-eslint/no-explicit-any': 'off',
       '@typescript-eslint/no-non-null-assertion': 'off',

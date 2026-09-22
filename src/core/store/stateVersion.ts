@@ -27,7 +27,7 @@ const STATE_VERSION = Symbol.for('geomstore.stateVersion')
  * （生产 warn/silent）不递增计数——此类直写属被保护机制明确劝退的反模式，
  * 版本号不反映它；请始终通过 setState/$patch/$replaceState 修改状态。
  *
- * 定义失败（状态对象被冻结或不可扩展）时静默忽略：
+ * 定义失败时静默忽略（**任何**异常都不外溢，理由见函数体内注释）：
  * 消费者会自动回退到 deepEqual 比较，仅损失优化而不影响正确性。
  *
  * @param state - 状态对象
@@ -41,7 +41,15 @@ export function defineStateVersion(state: object, getVersion: () => number): voi
       configurable: true,
     })
   } catch {
-    // 状态对象不可扩展/被冻结：放弃版本化，消费者回退到 deepEqual
+    // 刻意不区分异常种类（`if (!(e instanceof TypeError)) throw` 这种收窄经实测否证：
+    // 报告点名的三类「调用方缺陷」——getVersion 非函数（"Getter must be a function"）、
+    // 描述符非法（accessor + writable）、覆盖不可配置属性——Node 里抛的全是 TypeError，
+    // 与预期吞掉的「目标非可扩展/被冻结」同为 TypeError，按构造器判别分不开。
+    // 能被判出来的只剩 Proxy 陷阱抛的非 TypeError 异常，而那恰恰最不该外溢：
+    // 本函数是纯优化装载（拿不到版本消费者就回退 deepEqual），在 setState/$patch 的
+    // 写入热路径上抛错等于把降级入口变成崩溃入口。
+    // 代价是调用方缺陷（传错 getVersion 等）会静默退化为「无版本 + 每次 deepEqual」，
+    // 只慢不错；调用侧参数已由 Store 内部固定，实际不构成可踩到的坑
   }
 }
 

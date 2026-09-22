@@ -299,127 +299,145 @@ export function cloneDeep<T>(
     return SKIP_CLONE_NODE
   }
 
-  // 处理特殊类型
-  if (value instanceof Date) {
-    return new Date(value.getTime())
-  }
-
-  if (value instanceof RegExp) {
-    return new RegExp(value.source, value.flags)
-  }
-
-  if (value instanceof Map) {
-    const cloned = new Map()
-    context.visited.set(value as object, cloned)
-
-    for (const [k, v] of value) {
-      const clonedKey = cloneDeep(
-        k,
-        {
-          ...context,
-          path: `${context.path}.key`,
-          depth: context.depth + 1,
-        },
-        options,
-        errors,
-        stats,
-        counters,
-      )
-
-      // 键被丢弃时整条 entry 无法安全 set：语义上与「跳过该位置」一致
-      if (clonedKey === SKIP_CLONE_NODE) {
-        continue
-      }
-
-      const clonedValue = cloneDeep(
-        v,
-        {
-          ...context,
-          // String(k) 而非模板插值 Symbol 键：ToString(Symbol) 会抛 TypeError，
-          // 让含 Symbol 键的 Map 克隆直接失败并越过 onError 降级契约
-          path: `${context.path}[${String(k)}]`,
-          depth: context.depth + 1,
-        },
-        options,
-        errors,
-        stats,
-        counters,
-      )
-
-      if (clonedValue === SKIP_CLONE_NODE) {
-        continue
-      }
-
-      cloned.set(clonedKey, clonedValue)
+  // 类型判定与容器外壳构造纳入同一个 try（与异步路径 clone-async 的同名保护同口径）：
+  // `value instanceof Date/RegExp/Map/Set` 与 Object.getPrototypeOf 都走 [[GetPrototypeOf]]，
+  // Proxy 的 getPrototypeOf 陷阱抛错时这些探针会直接冲出 cloneDeep —— 顶层调用不会被记为
+  // cloneError（只落到 SnapshotManager 的 unknown@root），嵌套时更被父级 catch 归因到父路径，
+  // 路径信息失真。纳入本 try 后回到统一契约：落账 cloneError（path 为本节点）→ 咨询 onError
+  // → 继续则丢该节点
+  let objectShell: Record<string, unknown>
+  try {
+    // 处理特殊类型
+    if (value instanceof Date) {
+      return new Date(value.getTime())
     }
 
-    stats.cloneOperations++
-    return cloned
-  }
-
-  if (value instanceof Set) {
-    const cloned = new Set()
-    context.visited.set(value as object, cloned)
-
-    let index = 0
-    for (const item of value) {
-      const clonedItem = cloneDeep(
-        item,
-        {
-          ...context,
-          path: `${context.path}[${index}]`,
-          depth: context.depth + 1,
-        },
-        options,
-        errors,
-        stats,
-        counters,
-      )
-      if (clonedItem !== SKIP_CLONE_NODE) {
-        cloned.add(clonedItem)
-      }
-      index++
+    if (value instanceof RegExp) {
+      return new RegExp(value.source, value.flags)
     }
 
-    stats.cloneOperations++
-    return cloned
-  }
+    if (value instanceof Map) {
+      const cloned = new Map()
+      context.visited.set(value as object, cloned)
 
-  // 处理数组
-  if (Array.isArray(value)) {
-    const cloned: unknown[] = []
-    context.visited.set(value as object, cloned)
+      for (const [k, v] of value) {
+        const clonedKey = cloneDeep(
+          k,
+          {
+            ...context,
+            path: `${context.path}.key`,
+            depth: context.depth + 1,
+          },
+          options,
+          errors,
+          stats,
+          counters,
+        )
 
-    for (let i = 0; i < value.length; i++) {
-      const clonedItem = cloneDeep(
-        value[i],
-        {
-          ...context,
-          path: `${context.path}[${i}]`,
-          depth: context.depth + 1,
-          parent: value,
-          key: i,
-        },
-        options,
-        errors,
-        stats,
-        counters,
-      )
-      // 被丢弃的元素保留位置（留洞），与异步路径不填充该索引同语义
-      if (clonedItem !== SKIP_CLONE_NODE) {
-        cloned[i] = clonedItem
+        // 键被丢弃时整条 entry 无法安全 set：语义上与「跳过该位置」一致
+        if (clonedKey === SKIP_CLONE_NODE) {
+          continue
+        }
+
+        const clonedValue = cloneDeep(
+          v,
+          {
+            ...context,
+            // String(k) 而非模板插值 Symbol 键：ToString(Symbol) 会抛 TypeError，
+            // 让含 Symbol 键的 Map 克隆直接失败并越过 onError 降级契约
+            path: `${context.path}[${String(k)}]`,
+            depth: context.depth + 1,
+          },
+          options,
+          errors,
+          stats,
+          counters,
+        )
+
+        if (clonedValue === SKIP_CLONE_NODE) {
+          continue
+        }
+
+        cloned.set(clonedKey, clonedValue)
       }
+
+      stats.cloneOperations++
+      return cloned
     }
 
-    stats.cloneOperations++
-    return cloned
+    if (value instanceof Set) {
+      const cloned = new Set()
+      context.visited.set(value as object, cloned)
+
+      let index = 0
+      for (const item of value) {
+        const clonedItem = cloneDeep(
+          item,
+          {
+            ...context,
+            path: `${context.path}[${index}]`,
+            depth: context.depth + 1,
+          },
+          options,
+          errors,
+          stats,
+          counters,
+        )
+        if (clonedItem !== SKIP_CLONE_NODE) {
+          cloned.add(clonedItem)
+        }
+        index++
+      }
+
+      stats.cloneOperations++
+      return cloned
+    }
+
+    // 处理数组
+    if (Array.isArray(value)) {
+      const cloned: unknown[] = []
+      context.visited.set(value as object, cloned)
+
+      // 逐索引赋值：源数组的洞在此落成真实的 undefined 元素，元素描述符也不还原。
+      // 与异步路径同口径，改动理由与代价见 clone-async 的数组分支注释（两条路径要改一起改）
+      for (let i = 0; i < value.length; i++) {
+        const clonedItem = cloneDeep(
+          value[i],
+          {
+            ...context,
+            path: `${context.path}[${i}]`,
+            depth: context.depth + 1,
+            parent: value,
+            key: i,
+          },
+          options,
+          errors,
+          stats,
+          counters,
+        )
+        // 被丢弃的元素保留位置（留洞），与异步路径不填充该索引同语义
+        if (clonedItem !== SKIP_CLONE_NODE) {
+          cloned[i] = clonedItem
+        }
+      }
+
+      stats.cloneOperations++
+      return cloned
+    }
+
+    // 处理普通对象
+    // 保留源对象原型：类实例快照后仍是该类实例（方法/继承链可用），
+    // 仅复制自有可枚举属性，不触发任何构造器或 getter
+    objectShell = Object.create(Object.getPrototypeOf(value) as object | null) as Record<string, unknown>
+    context.visited.set(value as object, objectShell)
+  } catch (error) {
+    // 中止信号在 handleCloneError 内原样上抛：父级克隆已就「是否继续」做过决定，
+    // 在此二次咨询 onError 会把「中止」降级为丢子树且快照仍标记成功
+    handleCloneError(error, { path: context.path, depth: context.depth, value }, options, errors, stats)
+    return SKIP_CLONE_NODE
   }
 
-  // 处理普通对象
-  // 保留源对象原型：类实例快照后仍是该类实例（方法/继承链可用），
-  // 仅复制自有可枚举属性，不触发任何构造器或 getter
-  const cloned: Record<string, unknown> = Object.create(Object.getPrototypeOf(value) as object | null) as Record<string, unknown>
-  context.visited.set(value as object, cloned)
+  const cloned = objectShell
 
   // keys 计算纳入 try：Proxy 的 ownKeys/getOwnPropertyDescriptor 陷阱抛错时
   // 走 onError 降级，而非冲出整个快照

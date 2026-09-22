@@ -4,6 +4,8 @@
  * 自 SnapshotManager.ts 拆出：异步模式单节点克隆。
  * 只克隆当前节点的容器外壳与叶子字段，对象子值经 enqueue 入队异步填充；
  * 相比同步递归，每个节点的工作量有界，大对象不会阻塞主线程。
+ * 该有界性有一处例外：Map 的键子树为保插入序按同步递归克隆（见 processNodeAsync 的
+ * Map 分支），重键结构会把阻塞搬回当前批。
  *
  * 本模块为纯函数（不依赖管理器实例状态），由 SnapshotManager.createSnapshotAsync
  * 的队列驱动逐个调用。
@@ -97,7 +99,12 @@ export function processNodeAsync(
       context.visited.set(value as object, cloned)
 
       for (const [k, v] of value) {
-        // Map 键需要克隆完成后才能 set，且对象键罕见，同步克隆键
+        // Map 键需要克隆完成后才能 set，且对象键罕见，故同步克隆键（键一律入队的话，
+        // entry 要等键与值都就绪才能写，Map 的插入序随之失真——迭代序是 Map 语义的一部分）。
+        // 代价是「每个节点的工作量有界」只对**值**成立、对**键**不成立：本行的 cloneDeep 是
+        // 同步递归，以大型对象为键（或以 Map 为键的链式 Map）时会一次性克隆整棵键子树、
+        // 阻塞当前批。把大对象放在**值**的位置（值全部入队），必要时用 customCloner
+        // 提前接管重键节点，让它在本引擎之外产出克隆
         const clonedKey = cloneDeep(
           k,
           {
@@ -166,6 +173,14 @@ export function processNodeAsync(
       const cloned: unknown[] = []
       context.visited.set(value as object, cloned)
 
+      // 稀疏数组口径（与同步路径 clone.ts 的数组分支同语义，两条路径不要各自改）：
+      // 逐索引赋值会让源数组的「洞」（`[1, , 3]` 的索引 1）在克隆里落成真实的
+      // `undefined` 自有属性，故 `i in clone` / `Object.keys(clone)` 比源多出键；
+      // 元素自己的描述符标志同样不还原（index 目标只带位置，不像 prop 目标可携带 descriptor）。
+      // 之所以按现状保留：克隆产物主要供 diff / 序列化消费，而 JSON 与 forEach/for-of 都把
+      // 洞读成 undefined，两种形状在使用侧等价；要真正保洞需两条路径同步改成
+      // hasOwnProperty 判定 + 显式写 length（否则尾部洞会缩短克隆：cloned 的长度只由实际
+      // 写到的最大索引决定），并顺带决定元素描述符是否还原——超出 low 波次，需要时另开一条改动
       for (let i = 0; i < value.length; i++) {
         const item = value[i]
         if (item !== null && typeof item === 'object') {
@@ -226,9 +241,10 @@ export function processNodeAsync(
       const isAccessor = descriptor.get !== undefined || descriptor.set !== undefined
       const sourceValue = isAccessor ? (descriptor.get ? (value as Record<string, unknown>)[key] : undefined) : descriptor.value
       // 与同步路径共用同一归一化口径（见 clone.ts 的 normalizeDescriptorFlags）：
-      // 此前异步用 `=== true`、同步传原始值，同一份数据在两条路径会产出不同描述符
+      // 此前异步用 `=== true`、同步传原始值，同一份数据在两条路径会产出不同描述符。
+      // 三个标志一律从这一个对象取（含下方的原语分支）——直接从 descriptor 读会把
+      // 刚归一化的结果又绕开，重新造出两套方言
       const descriptorFlags = normalizeDescriptorFlags(descriptor, isAccessor)
-      const targetWritable = descriptorFlags.writable
 
       if (sourceValue !== null && typeof sourceValue === 'object') {
         // 占位属性必须可写可配置：源属性可能不可写，占位若继承该标志，
@@ -237,7 +253,7 @@ export function processNodeAsync(
         Object.defineProperty(cloned, key, {
           value: undefined,
           writable: true,
-          enumerable: descriptor.enumerable,
+          enumerable: descriptorFlags.enumerable,
           configurable: true,
         })
 
@@ -255,7 +271,7 @@ export function processNodeAsync(
             container: cloned,
             key,
             descriptor: {
-              writable: targetWritable,
+              writable: descriptorFlags.writable,
               enumerable: descriptorFlags.enumerable,
               configurable: descriptorFlags.configurable,
             },
@@ -264,9 +280,7 @@ export function processNodeAsync(
       } else {
         Object.defineProperty(cloned, key, {
           value: sourceValue,
-          writable: targetWritable,
-          enumerable: descriptor.enumerable,
-          configurable: descriptor.configurable,
+          ...descriptorFlags,
         })
       }
     } catch (error) {

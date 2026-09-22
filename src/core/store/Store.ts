@@ -448,6 +448,12 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
 
   /**
    * 创建状态快照
+   *
+   * @returns 深克隆后**部分冻结**的副本：纯对象与数组链上为深度只读，
+   *   但经 Date/RegExp/Map/Set 或非纯对象（class 实例等）触达的节点仍是活的
+   *   可变对象——`Readonly<S>` 只到类型层面，别把它当作深度不可变的保证。
+   *   另注意 Date/RegExp 在克隆时总新建实例，别名关系不保留
+   *   （详见 core/utils/clone.ts 的 deepCloneState 文档）
    */
   $snapshot(): Readonly<S> {
     if (this._destroyed) {
@@ -455,7 +461,8 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
     }
     return this._withInternalAccess(() => {
       // 深克隆后递归冻结纯对象/数组，使 Readonly<S> 的只读承诺在嵌套层级也成立
-      // （内建对象 Date/Map 等的 mutator 不走 [[Set]] 陷阱，冻结无意义故跳过）
+      // （Date/RegExp/Map/Set 的 mutator 不走 [[Set]] 陷阱，冻结拦不住故连同其子节点
+      //  一并留为可变，这就是上面「部分冻结」口径的来源）
       return deepFreezeState(deepCloneState(this._state)) as Readonly<S>
     })
   }
@@ -503,7 +510,13 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
    * Getters 定义对象（只读）
    *
    * 供类型系统推断 Getters 键集合（如 withPageStore 的 mapGetters 约束），
-   * 亦可用于调试与运行时检查。允许在销毁后调用（只读，返回空对象）。
+   * 亦可用于调试与运行时检查。允许在销毁后调用（只读，不抛错）。
+   *
+   * @remarks 销毁后返回的**不是空对象**：destroy() 不注销 getter 定义，
+   *   这里给出的是初始化时登记的那份（`getter(name)` 则会在销毁后抛错，
+   *   两者对「已销毁」的严格程度不同）。销毁后仍调用返回对象里的函数时，
+   *   它会经 `store.state` 读到保留未释放的 `_state`——需要「销毁即失联」
+   *   的语义请显式判 `store.destroyed`
    */
   get getters(): G {
     return this._getterManager.getters
@@ -659,7 +672,12 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
       // 6. 标记已销毁
       this._destroyed = true
 
-      // 7. 清空集合引用
+      // 7. 兜底清空集合引用。看着像重复，其实不是：步骤 1 的循环只在**正常路径**上
+      //    逐个消费映射，而插件清理函数被允许重入（见上方注释——重入里再 use() 会
+      //    往 _plugins / 两张 Map 里塞新条目，此时 _destroyed 尚未置位挡不住），
+      //    且 2~6 任一步抛错时都会跳到 catch、使循环之后的清理半途而废。
+      //    所以这里是「teardown 结束前必须全空」的最后一道闸门：权威清空点是步骤 1，
+      //    本步只兜住重入与异常两条漏网路径，二选一不能省
       this._plugins = []
       this._pluginUninstallFns.clear()
       this._pluginInstallations.clear()
@@ -752,8 +770,16 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
 
   /**
    * 动态启用/禁用状态保护
+   *
+   * 与其他写接口同口径拒绝销毁后调用：destroy() 已经重建过 Proxy 管理器，
+   * 这里再改配置会把「已销毁」的 Store 拉回可变状态并白造一个新管理器。
+   * 只读侧（isStateProtectionEnabled / getStateProtectionConfig）不在此列
+   * @throws 如果 Store 已销毁
    */
   setStateProtection(enabled: boolean): void {
+    if (this._destroyed) {
+      throw new Error('[GeomStore] Cannot call setStateProtection on a destroyed Store')
+    }
     this._stateProtection.enabled = enabled
     this._stateProtectionEnabled = enabled
     if (!enabled) {

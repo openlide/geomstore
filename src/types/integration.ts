@@ -44,20 +44,19 @@ export interface ConnectOptions<S extends State = State, A extends Actions = Act
 type ExtractMappedState<
   S extends State = State,
   M extends { mapState?: readonly (keyof S)[] | Record<string, keyof S> } = { mapState?: readonly (keyof S)[] | Record<string, keyof S> },
-> =
-  undefined extends M['mapState']
-    ? object
-    : Extract<M['mapState'], readonly unknown[]> extends infer Arr
-      ? [Arr] extends [never]
-        ? Extract<M['mapState'], Record<string, keyof S>> extends infer R
-          ? [R] extends [never]
-            ? object
-            : { [P in keyof R & string]: S[R[P] & keyof S] }
-          : object
-        : Arr extends readonly unknown[]
-          ? { [P in Arr[number] & keyof S]: S[P] }
-          : object
-      : object
+> = undefined extends M['mapState']
+  ? object
+  : Extract<M['mapState'], readonly unknown[]> extends infer Arr
+    ? [Arr] extends [never]
+      ? Extract<M['mapState'], Record<string, keyof S>> extends infer R
+        ? [R] extends [never]
+          ? object
+          : { [P in keyof R & string]: S[R[P] & keyof S] }
+        : object
+      : Arr extends readonly unknown[]
+        ? { [P in Arr[number] & keyof S]: S[P] }
+        : object
+    : object
 
 /**
  * 从映射数组提取计算属性类型
@@ -68,20 +67,19 @@ type ExtractMappedState<
 type ExtractMappedGetters<
   M extends { mapGetters?: readonly PropertyKey[] | Record<string, PropertyKey> } = { mapGetters?: readonly PropertyKey[] | Record<string, PropertyKey> },
   G extends { [K: string]: (state: never) => unknown } = { [K: string]: (state: never) => unknown },
-> =
-  undefined extends M['mapGetters']
-    ? object
-    : Extract<M['mapGetters'], readonly PropertyKey[]> extends infer Arr
-      ? [Arr] extends [never]
-        ? Extract<M['mapGetters'], Record<PropertyKey, PropertyKey>> extends infer R
-          ? [R] extends [never]
-            ? object
-            : { [P in keyof R & string]: ReturnType<G[Extract<R[P], keyof G>]> }
-          : object
-        : Arr extends readonly unknown[]
-          ? { [P in Arr[number] & keyof G]: ReturnType<G[P]> }
-          : object
-      : object
+> = undefined extends M['mapGetters']
+  ? object
+  : Extract<M['mapGetters'], readonly PropertyKey[]> extends infer Arr
+    ? [Arr] extends [never]
+      ? Extract<M['mapGetters'], Record<PropertyKey, PropertyKey>> extends infer R
+        ? [R] extends [never]
+          ? object
+          : { [P in keyof R & string]: ReturnType<G[Extract<R[P], keyof G>]> }
+        : object
+      : Arr extends readonly unknown[]
+        ? { [P in Arr[number] & keyof G]: ReturnType<G[P]> }
+        : object
+    : object
 
 /**
  * 从映射配置提取 actions 类型（精确签名）
@@ -92,22 +90,21 @@ type ExtractMappedGetters<
 export type ExtractMappedActions<
   A extends Actions = Actions,
   M extends { mapActions?: readonly (keyof A)[] | Record<string, keyof A> } = { mapActions?: readonly (keyof A)[] | Record<string, keyof A> },
-> =
-  undefined extends M['mapActions']
-    ? object
-    : Extract<M['mapActions'], readonly unknown[]> extends infer Arr
-      ? [Arr] extends [never]
-        ? Extract<M['mapActions'], Record<string, keyof A>> extends infer R
-          ? [R] extends [never]
-            ? object
-            : {
-                [P in keyof R & string]: (...args: InferActionArgs<A, R[P] & keyof A>) => InferActionReturn<A, R[P] & keyof A>
-              }
-          : object
-        : Arr extends readonly unknown[]
-          ? { [P in Arr[number] & keyof A]: (...args: InferActionArgs<A, P>) => InferActionReturn<A, P> }
-          : object
-      : object
+> = undefined extends M['mapActions']
+  ? object
+  : Extract<M['mapActions'], readonly unknown[]> extends infer Arr
+    ? [Arr] extends [never]
+      ? Extract<M['mapActions'], Record<string, keyof A>> extends infer R
+        ? [R] extends [never]
+          ? object
+          : {
+              [P in keyof R & string]: (...args: InferActionArgs<A, R[P] & keyof A>) => InferActionReturn<A, R[P] & keyof A>
+            }
+        : object
+      : Arr extends readonly unknown[]
+        ? { [P in Arr[number] & keyof A]: (...args: InferActionArgs<A, P>) => InferActionReturn<A, P> }
+        : object
+    : object
 
 /**
  * 从 ConnectOptions 提取完整的页面 data 类型
@@ -126,6 +123,39 @@ export type ExtractPageData<
   M extends { mapState?: readonly (keyof S)[] | Record<string, keyof S>; mapGetters?: readonly PropertyKey[] | Record<string, PropertyKey> },
   G extends Getters<S> = Getters<S>,
 > = Partial<S> & ExtractMappedState<S, M> & ExtractMappedGetters<M, G>
+
+/**
+ * 页面/组件上「由集成层注入的框架成员」基类型（#429）
+ *
+ * `data` 与 `setData` 此前在 `PageThis` / `PageConfig` / `ComponentThis` / `ComponentConfig`
+ * 四处逐字重复。这四个类型分属「实例视角」与「配置视角」，任一处单独改动都会让两侧漂移，
+ * 而漂移的表现正是本文件反复防范的那类错误：类型声明出运行时不存在的成员
+ * （或漏掉确实注入了的成员），编译通过、运行时炸。
+ *
+ * `getTabBar` 不在基类型里：它只出现在页面侧的两个类型上（组件侧原本就没声明）。
+ * 本类型刻意不导出——它是内部的去重手段，不是公开契约面；公开面仍是那四个类型。
+ */
+type InjectedDataShape<
+  S extends State,
+  M extends { mapState?: readonly (keyof S)[] | Record<string, keyof S>; mapGetters?: readonly PropertyKey[] | Record<string, PropertyKey> },
+  G extends Getters<S> = Getters<S>,
+> = {
+  /** 注入/合并后的 data：映射的 state + getters（口径见 {@link ExtractPageData}） */
+  data: ExtractPageData<S, M, G>
+  /** 框架的 setData（本库不改其语义，只保证 `this.setData` 在页面/组件实例与配置对象上同形） */
+  setData: (data: Record<string, unknown>, callback?: () => void) => void
+}
+
+/**
+ * 组件 `methods` 命名空间的形状（#429）
+ *
+ * `ComponentThis` 与 `ComponentConfig` 都声明同一个 `ExtraMethods & ExtractMappedActions<A, M>`，
+ * 差别只在这个键出现在实例的顶层与配置对象里各一次（微信会把 methods 条目提升到实例）。
+ */
+type ComponentMethodsShape<ExtraMethods extends object, A extends Actions, M extends { mapActions?: readonly (keyof A)[] | Record<string, keyof A> }> = {
+  /** 配置对象上的 methods 命名空间（微信 Component 写法）；组件实例上这些条目会被提升为顶层方法 */
+  methods: ExtraMethods & ExtractMappedActions<A, M>
+}
 
 /**
  * 方法 this 重写映射类型
@@ -218,11 +248,9 @@ export type PageThis<
   G extends Getters<S> = Getters<S>,
   M extends ConnectOptions<S, A, G> = ConnectOptions<S, A, G>,
   ExtraMethods extends object = object,
-> = {
-  data: ExtractPageData<S, M, G>
-} & ExtraMethods &
+> = InjectedDataShape<S, M, G> &
+  ExtraMethods &
   ExtractMappedActions<A, M> & {
-    setData: (data: Record<string, unknown>, callback?: () => void) => void
     getTabBar?: () => { syncSelectedTab?: () => void } | undefined
   }
 
@@ -244,9 +272,7 @@ export type PageConfig<
     Getters<S>
   >,
   G extends Getters<S> = Getters<S>,
-> = {
-  data: ExtractPageData<S, M, G>
-  setData: (data: Record<string, unknown>, callback?: () => void) => void
+> = InjectedDataShape<S, M, G> & {
   getTabBar?: () => { syncSelectedTab?: () => void } | undefined
 }
 
@@ -266,14 +292,7 @@ export type ComponentThis<
   G extends Getters<S> = Getters<S>,
   M extends ConnectOptions<S, A, G> = ConnectOptions<S, A, G>,
   ExtraMethods extends object = object,
-> = {
-  data: ExtractPageData<S, M, G>
-} & ExtraMethods &
-  ExtractMappedActions<A, M> & {
-    /** 配置对象上的 methods 命名空间（微信 Component 写法）；实例上这些条目被提升为顶层方法 */
-    methods: ExtraMethods & ExtractMappedActions<A, M>
-    setData: (data: Record<string, unknown>, callback?: () => void) => void
-  }
+> = InjectedDataShape<S, M, G> & ExtraMethods & ExtractMappedActions<A, M> & ComponentMethodsShape<ExtraMethods, A, M>
 
 /**
  * 组件增强配置的形状（`withComponentStore` 的返回类型）
@@ -288,12 +307,7 @@ export type ComponentConfig<
   G extends Getters<S> = Getters<S>,
   M extends ConnectOptions<S, A, G> = ConnectOptions<S, A, G>,
   ExtraMethods extends object = object,
-> = {
-  data: ExtractPageData<S, M, G>
-  methods: ExtraMethods & ExtractMappedActions<A, M>
-} & {
-  setData: (data: Record<string, unknown>, callback?: () => void) => void
-}
+> = InjectedDataShape<S, M, G> & ComponentMethodsShape<ExtraMethods, A, M>
 
 /**
  * Component 配置的 this 注入类型
@@ -332,6 +346,15 @@ export interface HostStoreApi<S extends State = State> {
  * 运行时注入（见 with-app-store.ts）：映射的 state / getters 写入 `this.globalData`，
  * 映射的 action（bindActions）与 exposeStoreAPI 的调试方法直接挂在 App 实例上。
  * 交叉 `Extra`（调用处传入用户配置类型 C）以保留 `globalData` 的自定义字段。
+ *
+ * 名字撞车时谁赢：`onLaunch` 先 `bindActions`（with-app-store.ts:199）后 `exposeStoreAPI`
+ * （同文件 210），而 exposeStoreAPI 是无条件 `Object.assign` 覆写（utils.ts:369-371，
+ * 只在卸载时还原原值）。所以 action 名恰为 `store` / `getStore` / `getState` / `getCached` /
+ * `dispatch` / `subscribe` 之一时，实例上留下来的是调试 API。此前两侧直接求交，同名成员变成
+ * 函数交叉（重载集）：`this.getState()` 会解析到先声明的那个签名，调用方拿到的返回类型与运行时
+ * 实际值不符。故让映射 action 避让（`Omit` 掉这六个键），`HostStoreApi<S>` 保持完整——
+ * 反过来 Omit 调试 API 既与运行时相反，又会把 `getCached<K extends keyof S>` 这种带泛型的
+ * 成员经过一次映射类型（精度另有一次损失风险）。
  */
 export type AppThis<
   S extends State,
@@ -341,5 +364,5 @@ export type AppThis<
   Extra extends object = object,
 > = Extra & {
   globalData: ExtractPageData<S, M, G>
-} & ExtractMappedActions<A, M> &
+} & Omit<ExtractMappedActions<A, M>, keyof HostStoreApi<S>> &
   HostStoreApi<S>

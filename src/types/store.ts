@@ -78,10 +78,7 @@ export interface ActionContextBase<S extends State = State> {
  */
 type ActionCollisionKeys<A extends Actions> = string extends keyof A ? never : keyof A
 
-export type ActionContext<S extends State = State, A extends Actions = Actions> = Omit<
-  ActionContextBase<S>,
-  'dispatch' | ActionCollisionKeys<A>
-> &
+export type ActionContext<S extends State = State, A extends Actions = Actions> = Omit<ActionContextBase<S>, 'dispatch' | ActionCollisionKeys<A>> &
   A & {
     /** 类型安全的跨 action 调用（action 内 this.dispatch），仅接受已声明的 action 名称 */
     dispatch<K extends keyof A>(actionName: K, ...args: InferActionArgs<A, K>): InferActionReturn<A, K>
@@ -103,7 +100,13 @@ export type Actions = Record<string, (...args: any[]) => any>
  * 创建带 ThisType 的 Actions 类型
  * 这是方案3的核心：通过 ThisType 注入 this 类型
  */
-type ActionsWithThis<S extends State, A extends Actions> = A & ThisType<ActionContext<S, A>>
+/**
+ * Actions + `ThisType` 注入
+ *
+ * 导出原因：`StoreOptions.actions` 的类型就是它，消费者要写「带 this 上下文的一组 action」
+ * 的公共默认值/包装器时得能命名这个形状（此前只有 `StoreOptions` 可见，成员类型不可命名）。
+ */
+export type ActionsWithThis<S extends State, A extends Actions> = A & ThisType<ActionContext<S, A>>
 
 /**
  * Getters类型 - 支持类型推断
@@ -181,8 +184,11 @@ export type SubscriberLimitPolicy = 'evict-oldest' | 'throw'
 
 /**
  * 订阅配置选项
+ *
+ * 随 `StoreOptionsBase.subscription` 发布给消费者：需要集中管理默认订阅配置
+ * （共享 defaults 对象、包装 createStore 转发 `subscription`）时必须能命名它。
  */
-interface SubscriptionOptions {
+export interface SubscriptionOptions {
   /** 最大订阅者数量（默认 50） */
   maxSubscribers?: number
   /** 订阅者达到上限时的策略（默认 'evict-oldest'） */
@@ -191,8 +197,11 @@ interface SubscriptionOptions {
 
 /**
  * 通知行为配置选项
+ *
+ * 与 `SubscriptionOptions` 同理：`StoreOptionsBase.notify` 的成员类型，导出后消费者
+ * 才能显式声明/复用一份通知策略。
  */
-interface NotifyOptions {
+export interface NotifyOptions {
   /**
    * 通知监听器前是否深拷贝状态（默认 true）。
    * 设为 false 进入零拷贝模式：监听器收到只读保护 Proxy（状态保护关闭时为原始引用，

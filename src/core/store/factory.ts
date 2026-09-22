@@ -1,6 +1,46 @@
 import { Store } from './Store.js'
 import type { StoreConfig, State, Actions, Getters } from '../../types/store.js'
 
+// createStore 的设计要点。写成行注释而非 JSDoc：只有紧邻声明的 JSDoc 会被
+// IDE/typedoc 绑定，此前三块文档叠在 type FactoryStoreConfig 之上，下面两块
+// 永远取不到（悬空注释），故把不绑定单一声明的部分降级为普通注释，
+// 把使用文档移到重载之上（见下方 overload 1）。
+//
+// 设计要点：
+// - `S` / `A` / `G` 均作为独立泛型参数，由 `StoreConfig` 的
+//   state / actions / getters 字面量直接推断，无需 Infer* 反推工具，
+//   避免自引用循环导致退化为 object / unknown。
+// - `state` 通过**函数重载**提供两种形态，各自精确推断：
+//   1. 工厂函数 `state: () => S`（Pinia 同款，避免共享引用 / 惰性初始化）
+//   2. 对象字面量 `state: S`
+// - 工厂重载置于对象重载之前：函数类型本身可赋给 `State`（object），
+//   若顺序颠倒，`state: () => ({...})` 会被对象重载误判为 `S` 即函数类型，
+//   导致 getter / action 上下文退化。重载前置后 `S` 直接收敛为工厂函数
+//   的返回值类型，getter 上下文因此获得精确的 State 类型，彻底去除隐式 any。
+// - 重载配置通过 `Omit<StoreConfig, 'state'>` 剥离 `state` 后再固定其类型，
+//   避免与 `StoreConfig.state?: S` 交叉成 `S & (() => S)` 引发推断歧义。
+//
+// 显式泛型调用 `createStore<AppState>({...})` 的已知限制（TypeScript 语义，非本库缺陷）：
+// 类型参数只要显式给出一个，其余未给出的就落到默认值而**不参与推断**——`A` 退化为
+// `Actions`（`keyof A` 塌成 string）、`G` 退化为 `Getters<S>`。因此该写法下
+// `dispatch('拼错的action')` 不再报错、`getter('x')` 退化为 unknown，
+// 失去上面两型别名的全部约束。需要精确的 action/getter 类型请省略泛型、
+// 由 state/actions/getters 字面量反推（推荐写法），或显式写全三个类型参数。
+
+/**
+ * 工厂函数形式配置：state 类型固定为 `() => S`。
+ * 必须用 Omit 剥离 `StoreConfig.state?: S`——否则与 `{ state: () => S }` 交集
+ * 成 `S & (() => S)`，S 从两个位置产生冲突候选（函数与返回值），
+ * 导致 getter 上下文中 `ResolveState<S>` 退化为 `(() => S) | S`。
+ */
+type FactoryStoreConfig<S extends State, A extends Actions = Actions, G extends Getters<S> = Getters<S>> = Omit<StoreConfig<S, A, G>, 'state'> & {
+  state: () => S
+}
+
+/** 对象字面量形式配置：state 类型固定为 `S` */
+type LiteralStoreConfig<S extends State, A extends Actions = Actions, G extends Getters<S> = Getters<S>> = Omit<StoreConfig<S, A, G>, 'state'> & { state: S }
+
+// 重载 1：state 工厂函数形式（state: () => S）
 /**
  * 创建 Store 实例，支持完整的类型推断
  *
@@ -32,45 +72,6 @@ import type { StoreConfig, State, Actions, Getters } from '../../types/store.js'
  * const msg = store.getter('greeting')    // 返回类型自动推断为 string
  * ```
  */
-
-/**
- * 创建 Store 实例 - 免泛型自动推导（推荐）
- *
- * 设计要点：
- * - `S` / `A` / `G` 均作为独立泛型参数，由 `StoreConfig` 的
- *   state / actions / getters 字面量直接推断，无需 Infer* 反推工具，
- *   避免自引用循环导致退化为 object / unknown。
- * - `state` 通过**函数重载**提供两种形态，各自精确推断：
- *   1. 工厂函数 `state: () => S`（Pinia 同款，避免共享引用 / 惰性初始化）
- *   2. 对象字面量 `state: S`
- * - 工厂重载置于对象重载之前：函数类型本身可赋给 `State`（object），
- *   若顺序颠倒，`state: () => ({...})` 会被对象重载误判为 `S` 即函数类型，
- *   导致 getter / action 上下文退化。重载前置后 `S` 直接收敛为工厂函数
- *   的返回值类型，getter 上下文因此获得精确的 State 类型，彻底去除隐式 any。
- * - 重载配置通过 `Omit<StoreConfig, 'state'>` 剥离 `state` 后再固定其类型，
- *   避免与 `StoreConfig.state?: S` 交叉成 `S & (() => S)` 引发推断歧义。
- *
- * 显式泛型调用 `createStore<AppState>({...})` 的已知限制（TypeScript 语义，非本库缺陷）：
- * 类型参数只要显式给出一个，其余未给出的就落到默认值而**不参与推断**——`A` 退化为
- * `Actions`（`keyof A` 塌成 string）、`G` 退化为 `Getters<S>`。因此该写法下
- * `dispatch('拼错的action')` 不再报错、`getter('x')` 退化为 unknown，
- * 失去上面两型别名的全部约束。需要精确的 action/getter 类型请省略泛型、
- * 由 state/actions/getters 字面量反推（推荐写法），或显式写全三个类型参数。
- */
-/**
- * 工厂函数形式配置：state 类型固定为 `() => S`。
- * 必须用 Omit 剥离 `StoreConfig.state?: S`——否则与 `{ state: () => S }` 交集
- * 成 `S & (() => S)`，S 从两个位置产生冲突候选（函数与返回值），
- * 导致 getter 上下文中 `ResolveState<S>` 退化为 `(() => S) | S`。
- */
-type FactoryStoreConfig<S extends State, A extends Actions = Actions, G extends Getters<S> = Getters<S>> = Omit<StoreConfig<S, A, G>, 'state'> & {
-  state: () => S
-}
-
-/** 对象字面量形式配置：state 类型固定为 `S` */
-type LiteralStoreConfig<S extends State, A extends Actions = Actions, G extends Getters<S> = Getters<S>> = Omit<StoreConfig<S, A, G>, 'state'> & { state: S }
-
-// 重载 1：state 工厂函数形式（state: () => S）
 export function createStore<S extends State, A extends Actions = Actions, G extends Getters<S> = Getters<S>>(
   options: FactoryStoreConfig<S, A, G>,
 ): Store<S, A, G>

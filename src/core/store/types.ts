@@ -1,7 +1,14 @@
 /**
  * Store 内部类型定义
  *
- * 此模块定义 Store 内部使用的类型，不对外暴露
+ * 此模块定义 Store 内部使用的类型。
+ *
+ * 可见性口径：`InternalStateProtectionConfig` / `ProxyCache` /
+ * `SubscriptionManagerInterface` / `BatchManagerInterface` 由 `core/store/index.js`
+ * 的 barrel 再导出（该 barrel 自述「供高级用户使用」），但该子路径**不在 package.json 的
+ * exports 映射**里，消费者从包名只能拿到 `./core`（`src/core/index.ts`，未含这四个类型）。
+ * 因此它们对包外仍是内部件：形状可能随重构变动，不承诺语义稳定，破坏性调整不必升主版本。
+ * 原注释笼统写「不对外暴露」，与 barrel 的实际再导出不一致，故按上述口径更正。
  */
 
 import type { State, StateListener, StateProtectionOptions } from '../../types/store.js'
@@ -18,8 +25,8 @@ export type InternalStateProtectionConfig = Required<StateProtectionOptions>
  * 如需清空缓存，请通过 createProxyCache() 重新创建实例。
  */
 export interface ProxyCache {
-  /** 获取缓存的 Proxy */
-  get(target: object): unknown | undefined
+  /** 获取缓存的 Proxy；未命中返回 undefined（`unknown` 已含 undefined，无需并集；调用方需显式判 `!== undefined`） */
+  get(target: object): unknown
   /** 设置 Proxy 缓存 */
   set(target: object, proxy: unknown): void
   /** 删除 Proxy 缓存 */

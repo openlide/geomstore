@@ -37,7 +37,9 @@ export interface SnapshotDiff {
 export function compareSnapshots<T1, T2>(snapshot1: SnapshotResult<T1>, snapshot2: SnapshotResult<T2>): SnapshotDiff {
   // 对比最大深度：超出后停止递归，防止深度嵌套导致栈溢出
   const MAX_COMPARE_DEPTH = 100
-  const changes: Array<{ path: string; oldValue: unknown; newValue: unknown; kind?: 'changed' | 'added' | 'removed' }> = []
+  // 差异项类型复用接口定义（SnapshotDiff['changes']）：另抄一份内联字面量会让 kind 枚举
+  // 有两处定义，扩展时漏改一处即类型漂移
+  const changes: SnapshotDiff['changes'] = []
 
   // 已对比过的「对象对」登记表：逐路径调用 compare 时，循环引用会让同一对对象
   // （如 root 与 root.self 克隆后互指）反复进入比较，原先仅靠深度护栏截断会把

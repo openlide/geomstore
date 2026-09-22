@@ -9,15 +9,17 @@
  * typecheck:examples 更早失败。
  *
  * 文件同时承载 src/types 里**带运行时实现**的导出的回归用例（`types/error.ts` 的
- * `defaultErrorHandler` 见 #385，`types/persistence.ts` 的 `WxStorageBackend` 见 #390），
- * 因为 types 层没有独立的测试目录（`tests/unit/core/error/` 那类路径属实现层）。
+ * `defaultErrorHandler` 见 #385/#384、`types/store.ts` 的 `Store.hooks` 契约面见 #404、
+ * `types/persistence.ts` 的 `WxStorageBackend` 见 #390），因为 types 层没有独立的测试目录
+ * （`tests/unit/core/error/` 那类路径属实现层）。
  * 末尾另有一组针对测试基础设施自身（`tests/setup.ts` 的 wx mock / 定时器 / 进程监听器，
- * 见 #414/#415/#416）的用例：它们与上面的类型契约同属「只在编译期或全局装配阶段暴露」的缺陷。
+ * 见 #414/#415/#416/#417）的用例：它们与上面的类型契约同属「只在编译期或全局装配阶段暴露」的缺陷。
  */
 
 import { composeStore, createStore } from '../../src/index.js'
 import { createParametricSelector, createSelector } from '../../src/extras/selector.js'
-import { createErrorContext, defaultErrorHandler } from '../../src/types/error.js'
+import { createErrorContext, defaultErrorHandler, type ErrorLevel } from '../../src/types/error.js'
+import type { IHookSystem } from '../../src/types/plugin.js'
 import { WxStorageBackend } from '../../src/types/persistence.js'
 
 interface UserState {
@@ -40,10 +42,9 @@ describe('状态类型为业务 interface（无索引签名）', () => {
     expect(selectName(store.getState())).toBe('Ada')
 
     // 参数化选择器：按参数分别缓存
-    const selectNameById = createParametricSelector(
-      (state: UserState, id: number) => (state.id === id ? state.name : ''),
-      { ttl: 1000, maxEntries: 8 },
-    )(store.getState())
+    const selectNameById = createParametricSelector((state: UserState, id: number) => (state.id === id ? state.name : ''), { ttl: 1000, maxEntries: 8 })(
+      store.getState(),
+    )
     expect(selectNameById(1)).toBe('Ada')
     expect(selectNameById(2)).toBe('')
   })
@@ -89,11 +90,7 @@ describe('defaultErrorHandler 对非 Error 抛值的兜底（#385）', () => {
     const context = createErrorContext('user-store', 'dispatch', asError(null), 'warning')
 
     expect(() => defaultErrorHandler(context)).not.toThrow()
-    expect(warnSpy).toHaveBeenCalledWith(
-      expect.stringContaining('[WARNING][user-store]'),
-      expect.stringContaining('Warning in dispatch'),
-      'null',
-    )
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('[WARNING][user-store]'), expect.stringContaining('Warning in dispatch'), 'null')
 
     warnSpy.mockRestore()
   })
@@ -132,15 +129,76 @@ describe('defaultErrorHandler 对非 Error 抛值的兜底（#385）', () => {
     defaultErrorHandler(createErrorContext('user-store', 'dispatch', error, 'warning'))
     defaultErrorHandler(createErrorContext('user-store', 'dispatch', error, 'error'))
 
-    expect(warnSpy).toHaveBeenCalledWith(
-      expect.stringContaining('[WARNING][user-store]'),
-      expect.stringContaining('Warning in dispatch'),
-      'Test warning',
-    )
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('[WARNING][user-store]'), expect.stringContaining('Warning in dispatch'), 'Test warning')
     expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('[ERROR][user-store]'), 'Stack:', 'Test stack trace')
 
     errorSpy.mockRestore()
     warnSpy.mockRestore()
+  })
+})
+
+// ==================== #384：defaultErrorHandler 的级别分派是穷尽的 ====================
+
+describe('defaultErrorHandler 的级别分派（#384）', () => {
+  const asLevel = (value: string): ErrorLevel => value as unknown as ErrorLevel
+
+  it('契约外的级别走刻意兜底的 info 分支，而不是被静默丢掉', () => {
+    const infoSpy = jest.spyOn(console, 'info').mockImplementation(() => {})
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {})
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {})
+
+    // 兜底仍要出声：未知级别按 info 打印，前缀保留调用方传进来的原始标签
+    defaultErrorHandler(createErrorContext('user-store', 'dispatch', new Error('unexpected'), asLevel('debug')))
+
+    expect(infoSpy).toHaveBeenCalledWith(expect.stringContaining('[DEBUG][user-store]'), expect.stringContaining('Info in dispatch'), 'unexpected')
+    expect(errorSpy).not.toHaveBeenCalled()
+    expect(warnSpy).not.toHaveBeenCalled()
+
+    infoSpy.mockRestore()
+    errorSpy.mockRestore()
+    warnSpy.mockRestore()
+  })
+
+  it('warn 别名与 warning 同通道，critical 与 error 同通道（switch 登记顺序不变）', () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {})
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {})
+    const infoSpy = jest.spyOn(console, 'info').mockImplementation(() => {})
+    const error = new Error('level routing')
+    error.stack = 'routing stack'
+
+    defaultErrorHandler(createErrorContext('s', 'dispatch', error, 'warn'))
+    defaultErrorHandler(createErrorContext('s', 'dispatch', error, 'critical'))
+    defaultErrorHandler(createErrorContext('s', 'dispatch', error, 'info'))
+
+    expect(warnSpy).toHaveBeenCalledTimes(1)
+    expect(infoSpy).toHaveBeenCalledTimes(1)
+    // critical：error 通道 + 堆栈行（级别标签保留 CRITICAL）
+    expect(errorSpy.mock.calls[0]?.[0]).toContain('[CRITICAL][s]')
+    expect(errorSpy.mock.calls.some((call) => call.includes('Stack:'))).toBe(true)
+
+    warnSpy.mockRestore()
+    errorSpy.mockRestore()
+    infoSpy.mockRestore()
+  })
+})
+
+// ==================== #404：listenerCount 进入 IHookSystem 契约 ====================
+
+describe('Store.hooks 的契约面暴露 listenerCount（#404）', () => {
+  it('按 IHookSystem 取用 hooks 时无需断言即可拿到语义明确的监听器计数', () => {
+    const store = createStore({ name: 'hooks-contract-listener-count', state: { v: 0 } })
+    // 关键点是这行**不需要 any 断言**：此前 listenerCount 只在实现类 HookSystem 上，
+    // 声明为 IHookSystem 的 store.hooks 拿不到它
+    const hooks: IHookSystem = store.hooks
+
+    expect(hooks.listenerCount('afterSetState')).toBe(0)
+    const unsubscribe = hooks.on('afterSetState', () => {})
+    expect(hooks.listenerCount('afterSetState')).toBe(1)
+    // size(name) 的有参语义与 listenerCount 一致（无参时才是「钩子种类数」）
+    expect(hooks.size('afterSetState')).toBe(1)
+    unsubscribe()
+    expect(hooks.listenerCount('afterSetState')).toBe(0)
+    expect(hooks.listenerCount('onError')).toBe(0)
   })
 })
 
@@ -227,6 +285,19 @@ describe('tests/setup.ts 的 wx mock 默认行为（#416）', () => {
     wx.setStorageSync('to-clear', 1)
     wx.clearStorageSync()
     expect(wx.getStorageSync('to-clear')).toBeUndefined()
+  })
+
+  it('#417：nextTick 的回调按「无参回调」被调用一次（形参已显式标注，不再走隐式 any）', async () => {
+    const callback = jest.fn()
+    wx.nextTick(callback)
+    // 与真机一致：同一 tick 内不执行
+    expect(callback).not.toHaveBeenCalled()
+
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(callback).toHaveBeenCalledTimes(1)
+    // 回调不带任何实参：写 `(arg) => …` 的调用点在这里就会露出来
+    expect(callback.mock.calls[0]).toEqual([])
   })
 
   it('request 默认走 success(200) 分支，且用例仍可逐次覆盖实现', () => {

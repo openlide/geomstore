@@ -100,11 +100,27 @@ if (!fs.existsSync(distDir)) {
   try {
     removeDirTree(distDir)
     fs.rmdirSync(distDir)
-    console.log(`[clean-dist] removed dist (${before} files)`)
   } catch (error) {
     console.warn(
       `[clean-dist] WARN: 未能清空 dist（${error instanceof Error ? error.message : String(error)}）。\n` +
         '            构建将继续，但 dist 中可能残留源文件已删除的旧产物。',
+    )
+  }
+  // 后置校验：日志不能只由「有没有抛错」推断结果——removeDirTree 可能在半途失败后
+  // 只留下告警，也可能整个目录被外部进程重建。以 dist 是否真的消失为准；仍按本脚本
+  // 头部的既定策略只告警、不改退出码（残留属「未清理干净」，不是构建错误）。
+  if (!fs.existsSync(distDir)) {
+    console.log(`[clean-dist] removed dist (${before} files)`)
+  } else {
+    let remaining = -1
+    try {
+      remaining = countFiles(distDir)
+    } catch {
+      // 统计失败不改变结论：目录还在本身就是需要人看一眼的信号
+    }
+    console.warn(
+      `[clean-dist] WARN: dist 未被清空，仍有 ${remaining < 0 ? '未知数量' : remaining} 个文件残留` +
+        `（清理前有 ${before} 个）。构建继续，但旧产物（含已删除 API 的 .js/.d.ts）可能被一并发布。`,
     )
   }
 }

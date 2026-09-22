@@ -46,17 +46,25 @@ const executor = new ActionExecutor<MixedActions>()
 const utils = new ActionUtils<MixedActions>(mixedActions)
 
 // 正例：异步 action 返回已解包（修复前为 Promise<Promise<{id: string}>>，then 回调参数是 Promise，user.id 报错）
-executor.execute(mixedActions, 'fetchUser', 'u1').then((user) => {
-  const _userId: string = user.id
-})
+// 两条 `.then` 断言都收进同一个 await 探针（#434）：此前链子既不 await 也不 catch，
+// 一旦本文件被执行（jest testMatch 放宽、或经 ts-node/tsx 直跑）就是未处理拒绝；
+// 且 `mixedActions` 是 `declare const`，真跑起来会在断言之前抛 ReferenceError
+async function probeThenChannel(): Promise<void> {
+  await executor.execute(mixedActions, 'fetchUser', 'u1').then((user) => {
+    const _userId: string = user.id
+    void _userId
+  })
+  await executor.execute(mixedActions, 'tick').then((n) => {
+    const _tick: number = n
+    void _tick
+  })
+}
+void probeThenChannel
 
-// 正例：同步 action 直接返回值
-executor.execute(mixedActions, 'tick').then((n) => {
-  const _tick: number = n
-})
-
-// 正例：await 结果直接可用
-async function probeExecutor(): Promise<[unknown, number]> {
+// 正例：await 结果直接可用。
+// 返回类型写精确元组而不是 `[unknown, number]`（#435）：`unknown` 恰恰抹掉了本文件要锁的
+// 那点精度——异步 action await 出来的是解包值，写成 unknown 时 Promise<Promise<T>> 也能过
+async function probeExecutor(): Promise<[{ id: string }, number]> {
   const user: { id: string } = await executor.execute(mixedActions, 'fetchUser', 'u1')
   const n: number = await utils.execute(mixedActions, 'tick')
   return [user, n]

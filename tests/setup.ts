@@ -58,9 +58,13 @@ g.wx = {
     select: jest.fn().mockReturnThis(),
     selectAll: jest.fn().mockReturnThis(),
     selectViewport: jest.fn().mockReturnThis(),
-    exec: jest.fn().mockResolvedValue([])
+    exec: jest.fn().mockResolvedValue([]),
   })),
-  nextTick: jest.fn((callback) => setTimeout(callback, 0)),
+  // 形参显式标注：真机 `wx.nextTick(callback)` 的回调无入参，隐式 any 会让
+  // 「传了参数的调用点」在这里静默通过。
+  // 排期仍用真实 setTimeout（此处不预装 fake timers），用例自行 useFakeTimers 后
+  // 需要手动推进时钟；未推进的残留回调由文件末尾的全局 afterEach clearAllTimers 丢弃
+  nextTick: jest.fn((callback: () => void) => setTimeout(callback, 0)),
   // 高精度计时（模拟小程序 wx.getPerformance，底层复用 Node 的 performance.now）
   getPerformance: jest.fn(() => ({ now: () => (typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now()) })),
 }
@@ -71,7 +75,7 @@ const mockComponent = jest.fn()
 
 // Mock getApp函数
 const mockGetApp = jest.fn(() => ({
-  globalData: {}
+  globalData: {},
 }))
 
 g.Page = mockPage

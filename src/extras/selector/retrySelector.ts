@@ -164,8 +164,13 @@ function throwRetryExhausted(lastError: Error | undefined, attemptCount: number)
 /**
  * 创建可延迟重试的异步选择器
  *
- * 同步重试选择器无法在尝试之间让出（延迟意味着忙等），延迟/退避/中止
+ * 同步重试选择器无法在尝试之间让出（延迟意味着忙等），延迟/退避
  * 能力由本异步变体承载。
+ *
+ * 本变体**不提供**取消信号（无 `signal`/`AbortSignal` 选项）：已在执行的
+ * `selector(state)` 无法被打断，重试循环也只在两次尝试之间读 `shouldRetry`。
+ * 需要提前停止就让 `shouldRetry` 返回 false（剩余尝试立即结束、原错误照常带
+ * `attempts` 标注抛出），真正的取消须由被包装的选择器自己实现。
  *
  * 注意：对相同 state 立即重试仅当 selector 依赖外部可变状态（时钟、随机、
  * 惰性加载的缓存）时才有意义——纯函数对相同输入重试必然得到相同结果。

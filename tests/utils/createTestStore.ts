@@ -47,6 +47,11 @@ export function createTestStore<S extends Record<string, unknown> = Record<strin
   // 不改写调用方传入的 options：把生成的 name 写回入参，会让复用同一 fixture 的
   // 后续调用跳过计数器、全部落到同一个 name（正是本工厂要防的冲突），
   // 入参被 Object.freeze 时更直接抛错
+  //
+  // name 用真值判断而不是 `=== undefined`：本库对「空字符串名称」的既定语义就是「未命名」——
+  // `Store` 构造函数写的正是 `options.name || 'store-N'`（src/core/store/Store.ts，
+  // 由 tests/unit/store/store.test.ts 的 STORE-088 锁定）。`''` 若被原样透传，
+  // 最终仍会被 Store 换成非确定性的 `store-N`，恰恰丢掉本工厂要保证的唯一名可复现性
   const resolved: TestStoreConfig<S> = options.name ? options : { ...options, name: `test-store-${++_seq}` }
   return createStoreFromOptions(resolved)
 }

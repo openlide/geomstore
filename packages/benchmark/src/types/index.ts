@@ -131,6 +131,28 @@ export interface BenchmarkConfig {
 }
 
 /**
+ * 逐层可选版本
+ *
+ * 数组分支按「整体替换」处理：`mergeConfig` 对 scenarios 就是整组覆盖语义，
+ * 把元素也变可选只会让 `{ name?: string }` 这种半截场景通过编译、到运行时炸。
+ */
+export type DeepPartial<T> = T extends (infer U)[]
+  ? U[]
+  : T extends object
+    ? { [K in keyof T]?: DeepPartial<T[K]> }
+    : T
+
+/**
+ * 配置覆盖入参（`mergeConfig` 的第二参、`BenchmarkRunner` 构造函数的 config）
+ *
+ * 原先声明成 `Partial<BenchmarkConfig>`：那是浅 Partial，`general` / `datasets` /
+ * `thresholds` 一旦给出就必须整组配齐，而 `mergeConfig` 做的是逐档位、逐分组的深合并。
+ * 类型与运行时语义不一致时，`{ general: { warmupIterations: 5 } }` 这种合法写法直接被拒，
+ * 调用方只好把默认值整份抄一遍——抄来的默认值就是下一轮漂移的来源。
+ */
+export type BenchmarkConfigOverride = DeepPartial<BenchmarkConfig>
+
+/**
  * 基准测试结果
  */
 export interface BenchmarkResult {
@@ -189,7 +211,20 @@ export interface BenchmarkResult {
       peakInstantRate: number
     }
 
-    /** 缓存性能 */
+    /**
+     * 缓存性能
+     *
+     * `hitRate` / `missRate` 是派生值，不是独立的第二个真相源：包内唯一产出这一段的三处
+     * （`helpers.buildCacheResult`、`helpers.emptyCacheResult`、`ResultBuilder.mergeCacheStats`）
+     * 都从 `hits` / `misses` 现算，恒有 `hits + misses === totalAccesses` 与
+     * `hitRate + missRate === 100`（零访问时两者均为 0）。上游 `CacheStats` 压根没有比率入口，
+     * 适配方无法注入与计数器矛盾的比率；自行拼装 BenchmarkResult 的 harness 必须走
+     * `buildCacheResult`，不要手写这两个字段。
+     *
+     * `evictions` 有意保持可选（与 `BenchmarkStore.getCacheStats` 同一口径）：只有带淘汰
+     * 策略的实现统计它，「未统计」与「0 次淘汰」是两回事，必填会逼实现方伪造 0，
+     * `mergeCacheStats` 也就无法再区分二者（它按「任一参与方带值才求和」保留 undefined）。
+     */
     cache: {
       /** 启用缓存 */
       enabled: boolean
@@ -356,8 +391,16 @@ export interface IterationOutcome<T> {
 
 /**
  * 基准测试工具函数接口
+ *
+ * 名字带 `Contract` 而不叫 `BenchmarkUtils`：入口 barrel 既 `export { BenchmarkUtils } from './utils.js'`
+ * （类，同时占住值与类型两个含义）又 `export type * from './types/index.js'`，而显式导出优先级高于
+ * 星号导出——旧名下这份接口在包外永远取不到（`import type { BenchmarkUtils }` 拿到的是类实例类型），
+ * 且编译器对这种遮蔽一声不吭。改名后两个都可达，`BenchmarkUtils` 一名一义。
+ *
+ * 这里是「runner 实际用到的最小契约」，类可以比它多成员；把它当接口依赖的调用方不应
+ * 假设能拿到 `calculateTimeStats` / `repeat` 这类实现侧扩展。
  */
-export interface BenchmarkUtils {
+export interface BenchmarkUtilsContract {
   /** 测量执行时间 */
   measureTime<T>(fn: () => T): { result: T; duration: number }
 
