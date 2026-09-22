@@ -31,7 +31,7 @@ GeomStore 是轻量级微信小程序状态管理库，提供类 Pinia 的 API�
    微信「构建 npm」等不解析 `exports` 的场景，另有转发子目录（`store` / `hooks` / `plugins` / `integrations` / `compose` / `selectors` / `snapshot` / `performance` / `actions` / `cache` / `error`）可用，但 **Node 与打包器下请以上表为准**（如快照用 `extras/snapshot`，而非 `/snapshot`）。
 3. **环境要求**：Node ≥ 22；TypeScript **≥ 5.4**（`Store.use` / `usePlugin` 的公开签名使用 `NoInfer`，低版本会报 `Cannot find name 'NoInfer'`，除非开启 `skipLibCheck`）；用装饰器需 `experimentalDecorators`。
 4. **状态只能通过 action 修改**：禁止 `store.state.xxx = value`（开发模式直接抛错；生产模式由 `stateProtection.productionHandler` 决定：默认 `'warn'` 告警后放行、`'silent'` 静默放行、`'error'` 抛错；绕过 action 的写入不触发订阅通知）。合法写法：action 内 `this.state.xxx`、`this.setState(k, v)`、`this.$patch(partial)`、`this.$replaceState(next)`。
-5. **订阅是引用计数**：同一函数注册 N 次就通知 N 次，每个退订句柄只抵消自己那一次注册，重复调用同一句柄无效；句柄按注册标识精确退订，被上限驱逐的旧句柄不会误删同一回调的重新注册。`subscribe` 的监听器只接收**一个参数** `(state) => void`（新状态），没有 `prevState`。
+5. **订阅是引用计数**：同一函数注册 N 次就通知 N 次，每个退订句柄只抵消自己那一次注册，重复调用同一句柄无效；句柄按注册标识精确退订，被上限驱逐的旧句柄不会误删同一回调的重新注册。`subscribe` 的监听器只接收**一个参数** `(state) => void`（新状态），没有 `prevState`。回调抛错被逐个隔离，开发模式打印、生产模式经 `onError` 钩子上报；上限只门禁「新增订阅」，重复注册免检，`size()` 可高于 `maxSubscribers`。
 6. **action 的 `this`**：指向 action 上下文，含 `state` / `setState` / `$patch` / `$replaceState` / `getState` / `dispatch`，以及同 store 的其他 action；其余参数调用方传入。
 7. **插件已泛型化**：`Plugin<S extends State = State>`。写 `install(store)` 时可标注具体状态类型；`store.use(plugin)` 与 `usePlugin(plugin, store)` 传具体 Store **无需断言**，状态无关的插件写作 `Plugin<State>`（如 `loggerPlugin`）。
 8. **getter 是纯函数且不缓存**：`(state) => value`，每次读取重新执行；计算密集型派生用选择器。
@@ -129,6 +129,8 @@ unsubscribe()
 store.batch(() => { /* 多次写入合并为一次通知 */ })   // 或 startBatch() / endBatch() 手动配对
 ```
 
+钩子处理器在**插件侧**（`install(store)` 拿到的 `Store` 接口）按钩子名拿到精确形参（`HookArgsMap`）：`on('beforeDispatch', (name, args) => …)` 无需再写 `unknown`，`emit` 的实参个数 / 顺序也在编译期受检。`emit` 的失败语义：逐个处理器 `try/catch`，不影响其余处理器、也不传播给 `emit` 调用方，先 `console.error` 再转投 `onError`（`onError` 自身抛错只落日志）。要数某个钩子挂了几个处理器请用 `hooks.listenerCount(name)`（`size(name)` 与无参 `size()` 量纲不同）。
+
 action 体内调用 `batch()` 时通知统一延迟到 dispatch 收尾补发一次；批保护只覆盖同步段，异步回调 `await` 之后的变更逐条通知（开发模式有告警）。
 
 action 内 `this.state` 的对象/数组与 Map/Set 写入在两种通知模式下都会标记顶层脏键（共享别名可能标记多键），归属按需求建一次索引、标量写入 O(1)，逐项更新长列表不再退化；在同步订阅回调内读取 `isStateKeyDirty(key)`，通知结束后脏键清空（回调内重入写入的脏键留给下一轮）。默认模式同样追踪；`onlyOnChange` 只是按变更计数抑制通知，并非内容深比较，其基线覆盖 `beforeDispatch` 钩子内的写入。类实例与类型化数组也被追踪：属性/元素写入正常标记，实例方法调用保守标记所属键（读取时方法绑定原始接收者，`#private` 与内部槽位可用）。`getState()` 裸引用与 Date/RegExp/WeakMap/WeakSet 的内部变异不受追踪，请显式替换值。
@@ -152,7 +154,7 @@ store.use(analyzerPlugin)                       // globalThis.__GEOMSTORE_ANALYZ
 store.use(timeTravelPlugin({ maxSize: 100 }))   // store.__timeTravel__.undo()
 ```
 
-`storage` 必须**同步**（`{ getItem, setItem, removeItem }`），传异步实现会被拒绝；不传则自动探测 `wx` 同步存储，否则降级内存存储。
+`storage` 必须**同步且三方法齐备**（`{ getItem, setItem, removeItem }`）：残缺或返回 Promise 的后端会在安装期 / 读写时明确抛错，绝不静默换后端；不传则自动探测 `wx` 同步存储，否则降级内存存储（非生产 `console.warn`，**生产经 `onError` 钩子上报**）。接入微信请传 `new WxStorageBackend()`——`wx` 全局对象本身没有 `getItem`，不能直接当后端用。
 
 时间旅行 `getSnapshots()` 返回核心 `deepCloneState` 的副本，修改普通对象、数组、Date/RegExp/Map/Set 不会污染历史或 `goTo` 恢复值。但类实例、函数、Promise、弱集合仍共享引用，不要把它等同于 extras/snapshot 的完全隔离/丢弃契约。
 
@@ -205,7 +207,13 @@ class UserService {
 
 `withDebounce` / `withThrottle` / `withCache` 支持实例方法与静态方法，按宿主和方法隔离状态；复用装饰器时，同描述 Symbol 方法与同名字符串方法互不干扰。
 
-签名：`withLog(options?)` / `withDebounce(delay = 300)` / `withThrottle(interval, options?)` / `withCache(options?)` / `withRetry(options?)` / `withTimeout(timeout, options?)` / `createDecorator(impl)`。节流的 `leading` / `trailing` 默认均为 `true`；方法"非 `async` 语法但返回 Promise"时置 `assumeAsync: true`，使被抑制的调用同样返回 Promise。函数式场景用 `ActionExecutor` / `ActionLoader` / `withLoading`。
+签名：`withLog(name?, options?)`（`options`: `{ sink?, redact? }`）/ `withDebounce(delay = 300)` / `withThrottle(interval, options?)` / `withCache(options?)` / `withRetry(options?)` / `withTimeout(timeout, options?)` / `createDecorator(options?)`（`{ before?, after?, onError? }`）。节流的 `leading` / `trailing` 默认均为 `true`；方法"非 `async` 语法但返回 Promise"时置 `assumeAsync: true`，使被抑制的调用同样返回 Promise。函数式场景用 `ActionExecutor` / `ActionLoader` / `withLoading`。
+
+装饰器语义（写代码时按此预期，不要凭记忆）：
+
+- `createDecorator` **不把同步方法包成 `async`**：同步方法仍同步返回值，只有被装饰方法（或 `before`）返回 Promise 时调用才返回 Promise。`before` 返回 Promise 会被等待（其 rejection 走 `onError`）；`onError` 收到规范化 `Error`，它自身抛错只记日志、不顶替原始失败。
+- `withLog` 在**生产构建默认只输出摘要**（类型 / 长度 / 键数），不打印参数与返回值内容；要自定义脱敏传 `redact: (value, phase) => …`（`phase` 为 `'args' | 'result' | 'error'`，显式给出即以你给的为准），要换出口传 `sink`（`{ log, error }`）。
+- `withCache` 的用户 `keyFn` 抛错时该次调用退化为「不缓存、直接执行」，不会让整个业务方法失败；`withRetry` 的 `shouldRetry` 收到的也是规范化 `Error`，`retries` 是首次执行**之外**的次数（总尝试 = `retries + 1`）。
 
 ### 错误处理（`extras/error`）
 
@@ -234,24 +242,25 @@ await recovery.recover(createError(ErrorCode.ACTION_EXECUTION_ERROR, 'msg'))
 import { SnapshotManager, createSnapshot } from '@openlide/geomstore/extras/snapshot'
 import { PerformanceMonitor } from '@openlide/geomstore/extras/performance'
 
-// Store 自身的快照对（深克隆 + 递归深冻结 ↔ 恢复）
+// Store 自身的快照对（深克隆 + 冻结纯对象/数组链 ↔ 恢复；Date/RegExp/Map/Set 触达的节点仍可变）
 const snap = store.$snapshot()
 store.$restore(snap)
 
 // 快照引擎：返回 { data, metadata, success, errors, stats }；克隆失败不抛错（有 cloneError 时 success:false）
+// 异常 / 中止时 data 是 undefined（失败结果不回传活引用），先判 success 再读 data
 const manager = new SnapshotManager()
 const result = createSnapshot(store.getState())
 const diff = manager.compareSnapshots(result, createSnapshot(next))   // 传完整 SnapshotResult，不是 .data
 ```
 
-比较按对象对识别循环，等价循环不因重复进入被误判（深度 100 保护仍保留）。对象的自有 `undefined` 属性与缺失键不同，新增/删除会产生对应 `kind`，继承属性不参与。
+比较按对象对识别循环，等价循环不因重复进入被误判；100 层逐路径护栏只终止展开、不再无条件记为差异（超出后退化为整体 `deepEqual`）。对象的自有 `undefined` 属性与缺失键不同，新增/删除会产生对应 `kind`，继承属性不参与。`onError` 按**真值**解释：不写 `return` 的箭头函数等价「拒绝继续」，纯观测请显式 `return true` 或改用 `onProgress`（后者抛错被就地兜住，不影响快照）。
 
 ## 性能与最佳实践
 
 - **计算密集型派生用选择器**，不要用 getter（getter 每次读取都重新执行）。
 - **多字段一起更新用 `$patch` 或 `batch()`**，避免多次通知；未检测到写入时可用 `notify.onlyOnChange` 抑制通知，同值写入也可能推进计数。
 - **热点 state 键可开缓存**：`createStore({ enableCache: true, cacheKeys: ['count'] })`，读取用 `store.getCached('count')`。action 完成刷新时会移除已 `delete` 的键；`$replaceState` 清空缓存后回填，不依赖旧状态仍保留该键。
-- **`notify: { clone: false }`** 进入零拷贝通知模式（监听器收到只读代理，调用方需自行保证不修改）。
+- **通知载荷按订阅者构成决定**：`notify.clone` 未显式配置＝自动——全部订阅者只读（页面 / 组件绑定即是）时免深拷贝（状态保护开启给只读 Proxy、关闭给**原始引用**，回调需自行保证不写），存在可写订阅者时每次深拷贝。显式 `clone: true` 强制拷贝、`clone: false` 仍在有可写订阅者时拷贝。所以「不写状态的订阅」要老实标 `readOnly: true`，这是大状态下最主要的通知开销开关。
 - **可选能力按需引入**，尤其在小程序主包中；`extras` 聚合入口只在调试时用。
 - **App 级订阅不随 `onHide` 清理**（`withAppStore` 只在 `onLaunch` 建立，贯穿运行期）。
 - **同页面多实例**（同名页、列表项组件）的订阅清理由集成层挂在实例上（`__geomUnbinds`），无需手动管理。
@@ -269,7 +278,9 @@ const diff = manager.compareSnapshots(result, createSnapshot(next))   // 传完�
 | 订阅触发次数不符 / 退订后仍触发 | 同一函数重复订阅按引用计数通知 N 次、退订只减一份，确认没有重复注册 |
 | 组件生命周期不执行 | 微信要求写在 `lifetimes` / `pageLifetimes` 内，配置顶层的 `attached` 等不会被执行 |
 | `withRetry(fn, opts)` 报错 | 装饰器只能用于类方法且需 `experimentalDecorators`；函数式场景用 `ActionExecutor` |
-| 持久化恢复失败 | 恢复值须为纯对象；`validate` 不通过会跳过恢复；自定义 `storage` 必须同步 |
+| 持久化恢复失败 | 恢复值须为纯对象；`validate` 不通过会跳过恢复；自定义 `storage` 必须同步且三方法齐备（否则 `store.use()` 安装期就抛 `TypeError`） |
+| 快照结果 `data` 是 `undefined` | 该次快照异常或被 `onError` 拒绝继续——失败结果按契约不回传活引用 | 读 `errors` 的 `path` 定位；纯观测请显式 `return true` |
+| 生产环境完全没有日志 | 属预期（库口径静默），但降级 / 监听器抛错 / 落盘失败会 `emit('onError', …, source)` | 给 `onError` 挂上报处理器，而不是指望控制台 |
 | `Plugin` 与 Store 状态类型不匹配的编译错误 | 插件泛型已收紧，把插件声明为匹配的 `Plugin<S>`，或对状态无关插件写作 `Plugin<State>` |
 | 时间旅行 / analyzer API 不存在 | 需先 `store.use(...)` 安装对应插件，且非生产环境 |
 

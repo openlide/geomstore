@@ -127,6 +127,14 @@ export declare class OfflineManager<S extends State = State> {
     constructor(store: Store<S>, queueKey?: string, maxRetryCount?: number, onDrop?: (action: OfflineAction) => void);
     /**
      * 执行操作（支持离线缓存）
+     *
+     * 契约：失败不外抛。在线执行失败时与离线同样入队，返回 `null` 即
+     * 「本次未执行、已交由队列重放」。此前是「入队 + 抛错」并存：调用方拿到
+     * rejection 自行重试、队列稍后又会重放同一操作，非幂等操作（下单/提交表单）
+     * 会被执行两次，故把重放职责收敛给队列这一个入口。
+     *
+     * 重放按 `(type, payload)` 经 `store.dispatch` 组装（见 executeAction），
+     * 传入的 `action` 闭包本身不会被重放：payload 必须完整描述该 action 的参数
      */
     execute<T>(type: string, action: () => Promise<T>, payload?: unknown): Promise<T | null>;
     /**
@@ -147,6 +155,13 @@ export declare class OfflineManager<S extends State = State> {
     clearQueue(): void;
     /**
      * 获取队列长度
+     *
+     * 口径（#352）：只统计 `actionQueue`，同步在途期间为 0——syncQueue 会把整批快照
+     * 移到 syncPending/syncFailed，此时确有操作待完成但不计入本返回值。
+     * 刻意不改：库内唯一的「有待同步」门禁（wechat-enterprise 的 App.onShow）另有
+     * `syncInFlight` 与 syncQueue 内部的 `syncing` 互斥兜底，把在途段计入这里反而会让
+     * onShow 在网络回调触发的同步期间空跑一次 showLoading/hideLoading，
+     * 两次加载态抢同一个全局 toast（见该处注释）。需要「含在途」视图请自行判定
      */
     getQueueLength(): number;
     /**
@@ -177,6 +192,9 @@ export declare class OfflineManager<S extends State = State> {
      * 同步进行中时队列被拆为「已失败待重试 + 未处理剩余（含当前执行项）+ 新入队」三段，
      * 必须落盘完整联合视图：否则磁盘被仅含新项的队列覆写，
      * 进程在同步窗口内被杀会让未处理旧操作永久丢失（at-least-once）
+     *
+     * @returns 队列当前是否与存储一致。已释放实例不再持有该存储键（由接管的新实例
+     *   负责落盘），按一致处理，避免调用方对「无需落盘」误报丢失
      */
     private saveQueue;
     /**
@@ -185,6 +203,10 @@ export declare class OfflineManager<S extends State = State> {
     private appendDeadLetter;
     /**
      * 获取死信队列中超过重试上限被丢弃的操作
+     *
+     * 与 loadQueue 同口径做结构校验后再返回（#353）：死信键同样可被外部写坏
+     * （null、字符串、缺 type/retryCount 的对象），此前原样吐给业务层会让人工补发/
+     * 上报逻辑读到畸形条目。被过滤掉的条数会告警，便于发现存储被改坏
      */
     getDeadLetters(): OfflineAction[];
     /**
@@ -231,15 +253,26 @@ export declare class StoreManager {
     switchUser(userId: string): Store<UserState>;
     /**
      * 登出当前用户
-     * 持久化键与 createUserStore 的存储键一致（均为 `user-store-${userId}`）
+     * 持久化键经 userStoreKey 派生，与 createUserStore 写入的键同源
      */
     logout(): void;
     /**
      * 获取当前用户的 Store
+     *
+     * 真值判定与 logout 同源：currentUserId 不会是空串（见 logout 注释）
      */
     getCurrentStore(): Store<UserState> | null;
     /**
-     * 清理所有 Store
+     * 清理所有 Store —— 仅释放内存实例，不清理持久化数据（#342）
+     *
+     * 与 logout 的差别是刻意的：本方法面向「测试重置 / 宿主整体换号」这类
+     * 需要立刻回收全部实例的场景，而调用方无法指定「哪些账号的数据该被删除」；
+     * 在这里连带删除所有 `user-store-*` 键会把无法归零的数据一次抹掉，
+     * 风险远高于收益。需要真正清除某账号持久化数据请显式走 `logout()`（当前用户）
+     * 或按 `userStoreKey(userId)` 自行清理。
+     *
+     * 已知不一致：本方法把内存身份置空，但 `CURRENT_USER_KEY` 与各账号持久化键仍留在
+     * storage 中——冷启动恢复（createEnterpriseApp）会据此把身份指回最后一个登录账号。
      */
     clearAll(): void;
     /**
@@ -292,7 +325,7 @@ export interface UserState extends State {
     userInfo: UserInfo | null;
     /** 用户偏好设置 */
     preferences: UserPreferences;
-    /** 最近一次与服务端同步的时间戳；未同步时为 null */
+    /** 最近一次与服务端同步的时间戳；未同步时为 null。会话级字段，不随持久化恢复（见 createUserStore 的 filter） */
     lastSyncTime: number | null;
 }
 ```
@@ -304,8 +337,10 @@ export interface UserState extends State {
  * `createUserStore` 的配置项
  */
 export interface UserStoreConfig {
-    /** 用户唯一标识：参与 Store 名称与持久化键（`user-store-${userId}`） */
+    /** 用户唯一标识：参与 Store 名称与持久化键（`user-store-${userId}`），不可为空/纯空白 */
     userId: string;
+    /** 用户信息同步接口地址；缺省用模块默认 `DEFAULT_SYNC_URL`，便于按环境/宿主注入 */
+    syncUrl?: string;
     /** 初始状态覆盖项（可选） */
     initialState?: Partial<UserState>;
 }
@@ -354,7 +389,8 @@ export declare function createUserStore(config: UserStoreConfig): Store<UserStat
  *
  * 多次调用不会重复包装全局 App：
  * 若全局 App 仍为本模块安装的包装函数，则仅注册新的处理器；
- * 若全局 App 已被外部替换（如测试重置），则重新安装并重置注册表
+ * 若全局 App 已被外部替换（如测试重置），则重新安装包装，
+ * 已有处理器注册表原样保留（新包装遍历同一注册表，清空只会丢弃其他调用方的注册）
  */
 export declare function initBackgroundSync<S extends State = State>(config: BackgroundSyncConfig<S>): void;
 ```

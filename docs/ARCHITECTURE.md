@@ -101,7 +101,7 @@ src/
 
 - `composeStore(stores, { namespace, strict })`：命名空间模式下子 store 按 `name` 嵌套，dispatch 支持 `'store/action'`
 - 组合层 N 个监听器只占用每个子 store **一份**订阅（避免成倍挤占外部直连订阅的额度）
-- 无只读订阅者时通知走零拷贝；`isStateKeyDirty` 在命名空间模式下精确追踪脏子 store
+- 子 Store 以**只读**订阅注册，通知因此免深拷贝；组合层自己仅在存在可写监听器时对合并结果深拷贝一次（与 `Store._notifyListeners` 的 `hasWritableListeners()` 判据同口径）；`isStateKeyDirty` 在命名空间模式下精确追踪脏子 store，通知回调内的重入写入归下一轮
 - `getState()` / `state` 读取合并缓存前校验子 Store 版本，批内及异步通知前也能读到最新值；无版本号的子 Store（含嵌套组合）每次读取保守失效
 - 合并子 Store 的 `actions` 注册表，嵌套组合支持外层裸名 dispatch；非命名空间模式同名 action 取第一个 Store
 - `StoreRegistry` / `globalRegistry` 提供按名字管理
@@ -160,7 +160,7 @@ Page 的 `onUnload` / Component 的 `lifetimes.detached` 先调用用户钩子�
 | 插件 | 说明 |
 | --- | --- |
 | `loggerPlugin` | 打印 dispatch 名称、参数、耗时 |
-| `persistencePlugin(options)` | 状态持久化；**后端必须同步**；卸载时同步补写防抖窗口内容 |
+| `persistencePlugin(options)` | 状态持久化；**后端必须同步且三方法齐备**（安装期校验，缺项抛 `TypeError`）；卸载时同步补写防抖窗口内容；生产降级信号走 `onError` |
 | `devtoolsPlugin` / `timeTravelPlugin` | 调试与时间旅行（卸载带身份守卫，只清理属于本实例的全局项） |
 | `analyzerPlugin` | 接入 dispatch / setState / getter 计时；`onError` 精确清理配对栈 |
 
@@ -176,7 +176,7 @@ setState('count', 1)
   → 写入状态 + 推进版本号 + 脏计数 +1
   → 失效 count 相关缓存
   → beforeSetState / afterSetState 钩子（插件、监控在此接入）
-  → 通知调度：notify.async 决定立即或微任务合并；notify.clone 决定克隆或（条件性）零拷贝
+  → 通知调度：notify.async 决定立即或微任务合并；载荷形态按「有无只读以外的可写订阅者」决定（notify.clone 未显式配置＝自动，显式 true 强制深拷贝）
   → 监听器收到新状态；isStateKeyDirty('count') 为 true → 集成层更新 setData
 ```
 
@@ -245,6 +245,6 @@ Store 通知 → 集成层合并订阅回调
 | 就地变异状态（非不可变） | 小程序场景看重性能与写法简洁；用 `$snapshot()` / `createSnapshot()` 提供隔离副本 |
 | 钩子/插件的错误被隔离处理 | 监控插件不得因自身异常影响主流程；`onError` 是唯一观察点 |
 | 持久化后端强制同步 | 微信同步存储是主流；异步后端会因竞态导致写入静默丢失 |
-| 生产模式日志静默 | 减少发布包日志噪声；排查时切开发模式 |
+| 生产模式日志静默 | 减少发布包日志噪声；需要被监控发现的问题（持久化降级、监听器抛错、落盘 / 清理失败）统一 `emit('onError', …, source)`，排查时也可临时切开发模式 |
 | `customCloner` 抛错不降级为「原值兜底」 | 宁可丢弃节点也不能让活引用穿透隔离契约 |
 | 覆盖率为 100% 但不为数字改写语义 | 等价改写须可证明；不可达分支用带原因的标注，而非删除防御 |

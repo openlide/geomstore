@@ -24,6 +24,11 @@ export type ActionNames<A extends Actions> = keyof A & string;
 /**
  * Actions 类型约束
  * 用于约束 actions 参数类型
+ *
+ * 两个 `any` 都是必要的（实测改 `unknown` 即破功）：本类型是「任意 action 集合」的**约束位点**，
+ * 参数逆变会让 `(id: string) => void` 这类具体 action 不再满足 `(...args: unknown[]) => unknown`，
+ * 返回值逆变会拒掉返回具体值的 async action；协变/逆变两侧都要放行，只能是 `any`。
+ * 精确签名由 `InferActionArgs` / `InferActionReturn` 在具体 A 上恢复，`Actions` 从不出现在调用点。
  */
 export type Actions = Record<string, (...args: any[]) => any>;
 ```
@@ -119,12 +124,7 @@ export type CloneMode = 'deep' | 'shallow' | 'safe' | 'json';
  * 合并进 `config.methods`，再由微信提升到实例），故这里不在顶层重复声明——否则返回类型会
  * 声明出配置对象上并不存在的顶层方法（`config.add()` 能编译却在运行时失败）。
  */
-export type ComponentConfig<S extends State, A extends Actions, G extends Getters<S> = Getters<S>, M extends ConnectOptions<S, A, G> = ConnectOptions<S, A, G>, ExtraMethods extends object = object> = {
-    data: ExtractPageData<S, M, G>;
-    methods: ExtraMethods & ExtractMappedActions<A, M>;
-} & {
-    setData: (data: Record<string, unknown>, callback?: () => void) => void;
-};
+export type ComponentConfig<S extends State, A extends Actions, G extends Getters<S> = Getters<S>, M extends ConnectOptions<S, A, G> = ConnectOptions<S, A, G>, ExtraMethods extends object = object> = InjectedDataShape<S, M, G> & ComponentMethodsShape<ExtraMethods, A, M>;
 ```
 
 ### `ComponentOwnMethods`
@@ -152,13 +152,7 @@ export type ComponentOwnMethods<C> = C extends {
  * `this.add(...)` 与 `this.methods.add(...)` **都可用**；若类型只在 `methods` 下提供注入成员，
  * 方法内就必须手写 `this` 标注。故此处把注入成员展平到顶层，同时保留 `methods` 命名空间。
  */
-export type ComponentThis<S extends State, A extends Actions, G extends Getters<S> = Getters<S>, M extends ConnectOptions<S, A, G> = ConnectOptions<S, A, G>, ExtraMethods extends object = object> = {
-    data: ExtractPageData<S, M, G>;
-} & ExtraMethods & ExtractMappedActions<A, M> & {
-    /** 配置对象上的 methods 命名空间（微信 Component 写法）；实例上这些条目被提升为顶层方法 */
-    methods: ExtraMethods & ExtractMappedActions<A, M>;
-    setData: (data: Record<string, unknown>, callback?: () => void) => void;
-};
+export type ComponentThis<S extends State, A extends Actions, G extends Getters<S> = Getters<S>, M extends ConnectOptions<S, A, G> = ConnectOptions<S, A, G>, ExtraMethods extends object = object> = InjectedDataShape<S, M, G> & ExtraMethods & ExtractMappedActions<A, M> & ComponentMethodsShape<ExtraMethods, A, M>;
 ```
 
 ### `ComposeOptions`
@@ -209,11 +203,13 @@ declare class ComposedStore<S extends State = State> implements Store<S> {
     stores: Record<string, Store>;
     /** 防抖相关：实例级统一调度，避免多个订阅者各自维护标志导致非首个订阅者丢通知 */
     private _notificationScheduled;
-    /** 当前活跃的订阅者：监听器 → 注册次数。
+    /** 当前活跃的订阅者：监听器 → 注册次数与其中可写份数。
      *  与 SubscriptionManager 同语义——同一函数注册 N 次通知 N 次，退订只减一，
      *  减到 0 才真正移除。此前用 Set 会使「退订其中一份」直接删除整个监听器，
      *  用户仍持有的另一份退订句柄静默失效、永不再收到通知。 */
     private _composedListeners;
+    /** 可写（非只读）注册总次数：>0 时通知载荷必须是深拷贝（见 _notifyListeners 的隔离说明） */
+    private _composedWritableCount;
     /** 对子 Store 的订阅句柄（destroy 时统一退订，避免闭包残留） */
     private _storeUnsubscribers;
     /** 子 store 单路合并订阅是否已建立（构造期为缓存失效建立，组合层订阅复用，避免重复占额度） */
@@ -224,6 +220,13 @@ declare class ComposedStore<S extends State = State> implements Store<S> {
     private _hookUnsubscribers;
     /** 自上次通知以来发生变更的子 store 名集合：命名空间模式下供 isStateKeyDirty 精确跳过 setData */
     private _dirtyStores;
+    /**
+     * 通知期间新产生的脏子 store（回调内的重入写入）：与 Store._deferredDirtyKeys 同语义，
+     * 不能随本轮收尾一起清空，否则下一轮 isStateKeyDirty 会把已变更的子 store 判为未变化
+     */
+    private _deferredDirtyStores;
+    /** 是否正在通知：决定脏子 store 标记是否需要同时留给下一轮 */
+    private _notifying;
     /** 合并状态缓存：非命名空间/命名空间两种读取形态各缓存一份，子 store 变化时失效 */
     private _mergedCache;
     /** 只读冻结形态的合并状态缓存（对应 state getter），与 _mergedCache 独立以免冻结影响 getState 消费者 */
@@ -298,10 +301,16 @@ declare class ComposedStore<S extends State = State> implements Store<S> {
      */
     private _notifyListeners;
     /**
+     * 标记子 store 为脏；通知进行中（回调内的重入写入）同时记入下一轮集合
+     */
+    private _markDirtyStore;
+    /**
      * 调度一次合并通知：同一微任务内的多次状态变化只触发一次广播
      */
     private _scheduleNotify;
-    subscribe(listener: StateListener<S>): () => void;
+    subscribe(listener: StateListener<S>, options?: {
+        readOnly?: boolean;
+    }): () => void;
     /**
      * 判断指定状态键自上次通知以来是否发生变更
      *
@@ -322,6 +331,12 @@ declare class ComposedStore<S extends State = State> implements Store<S> {
      *  子 store 订阅与构造期建立对称，统一在 destroy() 释放。
      */
     private _createUnsubscribe;
+    /**
+     * 释放一份监听器注册：同一监听器减到 0 才真正移除。
+     *
+     * 句柄捕获自己那一次注册的 readOnly 标记：同一函数可能既被只读注册（视图绑定）
+     * 又被可写注册（用户订阅），退订时必须按各自的标记回收可写计数。
+     */
     private _releaseListener;
     use(plugin: Plugin<S> | Plugin<State>): () => void;
     /**
@@ -419,8 +434,16 @@ export type Getters<S extends State = State> = {
 ```ts
 /**
  * 钩子处理函数
+ *
+ * 返回值一律被忽略（`emit` 的返回类型是 `void`，实现层调用 `handler(...args)` 后不收集结果），
+ * 故本类型不带结果泛型：钩子只用于观察/改写载荷，需要「拦截并否决」的语义请走
+ * `beforeXxx` 内的异常抛出（`onError` 通道）。此前存在的 `TResult = void` 参数
+ * 会让 `HookHandler<[], boolean>` 这类写法看起来可被观察，实际永远拿不到返回值。
+ *
+ * 默认 `TArgs = unknown[]` 是实现层（core/hooks 的 `Map<HookName, Set<HookHandler>>`）
+ * 用来擦除钩子差异的内部形状；面向插件作者的签名是 {@link HookHandlerFor}。
  */
-export type HookHandler<TArgs extends unknown[] = unknown[], TResult = void> = (...args: TArgs) => TResult;
+export type HookHandler<TArgs extends unknown[] = unknown[]> = (...args: TArgs) => void;
 ```
 
 ### `HookName`
@@ -465,16 +488,51 @@ export declare class HookSystem implements IHookSystem {
  *
  * 由 core/hooks 的 HookSystem 类实现；类型层仅依赖此接口，
  * 避免 types 反向依赖实现类。
+ *
+ * `on` / `emit` 都按 `HookName` 关联 {@link HookArgsMap}：处理器可写出精确形参
+ * （`on('beforeDispatch', (name, args) => …)` 中 `name: string`，无需再写 `unknown`），
+ * `emit` 的实参顺序/个数也在编译期受检。
+ *
+ * 为什么 `on` 的处理器形参要经过 {@link HookHandlerFor} 的联合分支判定，而不是直接
+ * `handler: (...args: HookArgsMap[K]) => void`：实现类 `HookSystem.on` 的形参是类型擦除的
+ * `HookHandler`（`Map<HookName, Set<HookHandler>>` 的存储形状），精确元组在参数逆变下无法满足
+ * 接口成员（实测 TS2416）；而写成 `HookHandlerFor<K> | HookHandler` 虽然通过实现检查，却会让
+ * 联合形参失去上下文类型推断（实测无标注箭头形参全部退化为隐式 any），正好丢掉本次修复的目的。
+ * `IsUnion` 分支让两端同时成立：调用点传字面量钩子名得到精确签名，实现类与组合层桥接
+ * （传 `HookName` 联合变量）走擦除分支。
  */
 export interface IHookSystem {
-    /** 注册钩子处理器，返回取消注册函数 */
-    on(hookName: HookName, handler: HookHandler): () => void;
-    /** 触发钩子 */
-    emit(hookName: HookName, ...args: unknown[]): void;
+    /** 注册钩子处理器，返回取消注册函数；处理器形参由 HookArgsMap 按钩子名给出 */
+    on<K extends HookName>(hookName: K, handler: HookHandlerFor<K>): () => void;
+    /**
+     * 触发钩子：实参元组由 HookArgsMap 按钩子名给出，顺序/个数不符即编译报错
+     *
+     * **处理器抛错时的语义**（插件作者据此决定要不要自己兜异常）：
+     * - 单个处理器抛错既不中断本次触发的其余处理器，也**不会传播给 `emit` 的调用方**
+     *   （返回 `void`，实现按快照逐个 try/catch）。
+     * - 错误先 `console.error` 记录，再转投 `onError` 钩子（`emit('onError', error, hookName)`），
+     *   故 `onError` 是钩子系统唯一的上报通道；要接监控系统，注册 `onError` 处理器即可。
+     * - `onError` 自身抛错只落 `console.error`，不再递归转投自己。
+     * - 需要「让抛错冒泡到业务调用方」的语义不能靠钩子实现，请走 action 的错误边界。
+     */
+    emit<K extends HookName>(hookName: K, ...args: HookArgsMap[K]): void;
     /** 清除钩子（指定名称或全部） */
     clear(hookName?: HookName): void;
-    /** 查询钩子数量：传入 hookName 返回该钩子的 handler 数，不传返回已注册的钩子名称数 */
+    /**
+     * 计数，**量纲随入参变化**：传 `hookName` 返回该钩子的 handler 数，不传返回已注册的钩子名称数。
+     *
+     * 双语义易误用（无参时的「种类数」和有参时的「监听器数」不是同一个量），
+     * 只想数某个钩子上挂了几个处理器时请改用无歧义的 {@link IHookSystem.listenerCount}。
+     * 本方法保留：已随 `IHookSystem` 发布，且 `size()` 的无参语义有既有调用方。
+     */
     size(hookName?: HookName): number;
+    /**
+     * 指定钩子当前的处理器数量（未注册返回 0），语义单一。
+     *
+     * `size(hookName)` 的明确别名：本方法此前只在实现类 `HookSystem` 上存在，
+     * 而 `Store.hooks` 的声明类型是本接口，插件作者经 `store.hooks` 拿不到它。
+     */
+    listenerCount(hookName: HookName): number;
 }
 ```
 
@@ -501,6 +559,10 @@ export type InferActionReturn<A extends Actions, K extends keyof A> = A[K] exten
 ```ts
 /**
  * 推断Getter返回类型
+ *
+ * 约束里的 `any` 必要：getter 以**具体状态类型**声明形参（`(state: UserState) => number`），
+ * 参数逆变下 `state: State` / `state: unknown` 的约束会直接拒掉这类 getter；
+ * 返回值同理需放行任意形状。此处只做提取，精确返回类型仍由 `infer R` 从具体 G 得到。
  */
 export type InferGetterReturn<G extends Record<string, (state: any) => any>, K extends keyof G> = G[K] extends (...args: never[]) => infer R ? R : never;
 ```
@@ -519,6 +581,12 @@ export declare class LRUCache<K, V> {
     private tail;
     /** 当前缓存项数量 */
     private _size;
+    /**
+     * 淘汰进行中：onEvict 回调重入 set()/resize() 时不再启动第二层淘汰循环。
+     * 重入的写入交给外层循环消化（回调返回后外层 while 会重新核对容量），
+     * 否则「回调内回填刚被逐出的键」会一层套一层递归，直到 RangeError 栈溢出。
+     */
+    private evicting;
     /** 命中次数 */
     private hitCount;
     /** 未命中次数 */
@@ -571,7 +639,10 @@ export declare class LRUCache<K, V> {
      * 如果键存在，将其移动到头部（标记为最近使用）并返回值。
      * 如果键不存在，返回undefined。
      *
-     * 优化：减少 Date.now() 调用次数，只在必要时更新访问时间
+     * 优化：时钟调用只在「开启统计且开启计时」的命中路径发生，未命中不取时钟
+     *
+     * @remarks `trackAccessTime` 只影响 `avgAccessTime` 的采样，不影响 LRU 顺序：
+     * 顺序始终由 `moveToHead`（访问即最近使用）决定。
      *
      * @param {K} key - 键
      * @returns {V | undefined} 值或undefined
@@ -659,6 +730,12 @@ export declare class LRUCache<K, V> {
     delete(key: K): boolean;
     /**
      * 清空缓存
+     *
+     * @remarks 清空按「逐条淘汰」口径记账：每个条目触发一次 `onEvict`，
+     * 并累计计入 `getStats().evictions`（该字段的契约是「onEvict 触发次数」，
+     * 而非「因容量上限被挤出的条目数」）。因此把 `clear()` 用于配置性重建
+     * （如 `StoreCacheManager.enable()`）时，`evictions` 会包含这部分非容量淘汰；
+     * 需要区分两类淘汰的调用方，可在配置性清空前后各读一次 `evictions` 求差。
      *
      * @returns {this} 支持链式调用
      */
@@ -781,7 +858,14 @@ export declare class LRUCache<K, V> {
  * @interface LRUCacheStats
  */
 export interface LRUCacheStats {
-    /** 缓存容量 */
+    /**
+     * 缓存容量：实现保证的是「有限值且 >= 1」，**不保证整数**。
+     *
+     * 规范化只发生在写入 capacity 的两处（构造器与 `resize()`）：非有限值（NaN/±Infinity）
+     * 分别回退默认 100 与保持旧值，小于 1 的值夹到 1；小数上限不会被取整，
+     * 淘汰判定 `size > capacity` 因而等价于「最多容纳 floor(capacity) 个条目」。
+     * 这里读到的是生效容量，不是用户传入的原值。
+     */
     capacity: number;
     /** 当前缓存项数量 */
     size: number;
@@ -791,17 +875,43 @@ export interface LRUCacheStats {
     misses: number;
     /** 总访问次数 */
     totalAccesses: number;
-    /** 命中率（百分比） */
+    /**
+     * 命中率：**0–100 的百分比数值**（非 0–1 比例），保留两位小数。
+     *
+     * 哨兵语义：`totalAccesses === 0` 时返回 `0`，表示「无访问数据」而非「0% 命中」。
+     * 调用方需区分两者时请按 `totalAccesses > 0` 判定，不要用 `hitRate === 0` 判「全未命中」。
+     */
     hitRate: number;
-    /** 未命中率（百分比） */
+    /**
+     * 未命中率：**0–100 的百分比数值**，保留两位小数，口径与 `hitRate` 一致
+     * （两者按各自计数独立求值，和为 100，仅有两位小数的舍入误差）。
+     *
+     * 哨兵语义：`totalAccesses === 0` 时返回 `0`，表示「无访问数据」而非「0% 未命中」。
+     */
     missRate: number;
     /** 淘汰的缓存项数量 */
     evictions: number;
-    /** 当前缓存键列表（按最近使用顺序） */
+    /**
+     * 当前缓存键列表（按最近使用顺序）
+     *
+     * 键经 `String(key)` 序列化：非字符串键会丢失类型信息，对象键会塌缩为
+     * `[object Object]`、数字 1 与字符串 '1' 不可区分。仅用于调试展示，
+     * 不得用作键的身份判定（需要原始键请用 `LRUCache.keys()`）。
+     */
     keys: string[];
-    /** 平均访问时间（毫秒） */
+    /**
+     * 平均访问时间（毫秒，保留三位小数）：仅统计命中路径的收尾成本。
+     *
+     * 哨兵语义：`0` 有两种来源——「无命中」（hits === 0）与「未开启计时/统计」
+     * （`trackAccessTime` 或 `enableStats` 为 false），**不表示访问耗时真是 0ms**。
+     * 展示前请先确认 `hits > 0` 且构造时开启了计时。
+     */
     avgAccessTime: number;
-    /** 缓存项平均存活时间（毫秒） */
+    /**
+     * 缓存项平均存活时间（毫秒，四舍五入到整数）：`now - createdAt` 的均值。
+     *
+     * 哨兵语义：空缓存（`size === 0`）返回 `0`，表示「无条目」而非「存活 0ms」。
+     */
     avgItemLifetime: number;
 }
 ```
@@ -836,9 +946,7 @@ export interface NamespaceConfig {
 export type PageConfig<S extends State, M extends {
     mapState?: readonly (keyof S)[] | Record<string, keyof S>;
     mapGetters?: readonly PropertyKey[] | Record<string, PropertyKey>;
-} = ConnectOptions<S, Actions, Getters<S>>, G extends Getters<S> = Getters<S>> = {
-    data: ExtractPageData<S, M, G>;
-    setData: (data: Record<string, unknown>, callback?: () => void) => void;
+} = ConnectOptions<S, Actions, Getters<S>>, G extends Getters<S> = Getters<S>> = InjectedDataShape<S, M, G> & {
     getTabBar?: () => {
         syncSelectedTab?: () => void;
     } | undefined;
@@ -850,6 +958,11 @@ export type PageConfig<S extends State, M extends {
 ```ts
 /**
  * 从 Page 配置提取用户自定义方法（排除保留键，方法 this 不检查以避免循环兼容性）
+ *
+ * 现状（#428）：`withPageStore` 目前实例化的是 `PageThis<S, A, G, O>`，**没有**把本映射作为
+ * 第 5 个泛型 `ExtraMethods` 传进去（组件侧 `withComponentStore` 则确实传了 `ComponentOwnMethods<C>`），
+ * 故页面方法内的 `this` 暂时看不到同页自定义方法。保留键清单见 `PageReservedKeys`。
+ * 与 Component 对齐的接线在集成层（`src/integrations/with-store.ts`），不在类型层。
  */
 export type PageOwnMethods<C> = {
     [K in keyof Omit<C, PageReservedKeys>]: C[K] extends (...args: infer P) => infer R ? (...args: P) => R : C[K];
@@ -860,9 +973,18 @@ export type PageOwnMethods<C> = {
 
 ```ts
 /**
- * Page 保留键（框架生命周期 + 内部字段），不参与自定义方法提取
+ * Page 保留键（框架生命周期 + 页面事件处理函数 + 内部字段），不参与自定义方法提取
+ *
+ * 页面事件处理函数一栏来自小程序基础库、**仓库内没有任何地方声明**（本库不依赖 miniprogram-api-typings），
+ * 因此只能在这里逐个列全：漏掉的键会被 `PageOwnMethods` 当成用户自定义方法，
+ * 其方法签名里的 `this` 被剥离（该映射刻意去掉 this），并作为 ExtraMethods 并入 `this`，污染页面类型。
+ *
+ * - `onShareTimeline`：分享到朋友圈（基础库 2.11.3+）
+ * - `onAddToFavorites`：添加到收藏（基础库 2.8.1+）
+ * - `onSaveExitState`：退出时保存状态（基础库 2.11.0+）
+ * - `options`：页面级配置项（非函数，但同样是框架键，不应被当作自定义方法）
  */
-export type PageReservedKeys = 'data' | 'setData' | 'onLoad' | 'onShow' | 'onHide' | 'onUnload' | 'onReady' | 'onPullDownRefresh' | 'onReachBottom' | 'onPageScroll' | 'onShareAppMessage' | 'onResize' | 'onTabItemTap' | '__geomUnbinds';
+export type PageReservedKeys = 'data' | 'setData' | 'onLoad' | 'onShow' | 'onHide' | 'onUnload' | 'onReady' | 'onPullDownRefresh' | 'onReachBottom' | 'onPageScroll' | 'onShareAppMessage' | 'onResize' | 'onTabItemTap' | 'onShareTimeline' | 'onAddToFavorites' | 'onSaveExitState' | 'options' | '__geomUnbinds';
 ```
 
 ### `PageThis`
@@ -873,8 +995,11 @@ export type PageReservedKeys = 'data' | 'setData' | 'onLoad' | 'onShow' | 'onHid
  *
  * 由 withPageStore 装饰器自动构造并注入方法签名，用户无需手动填写泛型参数。
  * 方法内 `this.data` 包含完整状态 + 映射的 state/getters（精确类型），
- * 映射的 action 以精确签名挂载到 this（参数/返回值类型不丢失），
- * 用户自定义方法（排除保留键）也作为 ExtraMethods 注入 this。
+ * 映射的 action 以精确签名挂载到 this（参数/返回值类型不丢失）。
+ *
+ * 第 5 个泛型 `ExtraMethods` 是「同页自定义方法」的注入位点，默认 `object`（即不注入）：
+ * `withPageStore` 目前正是按默认值实例化本类型的（见 #428 与 `PageOwnMethods` 的说明），
+ * 所以页面方法内的 `this` 尚看不到自定义方法；接线需在集成层传 `PageOwnMethods<C>`。
  *
  * @example
  * ```typescript
@@ -889,10 +1014,7 @@ export type PageReservedKeys = 'data' | 'setData' | 'onLoad' | 'onShow' | 'onHid
  * }))
  * ```
  */
-export type PageThis<S extends State, A extends Actions, G extends Getters<S> = Getters<S>, M extends ConnectOptions<S, A, G> = ConnectOptions<S, A, G>, ExtraMethods extends object = object> = {
-    data: ExtractPageData<S, M, G>;
-} & ExtraMethods & ExtractMappedActions<A, M> & {
-    setData: (data: Record<string, unknown>, callback?: () => void) => void;
+export type PageThis<S extends State, A extends Actions, G extends Getters<S> = Getters<S>, M extends ConnectOptions<S, A, G> = ConnectOptions<S, A, G>, ExtraMethods extends object = object> = InjectedDataShape<S, M, G> & ExtraMethods & ExtractMappedActions<A, M> & {
     getTabBar?: () => {
         syncSelectedTab?: () => void;
     } | undefined;
@@ -1084,6 +1206,12 @@ export declare class Store<S extends State = State, A extends Actions = Actions,
     isStateKeyDirty(key: string): boolean;
     /**
      * 创建状态快照
+     *
+     * @returns 深克隆后**部分冻结**的副本：纯对象与数组链上为深度只读，
+     *   但经 Date/RegExp/Map/Set 或非纯对象（class 实例等）触达的节点仍是活的
+     *   可变对象——`Readonly<S>` 只到类型层面，别把它当作深度不可变的保证。
+     *   另注意 Date/RegExp 在克隆时总新建实例，别名关系不保留
+     *   （详见 core/utils/clone.ts 的 deepCloneState 文档）
      */
     $snapshot(): Readonly<S>;
     /**
@@ -1106,7 +1234,13 @@ export declare class Store<S extends State = State, A extends Actions = Actions,
      * Getters 定义对象（只读）
      *
      * 供类型系统推断 Getters 键集合（如 withPageStore 的 mapGetters 约束），
-     * 亦可用于调试与运行时检查。允许在销毁后调用（只读，返回空对象）。
+     * 亦可用于调试与运行时检查。允许在销毁后调用（只读，不抛错）。
+     *
+     * @remarks 销毁后返回的**不是空对象**：destroy() 不注销 getter 定义，
+     *   这里给出的是初始化时登记的那份（`getter(name)` 则会在销毁后抛错，
+     *   两者对「已销毁」的严格程度不同）。销毁后仍调用返回对象里的函数时，
+     *   它会经 `store.state` 读到保留未释放的 `_state`——需要「销毁即失联」
+     *   的语义请显式判 `store.destroyed`
      */
     get getters(): G;
     /**
@@ -1187,6 +1321,11 @@ export declare class Store<S extends State = State, A extends Actions = Actions,
     isStateProtectionEnabled(): boolean;
     /**
      * 动态启用/禁用状态保护
+     *
+     * 与其他写接口同口径拒绝销毁后调用：destroy() 已经重建过 Proxy 管理器，
+     * 这里再改配置会把「已销毁」的 Store 拉回可变状态并白造一个新管理器。
+     * 只读侧（isStateProtectionEnabled / getStateProtectionConfig）不在此列
+     * @throws 如果 Store 已销毁
      */
     setStateProtection(enabled: boolean): void;
     /**
@@ -1269,32 +1408,15 @@ export declare class Store<S extends State = State, A extends Actions = Actions,
 ```ts
 /**
  * Store 构造配置（显式泛型场景）
- * actions 使用 `ActionsWithThis<S, A>` 注入 `this` 类型。
+ * actions 使用 `ActionsWithThis<S, A>` 注入 `this` 类型。共享选项见 `StoreOptionsBase`。
  */
-export interface StoreOptions<S extends State = State, A extends Actions = Actions, G extends Getters<S> = Getters<S>> {
-    /** Store名称 */
-    name?: string;
-    /**
-     * 初始状态
-     * 支持对象字面量或工厂函数：`state: () => ({...})`
-     */
-    state?: S | (() => S);
+export interface StoreOptions<S extends State = State, A extends Actions = Actions, G extends Getters<S> = Getters<S>> extends StoreOptionsBase<S> {
     /** Actions - 使用 ThisType 注入 this 类型 */
     actions?: ActionsWithThis<S, A>;
     /** Getters */
     getters?: G;
-    /** 是否启用缓存 */
-    enableCache?: boolean;
     /** 需要缓存的state键（为空时缓存所有） */
     cacheKeys?: Array<keyof S>;
-    /** 缓存配置（容量、TTL等） */
-    cacheConfig?: CacheConfig;
-    /** 状态保护配置 */
-    stateProtection?: StateProtectionOptions;
-    /** 订阅配置（上限数量、超限策略） */
-    subscription?: SubscriptionOptions;
-    /** 通知行为配置（深拷贝开关、仅变更时通知） */
-    notify?: NotifyOptions;
 }
 ```
 
@@ -1367,9 +1489,11 @@ export declare class StoreRegistry {
     /**
      * 批量注册Store
      *
-     * 将多个Store实例批量注册到注册表中
+     * 将多个Store实例批量注册到注册表中。整体语义为「全成功或全不注册」：
+     * 先整体校验再写入，任一条目非法都会在改动注册表之前抛出，不会留下半注册状态
      *
      * @param {Record<string, Store>} stores - Store名称到实例的映射
+     * @throws {Error} 任一名称或 store 无效（此时注册表未被修改）
      *
      * @example
      * ```typescript
@@ -1601,10 +1725,13 @@ export declare class StoreRegistry {
 ```ts
 /**
  * Store树节点
+ *
+ * `store` 为 `Store | null`（根节点不绑定具体 Store）：树节点持有的就是本库的 Store 实例，
+ * 原先写作 `any` 会让 `node.store.xxx` 的拼写错误与误用全部静默通过。
  */
 export interface StoreTreeNode {
     name: string;
-    store: any;
+    store: Store | null;
     children?: Record<string, StoreTreeNode>;
 }
 ```
@@ -1659,6 +1786,37 @@ declare function composeStore<Stores extends readonly StoreLike[]>(stores: [...S
 ### `createStore`
 
 ```ts
+/**
+ * 创建 Store 实例，支持完整的类型推断
+ *
+ * 独立于根入口存放，避免集成层（integrations）反向依赖根入口形成循环引用。
+ *
+ * @param options - Store 配置项，包含 state、actions、getters
+ * @returns 返回新建的 Store 实例，类型完整推断
+ *
+ * @example
+ * ```typescript
+ * // ✅ 免泛型自动推导（推荐）：类型由字面量自动推断
+ * const store = createStore({
+ *   state: { count: 0, name: 'test' },
+ *   actions: {
+ *     // action 通过 this.state 读写状态，参数为调用时传入的用户参数
+ *     increment() { this.state.count++ },
+ *     add(n: number) { this.state.count += n }
+ *   },
+ *   getters: {
+ *     double(state) { return state.count * 2 },
+ *     greeting(state) { return `Hello, ${state.name}` }
+ *   }
+ * })
+ *
+ * // 类型推断：
+ * store.dispatch('add', 10)      // 参数类型自动推断为 number
+ * store.dispatch('increment')    // 无参数 action
+ * const doubled = store.getter('double')  // 返回类型自动推断为 number
+ * const msg = store.getter('greeting')    // 返回类型自动推断为 string
+ * ```
+ */
 export declare function createStore<S extends State, A extends Actions = Actions, G extends Getters<S> = Getters<S>>(options: FactoryStoreConfig<S, A, G>): Store<S, A, G>;
 
 export declare function createStore<S extends State, A extends Actions = Actions, G extends Getters<S> = Getters<S>>(options: LiteralStoreConfig<S, A, G>): Store<S, A, G>;
@@ -1690,11 +1848,25 @@ export declare function createStoreTree(stores: Store[], options?: ComposeOption
  * 这是保守语义——深度未知/超限的结构按「不相等」处理，
  * 以避免误报相等导致缓存误命中。调用方如需比较超深结构，
  * 请显式传入更大的 maxDepth。
+ * 超深结构下告警**每次顶层比较只出第一条**（见 `depthWarningEmitted` 的注释），
+ * 后续命中静默按同样的 false 语义处理，别让日志噪音掩盖真正的问题。
+ *
+ * 深度累加口径：所有跨容器边界（对象键、数组元素、Map 值、Set 元素）都算一层，
+ * 同一 maxDepth 预算在整棵树上连续消耗，不会因穿过 Set 而重新计数。
  *
  * @param a - 第一个值
  * @param b - 第二个值
  * @param maxDepth - 最大递归深度（默认1000），超限时返回 false
- * @returns 是否相等
+ * @returns 是否相等。比较范围：原型一致 + 自有可枚举字符串键逐项（数组含 length）；
+ *   symbol 键与不可枚举属性不参与比较（状态上的版本号标记即属此类，不应影响相等判定）
+ *
+ * @remarks **Map 的键按引用（SameValueZero）匹配，只有值做深度比较**——这是有意的
+ *   窄口径（键的深匹配要解「一个键配多个候选」的匹配问题，超出本工具职责），
+ *   对调用方是硬约束：两个 Map 若键集「结构相同但引用不同」（典型来源是反序列化、
+ *   跨 store 克隆、JSON 往返后的对象键），即便内容完全等价也会判为不相等，
+ *   表现为选择器/缓存永不命中而非报错。规避方式：Map 只用原始值（string/number）
+ *   或跨比较稳定的同一引用作键，或把这类映射改建为以 key 字符串索引的普通对象。
+ *   Set 则相反，元素按深度相等做无序配对，不受引用影响。
  */
 export declare function deepEqual(a: unknown, b: unknown, maxDepth?: number): boolean;
 ```
@@ -1827,6 +1999,11 @@ export declare function set<T = unknown>(obj: T, path: string, value: unknown): 
 ```ts
 /**
  * 浅比较两个值
+ *
+ * 语义边界：只有「双方都是纯对象」或「双方都是数组」时才按自有可枚举键逐项浅比较；
+ * 其余对象（类实例、Error/URL/Promise/装箱原始值等）没有可信的浅层身份，
+ * 要求引用相等。这类值本函数判不等（保守方向：最多让 createSelector 多做一次
+ * 结果分发，不会把陈旧值当新值返回）。
  */
 export declare function shallowEqual(a: unknown, b: unknown): boolean;
 ```
@@ -1939,7 +2116,7 @@ export declare function usePlugin<S extends State, A extends Actions, G extends 
  * app.subscribe(callback)   // 订阅状态变化
  * ```
  */
-export declare function withAppStore<S extends State = State, A extends Actions = Actions, G extends Getters<S> = Getters<S>>(store: Store<S, A, G>, options?: ConnectOptions<S, A, G>): <C extends AppOptions>(AppConfig: WithPageThis<C, AppThis<S, A, G, ConnectOptions<S, A, G>, C>> & ThisType<AppThis<S, A, G, ConnectOptions<S, A, G>, C>>) => C;
+export declare function withAppStore<S extends State, A extends Actions, G extends Getters<S>, O extends ConnectOptions<S, A, G>>(store: Store<S, A, G>, options?: O): <C extends AppOptions>(AppConfig: WithPageThis<C, AppThis<S, A, G, O, C>> & ThisType<AppThis<S, A, G, O, C>>) => C;
 ```
 
 ### `withComponentStore`

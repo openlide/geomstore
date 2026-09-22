@@ -6,7 +6,7 @@
 
 - **状态是就地变异的活动引用**：`getState()` 返回的是内部状态的引用（或保护代理），`setState` / `$patch` / action 内的直接写入都作用在同一对象上。
 - **推荐用工厂函数声明**：`state: () => ({ ... })`。工厂在创建 Store 时执行，避免数组 / Map / Set 等引用类型被多个实例共享。
-- **需要不可变副本时用快照**：`$snapshot()` 返回递归深冻结的结构；`$restore()` 从快照恢复。
+- **需要不可变副本时用快照**：`$snapshot()` 返回深克隆后**部分冻结**的结构（纯对象与数组链上深度只读；经 Date / RegExp / Map / Set 或非纯对象触达的节点仍可变）；`$restore()` 从快照恢复。
 - **就地变异带来的推论**：引用相等不等于内容相等。缓存与通知判定都不能依赖 `===`，这也是下文「版本号」与「脏计数」存在的原因。
 
 ## 2. 通知（Notify）
@@ -15,14 +15,14 @@
 
 | 配置 | 作用 | 默认 |
 | --- | --- | --- |
-| `notify.clone` | 通知时是否克隆状态；关闭且状态保护关闭时，**仅当无可读写订阅者**才返回原始引用（零拷贝） | `true` |
+| `notify.clone` | 通知时是否深拷贝载荷。**未显式配置＝自动**：仅有只读订阅者时零拷贝（状态保护开启则给只读保护 Proxy，关闭则给原始引用），存在可写订阅者才深拷贝；显式 `true` 强制深拷贝，显式 `false` 仍在有可写订阅者时深拷贝 | 未配置（自动） |
 | `notify.async` | 微任务合并：同一 tick 内多次写入只通知一次 | `false` |
 | `notify.onlyOnChange` | dispatch / batch 期间未检测到写入则不通知（依据变更计数，非内容深比较） | `false` |
 
 - **监听器只接收新状态**：`StateListener<S> = (state: S) => void`；需要前后对比请在闭包里自行保存。
-- **只读订阅**：`subscribe(listener, { readOnly: true })` 声明不写入状态，通知路径可据此做零拷贝优化。
-- **dispatch 的通知去重**：异步 action 的同步段不单独通知（其变更会被完成时的补发覆盖），`await` 之后的变更在结算时补发一次；嵌套 dispatch 仅最外层通知；dispatch 与 batch 交叉时由 batch 收尾统一通知。
-- **订阅有上限**：达上限时可配置驱逐最旧监听器或直接抛错；同一监听器重复订阅按引用计数计次。每个退订句柄幂等，重复调用同一句柄不会退订其他注册。
+- **只读订阅**：`subscribe(listener, { readOnly: true })` 声明不写入状态。载荷形态据此决定：全部订阅者只读时免深拷贝（开启状态保护则收到只读保护 Proxy，关闭时是原始引用，回调需自行保证不写）；存在可写订阅者时每次通知给一份独立深拷贝，监听器之间不共享被持续改动的对象。页面 / 组件 / App 的映射订阅本身就是只读注册。
+- **dispatch 的通知去重**：异步 action 的同步段不单独通知（其变更会被完成时的补发覆盖），`await` 之后的变更在结算时补发一次；嵌套 dispatch 仅最外层通知；dispatch 与 batch 交叉时由 batch 收尾统一通知。通知收尾链路自身抛错（补刷缓存、emit 钩子）不再变成 `unhandledRejection`，而是转投 `onError`；订阅回调抛错同样在生产经 `onError` 上报（控制台仍静默），单个坏订阅者不影响其余监听器。
+- **订阅有上限**：达上限时可配置驱逐最旧监听器或直接抛错；同一监听器重复订阅按引用计数计次。上限只门禁「新增订阅」，重复注册免检，因此 `size()` 可以高于 `maxSubscribers`。每个退订句柄幂等，重复调用同一句柄不会退订其他注册。
 - **Action 脏跟踪始终启用**：默认模式与 `onlyOnChange` 模式都通过可写代理记录对象 / 数组 / Map / Set 的直接变异，标记所有受影响的顶层键；异步 action 的脏键累积到通知时。`onlyOnChange` 额外依据变更计数跳过无写入的通知，并非前后内容深比较。
 - **别名与边界**：同一对象复用同一代理；归属关系按需求构建一次索引（标量写入 O(1) 查表，结构变更时重建），可识别未读取的别名、循环与重新挂接，构建与查找都不求值访问器。类实例与类型化数组同样被代理：实例属性写入与数组元素写入正常标记；实例方法调用保守标记所属键（方法内部的写入无法精细归因），读取时方法绑定到原始接收者，`#private` 字段与内部槽位可用。Date/RegExp/WeakMap/WeakSet 仍保留原引用、内部变异不跟踪；`$patch` 就地改写被其他顶层键引用的对象时，这些键一并标记。
 
@@ -51,11 +51,11 @@
 
 ## 6. 快照（Snapshot，`extras/snapshot`）
 
-**隔离契约**：快照绝不会把活引用兜底进结果。任何无法安全克隆的节点都会被丢弃（同步路径不写该位置 / 数组留洞；异步路径跳过填充），并把错误记入 `errors`。
+**隔离契约**：快照绝不会把活引用兜底进结果。任何无法安全克隆的节点都会被丢弃（同步路径不写该位置 / 数组留洞；异步路径跳过填充），并把错误记入 `errors`；异常或中止时交付的 `data` 是 `undefined`，不是调用方的原始对象。
 
-- **错误账本 + 降级策略**：每个节点失败都会落账 `cloneError`；`onError` 回调返回 `true` 继续（丢弃该节点）、`false` 中止整次快照。存在 `cloneError` 时 `success` 为 `false`。
-- **同步 / 异步**：同步实现是迭代式深克隆（不递归爆栈）；异步实现按 `batchSize` 分片、批间让出控制权，适合大对象并支持 `onProgress`。
-- **其他维度**：`maxDepth` 超限返回占位符（不返回活引用）、循环引用检测始终生效（`detectCircular` 只控制是否上报）、访问器属性以 getter 求值结果克隆、类实例保留原型。
+- **错误账本 + 降级策略**：每个节点失败都会落账 `cloneError`。`onError` 按**真值**解释（判定写法是 `if (!shouldContinue)`）：truthy 忽略该错误并按种类降级，falsy（含不写 `return` 的 `void` 写法）拒绝继续——`cloneError` 下抛 `SnapshotAbortError`、整次 `success: false`；`circular` 下只在该位置写 `'[Circular Reference]'` 占位并继续（快照仍可 `success: true`）。纯观测请显式 `return true`。只有 `cloneError` 参与 `success` 判定，故 `success: true` 且 `errors` 非空是合法状态；失败必然带原因。
+- **同步 / 异步**：同步实现是**递归**深克隆（栈深＝数据深度，默认 `maxDepth: 100` 兜住，超深结构请用异步路径）；异步实现按 `batchSize` 分片、批间让出控制权，适合大对象并支持 `onProgress`。`onProgress` 抛错被就地兜住（落一条 `unknown`、不影响 `success` 与克隆结果），`onError` 作为决策回调仍会让整次快照失败。
+- **其他维度**：`maxDepth` 超限返回占位符（不返回活引用）、循环引用检测始终生效（`detectCircular` 只控制是否上报）、访问器属性以 getter 求值结果克隆、类实例保留原型、函数按引用共享（无内部状态，共享无副作用）、`metadata.nodeCount` 两条路径同口径（实际进入克隆的节点数）。被 Proxy 包装过的 Date/RegExp/Map/Set 在类型判定处抛错时同样按节点落账并咨询 `onError`（异步路径）。
 - **自定义克隆器**：两条路径共用同一套抛错语义（落账 → 咨询 `onError` → 继续则丢弃 / 中止则抛 `SnapshotAbortError`）。
 - **差异比较**：`SnapshotManager.compareSnapshots` 按活动对象对识别循环，共享子对象仍在各路径比较；自有 `undefined` 属性的新增 / 删除与键缺失不同，分别报告 `kind: 'added' | 'removed'`。
 - **不要混淆时间旅行契约**：`timeTravelPlugin.getSnapshots()` 使用核心 `deepCloneState` 克隆支持的普通对象 / 数组 / Date / RegExp / Map / Set（支持循环引用）；类实例、函数、Promise、WeakMap 等保留原引用，不能宣称与 extras 快照一样完全隔离。
@@ -69,23 +69,23 @@
 ## 8. 错误处理（`extras/error`）
 
 - **错误模型**：`GeomStoreError` 携带错误码与上下文，派生出 `ActionError` / `StateError` / `SelectorError` / `PluginError` / `ComposeError` / `ValidationError`，并有对应的 `is*Error` 守卫
-- **边界（ErrorBoundary）**：默认 fail-loud——未配置 `fallback` 时错误重抛；提供 `fallback` 即视为声明恢复意图，`fallback` 函数自身抛错会重抛**原始错误**（不丢失现场）
-- **恢复（ErrorRecovery）**：策略含 `RETRY` / `FALLBACK` / `IGNORE` / `RECOVER` / `RESTART`；重试额度按**故障周期**计量（时间窗 = `max(60s, 本周期退避总时长 × 2)`），并有键容量守卫防动态 operation id 导致的无界增长
-- **监控（ErrorMonitoring）**：批量 flush 对每个 reporter 做 `ok / fail / timeout` 三态判定；仅真正 resolve 才算成功；全部失败则按序重入队重试，连续失败超过 `maxFlushRetries` 丢弃该批并告警（避免永久失败批次空转）
+- **边界（ErrorBoundary）**：默认 fail-loud——未配置 `fallback` 时错误重抛；提供 `fallback` 即视为声明恢复意图，`fallback` 函数自身抛错会重抛**原始错误**（不丢失现场）。非 `Error` 的抛出值在入口归一化后再记账与传给回调，重抛时仍是原始值；显式 `recoverable: true` 而无 `fallback` 时返回 `undefined`。
+- **恢复（ErrorRecovery）**：策略含 `RETRY` / `FALLBACK` / `IGNORE` / `RECOVER` / `RESTART`；重试额度按**故障周期**计量（时间窗 = `max(60s, 本周期退避总时长 × 2)`），并有键容量守卫防动态 operation id 导致的无界增长。`recover()` 的受控字段（`error` / `config` / `attempt`）由库内写入，调用方上下文无法覆盖实际执行的策略与重试记账键。
+- **监控（ErrorMonitoring）**：批量 flush 对每个 reporter 做 `ok / fail / timeout` 三态判定；仅真正 resolve 才算成功（`reportTimeout <= 0` 表示不超时）；全部失败则按序重入队重试，连续失败超过 `maxFlushRetries` 丢弃该批并告警（避免永久失败批次空转）。聚合统计与错误组同生命周期：组被驱逐时其按 Store 的计数一并删除，`sum(byStore) === totalErrors` 长期成立；组内样例是不含 `payload` 的浅拷贝并随命中刷新，避免进程级缓存钉住 store / 页面节点。
 
 ## 9. 插件（Plugin）
 
 - **契约**：`{ name, install(store) }`，`install` 返回卸载函数（`store.use(plugin)` 返回同一函数）
-- **钩子**：插件通过 `store.hooks.on/emit` 接入 `beforeDispatch` / `afterDispatch` / `beforeSetState` / `afterSetState` / `beforePatch` / `afterPatch` / `beforeReplaceState` / `afterReplaceState` / `onError` 等生命周期
+- **钩子**：插件通过 `store.hooks.on/emit` 接入 `beforeDispatch` / `afterDispatch` / `beforeSetState` / `afterSetState` / `beforePatch` / `afterPatch` / `beforeReplaceState` / `afterReplaceState` / `onError` 等生命周期。处理器的形参与 `emit` 的实参在类型层按**钩子名**关联（写错个数 / 顺序即编译错误）。`emit` 逐个 `try/catch`：单个处理器抛错不影响其余处理器、也不传播给 `emit` 调用方，先 `console.error` 再转投 `onError`（`onError` 自身抛错只落日志、不递归）；需要让异常冒泡到业务方请走 action 的错误边界。
 - **安装安全**：`install` 抛错时回滚入列，不会残留半安装条目；生产模式下安装/卸载日志静默
 
 ## 10. 组合（Compose）
 
 - **命名空间**：`composeStore([a, b], { namespace: true })` 下子 store 按 `name` 嵌套，dispatch 使用 `'storeName/actionName'`；合并的 `actions` 注册表也支持外层组合路由嵌套组合的裸名 action（非命名空间模式同名取第一个 Store）
 - **合并缓存**：`getState()` / `state` 读取前校验子 Store 版本，批内或异步通知尚未发出时也保持新鲜；无版本号的子 Store（含嵌套组合）每次读取保守失效
-- **嵌套内层**：非命名空间外层包含命名空间内层时，其子 store 的键为「子 store 名/键」，写操作需用完整斜杠路径（构造期开发模式提示）
-- **脏追踪**：命名空间模式下 `isStateKeyDirty` 精确判断子 store 是否变化，集成层据此跳过未变化的 `setData`
-- **订阅复用**：组合层 N 个监听器只占用每个子 store 一份订阅；无只读订阅者时通知走零拷贝
+- **嵌套内层**：非命名空间外层包含命名空间内层时，其子 store 的键为「子 store 名/键」，写操作需用完整斜杠路径（构造期开发模式提示）。该归属判定只看数据形状，与 `$replaceState` 的丢键告警开关无关——同一份写入在开发与生产走同一分支
+- **脏追踪**：命名空间模式下 `isStateKeyDirty` 精确判断子 store 是否变化，集成层据此跳过未变化的 `setData`；通知回调内的重入写入留给下一轮（本轮收尾只作废本轮脏键）
+- **订阅复用**：组合层 N 个监听器只占用每个子 store 一份订阅；子 store 的订阅按只读注册，因此通知路径免深拷贝
 - **只读化**：`composed.state` 顶层冻结，嵌套经子 store 保护代理，写入不会穿透
 
 ## 11. 批处理（Batch）

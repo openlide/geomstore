@@ -17,6 +17,7 @@
 - `ActionLoader`
 - `ActionLoaderOptions`
 - `ActionResult`
+- `ActionStats`
 - `ActionUtils`
 - `ActionUtilsOptions`
 - `AsyncActions`
@@ -27,6 +28,7 @@
 - `DecoratorOptions`
 - `EnterpriseAppConfig`
 - `HotUpdateConfig`
+- `LogDecoratorOptions`
 - `MetricType`
 - `MetricsCollector`
 - `OfflineAction`

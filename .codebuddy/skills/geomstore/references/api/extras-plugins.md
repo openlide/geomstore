@@ -49,13 +49,19 @@ export interface PersistenceOptions<S extends State = State> {
  * 仅支持同步后端：persistencePlugin 的恢复与保存均为同步语义，
  * 异步后端（返回 Promise）会在运行时被检测并报错。
  * 如需异步持久化，请在外部自行订阅 store 并处理异步写入。
+ *
+ * 错误语义（三个方法一致，见 #390）：**存储失败一律抛错**，由调用方决定是否降级——
+ * `getItem` 返回 `null` 只代表「键无数据」，不代表「读取失败」，两者不得混用，
+ * 否则损坏的存储会被误判为空状态并随后被覆盖。
+ * persistencePlugin 已按此契约为三条路径（恢复 / 落盘 / clearOnUninstall）各自 try/catch
+ * 并记录日志（落盘失败还会 emit `onError`），自定义后端只要照此抛错即可。
  */
 export interface StorageBackend {
-    /** 获取值（必须同步返回） */
+    /** 获取值（必须同步返回；键不存在返回 null，读取失败抛错） */
     getItem(key: string): string | null;
-    /** 设置值（必须同步返回） */
+    /** 设置值（必须同步返回；失败抛错） */
     setItem(key: string, value: string): void;
-    /** 删除值（必须同步返回） */
+    /** 删除值（必须同步返回；失败抛错） */
     removeItem(key: string): void;
 }
 ```

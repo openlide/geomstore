@@ -4,6 +4,40 @@
 
 > 版本约定：`0.x` 阶段的行为契约变更会显式标注「Breaking」并给出迁移代码；仅「新增可选项」之类的纯增量不在此列。
 
+## 升级到 0.5.2
+
+第四轮复审（454 条）的修复同步。多数为「原本就该如此」的缺陷修复，本节只列**需要动调用方**或**会改变可观测行为**的点；完整清单见 [CHANGELOG](../CHANGELOG.md)。
+
+### Breaking
+
+- **快照 `onError` 的签名与真值语义**：返回类型改为 `boolean | void`，判定是 `if (!shouldContinue)`——不写 `return` 的箭头函数（`void`）等价于**拒绝继续**。只观测不表态的写法必须改成显式 `return true`：
+
+  ```ts
+  // 改前（会把整次快照做成失败）
+  createSnapshot(state, { onError: (e) => console.warn(e) })
+  // 改后
+  createSnapshot(state, { onError: (e) => (console.warn(e), true) })
+  ```
+
+- **`persistencePlugin({ storage })` 在 `store.use()` 安装期即校验三方法**：只实现了部分方法的自定义后端会抛 `TypeError`（此前静默回落到 `wx` / 内存）。补齐 `getItem` / `setItem` / `removeItem`，或直接传 `new WxStorageBackend()`。`Store.use` 会原样上抛，`usePlugin` 仍吞掉并 `console.error`。
+- **`OfflineManager.execute` 失败不再 reject**：契约改为「失败返回 `null` ＝ 已入队待重放」。原先靠 `catch` 它做重试的代码要改成读返回值 / 队列，否则非幂等操作可能被「自己重试 + 队列重放」执行两次。
+- **类型面**：`HookHandler<TArgs, TResult>` → `HookHandler<TArgs>`（`TResult` 删除，`emit` 从不读返回值）；`IHookSystem` 新增必需成员 `listenerCount(hookName)`，自行实现该接口的代码需补方法；`ActionDecorator` 改为 `MethodDecorator` 别名；`ActionResult` 为判别联合（`success: true` 不再带 `error`）；`ActionContext` 默认泛型收紧为 `Actions`（以 `interface` 声明的 action 集合需改 `type` 别名）；`withAppStore` 的映射类型改按实参推断。
+- **Store 品牌 Symbol 键更名**为 `Symbol.for('@openlide/geomstore:brand')`。`isGeomStore()` 用法不变；直接读旧键 `Symbol.for('__geomstore_brand__')` 的代码需同步。
+- **`createUserStore({ userId })` 拒绝空 / 纯空白 userId**（抛错）；**`syncWithServer()` 在响应体缺 `userInfo` 时 reject**。依赖「失败也 resolve」的调用方需加 `catch`。
+- **`setStateProtection()` 在 Store 销毁后抛错**：与 `setState` / `$patch` / `subscribe` / `use` / `cache` / `batch` 同口径；只读的 `isStateProtectionEnabled` / `getStateProtectionConfig` 仍可用。
+
+### 行为变更（无需改代码，但断言 / 监控需复核）
+
+- **装饰器不再把同步方法包成 `async`**（`createDecorator` 及其派生装饰器）：同步方法按同步取值；`before` 返回 Promise 时整次调用才降级为异步。
+- **`withLog` 在生产构建默认输出摘要**（类型 / 长度 / 键数），不再原样打印 `args` / `result`；需要内容请传 `redact`（同时可用 `sink` 换出口）。
+- **快照失败 / 中止时 `data` 为 `undefined`**（不再回传活引用）；`metadata.nodeCount` 两条路径同口径；`onProgress` 抛错不再让整次快照失败。
+- **`subscribe(fn, { readOnly })` 决定载荷形态**：仅有只读订阅者时免深拷贝（保护开启给只读 Proxy、关闭给原始引用）。`notify.clone` 未显式配置即自动模式——集成层绑定本身是只读注册，默认场景下通知开销显著下降；若有测试断言「回调拿到的是副本」，请改为显式 `notify: { clone: true }`。
+- **脏键与通知**：`$replaceState` 会把被删掉的旧键一并标脏；通知回调内的重入写入归下一轮（组合 Store 同口径）；监听器抛错与 action 收尾链路异常改由 `onError` 承接（生产控制台仍静默）。
+- **持久化生产降级改走 `onError`**（`emit('onError', error, 'persistence')`）；`clearOnUninstall` 删除失败不再被吞。`StorageBackend` 三方法一律「失败抛错」，`getItem` 返回 `null` 只代表键无数据。
+- **`compareSnapshots` 不再把「深过 100 层」当成差异**（退化为整体 `deepEqual`）；`deepEqual` 的深度预算跨 Set 累加，超深结构按保守语义判不等且一次顶层调用只告警一次。
+- **错误子系统统计与上报**：`ErrorAggregator` 的样例不再携带 `payload` 且随命中刷新、`byStore` 随组驱逐保持一致；`ErrorMonitoring` 的 `reportTimeout <= 0` 表示不超时、`clear()` 复位连续失败计数；`ErrorRecovery` 的受控字段（`error` / `config` / `attempt`）不再被调用方上下文覆盖；`ErrorBoundary` 会把非 `Error` 抛出值归一化后记账（重抛仍用原始值）。
+- **时间旅行 `importHistory` 会跳过畸形条目**（`state` 为数组或自持 `__proto__` 键），`undo` / `redo` 在回放成功后才推进索引。
+
 ## 升级到 0.5.1
 
 公开签名基本不变（含两处类型放宽）；升级时请确认依赖旧行为的断言与收尾逻辑。以下两节按修复批次列出会改变可观测行为的点，完整清单见 [CHANGELOG](../CHANGELOG.md)。
@@ -144,5 +178,5 @@ composeStore([userStore, cartStore])
 
 - `persistencePlugin` 启动恢复改用 `$patch` 合并语义（未被持久化的键保留初始值）；无 `wx` 同步存储时降级为内存存储并告警
 - `initBackgroundSync` 改为包装全局 `App` 构造器注入 `onShow` / `onHide`（修改 `App.prototype` 在微信中不生效）
-- `Store.$snapshot` 返回递归深冻结结构
+- `Store.$snapshot` 返回递归深冻结结构（**该口径已在 0.5.2 更正为「部分冻结」**：只有纯对象与数组链被冻结，经 Date/RegExp/Map/Set 或非纯对象触达的节点仍可变）
 - 文档与示例统一使用 `state` 工厂函数形式 `state: () => ({ ... })`

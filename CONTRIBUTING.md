@@ -35,12 +35,15 @@ packages/benchmark 性能基准
 ```bash
 pnpm lint:ci          # ESLint（带 --max-warnings 上限）
 pnpm typecheck        # 源码
+pnpm typecheck:tests  # 测试代码（tsconfig.tests.json；CI 独立成步，别指望它被 src 的检查顺带覆盖）
 pnpm typecheck:examples
 pnpm test:ci          # jest --ci --coverage
-pnpm build            # clean-dist → tsc → postbuild（写 module-type 标记、移除 sourcemap）
+pnpm build            # clean-dist → tsc → postbuild（校验 dist 非空、写 module-type 标记、移除 sourcemap）
 ```
 
-CI 在 `build` 之后还会跑一段 **ESM + 子路径冒烟**（`import dist/index.js`、`dist/extras/error/index.js`、`dist/extras/plugins.js`），改动构建或 exports 时请本地复现：
+CI（`.github/workflows/ci.yml`）另有三条约束，本地复现时注意：`concurrency` 对非长期分支取消旧运行、顶层 `permissions` 为 `contents: read` + `actions: write`、`verify` job 有 `timeout-minutes: 20`。
+
+CI 在 `build` 之后还会跑 **ESM + 子路径冒烟**：它从 `package.json` 的 `exports` 里读出每个子路径的 `default` 目标再 `import`（改动构建或 `exports` 时请本地复现；不要改成硬编码 `dist/...` 路径，那会导出 tsc 顺带产出、从不发布的目录形状，冒烟就成了自证空转）：
 
 ```bash
 node --input-type=module -e 'const s = await import("./dist/index.js"); console.log(typeof s.createStore)'
@@ -71,13 +74,16 @@ node --input-type=module -e 'const s = await import("./dist/index.js"); console.
 
 ## 文档
 
-- 文档以**源码为唯一依据**；示例代码请与 `examples/` 保持同源，使其可通过 `pnpm typecheck:examples` 校验
+- 文档以**源码为唯一依据**；示例代码请与 `examples/` 保持同源，使其可通过 `pnpm typecheck:examples` 校验。写完一段结论就回 `src/` 核一遍——判定表 / 复审报告的措辞不是真相，代码才是
 - 易错点（写文档时特别容易写错，均有测试兜底）：
-  - `store.subscribe(listener, options?)` 的监听器是 **`(state: S) => void`**，没有 `prevState`
-  - `createSelector(单个选择器函数, 选项?)`，没有「输入函数 + 结果函数」的双函数重载
-  - `withThrottle(interval, options)` 的间隔是**第一个位置参数**
-  - 装饰器选项为 `withRetry({ retries, delay, shouldRetry })`
-  - 持久化后端必须是**同步**实现
+  - `store.subscribe(listener, options?)` 的监听器是 **`(state: S) => void`**，没有 `prevState`；载荷形态按「有没有可写订阅者」决定（`notify.clone` 未显式配置＝自动），别写成「默认总是深拷贝」
+  - `store.$snapshot()` 是**部分冻结**（纯对象 / 数组链只读，Date/RegExp/Map/Set 与非纯对象触达的节点仍可变），别写成「递归深冻结」
+  - 快照 `onError` 按**真值**解释（判定是 `if (!shouldContinue)`）：`void` / `undefined` 等同拒绝继续；`cloneError` 与 `circular` 的拒绝后果不同（前者整次失败、后者落占位并继续），失败 / 中止时 `data` 为 `undefined`
+  - `createSelector(单个选择器函数, 选项?)`，没有「输入函数 + 结果函数」的双函数重载；选项名是 `cacheSize` / `cacheTTL`（不是 `maxCacheSize`），且只在 `cache: true` 时被读取
+  - `withThrottle(interval, options)` 的间隔是**第一个位置参数**；`withLog(name?, options?)` 的名称在第一位；`createDecorator(options?)` 传的是 `{ before, after, onError }`
+  - 装饰器选项为 `withRetry({ retries, delay, shouldRetry })`，`retries` 是首次执行**之外**的次数
+  - 持久化后端必须是**同步且三方法齐备**的实现：`new WxStorageBackend()` 或自封装，**不要**写 `storage: wx`（`wx` 全局对象没有 `getItem`）
+  - 同步快照克隆是**递归**实现（栈深＝数据深度），`deepEqual` 才是迭代实现；两者都不要写成「无限深度安全」
 - 新增/变更 API 时同步更新：[docs/API.md](./docs/API.md)、相关指南，以及（若涉及行为变更）[CHANGELOG.md](./CHANGELOG.md) 与 [docs/MIGRATION.md](./docs/MIGRATION.md)
 
 ## 提交与 PR

@@ -16,7 +16,6 @@ build/
 coverage/
 coverage-report.json
 .nyc_output/
-coverage-report.json
 coverage-*.json
 
 # IDE
@@ -35,6 +34,9 @@ coverage-*.json
 *.tmp
 *.temp
 .cache/
+
+# 示例工程：本地试验目录，不随仓库分发（与 src 下的 *.example.ts 无关，后者照常跟踪）。
+# 已在此规则前被跟踪的 12 个文件仍在版本控制内；新增示例需显式 git add -f
 examples/
 
 # Environment variables

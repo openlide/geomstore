@@ -7,6 +7,87 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+拟发布为 **0.5.2**：第四轮 ocr 复审的修复同步（454 条 = critical 6 / high 31 / medium 239 / low 178，分波提交 `1097621`、`5616cbb`、`4f08963`、`5a677d2`、`a954078`、`02bd20f`、`1510829`）。逐条判定与证据见 `.ocr-fix/decisions.md` 与 `.ocr-fix/verdicts/*.md`；本节只列**用户可感知**的语义变化，内部健壮性 / 注释类修复不逐条重复。
+
+### Breaking（类型面与对外契约）
+
+- **`HookHandler` 只剩一个类型参数**：`HookHandler<TArgs extends unknown[] = unknown[]>`，`TResult` 已删除——`emit` 从不读处理器的返回值，需要否决请走异常通道。`IHookSystem.on` / `emit` 改按 `HookArgsMap` 与钩子名关联实参：`emit('afterDispatch', name, result)` 这类参数顺序 / 个数写错的代码从「静默通过」变成编译错误（单一钩子名拿到精确形参，联合钩子名沿用擦除形状以兼容组合层桥接）。新增导出类型 `HookArgsMap` / `HookHandlerFor`。
+- **`IHookSystem` 新增必需成员 `listenerCount(hookName): number`**：双语义的 `size()`（无参＝总注册数、带参＝单钩子数）从此有无歧义替代。仓库内唯一实现方 `HookSystem` 已提供该方法；自行实现 `IHookSystem` 的第三方需补上。
+- **`ActionDecorator` 改为 `MethodDecorator` 的别名**：此前反向不可赋值，`const d: ActionDecorator = withRetry()` 编译不过（库内 8 个公开装饰器返回的都是 `MethodDecorator`）。
+- **`ActionResult` 收紧为判别联合**：`success: true` 的结果不再能携带 `error`。未收窄直接读 `data` / `error` 仍得到 `T | undefined` / `Error | undefined`，收窄后精确。
+- **`ActionExecutionContext` 默认泛型收紧**为 `S extends State = State, A extends Actions = Actions`：默认写法下 `ctx.actions.x()` 可调用（此前 `A = unknown` 不可调用）。副作用：以 `interface` 声明的 action 集合不满足 `Actions` 的 `Record` 索引签名约束，需改用 `type` 别名。action 名与基座成员同名（如 `getState`）时，`this.getState` 不再合成成「既像 action 又像基座」的重载集，而是按 action 解析——与运行时（`exposeStoreAPI` 之后仍是基座 API 胜出）一致。
+- **`persistencePlugin({ storage })` 在 `store.use()` 安装期校验后端完整性**：缺少 `getItem` / `setItem` / `removeItem` 任一项即抛 `TypeError` 并点名缺失方法（此前只检查 `getItem`，缺写入方法的「只读后端」会推迟到首次落盘才炸、且被 `saveState` 吞成一条日志；悄悄回落到 `wx` / 内存则把数据写到另一个后端）。`Store.use` 原样上抛安装异常，`usePlugin` 仍按既有口径吞掉并 `console.error`。
+- **`OfflineManager.execute` 失败不再抛错**：在线执行失败时返回 `null`（语义＝本次未执行、已交队列重放），原错误记 `logger.error`。此前「入队 + reject」双通道会让非幂等操作（下单 / 提交表单）被执行两次；原先 `catch` 它做重试的调用方请改读返回值或队列长度。
+- **`createUserStore({ userId })` 拒绝空标识**：`userId` 非字符串、空串或纯空白即抛错。此前会派生出 `user-store-` 这类畸形键，不同账号在存储与 `StoreManager` 上撞同一键＝跨账号数据泄漏。`createEnterpriseApp` 冷启动读到历史脏标识时按未登录处理（清键并记日志，不再中断 `App` 构造）。
+- **`syncWithServer()` 校验响应体**：`statusCode` 为 2xx 但响应体没有 `userInfo` 对象时改为 reject（此前把 `undefined` 直接写进 `userInfo: UserInfo | null` 的契约，UI 侧看到「同步成功但无用户」）。配置项新增 `syncUrl`（缺省沿用内置默认端点）。
+- **`setStateProtection()` 在销毁后抛错**：与 `setState` / `$patch` / `subscribe` / `use` / `cache` / `batch` 同口径（消息 `[GeomStore] Cannot call setStateProtection on a destroyed Store`）；只读的 `isStateProtectionEnabled` / `getStateProtectionConfig` 仍豁免。
+- **Store 品牌 Symbol 键更名**：`Symbol.for('__geomstore_brand__')` → `Symbol.for('@openlide/geomstore:brand')`，带包名命名空间以降低与第三方符号偶然碰撞，且刻意不加版本号（加版本会重新制造「分包副本 A 认不出副本 B 的 Store」）。`isGeomStore()` 用法不变；直接按旧键名读该 symbol 的代码需同步。该键不是安全边界，写入保护始终来自状态代理与内部访问令牌。
+
+### Changed（行为变更）
+
+- **`createDecorator` 不再把同步方法包成 `async`**：同步方法原样同步返回，返回 Promise 的方法才以 `.then` 挂 `after` / `onError`。`before` 返回 Promise 时整次调用降级为异步并等它 settle（其 rejection 走 `onError`）；`after` 返回 Promise 时只有被装饰方法本身是异步的才被接回返回值，同步路径就地兜住 rejection 并记日志，不再留下 unhandled rejection。`onError` 收到的是**规范化后的 `Error`**（`throw 'str'` 被包成带原文的 Error），且它自身抛错只记一条 `[Action] onError callback threw`，不再顶替原始失败。装饰非函数描述符（`get` / `set` 访问器）在装饰阶段即抛 `TypeError`；包装函数保留原方法的 `name` 与 `length`。
+- **`withLog` 新增 `sink` 与 `redact`**：`withLog(name?, options?)`，`sink` 接入项目 logger（缺省 `console`），`redact(value, phase)` 按 `args` / `result` / `error` 阶段决定脱敏形态。**生产构建默认只输出摘要**（类型 / 长度 / 键数），不再原样打印参数与返回值——action 参数常带 token、密码与用户数据；开发构建仍原样输出，显式传 `redact` 即视为自行决定了脱敏策略。
+- **快照失败不再回传活引用**：同步 / 异步快照在异常或中止路径上把 `data` 置为 `undefined`（此前是 `data as T` 原样带出调用方的活动对象，一次「失败快照」就能改到宿主状态）。中止根节点同理，`data` 为 `undefined`。
+- **快照计数口径统一**：`metadata.nodeCount` 两条路径都取「实际进入克隆的节点数」（不含在计数前就被 `maxDepth` 截断的节点），此前异步侧按「处理过的任务数」计，同一输入两边对不上；驱动层的 `processedCount` 只服务 `onProgress`。`SnapshotProgress.total` / `percentage` 为近似值（估算深度上限 10），不可当完成判据。
+- **`onProgress` 抛错不再判整次快照失败**：进度回调就地兜住，落一条 `unknown` 账（不参与 `success` 判定）并在首次异常后停止调用，克隆结果照常交付。`onError` 仍按「决策回调」对待：它抛错会让整次快照失败。
+- **克隆的类型判定纳入 `onError` 链路**：`value instanceof Date` / `getTime()` / `Object.getPrototypeOf(...)` 在 Proxy 陷阱抛错时，此前会绕过节点级错误处理，只留一条路径含糊的驱动层 `cloneError`（根节点为陷阱对象时连失败结果都不交付）；现按节点落账 → 咨询 `onError` → 继续则丢子树。`Map` 的 **Symbol 键**不再让快照抛 `ToString(Symbol)` 崩溃（异步路径原本就是 `String(k)`）。
+- **`compareSnapshots` 不再把「深过护栏」当成差异**：超出 100 层逐路径展开上限后退化为迭代式 `deepEqual`（深度预算不限，避免二次触发它的告警），两侧逐字节相同的超深结构不再永远 `changed`，依赖该结果的缓存 / 去重不再全量失效。
+- **组合 Store 通知期间新脏子 store 留给下一轮**：引入与单 Store 同款的延后脏集合，通知回调内的重入写入不再被本轮收尾清空（集成层对稳定引用对象值的「未变化」跳过判定会永久漏更新）。收尾语义为「本轮脏键作废、新脏键进入下一轮」。
+- **嵌套键路由不再受 `warnMissingKeys` 影响**：非命名空间外层包含命名空间内层时，`'子store/键'` 的归属只按数据形状判定，同一份写入在开发与生产走同一分支（此前 `$replaceState` 的告警开关被当成了路由开关）。命名空间分发只认 payload 的**自有键**，原型链上挂的可枚举属性不再被当作 store 名写入。
+- **`subscribe(fn, { readOnly })` 的拷贝判定真正落地**：载荷形态按「是否存在可写订阅者」决定——全部只读时走零拷贝（状态保护开启则收到只读保护 Proxy，关闭则是原始引用），存在可写订阅者时深拷贝。`notify.clone` 未显式配置即为自动模式；显式 `true` 强制深拷贝，显式 `false` 仍在有可写订阅者时拷贝以防污染。页面 / 组件 / App 绑定本身是只读订阅，因此**默认场景下通知不再深拷贝整棵状态树**。
+- **监听器与 action 收尾链路的异常有了归口**：订阅回调抛错在生产仍不刷控制台（库口径不变），但会通过 `onError` 钩子上报（`hooks.emit('onError', error)`），监控插件不再失明；action 结算链路自身抛错（补刷缓存 → 通知）此前变成 `unhandledRejection`，现同样归口 `onError`，钩子再失败才退到 `console.error`。
+- **`$replaceState` 把「被删掉的旧键」也标脏**：脏键取新旧键集合并集，此前只标新状态的键，被这次替换删掉的键在 `isStateKeyDirty` 上恒为 `false`，视图会一直留着已消失键的值。
+- **`deepEqual` 的深度预算跨 Set 累加**：Set 元素配对不再让深度归零，超深结构按保守语义判不等（与 Map 值分支同口径）；同一次顶层调用的「超过最大深度」告警只出一次。`symbol` 与不可枚举属性不参与比较的口径写入签名文档。
+- **嵌套数组走数组代理**：`this.state.matrix[0][0] = 1` 的错误路径恢复为 `matrix[0][0]`（此前塌成 `matrix.0.0`），且 `push` / `splice` 等变异方法重新命中数组专用拦截分支（此前以「给属性 'push' 赋值」文案抛出）。动作上下文代理不再屏蔽 `Symbol` 键成员（`Symbol.toStringTag`、Store 品牌键等此前一律读到 `undefined`）。
+- **错误聚合统计随组驱逐一致**：`ErrorAggregator` 的 `byStore` 改为与错误组同生命周期计数，组被 `maxGroups` 驱逐时一并删除，`sum(byStore) === totalErrors` 在长期运行后仍成立；组内 `storeHits` 不再让跨 Store 的错误组把整组次数重复计入每个 Store。
+- **错误组样例不再携带 `payload`**：`sampleError` 改为只含标量字段 + `error` 引用的浅拷贝，并随每次命中刷新为最近一次出现。此前它强引用调用方的 `ErrorContext`（其 `payload` 常指向 store / 页面节点），等于让进程级缓存钉住整棵对象树。组 ID 命中后还会严格比对指纹原文，32 位哈希碰撞不再把无关错误静默并组。
+- **`reportTimeout <= 0` 表示「不超时」**：不再创建 0ms 定时器，直接等待 reporter 任务（此前真实异步上报几乎必然被判超时 → 重入队 → 按 `maxFlushRetries` 丢弃）。`clear()` 同时复位「连续全部失败」计数，避免新批次被提前判定丢弃；`clear()` 不停止调度器。
+- **`ErrorBoundary` 接受非 Error 抛出值**：`throw 'str'` / `throw 42` 先归一化为 `Error` 再写入 `errorHistory`、传给 `onError` 与 `fallback`（此前这些位置声明 `Error` 却拿到原始值，读 `.message` / `.stack` 得 `undefined`）；重抛时仍是**原始值**，捕获方语义不变。`execute` / `executeAsync` 的返回类型补上 `undefined`（显式 `recoverable: true` 而未配 `fallback` 时的真实结果）。
+- **`ErrorRecovery` 的受控字段不被调用方覆盖**：`recover(error, context)` 的 `error` / `config` / `attempt` 一律由库内后写，此前展开顺序让调用方传入的同名字段能替换查表得到的策略与重试记账键（实际执行的策略与 `error.code` 不一致）。清除重试计数改按键精确删除，不再按错误码级联全清；`RecoveryContext.attempt` 现在反映真实重试次数（此前恒为 0）。
+- **重试与退避的回调异常被隔离**：`retryWithBackoff` 的 `onRetry` 抛错不再中断循环、不再顶替真实失败（与 `ErrorRecovery` 同口径）；`createRetrySelector` / `createRetrySelectorAsync` 的 `shouldRetry` 抛错按「不再重试」处理、`delay` 函数抛错按 0 等待继续，抛出的原始错误照常带真实 `attempts`。`withCache` 的用户 `keyFn` 抛错时该次调用退化为「不缓存并直接执行」，不再让整个方法失败。
+- **企业级集成的存储与账号切换**：`switchUser` 现在写回当前用户键（此前只在 `login` 写，其它入口换号后冷启动恢复旧身份）；备份键与用户 store 键改由单点派生；损坏备份的 `timestamp` 缺失不再让过期门禁静默绕过；`get` 读取失败补日志、`remove` 返回 `boolean`；序列化结果为 `undefined`（值为 `undefined` / 函数 / symbol）时不再误报写入成功。存储后端不可用时的降级在**生产环境改走 `onError` 钩子**（非生产仍 `console.warn`），持久化彻底静默失效从此可被监控发现；`clearOnUninstall` 的删除失败不再被吞掉。
+- **集成层调试入口收紧**：`exposeStoreAPI` / `devtoolsPlugin` 的 `subscribe` 默认按只读注册，回调收到的是只读保护 Proxy 而非深拷贝副本（就地改载荷会触状态保护告警，需显式传 `{ readOnly: false }`）；`bindActions` 改用自有属性写入（`__proto__` / `constructor` 不再沿原型链污染宿主），冲突时告警并在解绑时恢复宿主原值；同一份 `App` 配置被重复包装不再让热更新检查与 `refreshData` 翻倍触发；devtools 注册表改按自增令牌登记（同一引用重复安装不再让先装的卸载删掉后装的条目）。
+- **时间旅行与历史导入**：`importHistory` 跳过 `state` 为数组或自带 `__proto__` 自有键的条目（此前入栈后 `goTo` / `undo` 会在核心抛 `$replaceState: newState must be a plain object`）；`undo` / `redo` 改在回放成功后推进索引，抛错不再留下与状态失步的坏索引；超大历史（数十万条）导入不再因展开传参触 `RangeError`。
+- **插件全局入口**：`registerGlobalEntry` 改为 fail-safe（生产环境直接 no-op，不再依赖每个调用方自带守卫）；末位条目卸载后空容器从 `globalThis` 摘除，读方得以区分「无插件」与「有插件但为空」；analyzer 卸载只摘仍属于本实例的包装，之后 `store.getter()` 不再向已清理的监控器写幽灵指标。
+
+### Fixed
+
+- `new BatchManager(非函数)` 在构造期抛 `TypeError`（此前只在最外层 `end()` 才炸）；`clear()` 中 `onEvict` 抛错改为与淘汰路径一致的 `console.error`；`hooks` 末位监听者退订后摘除空键，不再让 Map 只增不减。
+- `PerformanceMonitor` 的 `maxSize` 规范化（此前负数会在空数组上死循环）、`getPercentile` 越界参数校验前置、`sampleRate` / `threshold` 双向规范化、阈值预警与采样解耦（logger 收到的是记录副本）、`wx.getPerformance()` 按实例缓存并对不可用形状与 `NaN` 读数降级 `Date.now`。指标出口（`getMetrics` / `getMetricsByType` / `getRecentMetrics`）返回元素副本，`MetricsCollector` 改环形缓冲。
+- `ConsoleReporter` 在 `console.group` 存在但调用即抛的基础库上降级为平铺输出并保证 `groupEnd` 恰好一次；批量路径的级别标签与字段打印与单条路径统一，残缺 `context`（缺 `level` / 非法时间戳 / 非数组入参）不再让上报链抛错。`HttpReporter` 的 `Headers` 形参数按鸭子类型归一化（此前真实 `Headers` 会被展开成空对象而丢头）、透传 `timeout` 到 `wx.request`、避免 body 的 `stringify → parse → 再 stringify` 往返。
+- `StorageBackend.getItem` 对「键不存在」的判定收紧为 `typeof value === 'string' && value !== ''`（微信缺失键返回空串），`getStorageSync` 的返回类型放宽为 `unknown` 使该守卫有意义；`WxStorageBackend.removeItem` 由吞异常改为抛错（恢复路径无法区分「无数据」与「读失败」时，静默继续会在下次落盘覆盖真实数据）。
+- `ErrorLevel` 的日志映射改 `switch` + `never` 穷尽守卫（新增级别不再被静默降级为 `console.info`）；`warn` 标 `@deprecated` 但保留（已随包发布）；`ErrorHandler` 的四个诊断出口返回浅拷贝，`ErrorMonitoring.clear()` 复位连续失败计数。
+- 类型面：`ExtractGetters` 与 `ExtractStates` / `ExtractActions` 收敛到共用的 `ExtractField` 并修掉可选 `getters` 塌成 `never` 的问题；`ExtractMappedState` / `ExtractMappedGetters` / `ExtractMappedActions` 补 `undefined` 守卫，`withAppStore` 的映射类型改按实参推断（与 `withPageStore` 一致，此前 `keyof S` 会退化成 `never`）；`ParametricSelector` 补 `S` / `P` / `R` 默认值；`SelectorComposerInput` 新增可选 `R` 使 `combiner` 返回类型精确；`createStructuredSelector` 的映射参数保持可选并写明「缺键静默跳过」的代价；`ResolvedState` / `StoreOptionsBase` / `SubscriptionOptions` / `NotifyOptions` / `ActionsWithThis` 导出，`PageReservedKeys` 补 `onShareTimeline` / `onAddToFavorites` / `onSaveExitState` / `options`。
+- `deepMerge` 的 `fallbackClone` 对 `__proto__` 走 `defineProperty`；快照的 `mode: 'json'` 在顶层与嵌套口径一致；类实例 / 空原型对象的克隆不再走 `JSON` 兜底。
+
+### Performance
+
+- `LRUCache` 删掉两个只写不读的死字段（每次命中少一次 `Date.now` 与两次属性写），访问计时改到命中之后，未命中不再丢弃高精度时钟调用；淘汰加 `evicting` 重入标志与有界预算（回调内回填不再递归到 `RangeError`）。
+- 错误组的驱逐改为一次线性扫描取 `lastSeen` 最小值（此前每次 `addError` 达上限后都复制数组再排序）。
+- `withThrottle` 的尾随助手提升到装饰阶段，每次调用少分配两个闭包；`SelectorFactory` 的 `execute` 与 `withCacheResult` 合并为单条 `resolve()` 路径；`$patch` 别名标脏时的目标集合一次性建好（不再每个顶层键重建 `Set`）。
+
+### Docs
+
+- `README.md` / `docs/API.md` / `docs/CONCEPTS.md` / `docs/GUIDE.md` / `docs/BEST_PRACTICES.md` / `docs/FAQ.md` 与本轮语义同步：`notify.clone` 与 `readOnly` 的载荷判定、`$snapshot()` 的「部分冻结」口径、快照 `onError` 的真值语义与失败结果 `data`、`HookSystem` 的按钩子签名、持久化后端契约与生产降级信号、`withLog` 的 `sink` / `redact`、`LRUCache.resize` 的实际归一化规则。
+- `pnpm run skill:api` 重新生成 `.codebuddy/skills/geomstore/references/api/*`（机械映射，请勿手改）；`SKILL.md` 的 `withLog` / `createDecorator` 签名、`$snapshot` 冻结口径与持久化 `storage` 要求同步修正。
+- 文档化的既有实现口径（本轮只写清、不改行为）：`$snapshot()` 冻结的是纯对象与数组链，经 Date/RegExp/Map/Set 触达的节点仍可变；`cloneDeep` 是**递归**实现（栈深＝数据深度，默认 `maxDepth: 100` 兜住，超深结构走异步路径）；`ActionLoaderOptions.sharedLoadingCounts` 仅构造期读取、`setOptions()` 忽略；`withTimeout` 的超时错误是普通 `Error` 且 `Timeout after <n>ms` 属稳定文案；`destroy()` 不注销 getter 定义（销毁后 `store.getters` 返回初始化时登记的那份）。
+
+### Tooling（工程链）
+
+- **CI**（`.github/workflows/ci.yml`）：新增 `Typecheck (tests)` 步骤（此前 `typecheck:tests` 从不进 CI，测试代码的类型错误永不被发现）；补 `concurrency`（非长期分支取消旧运行，main / master / develop 保留完整验证记录）与顶层 `permissions`（`contents: read` + `actions: write`，产物上传需要）；`verify` job 加 `timeout-minutes: 20`；产物冒烟改为从 `package.json` 的 `exports` 读出各子路径的实际 default 目标再 `import`（此前导的是 `tsc` 顺带产出、从不发布的路径，等于自证空转）。
+- **构建脚本**：`postbuild-dist` 先校验 `dist` 存在且非空再写标记（并把 `dist/package.json` 由覆写改为解析后合并，解析失败退出 1）；`clean-dist` 加「目标不可信」守卫（`realpath` 与 `root/dist` 全等才允许删除）并把清理失败降为告警；`minify-dist` 探测顺序改为 terser 优先并写明理由，两后端统一 `ECMASCRIPT_TARGET=2020`、补 terser 的 `mangle.toplevel` / `format.comments:false` 与 esbuild 的 `format:'esm'` / `legalComments:'none'`（此前 `ecma` 被放进 mangle 选项集会 `DefaultsError`），删掉不支持 ESM 的 uglify-js 兜底分支，改为全部结果先备在内存再统一落盘，零文件与 `-NaN%` 提前短路并区分宽松 / `--strict` 失败等级；`.map` 清理收紧为 `.(js|d.ts).map`；`tryRequire` 只吞 `MODULE_NOT_FOUND`；subpath stubs 与 skill 参考生成脚本补 dist 目标存在性、`exports` 一致性与输出文件名冲突校验；`tools/fix-errors.sh` 加 `set -euo pipefail` 并按脚本位置定位仓库根。
+- **配置清理**：基线 `tsconfig.json` 的 `lib` 去掉 DOM（src 无任何 DOM 标识符；测试里唯一依赖 DOM 的 `TimerHandler` 标注已改为 `Parameters<typeof setTimeout>[0]`，`tsconfig.jest.json` / `tsconfig.tests.json` 的临时回补项同时撤除）；`tsconfig.build.json` 收敛为「extends + 真实 override」，删掉与 postbuild 互斥的 `sourceMap` / `declarationMap`（此前产物留着指向已删除文件的死链），移除全仓零使用的 `@tests/*` 路径别名；`jest.config.js` 删掉无消费者的 `emitDecoratorMetadata`（与 `isolatedModules` 冲突）；`eslint.config.js` 删掉只有 `no-undef` 一类规则才消费、因而从不参与判定的两块 `globals` 与冗余 override；`.prettierrc.json` 删三个被 Prettier 3.8 明确忽略的键并把 `jsxBracketSameLine` 更名为 `bracketSameLine`；`.gitignore` 的 `.env*` 口径收敛为 `.env` + `.env.*` + `!.env.example`；`.npmignore` 头注释改为如实描述（`package.json` 的 `files` 才是发布清单，实测 213 文件；本文件只在 `files` 被删 / 放宽时兜底），并补 `.npmrc` / `.env*` / `coverage/` / IDE / `.ocr-fix/` 等兜底项。
+- **benchmark**：吞吐阈值由耗时阈值推导（此前两组常量互不可满足）并留 0.5 安全系数，`datasetSize` 类型对齐联合，HTML 报告转义场景名与元数据，`runScenario` 的 `store.destroy()` 移入 `finally`，并发池按同步预约槽位写入结果（此前可超跑 `total` 次且顺序不定），`mergeCacheStats` 汇总 `evictions`，peer 依赖 `^0.4.0` → `^0.5.1`。
+- 删除 `tests/jest.d.ts`（顶层 `JestMatchers` 从不被 `expect()` 引用，且内含误拼的 `toHaveBeenCalledNthWith`）；`createTestStore` 不再写回入参对象。
+
+### 明确不修（避免后人重复踩）
+
+- **脏标记的上报时机保留「调用前」**（`dirtyTracking`）：改成「先调用后上报」会把「多报」换成「漏报」——方法内改完状态再抛错时脏标记丢失，视图永久漏更新。现状是注释明示的「宁可多报」保守契约；同步方法调用后抛错会多标一次键，属预期。
+- **`pnpm-workspace.yaml` 的 `allowBuilds` 不是拼写错误**：pnpm 12.3.4 实际识别并回写该键（见 `node_modules/.modules.yaml`）与 `nodeLinker: hoisted`（Windows junction / 重解析点的安全策略权衡已在该文件注释中记录）。按报告改回 `onlyBuiltDependencies` 会让白名单失效、`pnpm -r exec` 的行为反而需要重建布局复验。
+- **`no-extra-semi` 仍是 ESLint 9 的内置规则**：报告称「v9 已移除」不成立（该规则 v8.53 弃用、v10 才移除），`eslint --print-config` 输出 `[2]`、`pnpm lint` 退出 0。测试文件里行首 `;(` 的既有写法属 prettier 与 ESLint 的历史分歧，本轮未动。
+- **未纳入本轮的改动**：`withThrottle` / `withDebounce` 的 `dispose` / `cancel` 入口、`Storage` 与 `ActionLoader` 默认值的跨文件单点化、`WxStorageBackend` 从 `src/types/persistence.ts` 迁到运行时模块、脏键归属索引增量化（需与 benchmark 吞吐基线一起评估）——均涉及公开面或目录级搬迁，另立波次。
+- **CI 第三方 action 尚未钉 SHA**：`pnpm/action-setup@v4` 仍按可变 tag 引用，需在有外网的机器上核验 `refs/tags/v4` 指向后换成 commit SHA（`packageManager` 字段已用 sha512 锁住 pnpm 本体）。
+
 ## [0.5.1] - 2026-09-17
 
 ### Fixed（第三轮复审）
@@ -82,7 +163,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **文档全面重写**：README 与 `docs/`（GUIDE / API / ARCHITECTURE / CONCEPTS / BEST_PRACTICES / FAQ / MIGRATION）及 CONTRIBUTING 以源码为唯一依据重写；`examples/` 同步重写并新增 `extras/` 分类（覆盖已下沉的可选能力与新增选项），全部示例纳入 `pnpm typecheck:examples` 校验。
-- **快照 / 选择器 / Action 增强的**实现**由 `src/core/**` 移至 `src/extras/**`**（此前仅入口在 `extras`）。通过公开子路径 `extras/*` 引入的代码不受影响；深链内部源码路径需同步调整（见 MIGRATION.md）。`cache` / `hooks` / `performance` 的实现保留在 `core`（被核心直接依赖），仅入口在 `extras/*`。
+- **快照 / 选择器 / Action 增强的实现**由 `src/core/**` 移至 `src/extras/**`（此前仅入口在 `extras`）。通过公开子路径 `extras/*` 引入的代码不受影响；深链内部源码路径需同步调整（见 MIGRATION.md）。`cache` / `hooks` / `performance` 的实现保留在 `core`（被核心直接依赖），仅入口在 `extras/*`。
 - 测试按领域重组至 `tests/unit/{core,extras,store,integrations,plugins}/**`，不再使用按批次命名的文件。
 - `ErrorRecovery` 逐出循环去掉单轮淘汰上限：键数远超上限时一次调用即收敛（此前需多轮调用，且每轮重做一次 O(n) 过期扫描）。
 - 语义等价改写以消除不可达分支：`equalityFn` 在构造期归一化后恒为函数、`HttpReporter` 请求体由私有方法唯一产出、快照描述符标志两条路径统一归一化。
@@ -205,6 +286,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed（全量代码审查第二轮修复，约 25 项）
 
 **Store 核心**
+
 - dispatch 进行中（action 体内调用 `store.batch`）时批收尾不再提前通知：中间态不外泄，由 dispatch 收尾统一补发一次；`batch(fn)` 传入异步回调时开发模式显式告警批保护边界（await 之后的变更逐条通知）。
 - 异步 action 以 reject 结束时先补发 `onError` 钩子再进入失败收尾（拒绝值保持原始错误不包装），监控/上报插件对异步失败不再失明。
 - `use()` 安装抛错时回滚入列，半安装插件不再残留（捕获后重试 use 不累积重复条目）。
@@ -212,32 +294,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - StateProxy 数组子值统一经 `_wrapArrayChild` 缓存代理返回：索引 / symbol 键 / 自定义属性上的对象值不再有绕过写保护的裸引用。
 
 **快照**
+
 - `compareSnapshots` 数组 vs 数组改逐元素比较：新增元素产出 `path[added:i]`（kind `'added'`）、删除产出 `path[removed:i]`（kind `'removed'`），数组与非数组比较报告整体 changed。
 - 克隆保留源对象原型：类实例快照后仍可调用原型方法；克隆失败节点记入 `errors` 并丢弃子树，绝不把活引用兜底进快照；同步路径克隆错误计入 success 判定（存在 cloneError 即 `success: false`），onError 的「中止」决定深层直传不被降级。
 
 **错误系统**
+
 - `defaultErrorHandler` 补齐 critical / warn 级别映射（此前落入 info 分支只打 console.info 且无堆栈）。
 - ErrorMonitoring：全部 reporter 失败的报文按序重入队等待下次 flush 重试（超容量从队尾淘汰）；shutdown 排空阶段不再重排队，避免对已退出上报端无限等待导致 shutdown 永不返回。
 
 **性能 / 工具**
+
 - debounce 定时器先复位再执行、throttle 尾随补发捕获同步抛错并记录，定时器回调异常不再成为 uncaught exception。
 - StateFingerprint 数字哈希改 IEEE754 位模式混合：时间戳量级的增量（~1.7e12 +4181）不再塌缩为相同指纹。
 - `shallowEqual` 对 Date/RegExp/Map/Set 按内容比较（内建对象自有键恒为空，此前 `new Date(1)` 与 `new Date(2)` 被误判相等——该函数是 createSelector 默认比较器，误判会向用户返回陈旧值）。
 - `deepMerge` 增加循环引用防护（WeakMap 配对跟踪）：自引用 / 互引用结构不再栈溢出。
 
 **选择器**
+
 - createRetrySelector / createRetrySelectorAsync 抛出的错误带不可枚举 `attempts` 属性，记录真实执行次数（shouldRetry 提前拒绝时不再是上限值）；throttled selector 取值成功后才推进节流窗口，首次抛错不再吞掉窗口内的重试。
 
 **插件**
+
 - timeTravelPlugin 卸载增加身份守卫：只清理仍属于本实例的 `__timeTravel__` 与全局注册项，同 store 后装的实例不受影响。
 
 **组合**
+
 - composeStore 桥接子 Store 全部生命周期钩子到 `composed.hooks`（此前组合层钩子监听器收不到任何回调）；通知去重简化避免双发相同状态；getters 合并改 own-property 判定；子 store 插件安装失败整体回滚；销毁守卫补齐 enableCache/invalidateCache/getCacheStats/$snapshot/$restore。
 
 **缓存**
+
 - LRUCache 容量 NaN/Infinity 回退默认值（构造与 resize 同守卫）；`getOrSet` 未命中计入 misses 统计；`forEach` 遍历先取后继再回调（回调内删除当前项安全）；avgAccessTime / missRate 口径修正；withCache Symbol 参数表设上限防无界增长；缓存清理条目时同步移除 TTL 时间戳。
 
 **企业版（微信小程序）**
+
 - storage 工具层收敛为尽力而为语义：`set` 返回 boolean（配额满等异常仅记日志）、`remove` 吞异常。
 - 热更新契约收紧：备份改至用户确认时执行；备份写入失败则不写待更新标记并跳过 applyUpdate（避免重启后凭空执行一次无源恢复）；onUpdateFailed 清理标记与备份。
 - OfflineManager 同步期间落盘完整联合队列视图（同步窗口进程被杀不再丢失未处理操作）；网络恢复自动同步与 App.onShow 启动同步补齐 promise 异常兜底（记日志而非 unhandled rejection）。
@@ -259,6 +349,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed（全量代码审查修复，约 50 项）
 
 **Store 核心**
+
 - 异步 action 完成时统一补发通知：此前 `await` 之后的变更（直接变异或 setState）不通知或重复通知；失败路径（同步抛错 / Promise 拒绝）同样补发已发生变更的通知；嵌套 dispatch 仅最外层通知；dispatch 与 batch 交叉时由 batch 收尾统一通知。
 - `dispatch`/`getter` 存在性检查改 own-property 判定：`dispatch('toString')` 等原型链属性名正确报 ACTION_NOT_FOUND，而非误导性 TypeError。
 - 状态保护补齐 `Object.defineProperty` 绕过漏洞（深层/浅层/数组/脏跟踪四类代理）；变异报错消息对 BigInt / 循环引用值安全（不再抛序列化 TypeError）。
@@ -266,26 +357,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 缓存：`enableCache([])` 静默全禁、`clearOldState` 的 `_timestamps` 泄漏等修复。
 
 **composeStore**
+
 - `composed.state` 只读化：顶层冻结、嵌套经子 store 保护代理（此前嵌套写入会静默穿透子 store 内部状态）。
 - `subscribe` 单路复用：N 个组合层监听器只占每个子 store 一份订阅额度（此前成倍挤占、静默驱逐外部直连订阅者）。
 - 非命名空间模式 state 键冲突开发模式告警（每组合一次）；路由与 action 查找改 own-property；销毁守卫补齐（getCached/startBatch/endBatch/batch）；batch 内销毁不再掩盖返回值/异常。
 
 **SnapshotManager**
+
 - `maxDepth` 超限返回占位符而非活引用（快照隔离不再被穿透）；异步快照对不可写属性永久挂起修复；访问器属性（getter）以求值结果克隆；异步 Map/Set 克隆保序；`metadata.size` 真实估算；diff 的 Set 无序匹配与 Map 键结构匹配（`changes` 条目新增可选 `kind: 'added' | 'removed'`）。
 
 **错误系统**
+
 - `flushReports`：reporter 同步抛错不再使 `isFlushing` 永久卡死（监控系统瘫痪）；小程序分支校验 HTTP statusCode；`shutdown` 等待在途 flush；`defaultMonitoring` 惰性代理的属性写入不再静默丢弃；ErrorBoundary 错误历史上限 100；事后 `setFallbackState` 正确切换恢复模式。
 
 **装饰器 / ActionLoader**
+
 - 同一装饰器实例复用于多个方法时状态按方法隔离（withCache 此前会静默返回错误数据）；withCache 并发同参调用 in-flight 去重、Symbol 参数唯一键；withDebounce/withThrottle 状态分桶；withLoading 引用计数按 (宿主, loading 键) 集中（多装饰器并发不再提前翻转 loading）；increment 失败回滚计数。
 
 **性能**
+
 - 状态指纹 DAG 记忆化（共享结构不再指数耗时 / 误判循环引用）；±Infinity 指纹区分；metrics 大数组栈溢出修复；`record` 不再变异调用方对象；超时计时条目惰性清理。
 
 **企业版（微信小程序）**
+
 - StoreManager 真正 LRU（命中刷新顺序）且不再淘汰当前登录用户的 store；`syncQueue` 异常路径完整回填队列（此前会话内丢操作、冷启动重复执行）；离线队列未知 action 走重试→死信路径（不再被当作成功静默丢弃）；在线失败保留原始错误 cause；热更新：确认更新写入重启标记（拒绝更新后的普通重启不再回滚状态）、监听幂等安装不随 login 累积、首次登录也注册保护、备份异常隔离；前台检查按 handler 异常隔离（单个 store 失败不再中断 App.onShow）。
 
 **插件 / 工具**
+
 - 持久化插件：卸载时同步落盘防抖窗口内最后一次变更；timeTravel `importHistory` 对 null JSON 防御；analyzer 卸载清理实例引用、onError 精确丢弃配对栈；`helpers.set` 中间路径为原始值时不再静默替换；TypeValidator 回边类型层校验、嵌套 schema 约束执行、DAG 记忆化、自引用 schema 深度守卫；`throttle`（工具函数版）trailing 使用最新参数。
 
 ## [0.1.2] - 2026-08-20

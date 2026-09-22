@@ -32,8 +32,17 @@ export type MetricType = 'setState' | 'patch' | 'replaceState' | 'dispatch' | 'g
 export declare class MetricsCollector {
     /** 默认指标容量上限：超出后淘汰最旧条目，防止长生命周期采集无限增长 */
     static readonly DEFAULT_MAX_SIZE = 10000;
-    /** 性能指标数组 */
-    private metrics;
+    /**
+     * 环形缓冲：定长数组 + 最旧元素游标 + 有效长度。
+     *
+     * 取代「push + 满员后 splice(0, 1)」：满员后每条指标都要前移整个 10000 元素数组
+     * （O(n)），而采集器正处在被监控操作的热路径上。环形写入是 O(1)。
+     */
+    private buffer;
+    /** 最旧元素下标（缓冲未满时恒为 0） */
+    private oldest;
+    /** 有效条目数 */
+    private _count;
     /** 容量上限 */
     private readonly _maxSize;
     /**
@@ -45,9 +54,10 @@ export declare class MetricsCollector {
      *
      * 添加单个性能指标到采集器。
      *
-     * @param {PerformanceMetrics} metrics - 性能指标
+     * @param {PerformanceMetrics} metric - 单条性能指标（形参名与私有字段 `metrics` 区分，
+     *   复数命名会让调用方误以为可传数组）
      */
-    collect(metrics: PerformanceMetrics): void;
+    collect(metric: PerformanceMetrics): void;
     /**
      * 批量收集指标
      *
@@ -57,11 +67,14 @@ export declare class MetricsCollector {
      */
     collectBatch(metricsList: PerformanceMetrics[]): void;
     /**
-     * 超出容量上限时淘汰最旧条目
+     * 按写入顺序展开环形缓冲
+     *
+     * 读取路径统一走此方法，调用方拿不到内部数组，
+     * 也就无法通过原地改写缓冲数组绕过容量约束
      *
      * @private
      */
-    private _trim;
+    private _ordered;
     /**
      * 获取所有指标
      *
@@ -129,7 +142,8 @@ export declare class MetricsCollector {
      * 计算指定百分位数的持续时间。
      *
      * @param {number} percentile - 百分位数（0-100）
-     * @returns {number} 指定百分位数的持续时间
+     * @returns {number} 指定百分位数的持续时间；采集器为空时返回 0
+     * @throws {RangeError} percentile 非有限数或落在 [0,100] 之外
      */
     getPercentile(percentile: number): number;
     /**
@@ -160,11 +174,17 @@ export declare class PerformanceAnalyzer {
     /**
      * 分析性能瓶颈
      *
-     * 识别超过阈值的性能瓶颈，按平均耗时相对阈值的倍数分级严重程度。
+     * 按操作分组统计，并以 threshold 的倍数标定严重程度。
+     *
+     * @remarks 返回值**不是**「超阈值操作的子集」：入参中出现过的每个操作都会各出一条，
+     * 未超阈值（`avgDuration <= threshold * 2`）的以 `severity: 'low'` 一并返回，
+     * 结果按 avgDuration 降序排列。调用方若只要瓶颈，请自行按 severity 过滤，
+     * 不能把列表长度当作「超标操作数」。
      *
      * @param {PerformanceMetrics[]} metrics - 性能指标数组
-     * @param {number} [threshold=16] - 性能阈值（毫秒）
-     * @returns {Array<{operation: string, count: number, avgDuration: number, maxDuration: number, severity: 'low' | 'medium' | 'high'}>} 瓶颈列表
+     * @param {number} [threshold=16] - 性能阈值（毫秒）：avgDuration > 2×threshold 记 medium、
+     *   > 3×threshold 记 high，否则 low（threshold 本身不是过滤门槛）
+     * @returns {Array<{operation: string, count: number, avgDuration: number, maxDuration: number, severity: 'low' | 'medium' | 'high'}>} 全部操作的分组列表（按 avgDuration 降序），含未超阈值项
      */
     static analyzeBottlenecks(metrics: PerformanceMetrics[], threshold?: number): Array<{
         operation: string;
@@ -181,7 +201,8 @@ export declare class PerformanceAnalyzer {
      * @param {PerformanceMetrics[]} currentMetrics - 当前性能指标
      * @param {PerformanceMetrics[]} baselineMetrics - 基准性能指标
      * @param {number} [threshold=0.2] - 退化阈值（比例，0.2 表示 20%）
-     * @returns {Array<{operation: string, baselineDuration: number, currentDuration: number, change: number, changePercent: number}>} 退化列表
+     * @returns {Array<{operation: string, baselineDuration: number, currentDuration: number, change: number, changePercent: number}>} 退化列表。
+     *   基线为 0 而当前有耗时时无比例可算，changePercent 取 Infinity 哨兵（幅度按无限恶化处理）
      */
     static detectRegression(currentMetrics: PerformanceMetrics[], baselineMetrics: PerformanceMetrics[], threshold?: number): Array<{
         operation: string;
@@ -324,6 +345,42 @@ export declare class PerformanceMonitor implements PerformanceMonitorInterface {
      * ```
      */
     constructor(options?: PerformanceOptions);
+    /** 默认指标容量上限 */
+    private static readonly DEFAULT_MAX_SIZE;
+    /**
+     * 规范化采样率
+     *
+     * `Math.random() > NaN` 恒为 false，未校验的 NaN 会让「采样」变成 100% 记录；
+     * 负值则让所有操作都被跳过。文档口径是 0-1，故统一夹到该区间，非有限值回退默认。
+     *
+     * @private
+     */
+    private static normalizeSampleRate;
+    /**
+     * 规范化阈值
+     *
+     * NaN 阈值会让 `duration > NaN` 恒为 false，超阈值预警静默失效；负值等价于 0
+     * （凡有耗时的操作都预警），夹到 0 保持「预警不被关掉」的直觉语义。
+     *
+     * @private
+     */
+    private static normalizeThreshold;
+    /**
+     * 规范化容量上限
+     *
+     * maxSize 直接来自调用方，未校验会让 `while (length > maxSize) shift()`
+     * 在负数时于空数组上死循环、NaN 时条件恒 false 使缓冲永不收敛，
+     * 故统一收敛为「有限、非负、整数」。
+     *
+     * @private
+     */
+    private static normalizeMaxSize;
+    /**
+     * 缓存的 wx 性能实例（undefined＝未探测，null＝探测过且不可用）
+     *
+     * @private
+     */
+    private cachedWxPerformance?;
     /**
      * 获取高精度时间戳（兼容微信小程序）
      *
@@ -332,6 +389,12 @@ export declare class PerformanceMonitor implements PerformanceMonitorInterface {
      * 取 Date.now()、测试 mock 复用 Node performance.now()（同为毫秒）。
      * 若某基础库实测 wx.getPerformance().now() 返回微秒，归一化只能改本函数这一处
      * （除以 1000），下游不得各自换算，否则口径会分散失配。
+     *
+     * 同一监控器实例只向 wx 取一次性能对象并缓存：start()/end()/pruneStaleOperations()
+     * 处于计时热路径，每点都重新读 globalThis + 调工厂既产生额外分配，
+     * 更关键的是缓存保证了「整轮计时共用同一实例、同一计时原点」，
+     * endTime - startTime 与 MAX_OPERATION_AGE_MS 的差值才不会因原点不同而失真。
+     * 缓存按实例而非模块级：多个监控器（含测试）各自独立探测，互不污染。
      *
      * @private
      */
@@ -386,6 +449,12 @@ export declare class PerformanceMonitor implements PerformanceMonitorInterface {
      * ```
      */
     record(metrics: PerformanceMetrics): void;
+    /**
+     * 超出容量上限时淘汰最旧条目
+     *
+     * @private
+     */
+    private trimToMaxSize;
     /**
      * 获取所有指标
      *
@@ -611,7 +680,19 @@ export interface PerformanceStats {
     totalCount: number;
     /** 超过阈值次数 */
     thresholdExceeded: number;
-    /** 按操作分组统计 */
+    /**
+     * 按操作分组统计
+     *
+     * 与顶层的口径差异是刻意的：这里只保留「便宜且够用」的三项（次数 / 平均 / 最大）。
+     * 顶层的 `minDuration` 需要一个按操作累加的极值，`thresholdExceeded` 需要把
+     * `exceedThreshold` 一并下钻到分组（阈值是全局配置，分组级计数在调阈值后还得重算），
+     * 二者都要改 `src/core/performance/metrics.ts` 的 `computePerformanceStats` 累加器，
+     * 只在类型上补字段会让契约声明出运行时不存在的成员（实测 TS2322 顶在
+     * `Object.fromEntries(byOperation)` 那一行）。
+     *
+     * 键数量不是无界的：分组由 `metrics` 数组派生，而该数组按 `PerformanceOptions.maxSize`
+     * （默认 1000）溢出即 shift，故不同操作名最多累积 maxSize 项。
+     */
     byOperation: Record<string, {
         count: number;
         avgDuration: number;

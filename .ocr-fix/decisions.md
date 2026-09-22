@@ -56,3 +56,40 @@
 ## Wave C — low（178 条）
 
 待处理。
+
+---
+
+## Wave D 同步记录与最终计数
+
+### 计数（454 / 454 全部有逐条判定）
+
+| 严重度 | 条数 | 修（含复核补做） | 驳回 FP | 驳回 reject |
+|---|---|---|---|---|
+| critical | 6 | 4 | 2 | 0 |
+| high | 31 | 27 | 4 | 0 |
+| medium | 239 | 215（含 15 补做） | 20 | 24 |
+| low | 178 | 114（含 2 补做） | 16 | 26 |
+| **合计** | **454** | **360** | **42** | **52** |
+
+- `修` = 报告成立并已改代码/文档；`FP` = 报告的事实不成立（附命令级证据）；
+  `reject` = 现象成立但报告的修法方向错、会引入更糟后果或属破坏性/越界改动，保留现状并说明。
+- 「复核补做」= 首批批量 agent 未落地或只做一半，由审计/复核片补完（明细见
+  `.ocr-fix/verdicts/G1-core-medium-audit.md`、`G2-extras-medium-p1-recheck.md`、`G6-scripts-medium-recheck.md`）。
+- 计数由脚本按判定表关键字自动归类（`.ocr-fix/ledger.json` × `.ocr-fix/{decisions.md,verdicts/*}`），
+  逐条以各 verdict 文件为准。
+
+### 本波（Wave D）改了哪些文档
+
+- `CHANGELOG.md`：新增 `[Unreleased] 拟发布 0.5.2` 节，按 Breaking / Changed / Fixed / Performance / Docs / Tooling / 明确不修 分组，只列用户可感知的语义变化。
+- `docs/API.md`：同步 `HookHandler`/`IHookSystem`、`persistencePlugin({storage})` 安装期校验、`withLog` 的 `sink`/`redact`、快照 `data`/`nodeCount`/`onProgress` 口径、`compareSnapshots` 深结构退化、`getErrorsBy*` 返回拷贝、`syncUrl` 与 `userId` 抛错等。
+- `docs/CONCEPTS.md`、`docs/GUIDE.md`、`docs/BEST_PRACTICES.md`：更正「迭代式深克隆不爆栈」「$snapshot 递归冻结」「notify.clone 与只读订阅者」等已失实表述，补只读订阅与零拷贝关系。
+- `docs/FAQ.md`、`docs/MIGRATION.md`、`docs/ARCHITECTURE.md`、`README.md`、`CONTRIBUTING.md`：与上述同口径的局部更正。
+- `.codebuddy/skills/geomstore/references/api/*.md`：由 `pnpm run skill:api` 重新生成（12 个文件），未手改。
+- `.gitignore`（收尾两条此前 defer 的 low）：删掉重复的 `coverage-report.json`（#448）；`examples/` 从「Temporary files」段移出并写明它与 `src/**/*.example.ts` 的关系（#451）。
+
+### 待人工拍板
+
+1. CI 第三方 action 尚未钉 SHA（#442）：需在有外网的机器上核验 `refs/tags/v4` 后替换。
+2. 判定表中标为「另立波次」的公开面改造：`WxStorageBackend` 迁出 `src/types`、`withThrottle/withDebounce` 的 `dispose` 入口、脏键归属索引增量化（#178）、`Storage`/`ActionLoader` 默认值单点化。
+3. 全量 jest 末尾的 “worker did not exit gracefully” 告警为既有现象（多位 agent 在未改动子集上复现过），建议单独排查。
+4. `ocr.md` / `review.json` 是本轮回话素材，当前未被任何忽略规则覆盖，也不应进版本库——是否加进 `.gitignore` 由你定。

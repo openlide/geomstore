@@ -27,8 +27,12 @@ export interface AsyncRetrySelectorOptions extends RetrySelectorOptions {
 ```ts
 /**
  * 参数化选择器
+ *
+ * 泛型默认值与同族的 `Selector`（`S = Record<string, unknown>`）、`SelectorComposerInput` 对齐：
+ * 此前 `S`/`P`/`R` 全部必填，未typed 场景要写满 `ParametricSelector<Record<string, unknown>, unknown, unknown>`，
+ * 与公开面上其它选择器类型的口径不一致。补默认值只是放宽「可省略」，显式传参的既有用法不受影响。
  */
-export type ParametricSelector<S extends State, P, R> = (state: S, params: P) => R;
+export type ParametricSelector<S extends State = Record<string, unknown>, P = unknown, R = unknown> = (state: S, params: P) => R;
 ```
 
 ### `RetrySelectorOptions`
@@ -77,6 +81,11 @@ export interface SelectorCacheItem<R> {
      * 缓存条目对应的状态版本号（来自 Store 的变更计数）。
      * 有值时命中判定退化为 O(1) 整数比较，无需 deepEqual 全树比较；
      * 为 undefined 表示状态无版本标记（普通对象），回退到 equalityFn 比较。
+     *
+     * 判「有没有值」一律写 `version !== undefined`，**不要写 `if (item.version)`**：
+     * `0` 是合法版本号（Store 的 `_mutationCount` 从 0 起算），真值判断会把首版状态误判成
+     * 「无版本」而退回昂贵的 deepEqual 路径。现有消费方（`createSelector.isCacheHit`、
+     * `parametricSelector` 的 stateCache 命中校验）都按 `!== undefined` 写。
      */
     version?: number;
 }
@@ -122,7 +131,7 @@ export declare class SelectorComposer {
      * const selector = SelectorComposer.combine({
      *   selectors: [
      *     (s) => s.base,
-     *     (s) => s.taxRate
+     *     (s) => s.taxRate,
      *     (s) => s.shipping
      *   ],
      *   combiner: (base, tax, shipping) => base * (1 + tax) + shipping
@@ -133,6 +142,17 @@ export declare class SelectorComposer {
      * ```
      */
     static combine<S extends State, R = unknown, T extends readonly Selector<S, unknown>[] = readonly Selector<S, unknown>[]>(input: SelectorComposerInput<S, T>): Selector<S, R>;
+    /**
+     * pipe / createDerived 共用的管道实现
+     *
+     * 两个公开入口只有重载签名不同、运行期行为逐字相同，故各自委托到这里：
+     * 此前 createDerived 写作 `pipe(...(selectors as [never]))`，那个断言把重载契约整个丢掉
+     * （`[never]` 可赋给任意 rest 形参，连第一个参数不是「接受 state 的选择器」都查不出来，
+     * 错误只在运行期暴露）。改为共用实现后两侧都只面对自己的 rest 类型，无需断言。
+     *
+     * @private
+     */
+    private static runPipe;
     /**
      * 管道操作
      *
@@ -204,7 +224,7 @@ export declare class SelectorComposer {
      * @example
      * ```typescript
      * const selector = SelectorComposer.createArraySelector(
-     *   (item) => item.value * 2
+     *   (item: number) => item * 2
      * )
      *
      * const doubled = selector([1, 2, 3])
@@ -215,10 +235,21 @@ export declare class SelectorComposer {
     /**
      * 创建对象选择器
      *
-     * 对对象的每个键应用选择器
+     * 对状态的**每个自有可枚举字符串键**应用选择器，返回同键名的对象。
+     *
+     * ⚠️ `K` 必须是 `keyof S` 中除 Symbol 外的全部键（即 `K = Extract<keyof S, string>`），
+     * 不能只填其中一部分：实现的键集来自运行期的 `Object.keys(state)`，与类型参数无关。
+     * 把 `K` 声明成子集（如 `createObjectSelector<S, 'a', R>((key: 'a') => ...)`）会让
+     * `keySelector` 收到它声明域之外的键、返回对象多出 `Record<K, R>` 之外的键——类型不会报错，
+     * 只表现为结果比预期多键。之所以不把签名改成 `(key: keyof S) => Selector<S, R>`
+     * （`keyof S` / `keyof S & string` / `Extract<keyof S, string>` 三种写法均已实测）：
+     * 键参数的类型一旦依赖 `S`，`(key) => (s: MyState) => s[key]` 这一最常见写法就会因
+     * 循环推断把 `S` 退回约束 `object`、`key` 退化成 `never` 而直接编译失败，
+     * 为了一个不产生错误数据的宽松性牺牲全部调用点的类型推断不值得。
+     * 确实只想派生固定子集时请改用 {@link SelectorComposer#combine}（键集由 selectors 显式列出）
      *
      * @template S - 状态类型
-     * @template K - 键类型
+     * @template K - 键类型，须为 `keyof S` 的非 Symbol 全部键（见上）
      * @template R - 值类型
      * @param {(key: K) => Selector<S, R>} keySelector - 键选择器工厂
      * @returns {Selector<S, Record<K, R>>} 对象选择器
@@ -347,17 +378,27 @@ export declare class SelectorComposer {
 ```ts
 /**
  * 组合选择器参数
+ *
+ * `R` 是组合结果的类型，与 `SelectorComposer.combine<S, R>` 的 `R` 同一个：
+ * 由 `combiner` 的返回类型直接给出，`combine` 侧不再需要 `as R` 断言
+ * （该断言此前把「combiner 返回了别的东西」——例如拼错的属性名——静默当成 `R`）。
+ * 默认 `unknown` 保持既有两参数写法 `SelectorComposerInput<S, T>` 的行为不变。
+ *
+ * 组合器实现见 `src/extras/selector/selectorComposer.ts`（`SelectorComposer.combine<S, R>`）。
  */
-export interface SelectorComposerInput<S extends State = Record<string, unknown>, T extends readonly Selector<S, unknown>[] = readonly Selector<S, unknown>[]> {
+export interface SelectorComposerInput<S extends State = Record<string, unknown>, T extends readonly Selector<S, unknown>[] = readonly Selector<S, unknown>[], R = unknown> {
     /** 选择器数组 */
     selectors: [...T];
     /**
      * 组合函数
      *
-     * 参数刻意保持 any[]：元组 mapped type 在严格泛型下推断失效
-     * （combiner 实参类型由调用方泛型推断保证，见 compose.ts）
+     * 参数刻意保持 `any[]`（实测改 `unknown[]` 即破功）：调用方的 combiner 普遍写成
+     * `(base: number, tax: number) => number` 这类**具体形参**，参数逆变下
+     * `(a: number) => …` 不满足 `(a: unknown) => …`，直接编译失败；
+     * 且 `combine` 内部是 `combiner(...results)` 的透传调用，形参类型由调用方泛型推断保证。
+     * 返回值不再是 `unknown` 而是 `R`，见上方类型参数说明。
      */
-    combiner: (...results: any[]) => unknown;
+    combiner: (...results: any[]) => R;
 }
 ```
 
@@ -452,6 +493,17 @@ export declare class SelectorFactory<S extends State = Record<string, unknown>, 
      */
     execute(state: S): R;
     /**
+     * 缓存解析协议：命中查找（当前条目 + 历史回溯）→ 未命中则计算并写入缓存
+     *
+     * execute 与 withCacheResult 共用本方法，两者的差异只在返回包装。此前两处各写一遍
+     * 「findCacheHit → selector → updateCache」，同一套协议要同步维护两份就会漂移
+     * （findCacheHit 抽出之前两者就分叉过一次：withCacheResult 只查当前条目，
+     * 命中 history 时 execute 判命中而它判未命中）。
+     *
+     * @private
+     */
+    private resolve;
+    /**
      * 判断缓存条目是否命中（状态相等且未过期）
      *
      * @private
@@ -489,6 +541,13 @@ export declare class SelectorFactory<S extends State = Record<string, unknown>, 
     /**
      * 获取缓存状态
      *
+     * `cacheHit` 的口径要说明白：它返回的是 **当前缓存条目**（`this.cache`，即最近一次写入
+     * 或因命中历史而被提升为当前的那条），与 `hasCache` 同源同值，**不是**「最近一次
+     * 命中的那条」。命中查找走 findCacheHit，它可能返回 cacheHistory 里的任意一条，
+     * 而本方法不记录那次查找的结果。字段名沿用 cacheHit 以保持既有公开面不变
+     * （改名是当前缓存语义的破坏性变更，不属本轮 low），需要真正的「最近命中」请比较
+     * `getCacheStatus().cacheHit` 与调用前后的 `cacheSize`/timestamp 自行推断
+     *
      * @returns {{hasCache: boolean, cacheSize: number, cacheHit?: SelectorCacheItem<R>}} 缓存状态信息
      *
      * @example
@@ -496,7 +555,7 @@ export declare class SelectorFactory<S extends State = Record<string, unknown>, 
      * const status = factory.getCacheStatus()
      * console.log('Has cache:', status.hasCache)
      * console.log('Cache size:', status.cacheSize)
-     * console.log('Last cache hit:', status.cacheHit)
+     * console.log('Current cache entry:', status.cacheHit)
      * ```
      */
     getCacheStatus(): {
@@ -532,15 +591,41 @@ export declare class SelectorFactory<S extends State = Record<string, unknown>, 
 ```ts
 /**
  * 选择器选项
+ *
+ * 默认值与生效条件都归一化在 `src/extras/selector/createSelector.ts` 的 `SelectorFactory` 构造函数
+ * （`cache: options.cache ?? true` 之后才用到 cacheSize/cacheTTL，见 `resolve()` 的两处
+ * `if (this.options.cache)`）；本类型只声明形状，故把口径抄在这里以免只读契约的人拿不到默认值。
  */
 export interface SelectorOptions {
-    /** 是否启用缓存 */
+    /**
+     * 是否启用缓存（默认 `true`）。
+     * `cacheSize` / `cacheTTL` / `equalityFn` 都只在 `cache` 为真时才被读取。
+     */
     cache?: boolean;
-    /** 缓存大小 */
+    /**
+     * 缓存历史条数（默认 10，历史条目同样参与命中判定，不只比对最近一条）。
+     *
+     * 归一化口径：`Number.isFinite(v) ? Math.max(1, v) : 10`——0 / 负数被夹到 1，
+     * `NaN`/`Infinity`/未提供回到 10（不夹会让 history 无界增长或刚 push 就被 shift 掉）。
+     */
     cacheSize?: number;
-    /** 缓存过期时间（毫秒） */
+    /**
+     * 缓存生存时间，毫秒（默认 5000）。
+     *
+     * 只做了 `?? 5000` 的缺省兜底，**不校验取值**：`<= 0` 会让每条缓存立即过期（等价于关缓存，
+     * 但不报错）；`NaN` 使过期判定 `timestamp + ttl <= now` 恒为 false，即永不过期。
+     * 需要这两类输入被拒绝请在选项归一化处补校验（属 `src/extras`，见本轮待办）。
+     */
     cacheTTL?: number;
-    /** 比较函数 */
+    /**
+     * 比较函数（默认 `deepEqual`；显式传 falsy 视同未提供，同样回退 `deepEqual`）。
+     *
+     * 比较的是**输入状态**（缓存键），不是选择器结果：实现里是
+     * `equalityFn(item.state, state)`（`createSelector.ts` 的 `isCacheHit`），
+     * 且仅在状态无版本标记（非 Store 状态、直接传普通对象）时才被调用。
+     * 形参保持 `unknown` 是必需的：本类型不带 `S` 泛型、`createSelector(selectorFn, options?)`
+     * 的 options 位点也不随 `S` 实例化，写成 `(a: S, b: S)` 要先在实现层把泛型透传下来。
+     */
     equalityFn?: (a: unknown, b: unknown) => boolean;
 }
 ```
@@ -610,6 +695,18 @@ export declare function createMemoizedSelector<S extends State, R>(selectorFn: S
  * 就地变异时校验会因引用相等判定「未变化」，TTL 内返回陈旧值。规避：用 setState/$patch
  * 整体替换该字段。
  *
+ * 参数缓存两侧的形状**不对称**（有意保留，调用侧需知悉）：
+ * - 原始类型参数走 Map：受 `maxEntries` 约束，写入接近上限时清扫过期项并按插入序淘汰。
+ * - 对象参数走 WeakMap：过期条目只在读取侧按 TTL 判 miss（随后覆写），**没有后台清扫**，
+ *   也**不受 `maxEntries` 约束**（该上限只作用于上面那条 Map）。因此对象的条目只在
+ *   「参数对象自身被 GC」时释放——长寿命的参数对象会一直带着它最后一次算出的 value 与 timestamp。
+ * - 复用同一个参数对象、原地改它的内容：WeakMap 的键引用不变，TTL 内命中的是改内容**之前**
+ *   的结果（失效凭证只有 state 侧的版本/快照，参数侧没有）。规避：每次传新对象，
+ *   或把参与派生的值作为原始类型参数传入。
+ *
+ * 不给对象侧补容量上限的原因：WeakMap 既无 size 也无法迭代，要计数就得另存一份键列表，
+ * 那会把弱引用换成强引用、反而造成本要避免的泄漏。
+ *
  * @example
  * ```typescript
  * const getUserById = createParametricSelector(
@@ -617,8 +714,7 @@ export declare function createMemoizedSelector<S extends State, R>(selectorFn: S
  *   { ttl: 10000 } // 自定义缓存有效期
  * )
  *
- * const getState = (state) => state
- * const getUser = getUserById(getState)
+ * const getUser = getUserById(store.state)
  *
  * // 使用不同的参数
  * const user1 = getUser('user1')
@@ -645,6 +741,13 @@ export declare function createParametricSelector<S extends State, P, R>(selector
  * state 里放了类实例并就地修改其字段，快照与活状态共享同一实例，比较会因引用相等
  * 判定「未变化」，TTL 内返回陈旧值。规避：用 setState/$patch 整体替换该字段，
  * 让状态树产生新的纯对象。纯对象/数组/Date/RegExp/Map/Set 会被正确深拷贝，不受影响。
+ *
+ * 性能口径：Store 状态自带版本号，命中判定走 O(1) 整数比较，不克隆状态；上述快照
+ * 只在「状态无版本标记（直接传入普通对象）+ 默认 deepEqual」的回退路径上发生——
+ * 每次 miss 深克隆整棵状态树，且 `cacheHistory` 最多驻留 `cacheSize`（默认 10）份完整
+ * 快照，每次命中还要深比较整棵树，即每次 `execute` 均为 O(状态规模)。大状态 + 普通对象
+ * 输入时需自控成本，两条免克隆出口：传 `equalityFn: (a, b) => a === b`（改为比较引用，
+ * 代价是感知不到就地变异）、或 `cache: false`（彻底不缓存，每次重算）。
  *
  * @template S - 状态类型
  * @template R - 返回值类型
@@ -685,9 +788,18 @@ export declare function createSelector<S extends State, R>(selectorFn: Selector<
  *
  * 从多个选择器组合成一个对象，便于批量获取派生状态
  *
+ * ⚠️ 参数类型把每个键都声明为**可选**（部分映射是受支持的公开用法），实现则按运行期的
+ * `Object.entries` 遍历，且只处理 `typeof === 'function'` 的项：非函数值（`undefined` /
+ * `null` / 手滑写成的字面量）被**静默跳过**，结果对象里根本没有那个键。而返回值被断言成
+ * 完整的 `R`，所以「R 里声明为必填、映射里省略或放了非函数」这种组合不会报错，只表现为
+ * 读出来是 `undefined`。需要这种不匹配可见时：把返回类型显式写成 `Partial<...>`，
+ * 或保证映射与 `R` 的键一一对应。
+ * 之所以不改成强制完整映射（`{ [K in keyof R]: Selector<S, R[K]> }`）或对缺项告警：
+ * 前者是公开类型的破坏性收紧，后者会把合法的稀疏映射变成日志噪音源（每个非函数项一次）
+ *
  * @template S - 状态类型
  * @template R - 返回结构类型（默认从选择器映射推断）
- * @param {[K in keyof R]?: Selector<S, R[K]>} selectors - 选择器映射
+ * @param {[K in keyof R]?: Selector<S, R[K]>} selectors - 选择器映射（非函数项被跳过，见上）
  * @returns {Selector<S, R>} 组合选择器
  *
  * @example

@@ -52,7 +52,7 @@ store.$patch({ x: 1 })
 
 ### `isStateKeyDirty` 有什么用？
 
-供集成层判断「自上次通知以来某键是否变化」，据此跳过无意义的 `setData`（小程序视图层更新是主要开销）。默认与 `onlyOnChange` 模式都跟踪 Action 内对象 / 数组 / Map / Set 的直接变异，标记所有受影响的顶层键（含别名，异步段累积到通知时）。Date 等其他内建对象的内部变异不被跟踪，请显式替换值。组合 Store 的命名空间模式下它会精确判断**子 store** 是否变化。
+供集成层判断「自上次通知以来某键是否变化」，据此跳过无意义的 `setData`（小程序视图层更新是主要开销）。默认与 `onlyOnChange` 模式都跟踪 Action 内对象 / 数组 / Map / Set 的直接变异，标记所有受影响的顶层键（含别名，异步段累积到通知时）。Date 等其他内建对象的内部变异不被跟踪，请显式替换值。`$replaceState` 会把**被这次替换删掉的旧键**也标脏（消失型变更），否则视图会一直留着已删键的值。通知回调内的重入写入归下一轮。组合 Store 的命名空间模式下它会精确判断**子 store** 是否变化。
 
 ## 缓存与选择器
 
@@ -79,14 +79,16 @@ store.$patch({ x: 1 })
 | `Map` | 跳过整条 entry |
 | 根节点 | `data` 为 `undefined` |
 
-排查方式：读 `result.errors`（每项含 `path` / `type` / `message`），并按需用 `customCloner` 接管该节点。存在 `cloneError` 时 `success` 为 `false`——**先看成功标志，再信任数据**。
+排查方式：读 `result.errors`（每项含 `path` / `type` / `message`），并按需用 `customCloner` 接管该节点。存在 `cloneError` 时 `success` 为 `false`——**先看成功标志，再信任数据**。整次快照异常或被告警中止时 `data` 是 `undefined`（失败结果不会回传活引用），别直接 `result.data.x`。
+
+`onError` 按**真值**解释：不写 `return` 的箭头函数返回 `undefined`，等价于「拒绝继续」，会把整次快照做成失败。只想观测请显式 `return true`，或改用 `onProgress`（它抛错会被就地兜住、不影响结果）。
 
 ### `$snapshot()` 和 `createSnapshot()` 有什么区别？
 
 | | `store.$snapshot()` | `createSnapshot(data)` |
 | --- | --- | --- |
 | 归属 | 核心 | `extras/snapshot` |
-| 结果 | 深克隆 + 递归冻结的只读状态 | `{ data, success, errors, metadata, stats }` |
+| 结果 | 深克隆 + **部分冻结**（纯对象 / 数组链只读；Date/RegExp/Map/Set 与非纯对象触达的节点仍可变） | `{ data, success, errors, metadata, stats }` |
 | 错误处理 | 无账本（失败即抛） | 逐节点落账 + `onError` 降级策略 |
 | 适用 | 需要只读副本 / 回滚点 | 需要错误可见性、进度、大对象分片 |
 
@@ -129,18 +131,24 @@ withThrottle(100, { leading: true, trailing: true })   // 间隔是第一个位�
 
 默认 `leading` 与 `trailing` 均为 `true`：窗口结束时以**最新参数**补发被抑制的调用。
 
+### 自定义装饰器（`createDecorator`）把同步方法变成返回 Promise 了？
+
+0.5.2 起不会。`createDecorator` 只在被装饰方法返回 Promise（或 `before` 回调返回 Promise）时才让调用返回 Promise，同步方法保持同步返回；`before` / `after` 的异步返回被接续而非并发执行，rejection 不再变成 unhandled rejection。`onError` 收到的是规范化后的 `Error`，它自身抛错只记一条日志、不会顶替原始失败。装饰访问器（`get` / `set`）在装饰阶段就抛 `TypeError`。
+
 ## 插件与持久化
 
 ### 持久化没有生效 / 恢复后字段丢了？
 
-- **后端必须同步**：`getItem` / `setItem` / `removeItem` 返回 Promise 的实现会被**显式拒绝**（避免写入静默丢失）。小程序用 `WxStorageBackend` 或自封装同步实现；浏览器可直接用 `localStorage`
+- **后端必须同步且三方法齐备**：`getItem` / `setItem` / `removeItem` 缺任一方法都会在 `store.use()` 安装期抛 `TypeError`；返回 Promise 的实现会在恢复 / 落盘 / 清理时被明确拒绝（避免写入静默丢失）。小程序用 `new WxStorageBackend()` 或自封装同步实现；浏览器的 `localStorage` 恰好实现了这三个同步方法，可直接传
 - **恢复是合并语义**（走 `$patch`）：未被持久化的键保留初始值，不会被覆盖
 - 用 `filter` 指定落盘子集；用 `debounce` 控制写入频率（卸载时会同步补写窗口内最后一次变更）
-- 需要卸载即清理时用 `clearOnUninstall: true`（此时待写数据会被丢弃）
+- 需要卸载即清理时用 `clearOnUninstall: true`（此时待写数据会被丢弃；删除失败会记日志并 `emit('onError', …, 'persistence')`，不再静默谎报已清除）
 
 ### 生产环境为什么看不到插件日志？
 
 `NODE_ENV=production` 下插件安装/卸载、订阅驱逐、子 store 竞态等路径**静默**（仅开发模式打日志）。这是刻意设计，排查时临时切到开发模式即可。
+
+但**静默不等于没有信号**：需要被监控发现的问题都改走 `onError` 钩子——持久化降级为内存后端、订阅回调抛错、落盘 / `clearOnUninstall` 失败、action 收尾链路自身抛错，都会 `store.hooks.emit('onError', error, source)`。生产环境请给 `onError` 挂上报处理器。
 
 ### 插件安装失败会留下半成品吗？
 
@@ -207,7 +215,7 @@ onLaunch(options) { console.log(this.globalData.appName); this.markLaunched(Stri
 
 ### 报错 `Cannot call … on a destroyed Store`
 
-Store 已 `destroy()`。销毁后除只读统计（如 `getCacheStats`）外的所有方法都会抛错；请在销毁前完成收尾，或在使用前判断生命周期。
+Store 已 `destroy()`。销毁后除只读统计（如 `getCacheStats`、`isStateProtectionEnabled`）外的所有**写接口**都会抛错（`setState` / `$patch` / `$replaceState` / `subscribe` / `use` / `cache` / `batch` / `setStateProtection`）；请在销毁前完成收尾，或在使用前判断生命周期。注意销毁不会注销 getter 定义：`store.getters` 返回的仍是初始化时登记的那份（`getter(name)` 则抛错、`getGetterNames()` 返回 `[]`）。
 
 ### 长期运行的进程内存持续增长 / 定时器不退出？
 

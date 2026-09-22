@@ -81,9 +81,21 @@ export declare class ComposeError extends GeomStoreError {
  *
  * 按级别将错误信息输出到 console；在缺少 `console.group` 的基础库上
  * 自动降级为平铺输出，保证报告不因 API 缺失而失败。
+ *
+ * 失败传播是有意为之：本报告的输出若抛错（自定义 console、被 stub 的
+ * `console.error`），异常向上交给 `ErrorMonitoring.doFlushReports`，由其折成
+ * 「该报告器 fail」并让整批重新入队重试。此处静默吞掉的话，管线会把
+ * 「一条都没落地」判成上报成功并丢弃批次（见其 `anyReporterSucceeded` 分支）。
  */
 export declare class ConsoleReporter implements ErrorReporter {
     private readonly prefix;
+    /**
+     * 分组能力是否已在本次运行中被证实不可用
+     *
+     * `console.group` 存在但调用即抛的运行时（占位实现）只试探一次，
+     * 之后直接走平铺路径；按实例记录，避免一个报告器的探测结果污染其他实例。
+     */
+    private groupUnavailable;
     /**
      * @param prefix 日志前缀，默认 `[ErrorMonitoring]`
      */
@@ -91,6 +103,32 @@ export declare class ConsoleReporter implements ErrorReporter {
     getName(): string;
     report(context: ErrorContext): Promise<void>;
     reportBatch(contexts: ErrorContext[]): Promise<void>;
+    /**
+     * 以分组方式执行 `grouped`，不具备分组能力（缺失或调用即抛）时执行 `flat`
+     *
+     * 组必须闭合：组内输出抛错时少一次 `groupEnd` 会让后续所有输出留在已打开的
+     * 分组里，故闭合放在 finally；`grouped` 的异常本身继续向外传播（见类文档）。
+     *
+     * @param decorate 标签装饰器，分组路径原样输出（`'Error:'`），
+     *        平铺路径由调用方加上头部信息（`'[prefix] ERROR Error:'`）
+     * @private
+     */
+    private runGrouped;
+    /**
+     * 输出一条错误上下文的全部字段
+     *
+     * 分组与平铺两条路径共用同一份实现（此前复制了四遍，改格式要同步四处且已出现
+     * 级别大小写漂移）。
+     *
+     * @private
+     */
+    private printContext;
+    /**
+     * 输出批量报告中的一条（分组与平铺路径同格式）
+     *
+     * @private
+     */
+    private printBatchEntry;
 }
 ```
 
@@ -104,13 +142,22 @@ export declare class ConsoleReporter implements ErrorReporter {
  */
 export declare class ErrorAggregator {
     /**
-     * 各 Store 的错误发生次数
+     * 按错误组保存的「Store → 该组内该 Store 的次数」
      *
-     * 单独按次计数：错误组会把同一站点在不同 Store 的报错合并为一条，
-     * 若按组计数求和（组 count 累加给每个受影响 Store），跨 Store 的组
-     * 会把整组次数重复计入每个 Store，byStore 之和超过 totalErrors
+     * 单独按次计数而非按组求和：错误组会把同一站点在不同 Store 的报错合并为一条，
+     * 若把组 count 累加给每个受影响 Store，跨 Store 的组会重复计入，byStore 之和超过 totalErrors。
+     * 计数随组一起存放，组被 maxGroups 驱逐时同步消失，因此
+     * `sum(byStore) === totalErrors` 在驱逐后依旧成立（此前独立累计的口径会永久偏离）。
      */
-    private readonly storeCounts;
+    private readonly storeHits;
+    /**
+     * groupId → 指纹原文
+     *
+     * 组 ID 只由 32 位哈希压缩而来，必然存在碰撞概率；这里保留指纹原文，
+     * 命中已有键时严格比对指纹，不同则向后探测新键，避免无关错误被静默折叠成
+     * 同一组（那会让 `count` 与 `affectedStores` 从此失真且无从发现）。
+     */
+    private readonly fingerprints;
     private groups;
     private readonly maxGroups;
     constructor(maxGroups?: number);
@@ -135,19 +182,56 @@ export declare class ErrorAggregator {
      */
     getGroupsByStore(storeName: string): ErrorGroup[];
     /**
+     * 记录一次「组内某 Store」的错误计数
+     *
+     * @private
+     */
+    private _countStoreHit;
+    /**
      * 清理旧的错误组
+     *
+     * 只驱逐「最近最少出现」的一组，不复用 getGroups()：那会把整个 Map 复制成数组
+     * 再排序（O(n log n) + n 个临时对象），而本方法在组数达到上限后的**每次** addError
+     * 都会进入，属于错误高发期的热路径。线性扫描取最小 lastSeen 即可，不分配临时数组。
+     * 新增一组最多越界一组，while 只是对 maxGroups 被改小等异常情形的兜底。
      *
      * @private
      */
     private cleanupOldGroups;
     /**
-     * 生成错误组ID
+     * 构造判定「同一错误」的指纹
+     *
+     * 归并粒度维持 name + message + 堆栈前 `STACK_FINGERPRINT_CHARS` 个字符：
+     * 「同一逻辑错误的多次抛出跨调用点归为一组」是本库对外承诺的聚合口径
+     * （ErrorMonitoring 的 MONITOR-008/014/015/062 用例即固化了它），堆栈头部长度
+     * 恰好落在 file:line 之前，改成全文堆栈会把同一逻辑错误按行号打散。
+     * 真正的缺陷不在此而在「哈希相同即并入」，由 resolveGroupId 的指纹严格比对兜住。
      *
      * @private
-     * @param {ErrorContext} context - 错误上下文
-     * @returns {string} 组ID
      */
-    private generateGroupId;
+    private buildFingerprint;
+    /**
+     * 由指纹求出（无碰撞的）组 ID
+     *
+     * 哈希只用于压缩 Map 键长，不承担正确性：同一哈希已被别的指纹占用时按
+     * `base~n` 线性探测，命中同指纹则复用原键。
+     *
+     * @private
+     */
+    private resolveGroupId;
+    /**
+     * 生成随组长期驻留的样本快照
+     *
+     * 组缓存可存活到进程结束，直接持有调用方交来的 ErrorContext 有两个后果：
+     * `payload` 常引用 store 实例 / 页面节点，等于让缓存钉住整棵对象树；
+     * 而 context 在报告链路上仍会被他人持有或改写，样本会随之漂移。
+     * 故留一份只含标量字段 + error 引用的浅拷贝，时间戳取归一后的 `now`。
+     * `error` 本体保留：它是诊断价值最高的部分，且 `ErrorGroup.sampleError` 的类型契约
+     * 要求 Error 实例（GeomStoreError 的 code 等字段也挂在其上）。
+     *
+     * @private
+     */
+    private copySample;
     /**
      * 清空所有错误组
      */
@@ -163,6 +247,12 @@ export declare class ErrorAggregator {
         byCode: Record<string, number>;
         byStore: Record<string, number>;
     };
+    /**
+     * 汇总现存各组的按 Store 计数
+     *
+     * @private
+     */
+    private _byStoreCounts;
 }
 ```
 
@@ -249,7 +339,8 @@ export declare class ErrorBoundary<S = unknown, F = undefined> {
      * @param {() => T} fn - 要执行的函数
      * @param {S} [currentState] - 当前状态（用于回退）
      * @returns {T | undefined} 函数执行结果，如果错误且可恢复则返回undefined
-     * @throws {Error} 如果错误且不可恢复则重新抛出
+     * @throws {Error} 错误且不可恢复时重抛原始错误；可恢复但 `fallback` 函数自身抛错时
+     *   同样重抛**原始**错误（回退路径已失效，不返回 undefined），见 {@link ErrorBoundary.handleError}
      *
      * @example
      * ```typescript
@@ -264,7 +355,7 @@ export declare class ErrorBoundary<S = unknown, F = undefined> {
      * // safeResult will be undefined, error is handled
      * ```
      */
-    execute<T>(fn: () => T, currentState?: S): T | F;
+    execute<T>(fn: () => T, currentState?: S): T | F | undefined;
     /**
      * 异步执行函数并捕获错误
      *
@@ -274,7 +365,8 @@ export declare class ErrorBoundary<S = unknown, F = undefined> {
      * @param {() => Promise<T>} fn - 要执行的异步函数
      * @param {S} [currentState] - 当前状态（用于回退）
      * @returns {Promise<T | undefined>} 函数执行结果，如果错误且可恢复则返回undefined
-     * @throws {Error} 如果错误且不可恢复则重新抛出
+     * @throws {Error} 与 {@link ErrorBoundary.execute} 同：不可恢复、或可恢复但 fallback
+     *   函数自身抛错时重抛原始错误
      *
      * @example
      * ```typescript
@@ -288,12 +380,12 @@ export declare class ErrorBoundary<S = unknown, F = undefined> {
      * }, state)
      * ```
      */
-    executeAsync<T>(fn: () => Promise<T>, currentState?: S): Promise<T | F>;
+    executeAsync<T>(fn: () => Promise<T>, currentState?: S): Promise<T | F | undefined>;
     /**
      * 处理错误
      *
      * @private
-     * @param {Error} error - 错误对象
+     * @param {unknown} rawError - 被捕获的原始抛出值（非 Error 会归一化为 Error 记录）
      * @param {S} [currentState] - 当前状态
      * @returns {S | undefined} 回退状态（若配置）；未配置回退时返回 undefined
      * @throws {Error} 如果错误且不可恢复
@@ -512,6 +604,30 @@ export type ErrorHandler = (context: ErrorContext) => void;
 ### `ErrorHandlerImpl`
 
 ```ts
+/**
+ * 错误处理器类
+ *
+ * 用于管理GeomStore运行过程中的错误处理、记录和统计
+ *
+ * @class ErrorHandlerImpl
+ *
+ * @example
+ * ```typescript
+ * const errorHandler = new ErrorHandlerImpl()
+ *
+ * // 自定义错误处理
+ * errorHandler.setHandler((context) => {
+ *   console.error(`[${context.level}] ${context.error.message}`)
+ * })
+ *
+ * // 处理错误
+ * errorHandler.handle('user-store', 'state-update', new Error('Failed'))
+ *
+ * // 获取错误统计
+ * const stats = errorHandler.getErrorStats()
+ * console.log(`Total errors: ${stats.total}`)
+ * ```
+ */
 export declare class ErrorHandlerImpl {
     /**
      * 错误处理函数
@@ -572,6 +688,13 @@ export declare class ErrorHandlerImpl {
      * }
      * errorHandler.handleError(context)
      * ```
+     *
+     * @remarks 处理器抛错被隔离成一条 `[ErrorHandler] Error in error handler:` 的
+     * `console.error`，不外溢给调用方：本方法是错误链路的最后一环，让坏掉的上报 handler
+     * 把原始错误顶替成二次异常，会让现场只剩 handler 的堆栈。context 在调用 handler 之前
+     * 已写入 errorLog，因此 handler 长期失效时仍可由 `getErrorLog()`/`getErrorStats()`
+     * 观察到错误在累积——这是该取舍的兜底通道，也是不额外加 `onHandlerError` 钩子的理由
+     * （钩子本身同样可能抛错，且要新增公开 API）。
      */
     handleError(context: ErrorContext): void;
     /**
@@ -609,9 +732,19 @@ export declare class ErrorHandlerImpl {
      */
     private logError;
     /**
+     * 拷贝一条错误上下文
+     *
+     * 内部 errorLog 存的若是交给调用方的同一个对象，一句 `ctx.level = 'critical'`
+     * 或 `ctx.error = ...` 就会污染此后所有查询与统计，故对外一律给副本。
+     * 浅拷贝已足够：`error`/`payload` 按约定是外部持有的不可变引用。
+     *
+     * @private
+     */
+    private copyContext;
+    /**
      * 获取错误日志
      *
-     * 返回所有错误上下文的副本
+     * 返回所有错误上下文的副本（数组与条目均可安全修改，不影响内部状态）
      *
      * @returns {ErrorContext[]} 错误日志数组的副本
      *
@@ -655,7 +788,7 @@ export declare class ErrorHandlerImpl {
      *
      * 当日志超过指定大小时，最旧的错误会被移除
      *
-     * @param {number} size - 最大日志数量（必须 >= 1）
+     * @param {number} size - 最大日志数量（必须 >= 1；小数向下取整，非有限值回退默认 100）
      *
      * @example
      * ```typescript
@@ -698,21 +831,27 @@ export declare class ErrorHandlerImpl {
     /**
      * 获取错误统计信息
      *
-     * 返回按级别和操作类型分组的错误统计
+     * 两个分组字段都是**稀疏**的：只包含实际出现过的级别 / 操作类型，
+     * 未出现过的键不存在（而非 0），因此按 `Partial` 暴露——
+     * 把它们预置成 0 会让「`Object.keys(byLevel)` 的长度」这类聚合口径失真。
+     * 读侧请写 `stats.byLevel.warn ?? 0`。
      *
-     * @returns {{total: number, byLevel: Record<ErrorLevel, number>, byOperation: Record<OperationType, number>}} 错误统计对象
+     * @returns {{total: number, byLevel: Partial<Record<ErrorLevel, number>>, byOperation: Record<string, number>}} 错误统计对象
+     *
+     * 键类型为 `string`（而非 `OperationType`）是刻意的：`OperationType` 是开放字符串
+     * 联合的聚合口径，调用方传入自定义 operation 时也会原样出现在这里。
      *
      * @example
      * ```typescript
      * const stats = errorHandler.getErrorStats()
      * console.log(`Total: ${stats.total}`)
-     * console.log(`Critical: ${stats.byLevel.critical}`)
-     * console.log(`Action errors: ${stats.byOperation['action-execution']}`)
+     * console.log(`Critical: ${stats.byLevel.critical ?? 0}`)
+     * console.log(`Action errors: ${stats.byOperation['action-execution'] ?? 0}`)
      * ```
      */
     getErrorStats(): {
         total: number;
-        byLevel: Record<ErrorLevel, number>;
+        byLevel: Partial<Record<ErrorLevel, number>>;
         byOperation: Record<string, number>;
     };
 }
@@ -723,8 +862,17 @@ export declare class ErrorHandlerImpl {
 ```ts
 /**
  * 错误级别
+ *
+ * 规范集合为 `'error' | 'warning' | 'critical' | 'info'`：
+ * - `'critical'` 不是 `'error'` 的同义词，它表示「需人工介入」的致命级别，
+ *   默认处理器按 error 同级输出（含堆栈），级别标签保留 CRITICAL。
+ * - `'warn'` 是 `'warning'` 的历史别名（同义拼写），并非独立级别：它已随
+ *   `ErrorContext` 发布给外部调用方，且 `tests/unit/core/error/ErrorHandler.test.ts`
+ *   的 #36 回归（「warn 别名走 warning 通道」）与 `error-boundaries.test.ts` 仍在断言它，
+ *   删除即为破坏性变更。故保留兼容，但默认处理器与 `'warning'` 归入同一分支输出。
+ *   新代码一律使用 `'warning'`。
  */
-export type ErrorLevel = 'error' | 'warning' | 'info' | 'warn' | 'critical';
+export type ErrorLevel = 'error' | 'warning' | 'critical' | 'info' | /** @deprecated 同义别名，请改用 `'warning'` */ 'warn';
 ```
 
 ### `ErrorMonitoring`
@@ -793,7 +941,12 @@ export declare class ErrorMonitoring {
      */
     report(context: ErrorContext): Promise<void>;
     /**
-     * 立即上报所有队列中的错误
+     * 立即上报队列中的错误
+     *
+     * 语义边界：本次 flush 发送的是进入时快照的队列，flush 期间新入队的错误
+     * 不在其中；已有 flush 在途时返回该 flush 的 Promise，resolve 仅代表那一批
+     * 已处理完，当前队列可能仍有条目未发送。因此本方法**不是**「排空队列」的保证，
+     * 需要排空语义请使用 shutdown()（它会等在途 flush 并做最终上报）
      *
      * @returns {Promise<void>}
      */
@@ -836,6 +989,9 @@ export declare class ErrorMonitoring {
     getErrorGroups(): ErrorGroup[];
     /**
      * 清除所有数据
+     *
+     * 只清数据（队列、聚合统计、连续失败计数），不停止周期调度器、也不影响在途
+     * flush——调度器仍会到期 flush 清除后新入队的错误；需要「停止」语义请用 shutdown()
      */
     clear(): void;
     /**
@@ -1020,13 +1176,6 @@ export declare class ErrorRecovery {
      */
     private incrementRetryCount;
     /**
-     * 清除重试计数与对应周期窗
-     *
-     * @private
-     * @param {string} errorCode - 错误代码
-     */
-    private clearRetryCount;
-    /**
      * 生成重试键
      *
      * @private
@@ -1045,7 +1194,7 @@ export declare class ErrorRecovery {
     /**
      * 清除所有重试计数
      *
-     * 与私有 clearRetryCount 同口径：计数与周期窗必须一起清。只清计数会留下陈旧窗口，
+     * 计数与周期窗必须一起清。只清计数会留下陈旧窗口，
      * 该窗口在中途过期时触发额度重置，使 max-retries 防重试风暴保护被击穿
      * （原本应被拦截的重试被放行），且残留窗口条目再无释放路径。
      *
@@ -1153,9 +1302,13 @@ export declare class GeomStoreError extends Error {
     /**
      * 创建GeomStore错误实例
      *
+     * `name` 由派生类显式传入而非取 `this.constructor.name`：产物经 esbuild/terser 压缩，
+     * 类名会被改写，取构造器名会让生产构建里的 `error.name` 变成不可读的短标识。
+     *
      * @param {string} message - 错误消息
      * @param {string} code - 错误代码
      * @param {Record<string, unknown>} [context] - 错误上下文
+     * @param {string} [name] - 错误名称（派生类传入自身类名字面量，默认 'GeomStoreError'）
      *
      * @example
      * ```typescript
@@ -1166,9 +1319,14 @@ export declare class GeomStoreError extends Error {
      * )
      * ```
      */
-    constructor(message: string, code: string, context?: Record<string, unknown>);
+    constructor(message: string, code: string, context?: Record<string, unknown>, name?: string);
     /**
      * 将错误对象转换为JSON格式
+     *
+     * @remarks 返回值含完整 `stack`：本方法的契约是**开发者诊断/日志**用途（ERROR-008
+     * 亦锁定了该形状），堆栈是排障必需信息，故不裁剪、也不按 NODE_ENV 分支（生产构建
+     * 里堆栈同样重要）。**不要把结果直接回传客户端或写入持久化存储**——小程序包路径与
+     * 内部实现细节会随之外泄；对外上报请只取 `name`/`message`/`code`/`context`。
      *
      * @returns {Record<string, unknown>} 序列化的错误信息
      *
@@ -1218,12 +1376,13 @@ export declare class GeomStoreError extends Error {
  * 将错误通过HTTP发送到远程服务器。
  * 默认自动适配运行环境（小程序 wx.request / 浏览器 fetch），
  * 也可通过构造参数注入自定义请求实现。
+ * 注意：环境能力差异见 createDefaultRequest —— wx 分支仅 method/header/data/timeout 生效。
  */
 export declare class HttpReporter implements ErrorReporter {
     private readonly endpoint;
     private readonly options;
     private readonly requestImpl;
-    constructor(endpoint: string, options?: RequestInit, requestImpl?: HttpRequestImpl);
+    constructor(endpoint: string, options?: HttpReporterOptions, requestImpl?: HttpRequestImpl);
     getName(): string;
     report(context: ErrorContext): Promise<void>;
     reportBatch(contexts: ErrorContext[]): Promise<void>;
@@ -1234,6 +1393,15 @@ export declare class HttpReporter implements ErrorReporter {
      * {@link JsonBody}，使下游解析不必再做空串防御。
      */
     private buildRequestBody;
+    /**
+     * 单个 ErrorContext 的上报投影
+     *
+     * 单条与批量两条路径共用：两处各写一份字段映射时，新增/改名字段只会落到其中一条，
+     * 服务端收到的单条与批量负载就会静默漂移。
+     *
+     * @private
+     */
+    private serializeContext;
     private serializeErrorMessage;
     private serializeErrorBatch;
     /**
@@ -1335,13 +1503,41 @@ export declare class PluginError extends GeomStoreError {
 export interface RecoveryConfig {
     /** 恢复策略 */
     strategy: RecoveryStrategy;
-    /** 最大重试次数（仅RETRY策略） */
+    /**
+     * 最大重试次数（仅 RETRY 策略）
+     *
+     * 缺省默认 3（ErrorRecovery.configure / executeRetryStrategy 静默补值，读本接口即知实际额度）。
+     * 取值范围：正整数。0 会使首次失败直接命中「Max retries exceeded」分支而完全放弃重试；
+     * 负数与 0 同（`currentAttempt >= maxRetries` 恒成立），均非「无限重试」语义
+     */
     maxRetries?: number;
-    /** 重试延迟（毫秒）（仅RETRY策略） */
+    /**
+     * 重试延迟（毫秒）（仅 RETRY 策略）
+     *
+     * 缺省默认 1000。取值范围：>= 0。0 表示不等待立即重试；负数传入 setTimeout 会被
+     * 归一为 0（同样是立即重试），如需退避请配 exponentialBackoff
+     */
     retryDelay?: number;
-    /** 是否使用指数退避（仅RETRY策略） */
+    /**
+     * 是否使用指数退避（仅 RETRY 策略）
+     *
+     * 缺省默认 true。为 true 时实际延迟为 `retryDelay * 2^已试次数`；
+     * 为 false 时每次固定 retryDelay
+     */
     exponentialBackoff?: boolean;
-    /** 回退值（仅FALLBACK策略） */
+    /**
+     * 回退值（仅FALLBACK策略）
+     *
+     * 与 {@link RecoveryConfig.fallbackFn} 的优先级：**fallbackFn 在前**，配了 fallbackFn 时
+     * 本字段被忽略；两者都没配则 FALLBACK 策略抛错（`No fallback value or function configured`）。
+     *
+     * 类型是 `unknown` 而非某个具体形状，因此「回退值就是 undefined」是合法配置，
+     * 与「没配」在类型上无法区分；引擎按 **`'fallback' in config`** 判定是否配过
+     * （见 `ErrorRecovery.executeFallbackStrategy`），故默认策略里 `fallback: undefined`
+     * 表示「显式回退到 undefined」。反过来说：不要靠展开/序列化搬运 config 后还指望
+     * 该键保留（删掉键就等于没配回退值）。做成 `{ value: unknown }` 之类的判别式联合
+     * 能消除这层歧义，但会破坏已发布的公开配置形状，故保留现形并在此写明判据。
+     */
     fallback?: unknown;
     /** 回退函数（仅FALLBACK策略） */
     fallbackFn?: (error: GeomStoreError) => unknown;
@@ -1373,7 +1569,14 @@ export interface RecoveryContext {
     error: GeomStoreError;
     /** 恢复配置 */
     config: RecoveryConfig;
-    /** 当前重试次数 */
+    /**
+     * 本次恢复进入策略时该重试键已消耗的尝试次数
+     *
+     * 由引擎填充：`recover()` 总是以 0 起算（调用方传入的同名字段会被覆盖，避免外部
+     * 伪造计数），随后 `executeRetryStrategy` 按内部计数表把它写成该键已试次数（首次为 0），
+     * 因此只有 RETRY 策略下会被更新；其余策略（FALLBACK/IGNORE/RECOVER/RESTART）不做
+     * 重试记账，恒为 0。本字段仅供诊断，不参与策略判定，也不会作为参数传给任何用户回调
+     */
     attempt: number;
     /** Store名称（如果适用） */
     storeName?: string;
@@ -1394,7 +1597,9 @@ export interface RecoveryContext {
  * - RETRY: 延迟后重抛原错误，由调用方重试（库内无原操作引用，无法自动重试）
  * - FALLBACK: 使用回退值
  * - IGNORE: 忽略错误
- * - RESTART: 重启相关组件
+ * - RESTART: 重启相关组件。刻意不接受任何配置、结果恒为 undefined：与 RETRY 同理，
+ *   库内不持有组件引用，无法自行重启；undefined 即「需要调用方重启」的信号，
+ *   重启动作与重启对象由调用方决定，故不提供 restartFn/restartTarget 之类的钩子
  * - RECOVER: 执行自定义恢复逻辑
  */
 export declare enum RecoveryStrategy {
@@ -1588,6 +1793,12 @@ export declare function createError(code: ErrorCode, message: string, context?: 
 ```ts
 /**
  * 创建错误上下文
+ *
+ * `timestamp` 的缺省值目前有两处（本工厂的 `Date.now()` 与 `ErrorAggregator.collect` 的
+ * `context.timestamp || Date.now()`）。以本工厂为准：`ErrorContext` 是随包发布的公开类型，
+ * 处理器/订阅方拿到的上下文需要「字段齐全」（`tests/unit/core/error/ErrorHandler.test.ts`
+ * 的「应该生成时间戳」用例即锁住这点），采集器的那一处只是手搓 context 绕过工厂时的兜底。
+ * 单一真相源要把采集器那处删掉（属 `src/extras`，本轮未动），并给测试/回放留出注入时钟的口子。
  */
 export declare function createErrorContext(storeName: string, operation: OperationType, error: Error, level?: ErrorLevel, payload?: unknown): ErrorContext;
 ```

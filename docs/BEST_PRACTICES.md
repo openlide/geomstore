@@ -61,15 +61,15 @@
 
 ## 5. 订阅与通知
 
-- **订阅回调要轻**：回调里只做「决定是否需要更新视图」，重活交给渲染层。回调抛错会被隔离（不影响其他监听器），但会掩盖真正的性能问题。
+- **订阅回调要轻**：回调里只做「决定是否需要更新视图」，重活交给渲染层。回调抛错会被隔离（不影响其他监听器），开发模式打印、生产模式经 `onError` 钩子上报——静默不等于无从监控，请给 `onError` 挂一个上报处理器。
 - **不写状态就声明 `readOnly`**：
 
   ```ts
   store.subscribe(listener, { readOnly: true })
   ```
 
-  只读订阅者存在时，通知路径可以做零拷贝（只在无可读写订阅者时才返回原始引用）。
-- **退订要落实**：`subscribe` 返回退订函数；页面 / 组件场景交给集成层（`onUnload` / `detached` 自动清理），自行订阅的场景务必在销毁前退订。
+  载荷形态按「有没有可写订阅者」决定：全部只读时免深拷贝（开启状态保护拿到的是只读保护 Proxy，关闭时是**原始引用**——只读声明此时只是约定，没有运行时拦截）；只要有可写订阅者，本轮所有回调都拿到独立深拷贝。所以「给一个会写载荷的回调声明 readOnly」在保护开启时是写入抛错、在保护关闭时是静默改活状态，务必如实标注。页面 / 组件绑定本身就是只读注册。
+- **退订要落实**：`subscribe` 返回退订函数；页面 / 组件场景交给集成层（`onUnload` / `detached` 自动清理），自行订阅的场景务必在销毁前退订。本轮派发的是进入通知时在册的注册，回调内退订自己仍会收到最后一次，依赖「立即生效」请在回调里自判存活标记。
 - **`onlyOnChange` 用于跳过无写入的通知**：默认模式也使用 Action 脏跟踪代理；该选项额外依据变更计数决定 dispatch / batch 是否通知，不做内容深比较（同值赋值也可能计数）。嵌套写入的归属关系按需求构建一次索引、标量写入为 O(1) 查表，仅在增删键或写入对象值等结构变更时重建，逐项更新长列表不再退化。
 - **不要用 `subscribe` 做数据转换**：转换放 getter / 选择器；订阅回调里转换会让同一份数据被反复计算。
 
@@ -82,9 +82,9 @@
 
 ## 7. 快照
 
-- **`compareSnapshots` 的循环与 `undefined` 语义**：循环按活动对象对识别，等价循环不会误报差异，共享子对象仍在各路径比较；自有 `undefined` 属性的新增 / 删除会以 `kind: 'added' | 'removed'` 报告，与键缺失区分。
+- **`compareSnapshots` 的循环与 `undefined` 语义**：循环按活动对象对识别，等价循环不会误报差异，共享子对象仍在各路径比较；自有 `undefined` 属性的新增 / 删除会以 `kind: 'added' | 'removed'` 报告，与键缺失区分。逐路径展开有 100 层护栏，超出后退化为整体 `deepEqual` 判定——**深并不等于有差异**，别再拿它当「必然 changed」的信号做缓存失效。
 - **不要把时间旅行快照当完全隔离副本**：`getSnapshots()` 对普通对象 / 数组 / Date / RegExp / Map / Set 重新深克隆，可安全检查；类实例、函数、Promise、WeakMap 等仍是原引用，不要修改。
-- **先看 `success` 再看 `data`**：
+- **先看 `success` 再看 `data`**：失败或中止时 `data` 是 `undefined`（不回传活引用），别直接 `result.data.x`：
 
   ```ts
   const snap = createSnapshot(state)
@@ -93,16 +93,18 @@
 
 - **理解丢弃语义，不要期待「兜底原值」**：不可安全克隆的节点会被丢弃（对象属性不写、数组留洞、`Set` 不加、`Map` 跳 entry）。宁可少字段，也不让活引用穿透隔离契约。
 - **不可克隆的类型用 `customCloner` 接管**：返回 `undefined` 表示交回默认流程，返回任意值即为该节点的克隆结果。
-- **大对象用异步快照并调 `batchSize`**：默认 100；调小可降低单帧卡顿，代价是总耗时略增。给用户反馈请用 `onProgress`。
-- **`onError` 的取舍**：返回 `true` 继续（该节点被丢弃、其余照常），返回 `false` 中止整次快照。**数据一致性优先时选中止**，**可用性优先时选继续并检查 `errors`**。
+- **大对象用异步快照并调 `batchSize`**：默认 100；调小可降低单帧卡顿，代价是总耗时略增。给用户反馈请用 `onProgress`——它是上报口，抛错会被就地兜住（落一条 `unknown`、不影响 `success` 与结果），首次异常后不再被调用。
+- **`onError` 是决策口，不是日志口**：按**真值**解释——truthy 忽略该错误并按种类降级（`cloneError` 丢该子树），falsy（**含不写 `return` 的 `void` 箭头函数**）拒绝继续：`cloneError` 下整次快照 `success: false`，`circular` 下只落 `'[Circular Reference]'` 占位并继续。只想记一行日志请显式 `return true`，或改用 `onProgress`；它自身抛错仍会让整次快照失败。
+- **超深结构走异步路径**：同步克隆是递归实现（栈深＝数据深度），默认 `maxDepth: 100` 会先把它截成占位符；靠抬 `maxDepth` 硬扛深树有爆栈风险。
 - **不要把快照当状态同步机制**：它是一次性隔离副本；跨实例 / 跨端同步请走持久化插件或企业集成。
 
 ## 8. 错误处理
 
-- **错误分层**：action / getter 只负责「抛」，是否恢复交给边界决定。`ErrorBoundary` 默认 **fail-loud**（未配 `fallback` 时重抛）——这避免了「静默吞错 + 返回 undefined」这类最难排查的故障。提供 `fallback` 即等于声明恢复意图。
-- **`ErrorRecovery` 的 operation 命名要稳定**：额度按 `code:storeName:operation` 计量。动态 id（`fetchUser:${id}`）会不断产生新键——虽有容量守卫兜底（`MAX_RETRY_KEYS = 1000`），但会让「同一操作的退避策略」失去意义。推荐按「操作类型」而非「操作对象」命名。
+- **错误分层**：action / getter 只负责「抛」，是否恢复交给边界决定。`ErrorBoundary` 默认 **fail-loud**（未配 `fallback` 时重抛）——这避免了「静默吞错 + 返回 undefined」这类最难排查的故障。提供 `fallback` 即等于声明恢复意图；未配 `fallback` 而显式 `recoverable: true` 时返回 `undefined`，返回类型是 `T | F | undefined`，按 `T | F` 消费会在远端二次炸。
+- **抛出的值请保持 `Error`**：`throw 'str'` 会被边界归一化成 `new Error(String(v))` 记账（堆栈是边界处的，不是抛出点的），重抛时仍是原始值——排查体验远不如带堆栈的 `Error`。
+- **`ErrorRecovery` 的 operation 命名要稳定**：额度按 `code:storeName:operation` 计量。动态 id（`fetchUser:${id}`）会不断产生新键——虽有容量守卫兜底（`MAX_RETRY_KEYS = 1000`），但会让「同一操作的退避策略」失去意义。推荐按「操作类型」而非「操作对象」命名。`recover()` 的 `error` / `config` / `attempt` 由库内写入，别指望用第二参数换策略。
 - **`ErrorMonitoring` 的 reporter 要幂等且有超时**：批量 flush 做 `ok / fail / timeout` 三态判定，仅真正 resolve 才算成功；超时会被当作失败并重入队。确保上报端可重试、不产生重复脏数据。
-- **显式传入 `0` 是合法的**：`batchInterval` / `batchThreshold` / `reportTimeout` 用 `??` 兜底，不会被替换为默认值（`batchInterval: 0` 即「无延迟」）。
+- **显式传入 `0` 是合法的**：`batchInterval` / `batchThreshold` / `reportTimeout` 用 `??` 兜底，不会被替换为默认值（`batchInterval: 0` 即「无延迟」）。`reportTimeout <= 0`（含 `0`）统一按**不超时**处理——想「等到上报真结束」就传 0，别传一个很大的数。
 - **在 reporter 里不要再写 Store**：上报失败会触发错误处理，可能形成回路。reporter 只做网络/日志。
 - **配置上限防长期运行泄漏**：`maxQueueSize`（默认 1000）与 `maxFlushRetries`（默认 3）；持续失败的批次会被丢弃并告警，而不是无限空转。
 
@@ -112,9 +114,9 @@
 - **分包**：企业集成（`extras/enterprise`）、调试插件（`extras/plugins` 的 devtools/timeTravel）建议放进分包。
 - **`setData` 优化**：集成层已按 `isStateKeyDirty` 跳过未变化的映射键，前提是**映射粒度合理**——映射整个大对象（`mapState: { whole: 'list' }`）会让任何内部变化都触发全量传输。映射到具体字段。
 - **`undefined` 不是合法值**：`setData` 不接受 `undefined`，集成层会过滤掉该字段。要「清空」用 `null`。
-- **持久化**：后端必须同步；用 `filter` 收敛落盘字段；`debounce` 降低写入频率（卸载时会同步补写最后一次变更）；需要卸载即清理才开 `clearOnUninstall`。
-- **生命周期**：组件端只认 `lifetimes` 写法；`onUnload` / `detached` 先执行用户钩子，再在 `finally` 清理绑定。需要映射 actions 的收尾放在钩子同步段，包装器不等待异步 Promise；清理绑定不等于销毁 Store，已销毁 Store 上的写操作仍会抛错。
-- **生产模式静默**：插件安装/卸载、订阅驱逐等日志在 `NODE_ENV=production` 下关闭，排查时切开发模式。
+- **持久化**：后端必须同步且 **`getItem` / `setItem` / `removeItem` 三项齐备**（缺项在 `store.use()` 安装期即抛 `TypeError`，不再悄悄换后端）；用 `filter` 收敛落盘字段；`debounce` 降低写入频率（卸载时会同步补写最后一次变更）；需要卸载即清理才开 `clearOnUninstall`。
+- **生产模式静默 ≠ 无信号**：插件安装/卸载、订阅驱逐等日志在 `NODE_ENV=production` 下关闭；但持久化降级为内存后端、监听器抛错、落盘与卸载清理失败都会 `emit('onError', …, source)`。上线前给 `onError` 挂一个上报处理器，比排查时临时切开发模式更可靠。
+- **生命周期**：组件端只认 `lifetimes` 写法；`onUnload` / `detached` 先执行用户钩子，再在 `finally` 清理绑定。需要映射 actions 的收尾放在钩子同步段，包装器不等待异步 Promise；清理绑定不等于销毁 Store，已销毁 Store 上的写操作仍会抛错（`setStateProtection()` 现在也在这条守卫之内）。
 
 ## 10. 测试与调试
 
@@ -141,7 +143,9 @@
 | 订阅回调里做数据转换 | 同一份数据被反复计算 | 转换放 getter / 选择器 |
 | 用 `$replaceState` 做局部更新 | 未列出的键会丢失；缓存全量失效 | `$patch` |
 | 把 `undefined` 写进要在 `setData` 里传输的字段 | `setData` 不接受 `undefined` | 用 `null` 表达「空」 |
-| 传异步 storage 给持久化插件 | 会被显式拒绝；异步写入存在竞态与静默丢失 | `WxStorageBackend` 或自封装同步实现 |
+| 传异步 storage 或**残缺后端**给持久化插件 | 异步写入存在竞态与静默丢失；缺 `setItem` / `removeItem` 的后端会在首次落盘才炸并被吞成日志 | `WxStorageBackend` 或自封装、三方法齐备的同步实现（现在安装期即校验并抛错） |
+| 用不写 `return` 的箭头函数当快照 `onError` | 判定按真值走，`undefined` ＝「拒绝继续」，纯观测会把整次快照做成失败 | 显式 `return true`，或改用 `onProgress` 做观测 |
+| 给装饰器方法期待同步返回（`createDecorator`） | 0.5.2 起同步方法不再被包成 `async`——反过来说，之前依赖它返回 Promise 的调用方现在拿到的是同步值 | 同步方法按同步取值；异步方法照常 `await` |
 | 为省一行引入 `@openlide/geomstore/extras` | 全部可选能力进入产物，主包变大 | 按需 `extras/<能力>` |
 | reporter 里再写 Store / 再抛错 | 形成错误处理回路 | reporter 只做网络/日志，失败交给 flush 的重入队 |
 | 用动态 operation id 做重试计量 | 退避策略失去意义，键数持续增长 | 按「操作类型」命名 |
@@ -153,7 +157,9 @@
 - [ ] `NODE_ENV=production` 下无多余日志（插件安装等已静默）
 - [ ] 只用到的 `extras/*` 被引入；无聚合入口引入；分包划分完成
 - [ ] 映射粒度到具体字段，未整树映射
-- [ ] 持久化后端为同步实现，`filter` 已收敛字段
+- [ ] 持久化后端为同步实现且三方法齐备（安装期校验会替你拦住残缺后端），`filter` 已收敛字段
+- [ ] `onError` 钩子已接上报（持久化降级、监听器抛错、落盘 / 清理失败在生产只走这里）
+- [ ] 带敏感数据的 action 已按需给 `withLog` 传 `redact` / `sink`（生产构建默认只输出摘要）
 - [ ] `ErrorMonitoring` 的 reporter 幂等、有超时；`maxQueueSize` / `maxFlushRetries` 按流量设定
 - [ ] `ErrorRecovery` 的 operation 命名稳定（不含动态 id）
 - [ ] 页面 / 组件卸载后不再触发写入；订阅由集成层自动清理

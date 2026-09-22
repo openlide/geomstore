@@ -74,7 +74,7 @@ Page(
 | 能力 | 引入位置 | 说明 |
 | --- | --- | --- |
 | 状态读写 | 核心 | `getState` / `setState` / `$patch` / `$replaceState` |
-| 快照与还原 | 核心 | `$snapshot` / `$restore`（隔离副本） |
+| 快照与还原 | 核心 | `$snapshot` / `$restore`（深克隆 + 冻结纯对象 / 数组链） |
 | Action | 核心 | `dispatch`、同步/异步、action 上下文、失败传播 |
 | Getter | 核心 | `store.getter(name)`、依赖未变时复用 |
 | 订阅 | 核心 | `subscribe` 返回退订函数；支持上限策略 |
@@ -114,8 +114,8 @@ import { createEnterpriseApp } from '@openlide/geomstore/extras/enterprise'
 - **定时器**：内部对 `setInterval`/`setTimeout` 做 `unref` 探测，浏览器 / 小程序无该 API 时自动跳过，不会阻止进程退出
 - **网络**：错误上报自动选择 `wx.request`（校验 `statusCode`）或 `fetch`（校验 `ok`），均可注入自定义实现
 - **控制台**：基础库缺少 `console.group` 时错误报告自动降级为平铺输出
-- **存储**：持久化插件要求**同步**后端（如 `wx.getStorageSync`）；传入异步实现会被显式拒绝，避免写入静默丢失
-- **生产模式**：插件安装、订阅驱逐、子 store 竞态等路径在 `NODE_ENV=production` 下静默（仅开发模式打日志）
+- **存储**：持久化插件要求**同步且三方法齐备**的后端（`getItem` / `setItem` / `removeItem`）；残缺或异步实现会在安装期 / 读写时被明确拒绝，避免写入静默丢失或写到另一个后端
+- **生产模式**：插件安装、订阅驱逐、子 store 竞态等路径在 `NODE_ENV=production` 下静默（仅开发模式打日志）；需要被监控发现的问题（持久化降级、监听器抛错、落盘 / 清理失败）统一走 `onError` 钩子
 
 ## 工程脚本
 

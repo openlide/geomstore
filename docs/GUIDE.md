@@ -128,24 +128,24 @@ App(
 | 操作 | API |
 | --- | --- |
 | 读取（活动引用） | `store.getState()` |
-| 不可变副本（深克隆 + 递归冻结） | `store.$snapshot()` |
+| 不可变副本（深克隆 + 冻结纯对象/数组） | `store.$snapshot()` |
 | 单键 / 多键合并写入 | `store.setState(key, value)` / `store.$patch({ ... })` |
 | 整体替换（支持工厂） | `store.$replaceState({ ... })` 或 `store.$replaceState(() => ({ ... }))` |
 | 从快照恢复 | `store.$restore(snapshot)`（经 `$replaceState`，不重复深拷贝） |
 
 ```ts
-const snap = store.$snapshot()   // Readonly<S>，嵌套纯对象/数组也被冻结
+const snap = store.$snapshot()   // Readonly<S>；纯对象与数组链被冻结，Date/Map/Set 内部仍可变
 store.$patch({ count: 1 })
 store.$restore(snap)             // 回到快照时刻
 ```
 
 ### 就地变异与隔离
 
-`getState()` 返回的是内部状态的引用，写入是**就地变异**——因此不能靠 `===` 判断内容是否变化（这也是缓存/通知判定依赖内部版本号与脏计数的原因）。需要与内部彻底隔离的副本时用 `$snapshot()`；需要完全隔离的一次性深拷贝用 `createSnapshot()`（见 §7）。
+`getState()` 返回的是内部状态的引用，写入是**就地变异**——因此不能靠 `===` 判断内容是否变化（这也是缓存/通知判定依赖内部版本号与脏计数的原因）。需要与内部隔离的副本时用 `$snapshot()`（深克隆 + 冻结纯对象 / 数组链；类实例、函数、弱集合等仍共享引用，且 Date/RegExp/Map/Set 的 mutator 拦不住）；需要错误账本、进度与丢弃语义的一次性深拷贝用 `createSnapshot()`（见 §7）。
 
 ### 状态保护
 
-开启 `stateProtection` 后，绕过 `setState` / `$patch` 的直接变异（含 `Object.defineProperty`、数组元素赋值）会**抛错**并在开发模式给出可读路径；`deep: false` 表示只保护顶层（性能优先，嵌套对象不再包装）。
+开启 `stateProtection` 后，绕过 `setState` / `$patch` 的直接变异（含 `Object.defineProperty`、数组元素赋值）会**抛错**并在开发模式给出可读路径；`deep: false` 表示只保护顶层（性能优先，嵌套对象不再包装）。嵌套数组走数组专用代理，错误路径形如 `matrix[0][0]`。`setStateProtection()` 与其他写接口一样在 Store 销毁后抛错（只读的 `isStateProtectionEnabled` / `getStateProtectionConfig` 仍可用）。
 
 ### 批量更新
 
@@ -203,18 +203,19 @@ const total = store.getter('total')   // 泛型签名会推导出返回类型
 const unsubscribe = store.subscribe((state) => { /* 只接收新状态 */ })
 unsubscribe()
 
-store.subscribe(listener, { readOnly: true })   // 声明不写状态：通知路径可零拷贝
+store.subscribe(listener, { readOnly: true })   // 声明不写状态：全部订阅者都只读时通知载荷免深拷贝
 ```
 
 | 配置 | 作用 | 默认 |
 | --- | --- | --- |
-| `notify.clone` | 通知时是否克隆状态；关闭且状态保护关闭时，**仅当无可读写订阅者**才返回原始引用 | `true` |
+| `notify.clone` | 通知时是否深拷贝载荷。**未显式配置＝自动**：仅有只读订阅者时零拷贝（状态保护开启给只读保护 Proxy、关闭给原始引用），存在可写订阅者才深拷贝；显式 `true` 强制深拷贝，显式 `false` 仍在有可写订阅者时深拷贝 | 未配置（自动） |
 | `notify.async` | 微任务合并：同一 tick 内多次写入只通知一次 | `false` |
 | `notify.onlyOnChange` | dispatch / batch 期间未检测到写入则不通知（依据变更计数，非内容深比较） | `false` |
 
 - 监听器签名是 **`(state: S) => void`**（没有 `prevState` 参数），需要前后对比请在闭包里自行保存
-- 订阅数达上限时按 `subscription.onLimit` 策略处理（`evict-oldest` / `throw`）；同一监听器重复订阅按引用计数计次，每个退订句柄幂等，重复调用不会移除其他注册
-- `store.isStateKeyDirty(key)` 供集成层跳过未变化的映射键（避免无意义的 `setData`）
+- 订阅数达上限时按 `subscription.onLimit` 策略处理（`evict-oldest` / `throw`）；同一监听器重复订阅按引用计数计次，每个退订句柄幂等，重复调用不会移除其他注册。上限只门禁「新增订阅」，重复注册免检，`size()` 可高于 `maxSubscribers`
+- 回调抛错被逐个隔离（不影响其余监听器）：开发模式打印，生产模式经 `onError` 钩子上报——坏订阅者不再无声漏掉全部更新。本轮派发的是进入通知时在册的注册，回调内退订自己仍会收到最后一次
+- `store.isStateKeyDirty(key)` 供集成层跳过未变化的映射键（避免无意义的 `setData`）；`$replaceState` 会把**被这次替换删掉的旧键**一并标脏
 
 ## 6. 钩子与插件
 
@@ -238,8 +239,9 @@ store.use(persistencePlugin({
 }))
 ```
 
-- **持久化后端必须是同步实现**（`getItem/setItem/removeItem`）——传异步后端会被显式拒绝，避免写入静默丢失
-- 卸载时会**同步补写**防抖窗口内的最后一次变更；`clearOnUninstall: true` 则改为清理存储
+- **持久化后端必须是同步实现且三方法齐备**（`getItem` / `setItem` / `removeItem`）：缺任一方法在 `store.use()` 安装期即抛 `TypeError`，返回 Promise 的实现会在恢复 / 落盘 / 清理时明确报错——不再静默回落到别的后端（那会把数据写到另一个地方）
+- 非微信环境且未传 `storage` 时降级为内存存储：开发模式 `console.warn`，**生产模式经 `onError` 钩子上报**（`emit('onError', error, 'persistence')`），别再指望控制台
+- 卸载时会**同步补写**防抖窗口内的最后一次变更；`clearOnUninstall: true` 则改为清理存储，删除失败会记日志并 `emit('onError', …)`（不再谎报已清除）
 - `store.use` 安装抛错会回滚入列，不留半安装插件；生产模式下安装/卸载日志静默
 - 独立函数 `usePlugin(plugin, store)` 等价且**无需断言**：泛型从 `store` 反推，`plugin` 需与其状态类型匹配（状态无关的插件写作 `Plugin<State>`，如 `loggerPlugin`）。日常也可直接用 `store.use`
 
@@ -249,23 +251,26 @@ store.use(persistencePlugin({
 import { createSnapshot, createSnapshotAsync } from '@openlide/geomstore/extras/snapshot'
 
 const snap = createSnapshot(store.getState())
-snap.data        // 隔离副本；快照内绝不会出现活引用
+snap.data        // 隔离副本；快照内绝不会出现活引用（异常/中止时为 undefined）
 snap.success     // 存在 cloneError 或超时即为 false
 snap.errors      // 错误账本（path / type / message）
-snap.metadata    // nodeCount / size / duration 等
+snap.metadata    // nodeCount / size / duration 等（nodeCount 两条路径同口径）
 
 const async = await createSnapshotAsync(bigObject, {
   batchSize: 100,                                  // 批间让出控制权
-  onProgress: (p) => console.log(p.percentage),
-  onError: (err) => true,                          // true=继续（丢弃该节点）/ false=中止
+  onProgress: (p) => console.log(p.percentage),    // 回调抛错被就地兜住，不影响本次快照
+  onError: (err) => true,                          // truthy=忽略该错误并按种类降级；falsy（含不写 return）=拒绝继续
 })
 ```
 
 要点：
 
-- **隔离契约**：无法安全克隆的节点一律**丢弃**，绝不把原值兜底进快照；丢弃时对象属性不写入、数组留洞、`Set` 不添加、`Map` 跳过整条 entry
-- `maxDepth` 超限返回占位符（不是活引用）；类实例保留原型；访问器属性以 getter 求值结果克隆
+- **隔离契约**：无法安全克隆的节点一律**丢弃**，绝不把原值兜底进快照；丢弃时对象属性不写入、数组留洞、`Set` 不添加、`Map` 跳过整条 entry；异常或中止交付的 `data` 是 `undefined`
+- **`onError` 按真值解释**（判定写法是 `if (!shouldContinue)`）：只观测请显式 `return true`，否则一个不写 `return` 的箭头函数会中止整次快照。「拒绝继续」的后果分岔——`cloneError` 抛 `SnapshotAbortError`（`success: false`），`circular` 只写 `'[Circular Reference]'` 占位并继续（快照仍可 `success: true`）；`maxDepth` / `timeout` 不经该回调
+- `maxDepth` 超限返回占位符（不是活引用）；类实例保留原型；访问器属性以 getter 求值结果克隆；函数按引用共享（无内部状态）
 - `customCloner` 抛错的语义在同步/异步路径**完全一致**（落账 → 咨询 `onError` → 继续则丢子树 / 中止则抛 `SnapshotAbortError`）
+- **同步实现是递归的**（栈深＝数据深度，默认 `maxDepth: 100` 兜住）：超深结构请用异步路径
+- `compareSnapshots` 的 100 层逐路径护栏只终止展开、不再无条件记为差异：超出后退化为迭代式 `deepEqual`，两侧内容相同就不报 `changed`
 
 ## 8. 选择器（`extras/selector`）
 
@@ -295,8 +300,8 @@ root.dispatch('user/updateName', 'Bob')     // 命名空间下的斜杠路径
 root.subscribe((state) => { /* 任一子 store 变化都会收到 */ })
 ```
 
-- 命名空间模式下状态按 `name` 嵌套；`isStateKeyDirty` 精确判断子 store 是否变化，集成层据此跳过未变化的 `setData`
-- 组合层 N 个监听器只占每个子 store 一份订阅；无只读订阅者时通知走零拷贝
+- 命名空间模式下状态按 `name` 嵌套；`isStateKeyDirty` 精确判断子 store 是否变化，集成层据此跳过未变化的 `setData`。通知回调内的重入写入归**下一轮**（本轮收尾只作废本轮脏键）
+- 组合层 N 个监听器只占每个子 store 一份订阅，且该订阅是只读注册的（子 store 免深拷贝）；组合层存在可写监听器时由组合层自己深拷贝一次载荷
 - `composed.state` 顶层冻结、嵌套经子 store 保护代理，写入不会穿透
 - 合并缓存在读取前校验子 Store 版本，批内及异步通知前也能读到最新状态；无版本号的子 Store（含嵌套组合）每次读取保守失效
 - 子 Store 的 `actions` 注册表会合并，外层组合可按裸名路由嵌套组合的 action；非命名空间模式同名取第一个 Store
@@ -319,10 +324,11 @@ const monitoring = new ErrorMonitoring({
 })
 ```
 
-- **`ErrorBoundary` 默认 fail-loud**：未配置 `fallback` 时错误重抛；提供 `fallback` 即声明恢复意图。`fallback` 函数自身抛错时会**重抛原始错误**（不丢失现场）
-- **`ErrorRecovery`** 策略含 `RETRY` / `FALLBACK` / `IGNORE` / `RECOVER` / `RESTART`；重试额度按**故障周期**计量（窗口 = `max(60s, 本周期退避总时长 × 2)`），并有键容量守卫防动态 operation id 导致的无界增长
-- **`ErrorMonitoring`** 批量 flush 对每个 reporter 做 `ok / fail / timeout` 三态判定——仅真正 resolve 才算成功；全部失败时按序重入队重试，连续失败超过 `maxFlushRetries` 丢弃该批并告警
-- `HttpReporter` 自动选择 `wx.request`（校验 `statusCode`）或 `fetch`（校验 `ok`），可注入自定义实现；基础库缺少 `console.group` 时 `ConsoleReporter` 自动降级为平铺输出
+- **`ErrorBoundary` 默认 fail-loud**：未配置 `fallback` 时错误重抛；提供 `fallback` 即声明恢复意图。`fallback` 函数自身抛错时会**重抛原始错误**（不丢失现场）。非 `Error` 的抛出值（`throw 'str'`）先归一化为 `Error` 再记账与传给回调，重抛时仍是原始值；显式 `recoverable: true` 而未配 `fallback` 时返回 `undefined`
+- **`ErrorRecovery`** 策略含 `RETRY` / `FALLBACK` / `IGNORE` / `RECOVER` / `RESTART`；重试额度按**故障周期**计量（窗口 = `max(60s, 本周期退避总时长 × 2)`），并有键容量守卫防动态 operation id 导致的无界增长。`recover(error, context)` 的 `error` / `config` / `attempt` 由库内写入，调用方无法覆盖实际执行的策略
+- **`ErrorMonitoring`** 批量 flush 对每个 reporter 做 `ok / fail / timeout` 三态判定——仅真正 resolve 才算成功（`reportTimeout <= 0` 表示不超时）；全部失败时按序重入队重试，连续失败超过 `maxFlushRetries` 丢弃该批并告警；`clear()` 会复位连续失败计数（不停调度器）
+- **聚合统计可信**：`getStats().byStore` 之和恒等于 `totalErrors`（错误组被驱逐时其计数一并删除）；`ErrorGroup.sampleError` 不含 `payload`（避免钉住 store / 页面节点）且随命中刷新
+- `HttpReporter` 自动选择 `wx.request`（校验 `statusCode`、透传 `timeout`）或 `fetch`（校验 `ok`），可注入自定义实现；`Headers` 形参数按鸭子类型归一化（真实 `Headers` 实例不再被展开成空对象而丢头）；基础库缺少 `console.group`（或它调用即抛）时 `ConsoleReporter` 自动降级为平铺输出并保证 `groupEnd` 恰好一次
 
 ## 11. 性能与体积
 
@@ -340,7 +346,11 @@ const monitoring = new ErrorMonitoring({
 | 监听器没被调用 | `onlyOnChange` 下确实没改动状态；或 `notify.async` 下还在同一 tick | 检查是否真的写入了状态；必要时去掉 `notify.async` |
 | 通知次数「偏多」 | 异步 action 同步段与续段各改一次，或与 batch 交叉 | 由 action 统一合并写入，或用 `batch` 收尾 |
 | `await dispatch(...)` 拿到 `undefined` | 方法不是 `async` 语法但返回 Promise，且首次调用被节流抑制 | `withThrottle(…, { assumeAsync: true })` |
-| 持久化没有生效 | 传了异步 storage 后端（被显式拒绝） | 改用同步后端（`WxStorageBackend` 或自封装同步实现） |
+| 持久化没有生效 | 传了异步 storage 后端（被显式拒绝），或非微信环境下自动降级为内存存储 | 改用同步后端（`WxStorageBackend` 或自封装同步实现）；生产环境的降级信号在 `onError` 钩子里，不在控制台 |
+| `store.use(persistencePlugin({ storage }))` 安装即抛 `TypeError` | 后端缺 `getItem` / `setItem` / `removeItem` 之一（只读适配器、键名拼错） | 补全三个同步方法；接入微信请传 `new WxStorageBackend()` |
+| 快照结果 `data` 是 `undefined` | 该次快照异常或被 `onError` 拒绝继续——失败结果按契约**不回传活引用** | 读 `errors` 的 `path` 定位；需要保留半成品请自行在 `onError` 里返回 truthy |
+| 日志里出现了 token / 用户数据 | `withLog` 在生产构建只输出摘要（类型 / 长度 / 键数），开发构建原样打印 | 需要自定义脱敏或改出口时传 `{ sink, redact }` |
+| 钩子处理器形参仍是 `unknown` | 精确签名（按 `HookArgsMap` 关联）目前在**插件侧**（`install(store)` 拿到的 `Store` 接口）生效；`createStore(...).hooks` 直连时字段声明为实现类 `HookSystem`，签名是擦除版 | 在插件里注册即可获得精确形参；直连场景先自行标注参数类型（源码里把该字段换成 `IHookSystem` 后统一） |
 | 快照里少了字段 | 该节点克隆失败被丢弃（隔离契约） | 查看 `snapshot.errors` 的 `path` 定位；按需用 `customCloner` 接管 |
 | 缓存命中率低 | 缓存键过多或状态频繁整体替换 | 只缓存热点键；避免 `$replaceState` 整体替换 |
 | 生产环境看不到插件日志 | `NODE_ENV=production` 下静默 | 属预期行为；排查时临时切换开发模式 |
