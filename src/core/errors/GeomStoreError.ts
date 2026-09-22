@@ -49,9 +49,13 @@ export class GeomStoreError extends Error {
   /**
    * 创建GeomStore错误实例
    *
+   * `name` 由派生类显式传入而非取 `this.constructor.name`：产物经 esbuild/terser 压缩，
+   * 类名会被改写，取构造器名会让生产构建里的 `error.name` 变成不可读的短标识。
+   *
    * @param {string} message - 错误消息
    * @param {string} code - 错误代码
    * @param {Record<string, unknown>} [context] - 错误上下文
+   * @param {string} [name] - 错误名称（派生类传入自身类名字面量，默认 'GeomStoreError'）
    *
    * @example
    * ```typescript
@@ -62,18 +66,28 @@ export class GeomStoreError extends Error {
    * )
    * ```
    */
-  constructor(message: string, code: string, context?: Record<string, unknown>) {
+  constructor(message: string, code: string, context?: Record<string, unknown>, name: string = 'GeomStoreError') {
     super(message)
-    this.name = 'GeomStoreError'
+    this.name = name
     this.code = code
     this.context = context
 
-    // 确保正确的原型链
-    Object.setPrototypeOf(this, GeomStoreError.prototype)
+    // 仅「直接构造本类」时才需要复位原型：target ES2020 下原生 class extends Error
+    // 已把 this 挂到派生原型上，而 new.target 只在派生类经 super() 调用时才是 undefined。
+    // 无条件按 GeomStoreError.prototype 复位会把派生原型降级（instanceof ActionError 变 false），
+    // 过去靠 6 个子类各补一句 setPrototypeOf 兜回——同一件事写七处，漏一处即静默失效
+    if (new.target) {
+      Object.setPrototypeOf(this, new.target.prototype)
+    }
   }
 
   /**
    * 将错误对象转换为JSON格式
+   *
+   * @remarks 返回值含完整 `stack`：本方法的契约是**开发者诊断/日志**用途（ERROR-008
+   * 亦锁定了该形状），堆栈是排障必需信息，故不裁剪、也不按 NODE_ENV 分支（生产构建
+   * 里堆栈同样重要）。**不要把结果直接回传客户端或写入持久化存储**——小程序包路径与
+   * 内部实现细节会随之外泄；对外上报请只取 `name`/`message`/`code`/`context`。
    *
    * @returns {Record<string, unknown>} 序列化的错误信息
    *
@@ -165,9 +179,8 @@ export class GeomStoreError extends Error {
  */
 export class ActionError extends GeomStoreError {
   constructor(message: string, code: string, context?: Record<string, unknown>) {
-    super(message, code, context)
-    this.name = 'ActionError'
-    Object.setPrototypeOf(this, ActionError.prototype)
+    // 名称按字面量交给基类：字段赋值与原型复位统一在 GeomStoreError 构造器内完成
+    super(message, code, context, 'ActionError')
   }
 }
 
@@ -197,9 +210,8 @@ export class ActionError extends GeomStoreError {
  */
 export class StateError extends GeomStoreError {
   constructor(message: string, code: string, context?: Record<string, unknown>) {
-    super(message, code, context)
-    this.name = 'StateError'
-    Object.setPrototypeOf(this, StateError.prototype)
+    // 名称按字面量交给基类：字段赋值与原型复位统一在 GeomStoreError 构造器内完成
+    super(message, code, context, 'StateError')
   }
 }
 
@@ -228,9 +240,8 @@ export class StateError extends GeomStoreError {
  */
 export class SelectorError extends GeomStoreError {
   constructor(message: string, code: string, context?: Record<string, unknown>) {
-    super(message, code, context)
-    this.name = 'SelectorError'
-    Object.setPrototypeOf(this, SelectorError.prototype)
+    // 名称按字面量交给基类：字段赋值与原型复位统一在 GeomStoreError 构造器内完成
+    super(message, code, context, 'SelectorError')
   }
 }
 
@@ -259,9 +270,8 @@ export class SelectorError extends GeomStoreError {
  */
 export class PluginError extends GeomStoreError {
   constructor(message: string, code: string, context?: Record<string, unknown>) {
-    super(message, code, context)
-    this.name = 'PluginError'
-    Object.setPrototypeOf(this, PluginError.prototype)
+    // 名称按字面量交给基类：字段赋值与原型复位统一在 GeomStoreError 构造器内完成
+    super(message, code, context, 'PluginError')
   }
 }
 
@@ -291,9 +301,8 @@ export class PluginError extends GeomStoreError {
  */
 export class ComposeError extends GeomStoreError {
   constructor(message: string, code: string, context?: Record<string, unknown>) {
-    super(message, code, context)
-    this.name = 'ComposeError'
-    Object.setPrototypeOf(this, ComposeError.prototype)
+    // 名称按字面量交给基类：字段赋值与原型复位统一在 GeomStoreError 构造器内完成
+    super(message, code, context, 'ComposeError')
   }
 }
 
@@ -325,9 +334,8 @@ export class ComposeError extends GeomStoreError {
  */
 export class ValidationError extends GeomStoreError {
   constructor(message: string, code: string, context?: Record<string, unknown>) {
-    super(message, code, context)
-    this.name = 'ValidationError'
-    Object.setPrototypeOf(this, ValidationError.prototype)
+    // 名称按字面量交给基类：字段赋值与原型复位统一在 GeomStoreError 构造器内完成
+    super(message, code, context, 'ValidationError')
   }
 }
 

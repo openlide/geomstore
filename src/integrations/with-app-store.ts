@@ -6,7 +6,7 @@
  * - 自动状态同步到 globalData
  * - Action 绑定到 App 实例
  * - 调试 API 暴露
- * - 自动清理订阅
+ * - App 级订阅随小程序运行期常驻，不主动清理（onHide 不清理，见下方说明）
  *
  */
 
@@ -146,8 +146,8 @@ export function withAppStore<S extends State, A extends Actions, G extends Gette
     // 仅在订阅建立前重置（防止重复绑定），不在 onHide 等生命周期中清理
     const unbindFunctions: Array<() => void> = []
     // 入参类型已被 WithPageThis 重写（方法 this 为注入后的实例类型），
-    // 运行时取值与原配置一致，故此处显式收窄回 AppOptions
-    const enhancedConfig = { ...AppConfig } as unknown as AppOptions
+    // 运行时取值与原配置一致，故此处收窄回 AppOptions（单层断言即可比较）
+    const enhancedConfig = { ...AppConfig } as AppOptions
 
     // 扩展 onLaunch
     const originalOnLaunch = enhancedConfig.onLaunch

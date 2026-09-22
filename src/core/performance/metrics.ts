@@ -115,19 +115,20 @@ export class MetricsCollector {
    *
    * 添加单个性能指标到采集器。
    *
-   * @param {PerformanceMetrics} metrics - 性能指标
+   * @param {PerformanceMetrics} metric - 单条性能指标（形参名与私有字段 `metrics` 区分，
+   *   复数命名会让调用方误以为可传数组）
    */
-  collect(metrics: PerformanceMetrics): void {
+  collect(metric: PerformanceMetrics): void {
     if (this._maxSize === 0) {
       return
     }
     if (this._count < this._maxSize) {
-      this.buffer.push(metrics)
+      this.buffer.push(metric)
       this._count++
       return
     }
     // 满员：覆盖最旧槽位并把游标前移，写入顺序仍等价于「淘汰最旧、保留最新」
-    this.buffer[this.oldest] = metrics
+    this.buffer[this.oldest] = metric
     this.oldest = (this.oldest + 1) % this._maxSize
   }
 
@@ -259,15 +260,17 @@ export class MetricsCollector {
    * 计算指定百分位数的持续时间。
    *
    * @param {number} percentile - 百分位数（0-100）
-   * @returns {number} 指定百分位数的持续时间
+   * @returns {number} 指定百分位数的持续时间；采集器为空时返回 0
+   * @throws {RangeError} percentile 非有限数或落在 [0,100] 之外
    */
   getPercentile(percentile: number): number {
-    if (this._count === 0) return 0
-
-    // 边界校验：负数会取到负索引（undefined），>100 无意义，直接抛错而非静默失真
+    // 参数校验先于「空采集器」短路：否则同一非法入参在有数据和无数据时行为不同
+    // （空集返回 0、非空抛 RangeError），调用方的错误处理路径会随运行时机漂移
     if (!Number.isFinite(percentile) || percentile < 0 || percentile > 100) {
       throw new RangeError(`[GeomStore] getPercentile: percentile must be between 0 and 100, got ${percentile}`)
     }
+
+    if (this._count === 0) return 0
 
     const sorted = this._ordered()
       .map((m) => m.duration)
@@ -318,11 +321,17 @@ export class PerformanceAnalyzer {
   /**
    * 分析性能瓶颈
    *
-   * 识别超过阈值的性能瓶颈，按平均耗时相对阈值的倍数分级严重程度。
+   * 按操作分组统计，并以 threshold 的倍数标定严重程度。
+   *
+   * @remarks 返回值**不是**「超阈值操作的子集」：入参中出现过的每个操作都会各出一条，
+   * 未超阈值（`avgDuration <= threshold * 2`）的以 `severity: 'low'` 一并返回，
+   * 结果按 avgDuration 降序排列。调用方若只要瓶颈，请自行按 severity 过滤，
+   * 不能把列表长度当作「超标操作数」。
    *
    * @param {PerformanceMetrics[]} metrics - 性能指标数组
-   * @param {number} [threshold=16] - 性能阈值（毫秒）
-   * @returns {Array<{operation: string, count: number, avgDuration: number, maxDuration: number, severity: 'low' | 'medium' | 'high'}>} 瓶颈列表
+   * @param {number} [threshold=16] - 性能阈值（毫秒）：avgDuration > 2×threshold 记 medium、
+   *   > 3×threshold 记 high，否则 low（threshold 本身不是过滤门槛）
+   * @returns {Array<{operation: string, count: number, avgDuration: number, maxDuration: number, severity: 'low' | 'medium' | 'high'}>} 全部操作的分组列表（按 avgDuration 降序），含未超阈值项
    */
   static analyzeBottlenecks(
     metrics: PerformanceMetrics[],

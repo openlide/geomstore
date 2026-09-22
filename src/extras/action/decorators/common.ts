@@ -26,9 +26,23 @@ const ASYNC_FUNCTION_PROTOTYPE = Object.getPrototypeOf(async () => {})
  * @remarks 本判定只看**语法**：非 async 但返回 Promise 的方法（包装函数、手写 thenable）
  * 会判为 false。装饰器另以「运行时观测首次调用结果」兜底（observesPromise），
  * 并对「首次调用即被抑制、无从观测」的场景提供 `assumeAsync` 选项显式声明。
+ * 跨 realm（iframe/worker）创建的 async 函数与本 realm 的 `AsyncFunction.prototype`
+ * 不是同一个对象，同样落回该兜底；误判代价只是被抑制的调用少返回一个 Promise，
+ * 不会返回错误结果。（`asyncFn.bind(ctx)` **不**在此列：按规范 BoundFunctionCreate 取目标
+ * realm 的 %AsyncFunction.prototype% 作原型，实测仍判为异步。）
  */
 export function isAsyncFunction(fn: unknown): boolean {
-  return typeof fn === 'function' && Object.getPrototypeOf(fn) === ASYNC_FUNCTION_PROTOTYPE
+  if (typeof fn !== 'function') {
+    return false
+  }
+  // getPrototypeOf 本身可抛：`Proxy` 的 getPrototypeOf 陷阱可以随意抛错。
+  // 本函数在装饰器求值与调用路径上被复用，为它崩掉整个方法不划算，
+  // 抛错时按「判不出异步性」降级，交给上面的 observesPromise / assumeAsync 兜底
+  try {
+    return Object.getPrototypeOf(fn) === ASYNC_FUNCTION_PROTOTYPE
+  } catch {
+    return false
+  }
 }
 
 /**

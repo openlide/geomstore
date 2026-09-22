@@ -11,7 +11,14 @@ import { storage, logger, BACKUP_EXPIRY_MS, type WxApi } from './env.js'
 // 本模块直接调用 wx（热更新管理器/弹窗/提示），故保留模块级 ambient 声明
 declare const wx: WxApi
 
-/** 本库版本常量：用于热更新备份的版本比对（区别于宿主 app 版本）。需随发版同步更新 */
+/**
+ * 本库版本常量：用于热更新备份的版本比对（区别于宿主 app 版本）。
+ *
+ * 已知限制（#327）：手工维护，仓库内没有任何机制把它与 package.json 的 version 同步，
+ * 漏 bump 只会让版本告警静默失效（比对结果仅用于 logger.warn，不拦截恢复），
+ * 不影响备份/恢复本身。真正的单一来源需要构建期注入或生成常量（scripts/ 侧改造），
+ * 在收口之前请勿把它当作可信的版本门禁
+ */
 const LIBRARY_VERSION = '1.0.0'
 
 /**
@@ -76,9 +83,13 @@ function backupState<S extends State = State>(store: Store<S>, backupKey: string
  */
 /** 热更新当前保护的 store 配置：重复调用（账号切换）时切换保护目标 */
 let hotUpdateRegistration: { store: Store<State>; backupKey: string; onBeforeUpdate?: () => void } | null = null
-/** 已安装监听的 updateManager 实例：真实环境为全局单例（幂等安装防止监听累积），
- *  测试环境的每个 mock 实例各自安装 */
-let hotUpdateManagerInstalled: unknown = null
+/** 已安装监听的 updateManager 实例集合：真实环境为全局单例（幂等安装防止监听累积），
+ *  测试环境的每个 mock 实例各自安装。
+ *  用 WeakSet 而非「最近安装的一个实例」单槽：单槽下宿主交替返回不同 manager 时，
+ *  回到旧实例会被判定为「未安装」而再次注册——onUpdateReady 是累加式注册且无 off API，
+ *  每个累积的监听都读同一个 hotUpdateRegistration，一次更新即弹出多个模态、备份多份。
+ *  弱引用键不阻止实例回收，也不改变单例场景下的行为 */
+const installedUpdateManagers = new WeakSet<object>()
 
 export function initHotUpdate<S extends State = State>(config: HotUpdateConfig<S>): void {
   const { store, backupKey, onBeforeUpdate } = config
@@ -88,8 +99,8 @@ export function initHotUpdate<S extends State = State>(config: HotUpdateConfig<S
   const updateManager = wx.getUpdateManager()
   // onUpdateReady 是累加式注册且无对应 off API：按 manager 实例幂等安装，
   // 否则每次 login 重新调用都会累积一个监听（多弹窗、多份备份、标记竞态）
-  if (hotUpdateManagerInstalled === updateManager) return
-  hotUpdateManagerInstalled = updateManager
+  if (installedUpdateManagers.has(updateManager)) return
+  installedUpdateManagers.add(updateManager)
 
   updateManager.onUpdateReady(() => {
     logger.log('HotUpdate', '新版本准备就绪')

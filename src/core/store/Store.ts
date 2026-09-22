@@ -202,6 +202,10 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
       storeName: this.name,
       maxSubscribers: options.subscription?.maxSubscribers ?? DEFAULT_MAX_SUBSCRIBERS,
       onLimit: options.subscription?.onLimit,
+      // 监听器抛错走 onError 钩子：控制台在生产是静默的（库口径），没有这条通道
+      // 一个坏订阅者的异常就彻底丢失。_hooks 在下一段才赋值，此处的箭头函数
+      // 首次被调用时（notify）早已就绪
+      onListenerError: (error) => this._hooks.emit('onError', error),
     })
 
     // 初始化异步通知合并器（仅启用时）：将同一 tick 内的多次 notify 合并为一次微任务通知，

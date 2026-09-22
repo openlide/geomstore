@@ -1,5 +1,10 @@
 /**
- * GeomStore - 插件模块入口（子路径导出 `geomstore/plugins`）
+ * GeomStore - 插件模块入口
+ *
+ * 对外发布路径：package.json exports 声明的是 `@openlide/geomstore/extras/plugins`
+ * （由 src/extras/plugins.ts 挑选性再导出）；`@openlide/geomstore/plugins` 只是 prepack
+ * 生成的老式解析器兼容别名（scripts/generate-subpath-stubs.mjs，供不识别 exports 字段的
+ * 微信小程序「构建 npm」命中）。新代码请用 extras/plugins 子路径。
  *
  * @module plugins
  */
@@ -18,3 +23,5 @@ export type { TimeTravelOptions } from './devtools/index.js'
 
 // 性能插件
 export { analyzerPlugin, createAnalyzerPlugin } from './performance/index.js'
+// 与 PersistenceOptions / TimeTravelOptions 同口径：配置项类型随运行时 API 一起给出
+export type { PerformanceOptions } from '../types/performance.js'

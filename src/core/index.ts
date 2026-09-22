@@ -1,8 +1,20 @@
 /**
  * GeomStore - 核心 API（瘦核心，始终打包）
  *
- * 仅导出应用运行所必需的最小接口集合。快照、选择器、性能监控、Action 增强、
- * 企业微信集成与插件实现等可选能力统一收敛至 `../extras`，按需动态引入。
+ * 「瘦」的判据是**是否被核心运行链路直接依赖**，不是「接口数量最少」。
+ * 本入口始终导出：Store/createStore 与状态工具、组合 Store、LRU 缓存，
+ * 以及插件钩子（`HookSystem` / `usePlugin`）与**微信小程序**接入
+ * （`withPageStore` / `withComponentStore` / `withAppStore`）。
+ * 后两组留在核心是依赖方向决定的，不是遗漏：钩子是 `store.use` 的实现层，
+ * 小程序绑定是本库的主用法，拆到 extras 会让主入口拿不到最基本的接入能力。
+ *
+ * 真正可选、需从 `../extras` 各子入口按需引入的是：插件**实现**（logger / persistence /
+ * devtools / timeTravel，钩子机制本身仍属核心）、快照、选择器、性能监控与性能插件、
+ * Action 增强（withCache / withThrottle 等）、错误边界与聚合上报、企业微信（WeCom）集成。
+ *
+ * @remarks 术语澄清：**企业微信集成（WeCom，`extras/enterprise`）**与
+ * **微信小程序集成（`src/integrations`，本入口导出）**是两回事，前者是可选能力、
+ * 后者属核心，历史文档把两者混写过，勿据此判断某个 API 是否需要额外引入。
  */
 
 // ==================== 核心Store ====================

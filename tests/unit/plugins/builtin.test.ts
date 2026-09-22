@@ -1829,7 +1829,10 @@ describe('R5 回归：devtoolsPlugin 全局注册表清理需身份守卫', () =
 
     uninstall()
 
-    expect(globalObj.__GEOMSTORE_STORES__['solo-devtools']).toBeUndefined()
-    expect(globalObj.__GEOMSTORE_DEVTOOLS__['solo-devtools']).toBeUndefined()
+    // #365：最后一个条目卸载后空容器一并从 globalThis 摘掉，故条目读取用可选链
+    expect(globalObj.__GEOMSTORE_STORES__?.['solo-devtools']).toBeUndefined()
+    expect(globalObj.__GEOMSTORE_DEVTOOLS__?.['solo-devtools']).toBeUndefined()
+    expect(globalObj.__GEOMSTORE_STORES__).toBeUndefined()
+    expect(globalObj.__GEOMSTORE_DEVTOOLS__).toBeUndefined()
   })
 })

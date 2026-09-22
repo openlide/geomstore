@@ -28,7 +28,14 @@ export class HookSystem implements IHookSystem {
     handlers.add(handler)
 
     return () => {
-      this.hooks.get(hookName)?.delete(handler)
+      const handlers = this.hooks.get(hookName)
+      if (!handlers) return
+      handlers.delete(handler)
+      // 最后一个监听者退订即摘键：留下空 Set 会让无参 size()（「已注册钩子种类数」）
+      // 在全部退订后仍把该钩子计为在册，观测值与真实状态永久背离
+      if (handlers.size === 0) {
+        this.hooks.delete(hookName)
+      }
     }
   }
 
@@ -42,7 +49,11 @@ export class HookSystem implements IHookSystem {
       try {
         handler(...args)
       } catch (error) {
-        console.error('[GeomStore] Error in hook ' + hookName + ':', error)
+        // 有意不加 isProduction() 门控（与 usePlugin 的 console.debug 不同）：
+        // 这里抛出的是使用者 handler 的真实故障，且已同时转投 onError 钩子；
+        // 钩子没有内建的失败上报通道，生产静默会让故障完全不可见。
+        // 需要收敛输出请在 onError 里自行接监控（错误已被再次 emit 出来）
+        console.error(`[GeomStore] Error in hook ${hookName}:`, error)
         if (hookName !== 'onError') {
           this.emit('onError', error, hookName)
         }

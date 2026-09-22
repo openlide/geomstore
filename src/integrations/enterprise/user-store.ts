@@ -45,7 +45,7 @@ export interface UserState extends State {
   userInfo: UserInfo | null
   /** 用户偏好设置 */
   preferences: UserPreferences
-  /** 最近一次与服务端同步的时间戳；未同步时为 null */
+  /** 最近一次与服务端同步的时间戳；未同步时为 null。会话级字段，不随持久化恢复（见 createUserStore 的 filter） */
   lastSyncTime: number | null
 }
 
@@ -160,6 +160,10 @@ export function createUserStore(config: UserStoreConfig): Store<UserState> {
   store.use(
     persistencePlugin<UserState>({
       key: (name: string) => name,
+      // 刻意只持久化 userInfo / preferences：lastSyncTime 是会话级字段。
+      // 跨进程重启沿用上一次的同步时间会让「上次同步于何时」指向一个本次进程
+      // 并未发生过的网络往返，依赖它做 re-sync 判定的调用方会被误导；
+      // 恢复后由 syncWithServer 重新写入（#338）
       filter: (state: UserState) => ({
         userInfo: state.userInfo,
         preferences: state.preferences,

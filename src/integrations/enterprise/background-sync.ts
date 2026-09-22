@@ -36,6 +36,16 @@ interface BackgroundSyncHandler {
 /** 模块级注册表：多次 initBackgroundSync 共享同一份生命周期包装 */
 const backgroundSyncHandlers: BackgroundSyncHandler[] = []
 
+/** 已包装的 App 配置标记（#357）：包装就地改写 options.onShow/onHide，
+ *  宿主缓存同一份 config 再次 App(config)（热重载、测试重复调用全局 App）时，
+ *  若不识别已包装的入参就会二次包装——检查与 refreshData 随包装轮数成倍执行 */
+const wrappedOptionsFlag = Symbol.for('geomstore.backgroundSync.wrappedOptions')
+
+/** 前台刷新用的 action 名（#358）：守卫与 dispatch 共用同一常量，
+ *  action 改名时只需改这里，否则 `'refreshData' in actions` 静默为 false、
+ *  前台刷新变成无提示的空操作 */
+const REFRESH_DATA_ACTION = 'refreshData'
+
 /** 已安装的全局 App 构造器包装函数引用，用于检测是否需要重新安装 */
 let installedAppWrapper: ((this: unknown, options?: Record<string, unknown>) => unknown) | null = null
 
@@ -73,11 +83,15 @@ function installAppLifecycleHooks(): void {
       const inactiveDuration = now - handler.lastActiveTime
       if (inactiveDuration > handler.maxInactiveTime) {
         logger.log('BackgroundSync', `非活跃时间过长(${inactiveDuration}ms)，刷新状态`)
-        if ('refreshData' in handler.store.actions) {
+        // 自有属性判定而非 `in`（#358）：`in` 沿原型链查找，原型上挂着同名成员时
+        // 守卫会为它放行，而核心 dispatch 只认自有 action（否则 ACTION_NOT_FOUND），
+        // 结果是一次注定失败的 dispatch 被记成「刷新状态失败」；
+        // 与 core dispatch、offline.executeAction 的校验口径对齐
+        if (Object.prototype.hasOwnProperty.call(handler.store.actions, REFRESH_DATA_ACTION)) {
           try {
             // 异步 action 的 rejection 不会被同步 try/catch 捕获，
             // 显式接住避免 unhandled rejection
-            Promise.resolve(handler.store.dispatch('refreshData')).catch((error) => {
+            Promise.resolve(handler.store.dispatch(REFRESH_DATA_ACTION)).catch((error) => {
               logger.error('BackgroundSync', '刷新状态失败:', error)
             })
           } catch (error) {
@@ -108,6 +122,13 @@ function installAppLifecycleHooks(): void {
   }
 
   const wrappedApp = function (this: unknown, options: Record<string, unknown> = {}): unknown {
+    // 同一份配置二次进入（宿主缓存 config、热重载、测试重复调用全局 App）：
+    // 回调已是本包装产物，直接透传，避免叠加包装导致检查按轮数翻倍执行
+    // （symbol 键需显式走 Record<symbol, unknown> 视角：options 的声明类型只有字符串索引）
+    if ((options as Record<symbol, unknown>)[wrappedOptionsFlag] === true) {
+      return originalApp.call(this, options)
+    }
+
     // 先按 typeof 校验再取用户回调：options 来自 App({...})，JS 调用方或 `as any`
     // 可传入非函数的真值（字符串/对象）。可选链 `userOnShow?.apply` 不校验可调用性，
     // 会抛 TypeError 并让本次 onShow 之后的生命周期逻辑一并中断
@@ -122,6 +143,15 @@ function installAppLifecycleHooks(): void {
     options.onHide = function (this: unknown, ...args: unknown[]): void {
       runBackgroundChecks()
       userOnHide?.apply(this, args)
+    }
+    // 标记写入用 defineProperty + 不可枚举：options 会被框架与宿主 Object.keys/展开遍历，
+    // 多出一个可枚举键会改变配置对象的可见形状。
+    // 写入失败（宿主把 options 冻结前只 seal 了自有键等不可扩展场景）不阻断生命周期：
+    // 少一个标记最多退化为「下次重复包装」（即修复前的行为），抛错却会让 App 起不来
+    try {
+      Object.defineProperty(options, wrappedOptionsFlag, { value: true, enumerable: false, configurable: true })
+    } catch {
+      /* 不可扩展的 options：放弃标记，其余包装逻辑照常生效 */
     }
     return originalApp.call(this, options)
   }

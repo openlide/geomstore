@@ -51,13 +51,18 @@ export function mergeNamespaced(stores: readonly Store[], pick: (store: Store) =
  */
 export function mergeStateMaps(
   stores: readonly Store[],
-  pick: (store: Store) => Record<string, unknown>,
+  // 返回类型放开 null/undefined：合并路径要能容忍未初始化/降级的子 store，
+  // 而不是在渲染热路径上抛 TypeError（下方对空值按「无键可并」兜底）
+  pick: (store: Store) => Record<string, unknown> | null | undefined,
   warnedConflicts: Set<string>,
 ): Record<string, unknown> {
   const result: Record<string, unknown> = {}
   const keyOwners = isProduction() ? undefined : new Map<string, string>()
   for (const store of stores) {
-    const source = pick(store)
+    // pick 的类型是「必返对象」，但子 store 可能处于未初始化/降级态而实际返回 null/undefined
+    // （如被外部改写过 getState 的宿主、组合到一半的桩 store）：
+    // 兜底空对象按「无键可并」处理，与 mergeNamespaced 直接挂原值不因空值抛错保持一致
+    const source = pick(store) ?? {}
     for (const key of Object.keys(source)) {
       if (keyOwners) {
         const previousOwner = keyOwners.get(key)

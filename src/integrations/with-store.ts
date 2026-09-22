@@ -166,6 +166,13 @@ export function withPageStore<S extends State, A extends Actions, G extends Gett
       const unbindFunctions = this.__geomUnbinds
 
       // 辅助函数：订阅 store 变化（共用 createStoreSubscriber）
+      // 绑定/注入的可复用部分（映射解析、订阅、脏检查、自动注入、批量清理）已全部
+      // 下沉到 integrations/utils（resolveMappings / createStoreSubscriber /
+      // bindMappings / performAutoInject / cleanupBindings）。这里保留的只是各入口的
+      // 接线差异：宿主写入方式（setData vs Object.assign(globalData)）、变更键判定
+      // 是否可用（state 传 isStateKeyDirty、getters 不传）、退订登记时机
+      // （页面/组件按实例 __geomUnbinds，App 随运行期常驻）、Component 的 action
+      // 走 methods 合并而非 bindActions——再抽一层只会把这些差异塞进回调参数里
       const subscribeStore = createStoreSubscriber(store)
 
       // 绑定 state

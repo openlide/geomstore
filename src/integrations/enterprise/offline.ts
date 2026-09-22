@@ -112,10 +112,21 @@ export class OfflineManager<S extends State = State> {
         // 原始错误（网络/HTTP/业务错误）在此记日志后由队列接管，排障信息不被吞
         logger.error('OfflineManager', `操作执行失败，已转交离线队列重放: ${type}`, error)
       }
-    } else {
-      logger.log('OfflineManager', `操作已缓存（离线）: ${type}`)
     }
 
+    // dispose 之后 saveQueue 一律短路返回（该存储键已由接管的新实例持有，旧实例落盘
+    // 会覆写新实例的队列），此时入队的条目既不会落盘也永远不会被 syncQueue 执行，
+    // 只留在内存里让 getQueueLength 报出「有待同步操作」——正是本模块要防的静默丢失（#354）。
+    // 返回值仍是 null（与「未执行、交由队列重放」的既有契约一致），但改告警说明这条
+    // 操作不会被重放；在线分支的 action 已在上面正常执行，不受本守卫影响
+    if (this.disposed) {
+      logger.warn('OfflineManager', `实例已释放，操作未入队也不会落盘（进程重启即丢失）: ${type}`)
+      return null
+    }
+
+    if (!this.isOnline) {
+      logger.log('OfflineManager', `操作已缓存（离线）: ${type}`)
+    }
     this.enqueue(type, payload)
     return null
   }
@@ -228,6 +239,13 @@ export class OfflineManager<S extends State = State> {
 
   /**
    * 获取队列长度
+   *
+   * 口径（#352）：只统计 `actionQueue`，同步在途期间为 0——syncQueue 会把整批快照
+   * 移到 syncPending/syncFailed，此时确有操作待完成但不计入本返回值。
+   * 刻意不改：库内唯一的「有待同步」门禁（wechat-enterprise 的 App.onShow）另有
+   * `syncInFlight` 与 syncQueue 内部的 `syncing` 互斥兜底，把在途段计入这里反而会让
+   * onShow 在网络回调触发的同步期间空跑一次 showLoading/hideLoading，
+   * 两次加载态抢同一个全局 toast（见该处注释）。需要「含在途」视图请自行判定
    */
   getQueueLength(): number {
     return this.actionQueue.length
@@ -359,10 +377,19 @@ export class OfflineManager<S extends State = State> {
 
   /**
    * 获取死信队列中超过重试上限被丢弃的操作
+   *
+   * 与 loadQueue 同口径做结构校验后再返回（#353）：死信键同样可被外部写坏
+   * （null、字符串、缺 type/retryCount 的对象），此前原样吐给业务层会让人工补发/
+   * 上报逻辑读到畸形条目。被过滤掉的条数会告警，便于发现存储被改坏
    */
   getDeadLetters(): OfflineAction[] {
     const saved = storage.get<OfflineAction[]>(this.deadLetterKey)
-    return Array.isArray(saved) ? saved : []
+    if (!Array.isArray(saved)) return []
+    const valid = saved.filter(isValidOfflineAction)
+    if (valid.length !== saved.length) {
+      logger.warn('OfflineManager', `死信队列包含损坏条目，已过滤 ${saved.length - valid.length} 条: ${this.deadLetterKey}`)
+    }
+    return valid
   }
 
   /**

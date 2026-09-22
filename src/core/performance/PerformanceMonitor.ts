@@ -173,6 +173,13 @@ export class PerformanceMonitor implements PerformanceMonitorInterface {
   }
 
   /**
+   * 缓存的 wx 性能实例（undefined＝未探测，null＝探测过且不可用）
+   *
+   * @private
+   */
+  private cachedWxPerformance?: { now(): number } | null
+
+  /**
    * 获取高精度时间戳（兼容微信小程序）
    *
    * 契约：**返回值单位恒为毫秒**。全类下游一律按毫秒比较——threshold 默认 16
@@ -181,17 +188,47 @@ export class PerformanceMonitor implements PerformanceMonitorInterface {
    * 若某基础库实测 wx.getPerformance().now() 返回微秒，归一化只能改本函数这一处
    * （除以 1000），下游不得各自换算，否则口径会分散失配。
    *
+   * 同一监控器实例只向 wx 取一次性能对象并缓存：start()/end()/pruneStaleOperations()
+   * 处于计时热路径，每点都重新读 globalThis + 调工厂既产生额外分配，
+   * 更关键的是缓存保证了「整轮计时共用同一实例、同一计时原点」，
+   * endTime - startTime 与 MAX_OPERATION_AGE_MS 的差值才不会因原点不同而失真。
+   * 缓存按实例而非模块级：多个监控器（含测试）各自独立探测，互不污染。
+   *
    * @private
    */
   private _getTimestamp(): number {
-    // 优先使用小程序高精度计时 wx.getPerformance().now()（基础库 2.20.1+），
-    // 旧基础库降级使用 Date.now()；两者均为毫秒，可直接互换比较
-    // wx 经 globalThis 读取，避免直接引用未声明的小程序全局标识符
-    const wxGlobal = (globalThis as { wx?: { getPerformance?: () => unknown } }).wx
-    if (wxGlobal && typeof wxGlobal.getPerformance === 'function') {
-      // 微信运行时 getPerformance() 返回的对象确实包含 now()，但部分基础库类型未声明，故此处断言
-      return (wxGlobal.getPerformance() as unknown as { now(): number }).now()
+    if (this.cachedWxPerformance === undefined) {
+      // wx 经 globalThis 读取，避免直接引用未声明的小程序全局标识符
+      const wxGlobal = (globalThis as { wx?: { getPerformance?: () => unknown } }).wx
+      let resolved: { now(): number } | null = null
+      if (wxGlobal && typeof wxGlobal.getPerformance === 'function') {
+        try {
+          // 部分基础库未声明 now()（甚至返回 undefined），只认「now 为函数」的实例，
+          // 缓存下不可用的对象会让后续每次计时都抛 TypeError
+          const instance = wxGlobal.getPerformance() as { now?: unknown } | null | undefined
+          if (instance && typeof instance.now === 'function') {
+            resolved = instance as { now(): number }
+          }
+        } catch {
+          // 工厂本身抛错（旧基础库占位实现）：本次与后续都走 Date.now 兜底
+          resolved = null
+        }
+      }
+      this.cachedWxPerformance = resolved
     }
+
+    const perf = this.cachedWxPerformance
+    if (perf) {
+      const value = perf.now()
+      if (typeof value === 'number' && Number.isFinite(value)) {
+        return value
+      }
+      // 读数非有限数（NaN/Infinity）说明该实例不可信：撤下缓存降级到 Date.now，
+      // 否则 NaN 会让 duration 恒为 NaN、exceedThreshold 恒 false、预警整体失效
+      this.cachedWxPerformance = null
+    }
+
+    // 旧基础库（无 wx.getPerformance）与降级路径统一用 Date.now（同为毫秒）
     return Date.now()
   }
 
@@ -285,14 +322,15 @@ export class PerformanceMonitor implements PerformanceMonitorInterface {
 
     // 添加内存使用信息：写入副本而非调用方传入的对象，
     // 避免副作用泄漏到调用方（复用/比较该对象的代码受影响）
-    let record = metrics
+    // 局部变量刻意不叫 record：与方法名 record() 同名会遮住方法、读起来像自递归
+    let metricRecord = metrics
     if (this.options.trackMemory) {
       try {
         // memory 为 Chrome 系环境扩展属性，不依赖 DOM lib 的 Performance 类型
         const perf = performance as { memory?: { usedJSHeapSize?: number } }
         const memory = perf.memory
         if (memory && memory.usedJSHeapSize !== undefined) {
-          record = { ...metrics, memoryUsage: memory.usedJSHeapSize }
+          metricRecord = { ...metrics, memoryUsage: memory.usedJSHeapSize }
         }
       } catch {
         // 内存监控可能不可用
@@ -301,7 +339,7 @@ export class PerformanceMonitor implements PerformanceMonitorInterface {
 
     // 记录指标
     if (sampled) {
-      this.metrics.push(record)
+      this.metrics.push(metricRecord)
 
       // 限制数量：一次性 splice 裁剪（容量已由构造器/setOptions 规范化，
       // 这里不再需要 while+shift 逐步收敛）
@@ -310,9 +348,11 @@ export class PerformanceMonitor implements PerformanceMonitorInterface {
 
     // 日志记录：threshold 的契约是「超过此值会触发警告」，若与采样同生灭，
     // sampleRate<1 时超阈值操作只有被抽到的才预警、sampleRate=0 时预警整体失效——
-    // 而预警正是低采样场景下唯一还该保留的信号
-    if (metrics.exceedThreshold) {
-      this.options.logger(record)
+    // 而预警正是低采样场景下唯一还该保留的信号。
+    // 传副本 metricRecord 而非入参 metrics：与缓冲区留存的是同一份内容，
+    // 否则 logger 永远看不到 memoryUsage，且调用方复用入参对象会让日志语义漂移
+    if (metricRecord.exceedThreshold) {
+      this.options.logger(metricRecord)
     }
   }
 

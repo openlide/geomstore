@@ -972,6 +972,8 @@ describe('R5 回归：analyzerPlugin 全局注册表清理需身份守卫', () =
 
     uninstall()
 
-    expect(globalObj.__GEOMSTORE_ANALYZER__['solo-analyzer']).toBeUndefined()
+    // #365：最后一个条目卸载后空容器一并从 globalThis 摘掉，故条目读取用可选链
+    expect(globalObj.__GEOMSTORE_ANALYZER__?.['solo-analyzer']).toBeUndefined()
+    expect(globalObj.__GEOMSTORE_ANALYZER__).toBeUndefined()
   })
 })

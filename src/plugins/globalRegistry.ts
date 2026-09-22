@@ -5,6 +5,8 @@
  * 统一「覆盖 + 身份守卫清理」语义，避免各插件各写一份（历史上多次因守卫遗漏出 bug）。
  */
 
+import { isProduction } from '../core/store/utils.js'
+
 /** 注册令牌自增序号：标识「哪一次注册」当前持有 globalKey + storeName 键位 */
 let latestRegistrationToken = 0
 
@@ -23,15 +25,20 @@ const registrationOwners = new Map<string, number>()
  * 避免同键后装的第二实例被前一份卸载函数误删（同一 api 引用重复注册时，
  * 仅比对引用会把守卫降级成值比较）。
  *
- * 调用方需自行处理生产守卫（生产环境不应注册）。
+ * 生产守卫内置（#366）：本 helper 是 fail-safe 的——`isProduction()` 为真时直接返回
+ * no-op，绝不往 globalThis 写任何内部引用。调用方仍以 `if (!isProduction())` 早退
+ * 为宜（省掉闭包构造与日志开销），但即使漏写也不会把 store/API 泄露到生产包。
  *
  * @param globalKey - globalThis 上的全局表键（如 '__GEOMSTORE_TIME_TRAVEL__'）
  * @param storeName - store 名（表内键）
  * @param api - 要暴露的调试入口对象
- * @returns 卸载函数（幂等；globalThis 缺失时为 no-op）
+ * @returns 卸载函数（幂等；globalThis 缺失或生产环境时为 no-op）
  */
 export function registerGlobalEntry(globalKey: string, storeName: string, api: unknown): () => void {
   if (typeof globalThis === 'undefined') {
+    return () => {}
+  }
+  if (isProduction()) {
     return () => {}
   }
   const g = globalThis as unknown as Record<string, Record<string, unknown>>
@@ -67,6 +74,11 @@ export function registerGlobalEntry(globalKey: string, storeName: string, api: u
     // 加自有属性判定，避免沿原型链命中同名成员后误删/删不掉
     if (current && Object.prototype.hasOwnProperty.call(current, storeName) && current[storeName] === api) {
       delete current[storeName]
+      // 表内已无条目时连容器一起摘掉（#365）：留着空表会让 globalThis 长期挂着
+      // 本库的键位，外部读到空对象也分不清「没有插件活跃」还是「有插件但无 store」
+      if (Object.keys(current).length === 0) {
+        delete g[globalKey]
+      }
     }
   }
 }

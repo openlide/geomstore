@@ -108,11 +108,12 @@ export class ActionManager<S extends State = State, A extends Actions = Actions>
         if (typeof prop === 'string' && Object.prototype.hasOwnProperty.call(boundActions, prop)) {
           return boundActions[prop]
         }
-        // 否则返回 Store 实例的属性
-        if (typeof prop === 'symbol') {
-          return undefined
-        }
-        return target[prop]
+        // symbol 一律透传给 target：boundActions 只按字符串键登记，上面的
+        // hasOwnProperty 已排除全部 symbol，此前在这里短路 return undefined
+        // 会把 context 自身的 symbol 成员一并抹掉，Symbol.toStringTag /
+        // Symbol.iterator / Symbol.for('nodejs.util.inspect.custom') 等协议
+        // 在 action 体内全部失效（console.log 与迭代都拿不到实现）
+        return (target as Record<string | symbol, unknown>)[prop]
       },
     })
 
@@ -169,7 +170,7 @@ export class ActionManager<S extends State = State, A extends Actions = Actions>
       // 否则「先置 loading 再失败」的中间状态对监听器永久不可见
       this._safeRefreshCache()
       // batch 进行中由 batch 收尾统一通知，不在中途泄漏
-      if (this._dispatchDepth === 0 && !this._isInBatch?.() && (!this._notifyOnlyOnChange || this._getMutationCount() > mutationsBefore)) {
+      if (this._shouldNotifyNow(mutationsBefore)) {
         this._notifyListeners()
       }
       throw createError(ErrorCode.ACTION_EXECUTION_ERROR, `Action "${name}" execution failed`, {
@@ -201,9 +202,9 @@ export class ActionManager<S extends State = State, A extends Actions = Actions>
     //   续段 setState 已自发通知过的（计数已被覆盖）不再重复
     const onSettled = (): void => {
       this._safeRefreshCache()
-      // 外层 dispatch 或 batch 进行中时跳过，由其收尾统一通知
-      if (this._dispatchDepth > 0 || this._isInBatch?.()) return
-      if (!this._notifyOnlyOnChange || this._getMutationCount() > (this._getLastNotifiedMutationCount?.() ?? -1)) {
+      // 外层 dispatch 或 batch 进行中时跳过，由其收尾统一通知；
+      // onlyOnChange 的基线取「最近一次通知已覆盖的计数」，与同步路径的 dispatch 前基线不同
+      if (this._shouldNotifyNow(this._getLastNotifiedMutationCount?.() ?? -1)) {
         this._notifyListeners()
       }
     }
@@ -214,19 +215,60 @@ export class ActionManager<S extends State = State, A extends Actions = Actions>
       // 异步失败同样触发 onError 钩子：reject 是 action 最常见的失败形态
       // （网络请求等），监控/上报插件对其不可失明——与同步 catch 路径对称。
       // 拒绝值保持原始错误不包装，不改变调用方捕获到的异常类型
-      (result as PromiseLike<unknown>).then(onSettled, (error) => {
+      // 终端 catch 不可省：.then(...) 的返回 promise 此前被直接丢弃，
+      // onSettled 内（补刷缓存/通知链路）或 onError 上报自身抛错时无人接手其 rejection，
+      // 会以 unhandledRejection 冒到全局（Node 下可直接终止进程），
+      // 绕开了本应承接它的 Store 错误路径。
+      // 只给派生 promise 补接（而非把整条链改写成 Promise.resolve(result).then(...)）：
+      // 补发回调仍直接挂在调用方 promise 上，微任务时序与原实现一致，
+      // 被 Promise.resolve 延后一拍的只有错误分支。
+      // 返回给调用方的仍是原始 result，异常语义不变
+      const settled = (result as PromiseLike<unknown>).then(onSettled, (error) => {
         this._hooks.emit('onError', error)
         onSettled()
+      })
+      Promise.resolve(settled).catch((error) => {
+        this._reportSettledFailure(error)
       })
       return result
     }
     // 同步 action：仅最外层 dispatch 且不在 batch 中时通知——
     // 内层 dispatch 结束时深度仍大于 0，提前通知会让监听器收到
     // 外层 action 尚未完成的中间状态；batch 中则由收尾统一通知
-    if (this._dispatchDepth === 0 && !this._isInBatch?.() && (!this._notifyOnlyOnChange || this._getMutationCount() > mutationsBefore)) {
+    if (this._shouldNotifyNow(mutationsBefore)) {
       this._notifyListeners()
     }
     return result
+  }
+
+  /**
+   * 本次 dispatch 收尾是否应补发通知（三个收尾点共用同一判据）
+   *
+   * 判定同时依赖「是否最外层 dispatch / 是否在 batch 中」与 onlyOnChange 的变更计数，
+   * 三处各写一遍字面量会在去重/重入规则调整时静默漂移，故收敛到此。
+   *
+   * @param baseline - 变更计数基线：同步与失败路径传 dispatch 进入前的计数，
+   *   异步完成路径传「最近一次通知已覆盖的计数」
+   *
+   * @private
+   */
+  private _shouldNotifyNow(baseline: number): boolean {
+    return this._dispatchDepth === 0 && !this._isInBatch?.() && (!this._notifyOnlyOnChange || this._getMutationCount() > baseline)
+  }
+
+  /**
+   * 收尾链路自身抛错的兜底上报：先走 onError 钩子，钩子也失败时退回 console.error
+   *
+   * 这是 dispatch 链上最后一个 catch，再无上游可接，故此处不允许抛错。
+   *
+   * @private
+   */
+  private _reportSettledFailure(error: unknown): void {
+    try {
+      this._hooks.emit('onError', error)
+    } catch {
+      console.error('[GeomStore] Error while reporting action settle failure:', error)
+    }
   }
 
   /**

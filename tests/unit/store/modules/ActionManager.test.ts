@@ -308,7 +308,7 @@ describe('ActionManager', () => {
   })
 
   describe('Proxy 上下文边界', () => {
-    it('访问 Symbol 属性应返回 undefined', () => {
+    it('访问上下文上不存在的 Symbol 属性应返回 undefined', () => {
       const { manager } = createActionManager()
       const context = createContextBase(jest.fn())
 
@@ -316,7 +316,7 @@ describe('ActionManager', () => {
 
       const actions = {
         testSymbol: function (this: any) {
-          // 通过 this 访问 symbol 属性，应触发 Proxy 的 symbol 分支返回 undefined
+          // symbol 键透传给 target：target 上没有该 symbol，故仍为 undefined
           return this[sym]
         },
       }

@@ -94,6 +94,52 @@ export function withThrottle(interval: number = DEFAULT_INTERVAL, options: Throt
     const methodKey = propertyKey
     const isAsyncMethod = isAsyncFunction(originalMethod)
 
+    // 尾随补发/排程助手定义在装饰阶段（每个被装饰方法一份），而不是每次调用重建：
+    // 节流跑在滚动、输入这类每事件路径上，两个闭包 per-call 分配是白付的开销。
+    // 宿主与状态改为参数传入——同一份 ThrottleState 恒属于同一个宿主（它按宿主存于
+    // stateMap），因此与原实现里闭包捕获 `this` 完全等价
+    const fireTrailing = (host: unknown, hostState: ThrottleState, handle: ReturnType<typeof setTimeout>): void => {
+      // 只清自己这次句柄：无条件置 null 会让「已被 scheduleTrailingAt 替换掉、
+      // 但回调已入队」的旧定时器抹掉新定时器的引用，此后既 clearTimeout 不到
+      // 真正的待发定时器，它还会在错误的时刻再补发一次
+      if (hostState.timer === handle) {
+        hostState.timer = null
+      }
+      /* istanbul ignore if -- 新窗口 leading 分支已作废上一窗口的尾调用定时器，
+         且 scheduleTrailingAt 保证同时只有一个活定时器，「无参数可补发」在
+         正常时序下不可达，仅作为对未来改动的防御 */
+      if (hostState.pendingArgs !== null) {
+        const trailingArgs = hostState.pendingArgs
+        hostState.pendingArgs = null
+        hostState.lastCallTime = Date.now()
+        // fire-and-forget：返回值不回传，且调用方早已返回——尾随执行的失败
+        // 不可能再抛给调用方，必须就地兜住：同步抛错会变成 uncaughtException，
+        // 异步 rejection 会变成 unhandledRejection
+        try {
+          const result = originalMethod.apply(host, trailingArgs) as unknown
+          if (result instanceof Promise) {
+            hostState.sawPromise = true
+            result.catch((error) => {
+              console.error('[withThrottle] trailing invocation failed:', error)
+            })
+          }
+        } catch (error) {
+          console.error('[withThrottle] trailing invocation failed:', error)
+        }
+      }
+    }
+    const scheduleTrailingAt = (host: unknown, hostState: ThrottleState, delay: number): void => {
+      if (hostState.timer !== null) {
+        clearTimeout(hostState.timer)
+      }
+      // 已知取舍：排程中的定时器回调持有 host 与 hostState 直到窗口结束，期间宿主
+      // 不可被回收，且本装饰器不提供 dispose/cancel 入口（窗口默认 300ms 量级，
+      // 定时器句柄也随状态一起被 WeakMap 连带回收，无跨周期泄漏）。
+      // 若宿主生命周期短于窗口（组件在窗口内被销毁），最坏结果是多执行一次补发
+      const timer = setTimeout(() => fireTrailing(host, hostState, timer), Math.max(0, delay))
+      hostState.timer = timer
+    }
+
     descriptor.value = function (this: unknown, ...args: unknown[]) {
       const now = Date.now()
 
@@ -113,44 +159,6 @@ export function withThrottle(interval: number = DEFAULT_INTERVAL, options: Throt
         byMethod.set(methodKey, state)
       }
       const hostState = state
-
-      const fireTrailing = (handle: ReturnType<typeof setTimeout>): void => {
-        // 只清自己这次句柄：无条件置 null 会让「已被 scheduleTrailingAt 替换掉、
-        // 但回调已入队」的旧定时器抹掉新定时器的引用，此后既 clearTimeout 不到
-        // 真正的待发定时器，它还会在错误的时刻再补发一次
-        if (hostState.timer === handle) {
-          hostState.timer = null
-        }
-        /* istanbul ignore if -- 新窗口 leading 分支已作废上一窗口的尾调用定时器，
-           且 scheduleTrailingAt 保证同时只有一个活定时器，「无参数可补发」在
-           正常时序下不可达，仅作为对未来改动的防御 */
-        if (hostState.pendingArgs !== null) {
-          const trailingArgs = hostState.pendingArgs
-          hostState.pendingArgs = null
-          hostState.lastCallTime = Date.now()
-          // fire-and-forget：返回值不回传，且调用方早已返回——尾随执行的失败
-          // 不可能再抛给调用方，必须就地兜住：同步抛错会变成 uncaughtException，
-          // 异步 rejection 会变成 unhandledRejection
-          try {
-            const result = originalMethod.apply(this, trailingArgs) as unknown
-            if (result instanceof Promise) {
-              hostState.sawPromise = true
-              result.catch((error) => {
-                console.error('[withThrottle] trailing invocation failed:', error)
-              })
-            }
-          } catch (error) {
-            console.error('[withThrottle] trailing invocation failed:', error)
-          }
-        }
-      }
-      const scheduleTrailingAt = (delay: number): void => {
-        if (hostState.timer !== null) {
-          clearTimeout(hostState.timer)
-        }
-        const handle = setTimeout(() => fireTrailing(handle), Math.max(0, delay))
-        hostState.timer = handle
-      }
 
       if (now - hostState.lastCallTime >= window) {
         // 新窗口
@@ -172,7 +180,7 @@ export function withThrottle(interval: number = DEFAULT_INTERVAL, options: Throt
         // leading=false：首次调用延后到窗口结束执行
         hostState.lastCallTime = now
         hostState.pendingArgs = args
-        scheduleTrailingAt(window)
+        scheduleTrailingAt(this, hostState, window)
         return isAsyncMethod || hostState.sawPromise || assumeAsync ? Promise.resolve(undefined) : undefined
       }
 
@@ -180,7 +188,7 @@ export function withThrottle(interval: number = DEFAULT_INTERVAL, options: Throt
       if (trailing) {
         // 始终保存最新参数并保证窗口结束时有且仅有一次补发
         hostState.pendingArgs = args
-        scheduleTrailingAt(hostState.lastCallTime + window - now)
+        scheduleTrailingAt(this, hostState, hostState.lastCallTime + window - now)
       }
       return isAsyncMethod || hostState.sawPromise || assumeAsync ? Promise.resolve(undefined) : undefined
     }

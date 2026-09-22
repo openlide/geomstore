@@ -1,10 +1,16 @@
 /**
  * 状态选择器（可选能力，按需动态引入）
  *
- * 实现位于同层 `./selector/`（v0.4.0 起由 `src/core/selector` 物理下沉至 extras）：
- * - `createSelector` / `createMemoizedSelector` / `createStructuredSelector`
- * - `createParametricSelector`：带参数选择器
- * - `SelectorComposer`：异步、重试等组合形态
+ * 实现位于同层 `./selector/`（v0.4.0 起由 `src/core/selector` 物理下沉至 extras），
+ * 本文件是 `export * from './selector/index.js'` 的薄壳，公开面即该 index 的清单：
+ *
+ * - 值：`createSelector` / `createMemoizedSelector` / `createStructuredSelector`
+ *   / `createParametricSelector` / `SelectorFactory` / `SelectorComposer`
+ * - 类型：`RetrySelectorOptions` / `AsyncRetrySelectorOptions`（来自 `selectorComposer`），
+ *   以及 `Selector` / `SelectorOptions` / `SelectorCacheItem` / `SelectorResult`
+ *   / `SelectorComposerInput` / `ParametricSelector`（定义在 `src/types/selector.ts`）
+ *
+ * 本文件的增删以 `./selector/index.ts` 为准，不要在此另立一份口径。
  *
  * @example
  * ```ts

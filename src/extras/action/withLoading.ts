@@ -30,24 +30,53 @@ const loaderRegistry = new WeakMap<object, Map<string, ActionLoader>>()
  */
 const loadingCountRegistry = new WeakMap<object, Map<string, Map<string, number>>>()
 
+/** `ActionLoaderOptions` 去掉「不必出现在签名里」的注入项后的完整形态 */
+type NormalizedLoaderOptions = Required<Omit<ActionLoaderOptions, 'sharedLoadingCounts'>>
+
+/**
+ * `ActionLoader` 构造器归一化后的缺省值镜像
+ *
+ * 唯一来源是 `ActionLoader.ts` 构造器里的 `options.xxx ?? 默认`（两处必须逐项对齐：
+ * 签名桶决定「哪些装饰器共用同一个 loader / 同一份 loading 计数」，默认值漂移会让
+ * 有效配置不同的装饰器落进同一个桶（互相覆盖状态），或让该共享的装饰器被拆开）。
+ * 类型上无法约束这种同步（两侧都是字面量），故在此单点声明，改 ActionLoader
+ * 缺省值时只需改这一处。
+ */
+const LOADER_DEFAULTS: NormalizedLoaderOptions = {
+  autoLoading: true,
+  loadingKey: 'loading',
+  errorKey: 'error',
+  errorDataKey: 'errorData',
+  perActionKeys: false,
+}
+
+/** 按 {@link LOADER_DEFAULTS} 补齐选项，两个签名函数共用一份归一化 */
+function normalizeLoaderOptions(options: ActionLoaderOptions): NormalizedLoaderOptions {
+  return {
+    autoLoading: options.autoLoading ?? LOADER_DEFAULTS.autoLoading,
+    loadingKey: options.loadingKey ?? LOADER_DEFAULTS.loadingKey,
+    errorKey: options.errorKey ?? LOADER_DEFAULTS.errorKey,
+    errorDataKey: options.errorDataKey ?? LOADER_DEFAULTS.errorDataKey,
+    perActionKeys: options.perActionKeys ?? LOADER_DEFAULTS.perActionKeys,
+  }
+}
+
 /**
  * 计算选项签名（与 ActionLoader 默认值同口径归一），用于注册表按配置分桶
  */
 function resolveLoaderSignature(options: ActionLoaderOptions): string {
-  return [
-    options.autoLoading ?? true,
-    options.loadingKey ?? 'loading',
-    options.errorKey ?? 'error',
-    options.errorDataKey ?? 'errorData',
-    options.perActionKeys ?? false,
-  ].join('|')
+  const normalized = normalizeLoaderOptions(options)
+
+  return [normalized.autoLoading, normalized.loadingKey, normalized.errorKey, normalized.errorDataKey, normalized.perActionKeys].join('|')
 }
 
 /**
  * 计算 loading 签名：仅包含决定 loading 状态键的选项
  */
 function resolveLoadingSignature(options: ActionLoaderOptions): string {
-  return [options.autoLoading ?? true, options.loadingKey ?? 'loading', options.perActionKeys ?? false].join('|')
+  const normalized = normalizeLoaderOptions(options)
+
+  return [normalized.autoLoading, normalized.loadingKey, normalized.perActionKeys].join('|')
 }
 
 /** 获取（或创建）宿主上按 loading 签名集中共享的引用计数存储 */

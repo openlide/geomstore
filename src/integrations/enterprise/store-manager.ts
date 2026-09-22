@@ -73,6 +73,9 @@ export class StoreManager {
    * 持久化键经 userStoreKey 派生，与 createUserStore 写入的键同源
    */
   logout(): void {
+    // currentUserId 只有两种取值：null（未登录）或 createUserStore 入口校验过的非空串
+    // （空/纯空白 userId 在 getUserStore/switchUser 处即抛错，写不进本字段），
+    // 故此处真值判定等价于 `=== null`
     if (!this.currentUserId) return
 
     const store = this.stores.get(this.currentUserId)
@@ -88,13 +91,24 @@ export class StoreManager {
 
   /**
    * 获取当前用户的 Store
+   *
+   * 真值判定与 logout 同源：currentUserId 不会是空串（见 logout 注释）
    */
   getCurrentStore(): Store<UserState> | null {
     return this.currentUserId ? (this.stores.get(this.currentUserId) ?? null) : null
   }
 
   /**
-   * 清理所有 Store
+   * 清理所有 Store —— 仅释放内存实例，不清理持久化数据（#342）
+   *
+   * 与 logout 的差别是刻意的：本方法面向「测试重置 / 宿主整体换号」这类
+   * 需要立刻回收全部实例的场景，而调用方无法指定「哪些账号的数据该被删除」；
+   * 在这里连带删除所有 `user-store-*` 键会把无法归零的数据一次抹掉，
+   * 风险远高于收益。需要真正清除某账号持久化数据请显式走 `logout()`（当前用户）
+   * 或按 `userStoreKey(userId)` 自行清理。
+   *
+   * 已知不一致：本方法把内存身份置空，但 `CURRENT_USER_KEY` 与各账号持久化键仍留在
+   * storage 中——冷启动恢复（createEnterpriseApp）会据此把身份指回最后一个登录账号。
    */
   clearAll(): void {
     this.stores.forEach((store) => store.destroy())

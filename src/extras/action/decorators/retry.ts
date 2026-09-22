@@ -11,11 +11,20 @@ import { retryWithBackoff } from '../async-core.js'
  * 重试装饰器选项
  */
 export interface RetryDecoratorOptions {
-  /** 最大重试次数 */
+  /**
+   * 首次执行之外的最大重试次数（总尝试次数 = retries + 1），默认 3
+   *
+   * 非有限值/负数/小数在内核里归一到非负整数（即「只执行一次」），不会是无限重试
+   */
   retries?: number
   /** 基础重试延迟（毫秒） */
   delay?: number
-  /** 判断是否应该重试的函数 */
+  /**
+   * 判断是否应该重试的函数
+   *
+   * 入参恒为 `Error`：非 Error 的抛出值（`throw 'boom'` / `throw { code }`）在传给本函数前
+   * 已由内核 `toError` 规范化，可安全读 `error.message`/`stack`；向外抛出的仍是原始值
+   */
   shouldRetry?: (error: Error) => boolean
 }
 
@@ -25,10 +34,15 @@ export interface RetryDecoratorOptions {
  * 在方法失败时自动重试，支持指数退避和条件重试
  *
  * @param {RetryDecoratorOptions} [options={}] - 重试选项
- * @param {number} [options.retries=3] - 最大重试次数
- * @param {number} [options.delay=100] - 基础重试延迟（毫秒）
+ * @param {number} [options.retries=3] - 首次执行之外的最大重试次数（总尝试 = retries + 1）
+ * @param {number} [options.delay=100] - 基础重试延迟（毫秒），第 n 次重试等待 `delay * 2^(n-1)`
  * @param {(error: Error) => boolean} [options.shouldRetry] - 判断是否应该重试的函数
  * @returns {MethodDecorator} 方法装饰器
+ *
+ * @remarks 与 `ActionExecutor.executeWithRetry` 共用 `retryWithBackoff` 内核，退避与
+ * 错误规范化语义一致；选项面**不**等价：本装饰器只暴露 retries/delay/shouldRetry，
+ * 内核的 `onRetry`（每次重试前回调）目前只由 `executeWithRetry` 入口提供。
+ * 需要逐次重试的通知，请在 `shouldRetry` 里自行计数或改用执行器入口。
  *
  * @example
  * ```typescript

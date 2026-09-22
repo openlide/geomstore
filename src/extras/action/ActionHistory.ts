@@ -22,6 +22,11 @@ export interface ActionStats {
  * Action 执行历史与统计
  *
  * 历史按 Action 名分桶，每桶有界（超出淘汰最旧一条）。
+ *
+ * @remarks 下方各方法的 `@example` 一律通过 `executor`（`AsyncActionSupport` 门面）调用：
+ * 其 `getHistory`/`getStats`/`setMaxHistory` 与本类同名，`clearHistory(actionName)` 委托到
+ * 本类的 {@link ActionHistoryTracker.clear}。直接持有本 tracker 的调用方把示例里的
+ * `executor.clearHistory(...)` 换成 `tracker.clear(...)` 即可。
  */
 export class ActionHistoryTracker {
   /**
@@ -64,10 +69,14 @@ export class ActionHistoryTracker {
    * 返回指定Action或所有Action的执行历史
    *
    * @param {string} [actionName] - Action名称，如果未指定则返回所有Action的历史
-   * @returns {ActionResult[]} 执行历史数组。传入 actionName 时按时间正序（最早在前，
+   * @returns {ActionResult[]} 执行历史数组的副本。传入 actionName 时按时间正序（最早在前，
    *   保持插入顺序）；未传时聚合所有 Action 并按 startTime 倒序（最新在前）
    *
-   * @remarks 判定「是否指定」用 `!== undefined` 而非真值：空串是合法 Action 名
+   * @remarks 只有**数组容器**是副本（外部 push/splice 不会污染内部桶）；数组里的
+   * `ActionResult` 条目仍与内部桶共享同一对象，改 `history[0].success` 之类会直接影响
+   * 后续 `getHistory`/`getStats` 结果——请把返回的条目按只读值消费，需要改写就先自行拷贝。
+   *
+   * 判定「是否指定」用 `!== undefined` 而非真值：空串是合法 Action 名
    * （`String(actionName)` 对 `{'': fn}` 就会产出它），按真值会让该桶只写不读。
    *
    * @example
@@ -85,7 +94,9 @@ export class ActionHistoryTracker {
    */
   getHistory(actionName?: string): ActionResult[] {
     if (actionName !== undefined) {
-      // 返回副本：直接返回内部数组会让外部 push/splice 污染历史与 getStats 统计
+      // 返回副本：直接返回内部数组会让外部 push/splice 污染历史与 getStats 统计。
+      // 只复制容器、不复制条目——逐条拷贝会让每次读历史都分配 N 个对象，而本方法是
+      // 诊断/统计入口，读多写少；条目只读共享的代价已在 JSDoc 写明
       return [...(this.actionResults.get(actionName) ?? [])]
     }
 

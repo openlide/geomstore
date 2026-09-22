@@ -200,6 +200,11 @@ export function createEnterpriseApp(config: EnterpriseAppConfig = {}) {
       this.globalData.offlineManager = null
       offlineManager = null
       storage.remove(CURRENT_USER_KEY)
+      // 有意不做热更新注册的反向注销（#361）：hot-update 的 onUpdateReady 回调按
+      // 累加式注册、微信没有 off API，注销只能靠读注册表时判活。这里留着指向已销毁
+      // store 的注册项，回调入口的 `store.destroyed` 守卫会跳过备份并告警，
+      // 下一次 initHotUpdate（login/冷启动）即覆盖为新目标——它就是预期的清理路径。
+      // 残留代价仅是一个已销毁 store 的引用，直到那次覆盖为止
     },
 
     getStore(): Store<UserState> | null {

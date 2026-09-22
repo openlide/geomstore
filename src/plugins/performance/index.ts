@@ -27,3 +27,6 @@
  */
 
 export { analyzerPlugin, createAnalyzerPlugin } from './analyzerPlugin.js'
+// createAnalyzerPlugin / setOptions 的入参类型：核心与 extras 入口早已导出，
+// 本插件入口此前只给运行时 API 不给类型，按同一入口配置分析器时还得另找路径导入
+export type { PerformanceOptions } from '../../types/performance.js'

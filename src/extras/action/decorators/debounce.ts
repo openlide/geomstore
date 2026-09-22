@@ -16,6 +16,17 @@ interface DebounceState {
   pendingRejects: Array<(error: unknown) => void>
   pendingArgs: unknown[]
 }
+
+/** 防抖状态的初始值：工厂内两处取用（宿主不可用作 WeakMap 键的兜底、方法首次调用），
+ *  单一构造点避免两处形状漂移 */
+function createDebounceState(): DebounceState {
+  return {
+    timeoutId: null,
+    pendingResolves: [],
+    pendingRejects: [],
+    pendingArgs: [],
+  }
+}
 /**
  * 创建防抖装饰器
  *
@@ -50,15 +61,15 @@ export function withDebounce(delay: number = 300): MethodDecorator {
   const store = new WeakMap<object, Map<string | symbol, DebounceState>>()
 
   const getState = (host: unknown, methodKey: string | symbol): DebounceState => {
-    // 宿主不是对象或函数（如 undefined / 基本类型）时，用一个一次性本地状态兜底，
-    // 保证不会跨调用串扰，也不影响装饰器主用例（类方法）。
+    // 宿主不是对象或函数（`this === undefined` / 基本类型 / null，如把方法解构下来 detached 调用）
+    // 时给一次性本地状态：WeakMap 无从按宿主存状态，只能保证不跨调用串扰。
+    // 已知代价（刻意保留，与 withThrottle「直接放行」、withCache「一次性 Map」同口径，
+    // 三者都选择在宿主不可跟踪时降级而不是抛错）：这份状态每次调用都新建，
+    // `timeoutId` 恒为 null → 既不 clearTimeout 也不合并调用，**防抖等于失效**：
+    // 每次调用各自排一个定时器、各自结算自己的 resolver，原方法还会以 undefined
+    // 之类的 receiver 执行。需要防抖语义就必须以方法调用的形式（带宿主）调用
     if ((typeof host !== 'object' && typeof host !== 'function') || host === null) {
-      return {
-        timeoutId: null,
-        pendingResolves: [],
-        pendingRejects: [],
-        pendingArgs: [],
-      }
+      return createDebounceState()
     }
     let byMethod = store.get(host)
     if (!byMethod) {
@@ -67,12 +78,7 @@ export function withDebounce(delay: number = 300): MethodDecorator {
     }
     let state = byMethod.get(methodKey)
     if (!state) {
-      state = {
-        timeoutId: null,
-        pendingResolves: [],
-        pendingRejects: [],
-        pendingArgs: [],
-      }
+      state = createDebounceState()
       byMethod.set(methodKey, state)
     }
     return state

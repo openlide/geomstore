@@ -6,6 +6,7 @@
  */
 
 import type { ErrorBoundaryOptions, ErrorFallback } from '../../types/error.js'
+import { DEFAULT_MAX_LOG_SIZE } from './ErrorHandler.js'
 
 /**
  * 错误边界类
@@ -99,7 +100,8 @@ export class ErrorBoundary<S = unknown, F = undefined> {
    * @param {() => T} fn - 要执行的函数
    * @param {S} [currentState] - 当前状态（用于回退）
    * @returns {T | undefined} 函数执行结果，如果错误且可恢复则返回undefined
-   * @throws {Error} 如果错误且不可恢复则重新抛出
+   * @throws {Error} 错误且不可恢复时重抛原始错误；可恢复但 `fallback` 函数自身抛错时
+   *   同样重抛**原始**错误（回退路径已失效，不返回 undefined），见 {@link ErrorBoundary.handleError}
    *
    * @example
    * ```typescript
@@ -133,7 +135,8 @@ export class ErrorBoundary<S = unknown, F = undefined> {
    * @param {() => Promise<T>} fn - 要执行的异步函数
    * @param {S} [currentState] - 当前状态（用于回退）
    * @returns {Promise<T | undefined>} 函数执行结果，如果错误且可恢复则返回undefined
-   * @throws {Error} 如果错误且不可恢复则重新抛出
+   * @throws {Error} 与 {@link ErrorBoundary.execute} 同：不可恢复、或可恢复但 fallback
+   *   函数自身抛错时重抛原始错误
    *
    * @example
    * ```typescript
@@ -172,9 +175,12 @@ export class ErrorBoundary<S = unknown, F = undefined> {
     const error: Error = rawError instanceof Error ? rawError : new Error(String(rawError))
     // 记录错误
     this.errorHistory.push(error)
-    // 上限保护：与 ErrorHandler.maxLogSize 同口径，高频失败场景下
-    // Error 对象无界累积（此前只增不减，需手动 clearErrorHistory）
-    if (this.errorHistory.length > 100) {
+    // 上限保护：与 ErrorHandler 的 errorLog 共用 DEFAULT_MAX_LOG_SIZE（同源，避免两处
+    // 100 各自漂移），高频失败场景下 Error 对象不再无界累积（此前只增不减，需手动
+    // clearErrorHistory）。每个入口只 push 一条，故此处判后 shift 恰好丢掉最旧一条，
+    // 等价于「保留最新 N 条」；本类的上限暂不对外开放（需要可调请走 ErrorHandler.setMaxLogSize
+    // 的同类接口设计，属新增公开配置，不在本轮范围）
+    if (this.errorHistory.length > DEFAULT_MAX_LOG_SIZE) {
       this.errorHistory.shift()
     }
 
@@ -199,7 +205,10 @@ export class ErrorBoundary<S = unknown, F = undefined> {
       if (typeof this.fallback === 'function') {
         // fallback 函数自身就是容错路径，出错概率不低：不加保护会以 fallback
         // 的异常顶替原错误逃逸（原错误现场丢失）。失败时重抛原错误，
-        // 与上方 onError 回调的防护口径一致
+        // 与上方 onError 回调的防护口径一致。
+        // 刻意不「按 recoverable 语义返回 undefined」：回退值是容错的最后一道，它自己
+        // 失败时本边界已无从恢复，改判成功会把容错路径的故障静默成一次「正常的 undefined」，
+        // 调用方拿不到任何信号；此处抛出的是原始错误而非 fallback 异常，现场不失真
         try {
           return (this.fallback as (error: Error, currentState: S | undefined) => F)(error, currentState)
         } catch (fallbackError) {

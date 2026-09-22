@@ -150,8 +150,6 @@ export class LRUCache<K, V> {
       prev: null,
       next: null,
       createdAt: timestamp,
-      lastAccessedAt: timestamp,
-      accessCount: 0,
     }
   }
 
@@ -164,15 +162,12 @@ export class LRUCache<K, V> {
    * @returns {LRUNode<K, V>} 新节点
    */
   private createNode(key: K, value: V): LRUNode<K, V> {
-    const now = Date.now()
     return {
       key,
       value,
       prev: null,
       next: null,
-      createdAt: now,
-      lastAccessedAt: now,
-      accessCount: 1,
+      createdAt: Date.now(),
     }
   }
 
@@ -182,7 +177,10 @@ export class LRUCache<K, V> {
    * 如果键存在，将其移动到头部（标记为最近使用）并返回值。
    * 如果键不存在，返回undefined。
    *
-   * 优化：减少 Date.now() 调用次数，只在必要时更新访问时间
+   * 优化：时钟调用只在「开启统计且开启计时」的命中路径发生，未命中不取时钟
+   *
+   * @remarks `trackAccessTime` 只影响 `avgAccessTime` 的采样，不影响 LRU 顺序：
+   * 顺序始终由 `moveToHead`（访问即最近使用）决定。
    *
    * @param {K} key - 键
    * @returns {V | undefined} 值或undefined
@@ -198,8 +196,6 @@ export class LRUCache<K, V> {
    * ```
    */
   get(key: K): V | undefined {
-    // 访问计时起点（trackAccessTime 且开启统计时才需要，避免多余的时钟调用）
-    const timing = this.options.trackAccessTime && this.options.enableStats ? highResNow() : 0
     const node = this.cache.get(key)
 
     if (!node) {
@@ -210,22 +206,20 @@ export class LRUCache<K, V> {
       return undefined
     }
 
-    // 命中：更新访问信息并移动到头部
-    // 只在需要时更新访问时间，避免不必要的 Date.now() 调用
-    if (this.options.trackAccessTime) {
-      const now = Date.now()
-      node.lastAccessedAt = now
-      if (this.options.enableStats) {
-        this.hitCount++
-        // 真实访问耗时（此前恒记 1ms，avgAccessTime 是无意义假数据）
-        this.totalAccessTime += highResNow() - timing
-      }
-    } else if (this.options.enableStats) {
+    // 计时起点在「确认命中之后」取：此前每次访问都先取一次高精度时钟，
+    // 未命中路径把它整次丢弃（未命中也要付一次时钟调用）。
+    // 测量区间随之变为命中相对未命中多做的收尾工作（计数 + 摘链/挂链）
+    const measure = this.options.trackAccessTime && this.options.enableStats
+    const timing = measure ? highResNow() : 0
+
+    if (this.options.enableStats) {
       this.hitCount++
     }
-
-    node.accessCount++
     this.moveToHead(node)
+    if (measure) {
+      // 真实访问耗时（此前恒记 1ms，avgAccessTime 是无意义假数据）
+      this.totalAccessTime += highResNow() - timing
+    }
 
     return node.value
   }
@@ -251,10 +245,11 @@ export class LRUCache<K, V> {
     const node = this.cache.get(key)
 
     if (node) {
-      // 节点已存在：更新值并移动到头部
+      // 节点已存在：更新值并移动到头部。
+      // 不再写 lastAccessedAt/accessCount 元数据：二者在全库内无任何读取方
+      // （LRU 顺序由链表决定，统计走 hitCount/totalAccessTime），
+      // 且 set() 原本无条件盖时间戳，与 get() 的 trackAccessTime 门控互相矛盾
       node.value = value
-      node.lastAccessedAt = Date.now()
-      node.accessCount++
       this.moveToHead(node)
       return this
     }
@@ -385,6 +380,12 @@ export class LRUCache<K, V> {
   /**
    * 清空缓存
    *
+   * @remarks 清空按「逐条淘汰」口径记账：每个条目触发一次 `onEvict`，
+   * 并累计计入 `getStats().evictions`（该字段的契约是「onEvict 触发次数」，
+   * 而非「因容量上限被挤出的条目数」）。因此把 `clear()` 用于配置性重建
+   * （如 `StoreCacheManager.enable()`）时，`evictions` 会包含这部分非容量淘汰；
+   * 需要区分两类淘汰的调用方，可在配置性清空前后各读一次 `evictions` 求差。
+   *
    * @returns {this} 支持链式调用
    */
   clear(): this {
@@ -404,13 +405,14 @@ export class LRUCache<K, V> {
     this._size = 0
 
     // clear 触发的全量回调与 evictLRU 同口径计入淘汰统计；
-    // 单个回调抛错不中断其余条目（与 evictLRU 的防护对齐）
+    // 单个回调抛错不中断其余条目，错误上报也与 evictLRU 一致（不受 NODE_ENV 门控，
+    // 否则同一类回调故障在两处的可见性不同）
     this.evictionCount += nodes.length
     for (const entry of nodes) {
       try {
         this.options.onEvict(entry.key as K, entry.value as V)
-      } catch {
-        // 淘汰回调失败不影响清空流程
+      } catch (error) {
+        console.error('[LRUCache] Error in onEvict callback:', error)
       }
     }
 

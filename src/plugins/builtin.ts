@@ -275,6 +275,11 @@ function installPersistence<S extends State>(store: Store<S>, options: Persisten
   let isUninstalled = false // 标记是否已卸载，防止卸载后定时器回调仍执行
   // 防抖窗口内最近一次待写入的状态：卸载时用于同步补写，避免最后一次变更丢失
   let pendingState: Partial<S> | null = null
+  // 最近一次成功落盘的序列化结果：卸载补写时据此跳过无变化的重复写入。
+  // 必须声明在下面的 subscribe 之前（#374）：saveState 是提升的函数声明并闭包引用它，
+  // 一旦订阅改为同步回调（或在注册与声明之间插入任何会 notify 的逻辑），
+  // 回调里的 saveState 就会读到 TDZ 中未初始化的 lastSaved 而直接抛 ReferenceError
+  let lastSaved: string | null = null
 
   // 只读订阅：仅序列化后落盘，不修改载荷，避免为持久化引入整树深拷贝
   const unsubscribe = store.subscribe(
@@ -312,9 +317,6 @@ function installPersistence<S extends State>(store: Store<S>, options: Persisten
     },
     { readOnly: true },
   )
-
-  // 最近一次成功落盘的序列化结果：卸载补写时据此跳过无变化的重复写入
-  let lastSaved: string | null = null
 
   function saveState(state: Partial<S>): void {
     // 卸载后不再执行保存操作
@@ -403,6 +405,13 @@ export const devtoolsPlugin: Plugin = {
       getState: () => store.state,
       // 注意：状态保护开启时 store.state 为保护 Proxy，读取语义等价；
       // devtools 消费方如需序列化（JSON.stringify 可穿透），请自行拷贝副本
+      //
+      // 下面三处的 `as never` 是必要的、而非偷懒（#373）：本插件的 `store` 形参类型是
+      // 无泛型的 `Store`，即 S = State，而 `State = object` → `keyof S` 为 never，
+      // 于是 setState/$patch/$replaceState 的形参在类型层面只接受 never。
+      // 调试入口按设计要能写任意键/值，只能在调用点收窄断言；键的合法性由核心
+      // （setState 的只读代理校验、$replaceState 的纯对象准入）在运行时兜住。
+      // 若哪天 Store 把这些方法的非泛型重载补上，这些断言应随之删除
       setState: (key: string, value: unknown) => {
         store.setState(key as never, value as never)
       },
@@ -419,8 +428,10 @@ export const devtoolsPlugin: Plugin = {
         return store.subscribe(callback, options ?? { readOnly: true })
       },
 
-      use: (plugin: unknown) => {
-        return store.use(plugin as never)
+      // 与上面几处不同，这里不需要断言：`Plugin`（默认泛型即 Plugin<State>）
+      // 本就在 Store.use 的形参联合里，写成 `unknown` + `as never` 只会白丢类型检查
+      use: (plugin: Plugin) => {
+        return store.use(plugin)
       },
 
       destroy: () => store.destroy(),

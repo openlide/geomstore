@@ -144,8 +144,16 @@ export class HttpReporter implements ErrorReporter {
     return JSON.stringify(payload) as JsonBody
   }
 
-  private serializeErrorMessage(context: ErrorContext): JsonBody {
-    return this.buildRequestBody({
+  /**
+   * 单个 ErrorContext 的上报投影
+   *
+   * 单条与批量两条路径共用：两处各写一份字段映射时，新增/改名字段只会落到其中一条，
+   * 服务端收到的单条与批量负载就会静默漂移。
+   *
+   * @private
+   */
+  private serializeContext(context: ErrorContext) {
+    return {
       error: {
         message: context.error.message || '',
         stack: context.error.stack || '',
@@ -156,24 +164,15 @@ export class HttpReporter implements ErrorReporter {
       level: context.level,
       payload: context.payload,
       timestamp: context.timestamp,
-    })
+    }
+  }
+
+  private serializeErrorMessage(context: ErrorContext): JsonBody {
+    return this.buildRequestBody(this.serializeContext(context))
   }
 
   private serializeErrorBatch(contexts: ErrorContext[]): JsonBody {
-    return this.buildRequestBody({
-      errors: contexts.map((ctx) => ({
-        error: {
-          message: ctx.error.message || '',
-          stack: ctx.error.stack || '',
-          name: ctx.error.name || '',
-        },
-        storeName: ctx.storeName,
-        operation: ctx.operation,
-        level: ctx.level,
-        payload: ctx.payload,
-        timestamp: ctx.timestamp,
-      })),
-    })
+    return this.buildRequestBody({ errors: contexts.map((ctx) => this.serializeContext(ctx)) })
   }
 
   /**

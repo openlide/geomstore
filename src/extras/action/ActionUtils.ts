@@ -72,8 +72,12 @@ export class ActionUtils<A extends Actions = AsyncActions> {
    * @template K - Action名称类型
    * @param {A} actions - Actions对象（省略时使用构造时绑定的 actions）
    * @param {K} actionName - Action名称
-   * @param {Parameters<A[K]>} args - Action参数
+   * @param {Parameters<A[K]>} args - Action 参数
    * @returns {Promise<Awaited<ReturnType<A[K]>>>} Action执行结果
+   * @throws 被装饰 action 自身抛出的错误会**原样**向上抛出（同 `ActionExecutor.execute`）：
+   *   本方法只是门面，不做包装、也不转成「失败结果」。executor 已把该次执行按失败记入历史
+   *   （`getStats`/`getHistory` 可见），随后 rethrow 原始值——调用方 `catch (e) => e === thrown`
+   *   的身份判断成立
    *
    * @example
    * ```typescript

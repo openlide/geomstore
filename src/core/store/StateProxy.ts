@@ -115,7 +115,13 @@ export class StateProxyManager<S extends State = State> {
       defineProperty(obj: T, key: string | symbol, descriptor: PropertyDescriptor): boolean {
         if (!self._isInternalAccess()) {
           // 拒绝路径总是抛错；生产 warn/silent 处理后放行定义
-          self._handleIllegalMutation(formatPath(key), descriptor.value, 'defineProperty')
+          // 访问器描述符（get/set）没有 value 字段，直接取 descriptor.value 会让
+          // 报错恒显示 undefined、丢掉真实写入内容，故按描述符种类给出可辨识的占位说明
+          const attempted =
+            'value' in descriptor
+              ? descriptor.value
+              : `[accessor descriptor: get=${typeof descriptor.get === 'function'}, set=${typeof descriptor.set === 'function'}]`
+          self._handleIllegalMutation(formatPath(key), attempted, 'defineProperty')
         }
         return Reflect.defineProperty(obj, key, descriptor)
       },
@@ -255,7 +261,17 @@ export class StateProxyManager<S extends State = State> {
     if (cached) {
       return cached
     }
-    const nestedProxy = this._createDeepProxy(value as object, `${path}${keySuffix}`)
+    const nestedPath = `${path}${keySuffix}`
+    // 嵌套数组同样走数组代理：一律交 _createDeepProxy 会让同一类数组在不同访问路径下
+    // 行为分叉——索引路径拼成 `matrix.0` 而非 `matrix[0]`，且 ARRAY_MUTATING_METHODS 的
+    // 专用拦截分支被整体绕过（push/splice 会以「给属性 'push' 赋值」的文案抛出）。
+    // 保持「数组只有一种代理」也让报错口径唯一
+    if (Array.isArray(value)) {
+      const arrayProxy = this._createArrayProxy(value as unknown[], nestedPath)
+      this._proxyCache.set(value as object, arrayProxy)
+      return arrayProxy
+    }
+    const nestedProxy = this._createDeepProxy(value as object, nestedPath)
     this._proxyCache.set(value as object, nestedProxy)
     return nestedProxy
   }

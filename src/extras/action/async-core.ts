@@ -72,6 +72,10 @@ interface RetryOptions {
  *
  * @remarks `shouldRetry`/`onRetry` 收到的是规范化后的 `Error`（抛出的值不是 Error 时包裹），
  * 而向外抛出的始终是原始值。
+ *
+ * 两者对回调异常的处理不同，是刻意的：`shouldRetry` 决定「要不要再来一次」，抛错即视为
+ * 该判断不可用、按原样向上抛（不擅自替调用方决定重试）；`onRetry` 只是通知，抛错被隔离
+ * 成一条 `console.error`，不中断重试、也不顶替真实失败。
  */
 export async function retryWithBackoff<T>(fn: () => Promise<T>, options: RetryOptions = {}): Promise<T> {
   const { retries = 3, delay = 100, shouldRetry, onRetry } = options
@@ -94,7 +98,17 @@ export async function retryWithBackoff<T>(fn: () => Promise<T>, options: RetryOp
         throw error
       }
 
-      onRetry?.(normalizedError, i + 1)
+      // 通知回调的异常不得改变重试结果：与 ErrorRecovery.executeRetryStrategy 的
+      // onRetry 处理同口径（否则一个只用于打日志的回调能让重试提前中断、
+      // 并让调用方看到与真实失败无关的报错）
+      if (onRetry) {
+        try {
+          onRetry(normalizedError, i + 1)
+        } catch (callbackError) {
+          console.error('[retryWithBackoff] Error in onRetry callback:', callbackError)
+        }
+      }
+
       // 指数退避：NaN/负数会让 setTimeout 立即触发，Infinity/超 2^31-1 会被宿主钳制为 0/1ms，
       // 两者都会把「退避」静默变成「立即重试」，故归一到 [0, MAX_TIMER_DELAY]
       const baseDelay = Number.isFinite(delay) ? Math.max(0, delay) : 0

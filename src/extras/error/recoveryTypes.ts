@@ -69,7 +69,19 @@ export interface RecoveryConfig {
    */
   exponentialBackoff?: boolean
 
-  /** 回退值（仅FALLBACK策略） */
+  /**
+   * 回退值（仅FALLBACK策略）
+   *
+   * 与 {@link RecoveryConfig.fallbackFn} 的优先级：**fallbackFn 在前**，配了 fallbackFn 时
+   * 本字段被忽略；两者都没配则 FALLBACK 策略抛错（`No fallback value or function configured`）。
+   *
+   * 类型是 `unknown` 而非某个具体形状，因此「回退值就是 undefined」是合法配置，
+   * 与「没配」在类型上无法区分；引擎按 **`'fallback' in config`** 判定是否配过
+   * （见 `ErrorRecovery.executeFallbackStrategy`），故默认策略里 `fallback: undefined`
+   * 表示「显式回退到 undefined」。反过来说：不要靠展开/序列化搬运 config 后还指望
+   * 该键保留（删掉键就等于没配回退值）。做成 `{ value: unknown }` 之类的判别式联合
+   * 能消除这层歧义，但会破坏已发布的公开配置形状，故保留现形并在此写明判据。
+   */
   fallback?: unknown
 
   /** 回退函数（仅FALLBACK策略） */
@@ -114,7 +126,14 @@ export interface RecoveryContext {
   /** 恢复配置 */
   config: RecoveryConfig
 
-  /** 当前重试次数 */
+  /**
+   * 本次恢复进入策略时该重试键已消耗的尝试次数
+   *
+   * 由引擎填充：`recover()` 总是以 0 起算（调用方传入的同名字段会被覆盖，避免外部
+   * 伪造计数），随后 `executeRetryStrategy` 按内部计数表把它写成该键已试次数（首次为 0），
+   * 因此只有 RETRY 策略下会被更新；其余策略（FALLBACK/IGNORE/RECOVER/RESTART）不做
+   * 重试记账，恒为 0。本字段仅供诊断，不参与策略判定，也不会作为参数传给任何用户回调
+   */
   attempt: number
 
   /** Store名称（如果适用） */

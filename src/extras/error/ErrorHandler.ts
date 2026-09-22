@@ -7,8 +7,13 @@
 
 import { createErrorContext, defaultErrorHandler, type ErrorContext, type ErrorHandler, type ErrorLevel, type OperationType } from '../../types/error.js'
 
-/** errorLog 条目上限的默认值：字段初始化与 setMaxLogSize 的非有限值回退共用 */
-const DEFAULT_MAX_LOG_SIZE = 100
+/**
+ * errorLog 条目上限的默认值：字段初始化与 setMaxLogSize 的非有限值回退共用。
+ *
+ * 导出仅供同目录复用（`ErrorBoundary` 的错误历史与之同源）；未经 barrel 再导出，
+ * 不是公开 API。
+ */
+export const DEFAULT_MAX_LOG_SIZE = 100
 
 /**
  * 错误处理器类
@@ -103,6 +108,13 @@ export class ErrorHandlerImpl {
    * }
    * errorHandler.handleError(context)
    * ```
+   *
+   * @remarks 处理器抛错被隔离成一条 `[ErrorHandler] Error in error handler:` 的
+   * `console.error`，不外溢给调用方：本方法是错误链路的最后一环，让坏掉的上报 handler
+   * 把原始错误顶替成二次异常，会让现场只剩 handler 的堆栈。context 在调用 handler 之前
+   * 已写入 errorLog，因此 handler 长期失效时仍可由 `getErrorLog()`/`getErrorStats()`
+   * 观察到错误在累积——这是该取舍的兜底通道，也是不额外加 `onHandlerError` 钩子的理由
+   * （钩子本身同样可能抛错，且要新增公开 API）。
    */
   handleError(context: ErrorContext): void {
     // 记录错误
@@ -233,7 +245,7 @@ export class ErrorHandlerImpl {
    *
    * 当日志超过指定大小时，最旧的错误会被移除
    *
-   * @param {number} size - 最大日志数量（必须 >= 1）
+   * @param {number} size - 最大日志数量（必须 >= 1；小数向下取整，非有限值回退默认 100）
    *
    * @example
    * ```typescript
@@ -245,7 +257,10 @@ export class ErrorHandlerImpl {
     // NaN/Infinity 守卫：Math.max(1, NaN) 返回 NaN，此后 logError 的
     // `length > this.maxLogSize` 与下方截断 while 条件恒为 false，
     // errorLog 会变成无界增长（入参可能来自 parseInt(配置) 等）
-    this.maxLogSize = Number.isFinite(size) ? Math.max(1, size) : DEFAULT_MAX_LOG_SIZE
+    // 取整只为让字段值等于实际容量：`length > 5.9` 的稳态本来就是 5 条，
+    // 但字段留着 5.9 会让读它的人（和下面的截断循环）误算成 5.9 条；
+    // 与 ActionHistoryTracker.setMaxHistory 的口径也由此一致
+    this.maxLogSize = Number.isFinite(size) ? Math.max(1, Math.floor(size)) : DEFAULT_MAX_LOG_SIZE
 
     // 如果当前日志超过新大小，截断
     while (this.errorLog.length > this.maxLogSize) {

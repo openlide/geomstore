@@ -276,6 +276,12 @@ export const timeTravelPlugin = <S extends State = State>(options: TimeTravelOpt
         // 避免用户状态中名为 timestamp 的键被快照元数据覆盖）
         // 与记录快照使用同一克隆策略：隔离支持的嵌套类型，保留不可安全克隆
         // 的类实例/WeakMap/Promise 等原引用，不用 JSON 或 structuredClone 改变兼容性。
+        //
+        // 展开的形态限制（#377）：`{ timestamp, ...clone }` 只对**顶层为纯对象**的状态
+        // 成立。顶层是 Date/Map/Set/数组时展开只会得到 `{ timestamp }`（非纯对象没有
+        // 可枚举自有键，数组则退化为数字键）——克隆本身保留了这些类型，是展开把它们
+        // 丢掉了。该扁平结构已被现有测试与文档固化，改形状属破坏性变更，故这里
+        // 只把口径写清：本方法只对顶层为纯对象的状态给出完整回显
         getSnapshots: () => snapshots.map((s) => ({ timestamp: s.timestamp, ...deepCloneState(s.state) })),
 
         // 获取快照数量
@@ -291,10 +297,14 @@ export const timeTravelPlugin = <S extends State = State>(options: TimeTravelOpt
           }
 
           const snapshot = snapshots[index]
-          currentIndex = index
           traveling = true
           try {
             store.$replaceState(snapshot.state)
+            // 索引在回放成功后才推进（#378）：$replaceState 抛错（store 已销毁、
+            // 快照状态非纯对象）时若先改索引，索引会指向一个从未生效的快照而真实状态
+            // 仍是旧的——此后 recordSnapshot 以该索引为分支点截断 redo 历史，
+            // 且 undo/redo 每次都会把这个坏索引一路继承下去、反复抛同一个错
+            currentIndex = index
             // 同步通知下回放已在 traveling 窗口内被吞掉；这里为异步通知留下识别标记，
             // 版本号在本次回放后再未前进时，下一次通知即为该回放本身
             pendingTravelVersion = getStateVersion(store.state)
@@ -316,8 +326,9 @@ export const timeTravelPlugin = <S extends State = State>(options: TimeTravelOpt
         // 撤销
         undo: (): void => {
           if (currentIndex > 0) {
-            currentIndex--
-            api.goTo(currentIndex)
+            // 目标索引交给 goTo 推进：goTo 只在 $replaceState 成功后才写 currentIndex，
+            // 此处若先自减，回放抛错时索引同样会与真实状态失步（#378）
+            api.goTo(currentIndex - 1)
           } else {
             console.warn('[timeTravel] Cannot undo: already at first snapshot')
           }
@@ -326,8 +337,7 @@ export const timeTravelPlugin = <S extends State = State>(options: TimeTravelOpt
         // 重做
         redo: (): void => {
           if (currentIndex < snapshots.length - 1) {
-            currentIndex++
-            api.goTo(currentIndex)
+            api.goTo(currentIndex + 1)
           } else {
             console.warn('[timeTravel] Cannot redo: already at latest snapshot')
           }
@@ -378,12 +388,21 @@ export const timeTravelPlugin = <S extends State = State>(options: TimeTravelOpt
             return
           }
           snapshots.length = 0
-          snapshots.push(...valid)
+          // 逐条 push 而非 `push(...valid)`（#379）：条目数由输入决定，
+          // 展开传参在超过 V8 实参上限（约 1e5 量级）时直接抛
+          // RangeError: Maximum call stack size exceeded——一条畸形超大 JSON
+          // 就能让导入崩溃。也不在此预截取尾部 maxSize 条：那会让下面的
+          // currentIndex 变成「相对裁剪后数组」的位置而漂移（#380）
+          for (const entry of valid) {
+            snapshots.push(entry)
+          }
           // currentIndex 钳制到合法范围（缺省为最后一个）；小数向下取整，
           // 避免小数索引取 snapshots[1.5] 得 undefined 传入 $replaceState 抛错
           currentIndex =
             typeof data.currentIndex === 'number' ? Math.min(Math.max(Math.floor(data.currentIndex), 0), snapshots.length - 1) : snapshots.length - 1
-          // 导入同样受 maxSize 限制：超出部分淘汰最旧快照并同步修正索引
+          // 导入同样受 maxSize 限制：超出部分淘汰最旧快照并同步修正索引。
+          // 顺序必须是「先按完整输入钳制 index，再按 overflow 偏移」（#380）：
+          // 100 条取末 50 条、原 index 90 时应得 40，先裁剪再钳制会得到 49
           if (snapshots.length > maxSize) {
             const overflow = snapshots.length - maxSize
             snapshots.splice(0, overflow)

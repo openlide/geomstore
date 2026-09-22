@@ -299,6 +299,9 @@ export class ErrorRecovery {
     }
 
     const currentAttempt = this.getRetryCount(retryKey)
+    // 把真实计数回填给上下文（RecoveryContext.attempt 的文档口径）：本方法不读它，
+    // 只保证诊断用途的字段不再恒为 0
+    context.attempt = currentAttempt
 
     // 检查是否超过最大重试次数
     if (currentAttempt >= maxRetries) {
@@ -425,6 +428,9 @@ export class ErrorRecovery {
     // 不同 Store 的重试额度互相挤占（A 用满后 B 也被判超限）
     const storeName = context?.storeName || error.context?.storeName || 'unknown'
     const operation = context?.operation || error.context?.operation || 'unknown'
+    // 键只做**整串精确匹配**（get/set/delete 用同一个 getRetryKey 产物），从不按 ':' 切分
+    // 或做前缀匹配：因此 code/storeName/operation 含 ':' 至多让两段边界挪位，不会误命中
+    // 别人的计数。若将来要按 code 级联清理，必须改成嵌套 Map 或 JSON 元组，不要回到 split
     return `${error.code}:${storeName}:${operation}`
   }
 

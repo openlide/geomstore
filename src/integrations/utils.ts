@@ -178,14 +178,18 @@ export function bindMappings(
     }
   }
 
-  // 立即设置初始值（过滤 undefined，理由同 updateAll）
+  // 立即设置初始值（过滤 undefined，理由同 updateAll）。
+  // 全空则不调用 setter：本函数其余部分（updateAll 的 changed 判定）刻意避免空更新，
+  // 映射值全部尚未有值时 setData({}) 仍会走一次视图更新往返
   const initialValues: Record<string, unknown> = {}
   for (const [localKey] of entries) {
     if (prevValues[localKey] !== undefined) {
       initialValues[localKey] = prevValues[localKey]
     }
   }
-  setter(initialValues)
+  if (Object.keys(initialValues).length > 0) {
+    setter(initialValues)
+  }
 
   // 订阅 Store 变化（单个订阅覆盖全部映射，进一步减少回调数）
   // 标记只读：updateAll 只读取状态写入 data，从不修改载荷，
@@ -199,8 +203,13 @@ export function bindMappings(
 /**
  * 原始值比较：处理 NaN 与引用相等。
  *
- * 仅用于原始值的脏检查；对象值在 updateAll 中不做比较、始终纳入更新
- * （$patch 原地深合并后引用不变，引用比较无法感知内部变化）。
+ * 只用于 updateAll 的原始值分支；对象值走另一条判定（引用比较 + changedKeys 脏标记，
+ * 两者都未变才跳过该键），本函数不参与对象值的脏检查。
+ *
+ * 对象值判定的已知限制（#345）：`changedKeys` 仅 state 映射提供，getters 映射缺失时
+ * 一律按「脏」处理——getter 若每次返回新建对象（如内联 `{ ... }` / `map()` 构造），
+ * `next === prev` 永不成立，该键每次通知都会整包下发，脏检查对它实际失效。
+ * 需要避免这种抖动，getter 应返回稳定引用（缓存派生结果）或改用 mapState
  *
  * @param a - 旧值
  * @param b - 新值

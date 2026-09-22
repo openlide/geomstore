@@ -171,6 +171,18 @@ function reclaimExpired(cache: Map<string, CacheEntry>, at: number): void {
 }
 
 /**
+ * 「本次调用不缓存」的一次性唯一键
+ *
+ * 键生成失败时的统一退路：与既有任意键都不相撞，因此本次调用必然 miss、直接执行原方法，
+ * 结果也不会被写进一个每次都不同的键里（等于跳过缓存），而不是让被装饰方法整体不可用。
+ *
+ * @private
+ */
+function uncacheableKey(): string {
+  return `__uncacheable__${Date.now()}_${Math.random()}`
+}
+
+/**
  * 默认缓存键生成：稳定序列化参数（排序对象键）
  *
  * @private
@@ -181,7 +193,28 @@ function defaultKeyFn(...args: unknown[]): string {
   } catch {
     // 序列化失败（如循环引用参数）：返回唯一键，等效跳过缓存直接执行原方法，
     // 避免被装饰方法因键生成失败而整体不可用
-    return `__uncacheable__${Date.now()}_${Math.random()}`
+    return uncacheableKey()
+  }
+}
+
+/**
+ * 调用用户提供的 `keyFn`
+ *
+ * 用户 keyFn 里常见的 `JSON.stringify` / 深层取值都可能抛错，而它在**每次调用**的路径上：
+ * 不做保护会让「缓存键生成失败」升级为「业务方法抛错」，且调用方无从区分这两类故障。
+ * 与 {@link defaultKeyFn} 同口径降级为一次性唯一键（本次调用跳过缓存）。
+ *
+ * @private
+ */
+function userKeyFn(keyFn: (...args: unknown[]) => string, args: unknown[]): string {
+  try {
+    return String(keyFn(...args))
+  } catch (error) {
+    if (!isProduction()) {
+      // 静默降级会让「缓存明明配了却从不命中」难以定位，故开发期点名原因
+      console.debug('[Cache] keyFn threw, this invocation is not cached:', error)
+    }
+    return uncacheableKey()
   }
 }
 
@@ -193,6 +226,10 @@ function defaultKeyFn(...args: unknown[]): string {
  * @param {CacheDecoratorOptions} [options={}] - 缓存选项
  * @param {number} [options.ttl=5000] - 缓存生存时间（毫秒）
  * @param {(...args: unknown[]) => string} [options.keyFn] - 自定义缓存键函数
+ *
+ * @remarks `keyFn` 抛错（典型是其内部的 `JSON.stringify` 遇到循环引用/BigInt）不会让被装饰
+ * 方法失败：该次调用退化为一次性唯一键、直接执行原方法且不入缓存，与内置默认键生成器的
+ * 失败口径一致。开发期会有一条 `[Cache] keyFn threw...` 的 `console.debug` 点名原因。
  * @returns {MethodDecorator} 方法装饰器
  *
  * @example
@@ -272,7 +309,7 @@ export function withCache(options: CacheDecoratorOptions = {}): MethodDecorator 
 
     descriptor.value = function (this: unknown, ...args: unknown[]) {
       const cache = getCache(this)
-      const key = `${methodKey}${keyFn ? keyFn(...args) : defaultKeyFn(...args)}`
+      const key = `${methodKey}${keyFn ? userKeyFn(keyFn, args) : defaultKeyFn(...args)}`
       const now = Date.now()
 
       // 检查缓存

@@ -71,7 +71,9 @@ export function dispatchByNamespace<T>(
 ): void {
   if (namespace) {
     // 命名空间模式：每个顶层键是一个 store
-    for (const key in data) {
+    // Object.keys 而非 for…in：后者会枚举调用方 payload 原型链上的可枚举属性，
+    // 被污染的原型即被当作要写入的 store 名（本文件其余处一律按自有键判定）
+    for (const key of Object.keys(data)) {
       const value = data[key]
       const targetStore = stores.find((s) => s.name === key)
       if (targetStore) {
@@ -87,7 +89,7 @@ export function dispatchByNamespace<T>(
     // 不能按原样透传——内层的命名空间查找以顶层键为 store 名
     const nestedGroups = new Map<Store, Record<string, Record<string, T>>>()
 
-    for (const key in data) {
+    for (const key of Object.keys(data)) {
       const value = data[key]
       const targetStore = findTargetStore(key, stores, namespace)
       // 嵌套归属判断只看数据形状，不看 options：warnMissingKeys 是开发模式下
@@ -223,6 +225,7 @@ export function parseActionName(fullName: string, namespace?: string | boolean):
       return [parts[0], parts.slice(1).join('/')]
     }
   }
-  // 如果没有命名空间，尝试从stores中查找
+  // 无命名空间（或名称中不含 '/'）时返回空 store 名：本函数不做任何 store 查找，
+  // 由调用方按裸名（fullName）在全部子 store 中继续解析
   return ['', fullName]
 }

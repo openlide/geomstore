@@ -29,6 +29,37 @@ export interface AsyncRetrySelectorOptions extends RetrySelectorOptions {
   delay?: number | ((attempt: number) => number)
 }
 
+/**
+ * `retries` 的统一校验：两个重试工厂共用，避免同一约束与报错文案在两处漂移
+ *
+ * @throws {TypeError} 非整数或负数
+ */
+function assertValidRetries(retries: number): void {
+  if (!Number.isInteger(retries) || retries < 0) {
+    throw new TypeError(`[SelectorComposer] retries 必须是非负整数，收到: ${retries}`)
+  }
+}
+
+/**
+ * 调用用户的 `shouldRetry`
+ *
+ * 它在 `catch` 块里被调用：不保护的话，回调自身的异常会顶替选择器的原始错误、
+ * 并绕过 `throwRetryExhausted` 的 `attempts` 标注，使这条失败路径与本模块其它
+ * 失败路径（都是「抛原错误 + 标注」）不一致。判不了就按「不再重试」处理，
+ * 让收尾逻辑抛出真实的那个错误。
+ */
+function invokeShouldRetry(shouldRetry: ((error: Error, attempt: number) => boolean) | undefined, error: Error, attempt: number): boolean {
+  if (!shouldRetry) {
+    return true
+  }
+  try {
+    return Boolean(shouldRetry(error, attempt))
+  } catch (callbackError) {
+    console.error('[SelectorComposer] shouldRetry threw, stop retrying and rethrow the original error:', callbackError)
+    return false
+  }
+}
+
 /** 在错误对象上以不可枚举属性标注总尝试次数，供调用方排障 */
 function annotateAttempts(error: Error, attempts: number): Error {
   // 选择器可以合法地 `throw 'boom'` / `throw 42`，或重抛冻结的 Error：
@@ -60,6 +91,9 @@ function annotateAttempts(error: Error, attempts: number): Error {
  * @param {RetrySelectorOptions} [options] - 重试选项（默认 { retries: 3 }）
  * @returns {Selector<S, R>} 重试选择器
  *
+ * @remarks `shouldRetry` 自身抛错按「不再重试」处理（原始错误照常带 `attempts` 标注抛出），
+ * 不会让回调异常顶替选择器的真实失败。
+ *
  * @example
  * ```typescript
  * const selector = SelectorComposer.createRetrySelector(
@@ -76,9 +110,7 @@ function annotateAttempts(error: Error, attempts: number): Error {
  */
 export function createRetrySelector<S extends State, R>(selector: Selector<S, R>, options: RetrySelectorOptions = {}): Selector<S, R> {
   const { retries = 3, shouldRetry } = options
-  if (!Number.isInteger(retries) || retries < 0) {
-    throw new TypeError(`[SelectorComposer] retries 必须是非负整数，收到: ${retries}`)
-  }
+  assertValidRetries(retries)
 
   return (state: S): R => {
     let lastError: Error | undefined
@@ -93,7 +125,7 @@ export function createRetrySelector<S extends State, R>(selector: Selector<S, R>
       } catch (error) {
         lastError = error as Error
         const isRetryAttempt = attempt < retries
-        if (isRetryAttempt && (!shouldRetry || shouldRetry(lastError, attempt + 1))) {
+        if (isRetryAttempt && invokeShouldRetry(shouldRetry, lastError, attempt + 1)) {
           continue
         }
         break
@@ -110,6 +142,11 @@ export function createRetrySelector<S extends State, R>(selector: Selector<S, R>
  *
  * 同步/异步两个重试选择器的收尾逻辑逐字相同，抽为单一实现；
  * `lastError` 为空是「未来逻辑变更」才可能出现的防御性死代码。
+ *
+ * 为什么不按「已知不可达」把参数收窄成 `Error` 并删掉兜底分支：收窄要靠 `lastError as Error`
+ * 或 `!` 断言（`no-non-null-assertion` 为 warn），而断言一旦失真就会 `throw undefined`——
+ * 调用方拿到的是 `undefined`，比现在这条明确报错难查得多。保留分支的代价只是一段
+ * istanbul 已忽略的 5 行代码。
  *
  * @param lastError 最后一次失败的错误
  * @param attemptCount 实际执行的尝试次数（非上限）
@@ -139,6 +176,9 @@ function throwRetryExhausted(lastError: Error | undefined, attemptCount: number)
  * @param {AsyncRetrySelectorOptions} [options] - 重试选项
  * @returns {(state: S) => Promise<R>} 异步选择器
  *
+ * @remarks 与同步变体同口径：`shouldRetry` 抛错按「不再重试」处理、`delay` 函数抛错按 0 等待
+ * 处理，两者都只留一条 `console.error`，不会顶替选择器的真实失败、也不会绕过 `attempts` 标注。
+ *
  * @example
  * ```typescript
  * const selector = SelectorComposer.createRetrySelectorAsync(
@@ -149,9 +189,7 @@ function throwRetryExhausted(lastError: Error | undefined, attemptCount: number)
  */
 export function createRetrySelectorAsync<S extends State, R>(selector: Selector<S, R>, options: AsyncRetrySelectorOptions = {}): (state: S) => Promise<R> {
   const { retries = 3, delay = 0, shouldRetry } = options
-  if (!Number.isInteger(retries) || retries < 0) {
-    throw new TypeError(`[SelectorComposer] retries 必须是非负整数，收到: ${retries}`)
-  }
+  assertValidRetries(retries)
 
   return async (state: S): Promise<R> => {
     let lastError: Error | undefined
@@ -167,11 +205,23 @@ export function createRetrySelectorAsync<S extends State, R>(selector: Selector<
         return await selector(state)
       } catch (error) {
         lastError = error as Error
-        const canRetry = attempt < retries && (!shouldRetry || shouldRetry(lastError, attempt + 1))
+        const canRetry = attempt < retries && invokeShouldRetry(shouldRetry, lastError, attempt + 1)
         if (!canRetry) {
           break
         }
-        const waitMs = typeof delay === 'function' ? delay(attempt + 1) : delay
+        // 退避函数也不能决定成败：抛错时按默认 0（立即重试）继续，
+        // 既不丢掉 attempts 标注，也不改变「总尝试 = retries + 1」的契约
+        let waitMs: number
+        if (typeof delay === 'function') {
+          try {
+            waitMs = delay(attempt + 1)
+          } catch (callbackError) {
+            console.error('[SelectorComposer] delay threw, retrying without waiting:', callbackError)
+            waitMs = 0
+          }
+        } else {
+          waitMs = delay
+        }
         if (waitMs > 0) {
           await new Promise((resolve) => setTimeout(resolve, waitMs))
         }

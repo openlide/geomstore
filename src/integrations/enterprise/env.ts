@@ -101,11 +101,16 @@ export const storage = {
    * 故解析出 number/boolean 时按原始字符串返回。调用方对这两类原始值
    * 只可依赖存在性/真值（如热更新标记），不可依赖 `<T>` 保型；
    * 对象/数组与字符串经 JSON 往返均类型无损，现有库内调用点全部落在此范围内
+   *
+   * 缺失键语义（#330）：wx.getStorageSync 对不存在的键返回 `''`（不抛错、不返回
+   * undefined），因此「存了空串」与「键不存在」在平台层面不可区分，两者一律返回 null。
+   * 这里用显式判空而非 `!value`：`!value` 会把外部写入的原始 `0` / `false` 也当成缺失，
+   * 而本工具对这两类值按原始字符串返回（见上文契约），判定口径必须一致
    */
   get: <T>(key: string): T | null => {
     try {
       const value = wx.getStorageSync(key)
-      if (!value) return null
+      if (value === '' || value === undefined || value === null) return null
       if (typeof value !== 'string') return value as T
       // 兼容非 JSON 字符串（如 login 时存储的纯 userId）
       try {
@@ -147,11 +152,20 @@ export const storage = {
       return false
     }
   },
-  remove: (key: string): void => {
+  /**
+   * 删除键，返回是否删除成功（与 set 同口径的布尔结果）。
+   *
+   * 此前返回 void：登出与会话清理路径（StoreManager.logout、热更新标记清理）
+   * 无从得知凭证/会话键是否真的消失，删除失败会留下「已登出但数据仍在」的假象。
+   * 库内调用点仍以尽力而为为主（存储层已统一记日志），返回值供需要核验的调用方使用
+   */
+  remove: (key: string): boolean => {
     try {
       wx.removeStorageSync(key)
+      return true
     } catch (error) {
       logger.error('Storage', `删除 storage 失败: ${key}`, error)
+      return false
     }
   },
 }

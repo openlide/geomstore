@@ -21,6 +21,10 @@
 // ==================== 插件系统实现 ====================
 export { loggerPlugin, persistencePlugin, devtoolsPlugin, builtinPlugins } from '../plugins/builtin.js'
 export type { PersistenceOptions, StorageBackend } from '../types/persistence.js'
+// 已知债：WxStorageBackend 是带 `wx.*` I/O 的运行时类，却定义在 `src/types/` 下，
+// 使本入口的运行时依赖落进「可用 import type 整体擦除」的目录，`verbatimModuleSyntax`
+// 消费者也无法把 types/* 当纯类型看。迁到持久化实现所在模块（plugins/builtin 侧）才是
+// 正解，但那要同时改 src/types 与 src/plugins，故本处只保留这一策展式再导出
 export { WxStorageBackend } from '../types/persistence.js'
 
 // ==================== 性能插件 ====================

@@ -90,7 +90,10 @@ describe('全局调试入口的 no-op 兜底', () => {
     expect(g.__GEOMSTORE_TEST_REUSE__['same-store']).toBe(api)
 
     unregisterSecond()
-    expect(g.__GEOMSTORE_TEST_REUSE__['same-store']).toBeUndefined()
+    // #365 连带语义：末条目卸载后空容器一并从 globalThis 摘掉，
+    // 故条目读取改用可选链（原断言的「条目不再可见」不受影响）
+    expect(g.__GEOMSTORE_TEST_REUSE__?.['same-store']).toBeUndefined()
+    expect(g.__GEOMSTORE_TEST_REUSE__).toBeUndefined()
 
     // 卸载幂等：重复调用不再影响后续注册
     const again = registerGlobalEntry('__GEOMSTORE_TEST_REUSE__', 'same-store', api)

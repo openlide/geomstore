@@ -158,6 +158,14 @@ export class StoreCacheManager<S extends State = State> {
    * 直接变异状态（绕过 setState/$patch），导致缓存与真实状态不一致，
    * 此方法按缓存键集合从状态源强制回写
    *
+   * @remarks TTL 语义是「距最后一次与状态源对齐的时长」，不是「距条目首次写入的时长」：
+   * 本方法在每次 dispatch 收尾把全部缓存键的值重读自状态源并重置时间戳，
+   * 因此高频 dispatch 下热点条目事实上不会过期——这不是缺陷，被重置的条目里存的
+   * 就是刚刚读出的当前值，让它按墙钟过期只会多一次同样返回该值的回读。
+   * 需要知道的边界：ttl 只在「状态被 dispatch 之外的途径改写」时兜陈旧读，
+   * 且该兜底会在高频 dispatch 下被不断推迟，**不是硬过期上限**；
+   * 要求「写入后最长存活」的调用方不要依赖 ttl 达成
+   *
    * @param getState - 从状态源读取值的函数
    * @param stateKeys - 当前状态的全部键（未配置 cacheKeys 时作为刷新范围）
    */

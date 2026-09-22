@@ -23,6 +23,15 @@ export interface SubscriptionManagerOptions {
   storeName: string
   /** 订阅者达到上限时的策略（默认 'evict-oldest'） */
   onLimit?: SubscriberLimitPolicy
+  /**
+   * 监听器抛错的上报通道（可选）
+   *
+   * 存在的理由：本类的契约是「一个坏订阅者不得影响其余监听器」，因此回调异常必须被吞掉；
+   * 而吞掉在生产环境（控制台静默）会让某个订阅者从此无声漏掉全部状态更新，线上无从定位。
+   * 由宿主（Store）接 onError 钩子即可让监控插件收集，既保留静默口径又有上报入口。
+   * 不配置时行为与既有一致（仅开发模式打印）
+   */
+  onListenerError?: (error: unknown) => void
 }
 
 /**
@@ -44,6 +53,7 @@ export class SubscriptionManager<S extends State = State> implements Subscriptio
   private readonly _maxSubscribers: number
   private readonly _storeName: string
   private readonly _onLimit: SubscriberLimitPolicy
+  private readonly _onListenerError?: (error: unknown) => void
   /** 监听器注册总次数（按注册次数计）：O(1) 维护，避免 size getter 每次遍历整表求和 */
   private _totalCount = 0
 
@@ -51,6 +61,7 @@ export class SubscriptionManager<S extends State = State> implements Subscriptio
     this._maxSubscribers = options.maxSubscribers ?? 50
     this._storeName = options.storeName
     this._onLimit = options.onLimit ?? 'evict-oldest'
+    this._onListenerError = options.onListenerError
   }
 
   /**
@@ -183,6 +194,14 @@ export class SubscriptionManager<S extends State = State> implements Subscriptio
     // （cloneOnNotify=true 默认开启，单次克隆已能保证监听器间的引用隔离）
     const payload = cloneOnNotify ? deepCloneState(state) : state
     // 按注册次数展开：重复注册的监听器每次通知收到多次回调
+    //
+    // 快照语义是有意选择（与 Redux 的 listeners 快照一致）：本轮派发的对象是
+    // 「进入 notify 时在册的注册」，派发过程中才失效的监听器（回调内退订自己、
+    // 或本轮 add 触发 evict-oldest 把最旧注册挤掉）仍会被投递最后一次更新。
+    // 不逐个复核在册状态有两点代价：一是热路径上每个回调都要回查 _listeners 及其
+    // registrations 子 Map；二是「失效发生在第 k 个回调之前还是之后」取决于回调内部
+    // 行为，复核只会让同一轮通知里各监听器看到的变更集合更不可预期。
+    // 依赖退订立即生效的调用方需在回调内自行判定（如比对自持的存活标记）
     const listeners: Array<(state: S) => void> = []
     this._listeners.forEach((entry, listener) => {
       for (let i = 0; i < entry.registrations.size; i++) {
@@ -194,10 +213,32 @@ export class SubscriptionManager<S extends State = State> implements Subscriptio
       try {
         listeners[i](payload as S)
       } catch (error) {
-        // 生产环境移除详细日志
+        // 契约：单个监听器抛错不得中断其余监听器（异常必须被吞掉），但吞掉不等于丢失——
+        // 开发期打印定位来源，生产期走宿主注入的上报通道（Store 接到 hooks 的 onError），
+        // 否则一个持续抛错的订阅者会无声漏掉后续全部更新且无任何指标入口
         if (!isProduction()) {
           console.error('[GeomStore] Error in state listener:', error)
         }
+        this._reportListenerError(error)
+      }
+    }
+  }
+
+  /**
+   * 把监听器异常交给宿主注入的上报通道；通道自身抛错不得反噬 notify 流程
+   *
+   * @private
+   */
+  private _reportListenerError(error: unknown): void {
+    const reporter = this._onListenerError
+    if (!reporter) {
+      return
+    }
+    try {
+      reporter(error)
+    } catch (reportError) {
+      if (!isProduction()) {
+        console.error('[GeomStore] Error in listener error reporter:', reportError)
       }
     }
   }
