@@ -6,14 +6,17 @@
  * 实现当时住在 `src/types/`（types 层没有独立测试目录），实现迁到 `src/plugins/` 后
  * 与 `persistencePlugin` 的测试同目录，故归并到本文件。
  *
- * 覆盖三块契约：
+ * 覆盖四块契约：
  * 1. #389 —— `getItem` 对「键无数据」的归一化（微信 `getStorageSync` 缺失键返回 `''`、
  *    写入非字符串载荷时原样返回该值）
  * 2. #390 —— 三个方法的错误语义一致：记录后一律重抛，读取失败不得退化成「键无数据」
  * 3. `wx` 整体缺失 / 单个方法缺席时的 `?.` 兜底（真机、开发者工具、Node 测试环境差异）
+ * 4. #391 —— 「同步存储」这条契约的唯一实现：`isWxStorageSyncAvailable` 的可用性判定、
+ *    `normalizeWxStoredValue` 的缺失键口径、以及**先守卫再归一化**的顺序
+ *    （`persistencePlugin` 未传 `storage` 时的默认后端就是本类，两侧共享同一份判定）
  */
 
-import { WxStorageBackend } from '@/plugins/WxStorageBackend.js'
+import { isWxStorageSyncAvailable, normalizeWxStoredValue, readWxStorageSyncApi, WxStorageBackend } from '@/plugins/WxStorageBackend.js'
 
 type WxHolder = { wx?: Record<string, unknown> }
 const writableGlobal = globalThis as unknown as WxHolder
@@ -168,5 +171,84 @@ describe('WxStorageBackend 在 wx 不可用时的兜底（?. 短路）', () => {
     new WxStorageBackend().setItem('k', 'v')
     expect(new WxStorageBackend().getItem('k')).toBeNull()
     expect(written).toEqual([['k', 'v']])
+  })
+})
+
+// ==================== #391：同步契约的唯一实现 ====================
+
+describe('normalizeWxStoredValue（「键无数据」的唯一口径）', () => {
+  it('空串 / undefined / null / 非字符串 → null，非空字符串原样返回', () => {
+    expect(normalizeWxStoredValue('')).toBeNull()
+    expect(normalizeWxStoredValue(undefined)).toBeNull()
+    expect(normalizeWxStoredValue(null)).toBeNull()
+    expect(normalizeWxStoredValue({ a: 1 })).toBeNull()
+    expect(normalizeWxStoredValue(42)).toBeNull()
+    expect(normalizeWxStoredValue('{"a":1}')).toBe('{"a":1}')
+  })
+
+  it('类与 globalThis 读取点共用同一份实现', () => {
+    withWx({ getStorageSync: () => '' })
+
+    expect(readWxStorageSyncApi()?.getStorageSync?.('k')).toBe('')
+    expect(normalizeWxStoredValue(readWxStorageSyncApi()?.getStorageSync?.('k'))).toBeNull()
+    expect(new WxStorageBackend().getItem('k')).toBeNull()
+  })
+})
+
+describe('WxStorageBackend 的异步返回值守卫（必须先于归一化）', () => {
+  it('getStorageSync 返回 Promise：报「仅支持同步存储后端」，不得被归一化成「键无数据」', () => {
+    withWx({ getStorageSync: () => Promise.resolve('{"a":1}') })
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {})
+
+    try {
+      // 守卫先于归一化：Promise 若被 normalizeWxStoredValue 洗成 null，「异步后端」就会退化成「键无数据」
+      expect(() => new WxStorageBackend().getItem('k')).toThrow(/wx\.getStorageSync\(\) 返回了 Promise/)
+    } finally {
+      errorSpy.mockRestore()
+    }
+  })
+
+  it('setStorageSync / removeStorageSync 返回 Promise：同样抛错，不留无人处理的 rejection', () => {
+    withWx({
+      setStorageSync: () => Promise.resolve(undefined),
+      removeStorageSync: () => Promise.resolve(undefined),
+    })
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {})
+
+    try {
+      const backend = new WxStorageBackend()
+
+      expect(() => backend.setItem('k', 'v')).toThrow(/wx\.setStorageSync\(\) 返回了 Promise/)
+      expect(() => backend.removeItem('k')).toThrow(/wx\.removeStorageSync\(\) 返回了 Promise/)
+    } finally {
+      errorSpy.mockRestore()
+    }
+  })
+})
+
+describe('isWxStorageSyncAvailable（默认后端选择的唯一判定）', () => {
+  it('三个同步方法齐备才算可用', () => {
+    withWx({ getStorageSync: () => '', setStorageSync: () => undefined, removeStorageSync: () => undefined })
+
+    expect(isWxStorageSyncAvailable()).toBe(true)
+  })
+
+  it('缺任一方法即不可用（含 wx 整体缺失）：有读无写的环境不得被选中', () => {
+    const full = { getStorageSync: () => '', setStorageSync: () => undefined, removeStorageSync: () => undefined }
+    for (const missing of ['getStorageSync', 'setStorageSync', 'removeStorageSync'] as const) {
+      withWx({ ...full })
+      delete writableGlobal.wx?.[missing]
+
+      expect(isWxStorageSyncAvailable()).toBe(false)
+    }
+
+    delete writableGlobal.wx
+    expect(isWxStorageSyncAvailable()).toBe(false)
+  })
+
+  it('方法存在但不是函数同样判为不可用', () => {
+    withWx({ getStorageSync: () => '', setStorageSync: () => undefined, removeStorageSync: 'nope' })
+
+    expect(isWxStorageSyncAvailable()).toBe(false)
   })
 })

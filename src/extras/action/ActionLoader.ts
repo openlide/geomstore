@@ -9,6 +9,50 @@ import type { ActionLoaderOptions } from '../../types/action.js'
 import { toError } from './async-core.js'
 
 /**
+ * 归一化后的完整选项形态
+ *
+ * `sharedLoadingCounts` 是注入项而非用户配置，因此不参与归一化，也不参与
+ * `withLoading` 的选项签名（见 `withLoading.ts` 的注册表说明）。
+ */
+export type NormalizedActionLoaderOptions = Required<Omit<ActionLoaderOptions, 'sharedLoadingCounts'>>
+
+/**
+ * `ActionLoaderOptions` 各选项的缺省值 —— **全库唯一来源**
+ *
+ * `ActionLoader` 构造器与 `withLoading` 的选项签名都必须由它派生（两侧各自持有
+ * 字面量时漂移过一次：一处用大写级别、一处用小写）。漂移的后果不是「值不好看」，
+ * 而是分桶错配：签名桶决定同一宿主上哪些被装饰方法共用一个 loader / 同一份 loading
+ * 引用计数，默认值不一致会让有效配置相同的装饰器被拆开（loading 互相提前翻转）、
+ * 或让配置不同的装饰器落进同一个桶（状态键互相覆盖）。
+ *
+ * 仅供本模块与 `withLoading.ts` 复用，未经 `extras/action` barrel 再导出，不是公开 API。
+ */
+export const ACTION_LOADER_DEFAULTS: NormalizedActionLoaderOptions = {
+  autoLoading: true,
+  loadingKey: 'loading',
+  errorKey: 'error',
+  errorDataKey: 'errorData',
+  // 默认 false：保持单键行为向后兼容；多 action 并发场景应启用 perActionKeys
+  perActionKeys: false,
+}
+
+/**
+ * 按 {@link ACTION_LOADER_DEFAULTS} 补齐缺省选项 —— **全库唯一归一化实现**
+ *
+ * 构造器与 `withLoading` 的签名计算共用本函数：只要两侧都写一遍 `options.x ?? 默认`，
+ * 就仍然存在「一侧漏项 / 一侧改用别的默认值」的空间。
+ */
+export function normalizeActionLoaderOptions(options: ActionLoaderOptions): NormalizedActionLoaderOptions {
+  return {
+    autoLoading: options.autoLoading ?? ACTION_LOADER_DEFAULTS.autoLoading,
+    loadingKey: options.loadingKey ?? ACTION_LOADER_DEFAULTS.loadingKey,
+    errorKey: options.errorKey ?? ACTION_LOADER_DEFAULTS.errorKey,
+    errorDataKey: options.errorDataKey ?? ACTION_LOADER_DEFAULTS.errorDataKey,
+    perActionKeys: options.perActionKeys ?? ACTION_LOADER_DEFAULTS.perActionKeys,
+  }
+}
+
+/**
  * Action加载状态管理器
  *
  * 用于包装异步Action，自动管理其执行状态（loading、error、errorData）
@@ -17,11 +61,10 @@ import { toError } from './async-core.js'
  *
  * @example
  * ```typescript
+ * // 缺省键名即 loading / error / errorData，只在需要改名时才传
  * const loader = new ActionLoader({
- *   autoLoading: true,
- *   loadingKey: 'loading',
- *   errorKey: 'error',
- *   errorDataKey: 'errorData'
+ *   loadingKey: 'isBusy',
+ *   perActionKeys: true
  * })
  *
  * // 包装Action
@@ -77,11 +120,11 @@ export class ActionLoader {
   private lastSetState: ((key: string, value: unknown) => void) | undefined
 
   /**
-   * 配置选项
+   * 配置选项（由 {@link normalizeActionLoaderOptions} 补齐，缺省值见 {@link ACTION_LOADER_DEFAULTS}）
    * @private
-   * @type {Required<ActionLoaderOptions>}
+   * @type {NormalizedActionLoaderOptions}
    */
-  private options: Required<Omit<ActionLoaderOptions, 'sharedLoadingCounts'>>
+  private options: NormalizedActionLoaderOptions
 
   /**
    * 创建Action加载器实例
@@ -104,14 +147,7 @@ export class ActionLoader {
    */
   constructor(options: ActionLoaderOptions = {}) {
     this.loadingRefCounts = options.sharedLoadingCounts ?? new Map()
-    this.options = {
-      autoLoading: options.autoLoading ?? true,
-      loadingKey: options.loadingKey ?? 'loading',
-      errorKey: options.errorKey ?? 'error',
-      errorDataKey: options.errorDataKey ?? 'errorData',
-      // 默认 false：保持单键行为向后兼容；多 action 并发场景应启用 perActionKeys
-      perActionKeys: options.perActionKeys ?? false,
-    }
+    this.options = normalizeActionLoaderOptions(options)
   }
 
   /**

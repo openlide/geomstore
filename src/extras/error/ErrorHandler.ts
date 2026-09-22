@@ -8,10 +8,13 @@
 import { createErrorContext, defaultErrorHandler, type ErrorContext, type ErrorHandler, type ErrorLevel, type OperationType } from '../../types/error.js'
 
 /**
- * errorLog 条目上限的默认值：字段初始化与 setMaxLogSize 的非有限值回退共用。
+ * 错误条目上限的默认值 —— **唯一来源**：`ErrorHandler.errorLog` 的字段初始化、
+ * `setMaxLogSize` 的非有限值回退，以及 `ErrorBoundary.errorHistory` 的裁剪都取本常量。
  *
- * 导出仅供同目录复用（`ErrorBoundary` 的错误历史与之同源）；未经 barrel 再导出，
- * 不是公开 API。
+ * 调这一处即同时改掉两侧上限（此前 `ErrorBoundary` 另写了一份字面量、注释却自称
+ * 「与 ErrorHandler 同口径」，值各持一份 = 迟早漂移）。
+ *
+ * 导出仅供同目录复用；未经 barrel 再导出，不是公开 API。
  */
 export const DEFAULT_MAX_LOG_SIZE = 100
 
@@ -245,7 +248,7 @@ export class ErrorHandlerImpl {
    *
    * 当日志超过指定大小时，最旧的错误会被移除
    *
-   * @param {number} size - 最大日志数量（必须 >= 1；小数向下取整，非有限值回退默认 100）
+   * @param {number} size - 最大日志数量（必须 >= 1；小数向下取整，非有限值回退 {@link DEFAULT_MAX_LOG_SIZE}）
    *
    * @example
    * ```typescript

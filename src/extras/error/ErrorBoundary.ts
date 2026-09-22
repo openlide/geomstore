@@ -175,10 +175,10 @@ export class ErrorBoundary<S = unknown, F = undefined> {
     const error: Error = rawError instanceof Error ? rawError : new Error(String(rawError))
     // 记录错误
     this.errorHistory.push(error)
-    // 上限保护：与 ErrorHandler 的 errorLog 共用 DEFAULT_MAX_LOG_SIZE（同源，避免两处
-    // 100 各自漂移），高频失败场景下 Error 对象不再无界累积（此前只增不减，需手动
-    // clearErrorHistory）。每个入口只 push 一条，故此处判后 shift 恰好丢掉最旧一条，
-    // 等价于「保留最新 N 条」；本类的上限暂不对外开放（需要可调请走 ErrorHandler.setMaxLogSize
+    // 上限保护：与 ErrorHandler 的 errorLog 共用同一个 DEFAULT_MAX_LOG_SIZE（单一来源，
+    // 调那一处常量即同时改掉两侧上限），高频失败场景下 Error 对象不再无界累积（此前只增
+    // 不减，需手动 clearErrorHistory）。每个入口只 push 一条，故此处判后 shift 恰好丢掉最旧
+    // 一条，等价于「保留最新 N 条」；本类的上限暂不对外开放（需要可调请走 ErrorHandler.setMaxLogSize
     // 的同类接口设计，属新增公开配置，不在本轮范围）
     if (this.errorHistory.length > DEFAULT_MAX_LOG_SIZE) {
       this.errorHistory.shift()

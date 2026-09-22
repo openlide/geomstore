@@ -19,6 +19,8 @@ import type { State } from './store.js'
  *
  * 内置实现见 `src/plugins/WxStorageBackend.ts`（`wx.*StorageSync` 适配器）：
  * 本文件只声明契约，带 I/O 的运行时实现与 `persistencePlugin` 同层。
+ * `persistencePlugin` **不传** `storage` 时的默认后端同样是这个类（判定与归一化口径
+ * 因此只有一处实现），仅在检测不到可用的 wx 同步 API 时降级为内存存储。
  */
 export interface StorageBackend {
   /** 获取值（必须同步返回；键不存在返回 null，读取失败抛错） */
