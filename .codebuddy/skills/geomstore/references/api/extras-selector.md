@@ -2,7 +2,7 @@
 
 > **本文件由 `scripts/generate-skill-api-reference.mjs` 从 `dist/**/*.d.ts` 生成，请勿手工编辑。**
 >
-> - 来源版本：`@openlide/geomstore@0.5.1`
+> - 来源版本：`@openlide/geomstore@0.5.2`
 > - 内容来源：构建产物类型声明（随 npm 包发布，与安装版本必然一致）
 > - 重新生成：`pnpm build && pnpm skill:api`
 > - 引入路径：`./extras/selector`

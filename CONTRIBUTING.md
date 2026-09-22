@@ -74,6 +74,14 @@ node --input-type=module -e 'const s = await import("./dist/index.js"); console.
 
 - 子路径转发目录（`store/`、`hooks/`、`plugins/`、`integrations/` 等）由 `prepack` 生成、`postpack` 清理；手动入口为 `pnpm stubs` / `pnpm stubs:clean`
 - 发布走 `prepublishOnly`：`pnpm test && pnpm run build:release`。`build:release` 使用**严格压缩**——无可用压缩器时以退出码 1 中止，杜绝静默发出未压缩包
+- **发版清单**（版本号散在四处，漏一处就有一条陈述变假话）：
+  1. `package.json` 的 `version`
+  2. `src/integrations/enterprise/hot-update.ts` 的 `LIBRARY_VERSION` —— 与 1 是**手工镜像**关系（#327 未收口：没有构建期注入）。漏改不会静默过去：`tests/integration/enterprise.test.ts` 会用 `package.json` 的 `version` 断言写入备份的该常量，漏 bump 直接红灯（比对结果本身只用于 `logger.warn`，不拦截恢复）
+  3. `CHANGELOG.md` —— `## [Unreleased]` 改成 `## [x.y.z] - 日期` 并在其上补一个空的 `[Unreleased]`；文末链接区同步：`[Unreleased]` 的 compare 基准换成新 tag、新增 `[x.y.z]` 的 release 链接
+  4. skill —— `pnpm run build && pnpm run skill:api` 重跑生成物（`references/api/*.md` 的「来源版本」行），另需手改 `SKILL.md` 三处版本号（frontmatter 的 `description`、正文「当前版本」、指向 `references/api/index.md` 那条的「当前对应 vX.Y.Z」）
+  5. 门禁 —— `lint:ci` / 四条 `typecheck` / `test:ci` / `build:release` / `npm pack --dry-run`（核对文件数），并在本地复现 CI 那条**走 Node `exports` 解析器的子路径冒烟**
+  6. `git tag` 与 `npm publish` 是**对外不可逆动作**（npm 不允许覆盖已发版本），须单独确认后再做
+- **0.x 的版本号语义**：`^0.5.1` 展开为 `>=0.5.1 <0.6.0`，因此**含破坏性变更的发版应升 minor（`0.6.0`）而不是 patch**——发成 `0.5.2` 会让按 caret 锁定的宿主自动升进来并编译失败
 - 改动 `package.json` 的 `exports` / `files` 后，请用 `pnpm stubs` + `pnpm build` 验证一次真实解析
 
 ## 文档

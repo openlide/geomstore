@@ -7,7 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-拟发布为 **0.5.2**：第四轮 ocr 复审的修复同步（454 条 = critical 6 / high 31 / medium 239 / low 178，分波提交 `1097621`、`5616cbb`、`4f08963`、`5a677d2`、`a954078`、`02bd20f`、`1510829`）。逐条判定与证据见 `.ocr-fix/decisions.md` 与 `.ocr-fix/verdicts/*.md`；本节只列**用户可感知**的语义变化，内部健壮性 / 注释类修复不逐条重复。判定为「另立波次」的四项公开面改造也已落在本节（下称 Wave E，提交 `dba29b9`、`2e95032` + `841d1ab`、`c7027a0`、`666e1ea`），条目与第四轮修复混排在各分组内。
+暂无。
+
+## [0.5.2] - 2026-09-23
+
+本版本汇总**第四、五两轮 ocr 复审**与两处复审登记的语义债：第四轮 454 条（critical 6 / high 31 / medium 239 / low 178，分波提交 `1097621`、`5616cbb`、`4f08963`、`5a677d2`、`a954078`、`02bd20f`、`1510829`）、Wave E 四项公开面改造（`dba29b9`、`2e95032` + `841d1ab`、`c7027a0`、`666e1ea`）、第五轮 376 条（`b83d2df`）、`deepEqual` 的内建类型口径修复（`ffc810d`）。逐条判定与证据在 `.ocr-fix/decisions.md` + `.ocr-fix/verdicts/*.md`（第四轮）与 `.ocr-fix/decisions5.md` + `.ocr-fix/verdicts5/*.md`（第五轮）。本节只列**用户可感知**的语义变化，内部健壮性 / 注释类修复不逐条重复。
+
+> **升级为破坏性变更的版本**：下面「Breaking」一节有类型面收紧与若干判据反转（`equalityFn` 快照选项、`SnapshotResult.data`、`WxStorageBackend` 抛错、`maxSubscribers` 硬上界、`deepEqual` 子类/装箱判不等）。按 semver 这本该是 `0.6.0`，仓库沿用 0.x 的既有节奏发 `0.5.2`——**后果是 `^0.5.1` 的宿主会自动升进来**，升级前请读本节与 [docs/MIGRATION.md](./docs/MIGRATION.md)。
 
 ### Breaking（类型面与对外契约）
 
@@ -579,6 +585,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [0.1.1]: https://github.com/openlide/GeomStore/releases/tag/v0.1.1
 [0.1.2]: https://github.com/openlide/GeomStore/releases/tag/v0.1.2
 [0.2.0]: https://github.com/openlide/GeomStore/releases/tag/v0.2.0
-[Unreleased]: https://github.com/openlide/GeomStore/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/openlide/GeomStore/compare/v0.5.2...HEAD
+[0.5.2]: https://github.com/openlide/GeomStore/releases/tag/v0.5.2
 [0.5.1]: https://github.com/openlide/GeomStore/releases/tag/v0.5.1
 [0.5.0]: https://github.com/openlide/GeomStore/releases/tag/v0.5.0

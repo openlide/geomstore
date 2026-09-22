@@ -14,12 +14,14 @@ declare const wx: WxApi
 /**
  * 本库版本常量：用于热更新备份的版本比对（区别于宿主 app 版本）。
  *
- * 已知限制（#327）：手工维护，仓库内没有任何机制把它与 package.json 的 version 同步，
- * 漏 bump 只会让版本告警静默失效（比对结果仅用于 logger.warn，不拦截恢复），
- * 不影响备份/恢复本身。真正的单一来源需要构建期注入或生成常量（scripts/ 侧改造），
- * 在收口之前请勿把它当作可信的版本门禁
+ * 已知限制（#327）：手工维护，仓库内没有把它与 package.json 的 version **同步**的机制
+ * （构建期注入 / 生成常量尚未做），但有一条**检测**：`tests/integration/enterprise.test.ts`
+ * 用 `package.json` 的 version 断言写进备份的本常量，漏 bump 会让那条用例变红。
+ * 漏 bump 的后果本身不严重——比对结果只用于 logger.warn，不拦截恢复，不影响备份/恢复；
+ * 在收口之前请勿把它当作可信的版本门禁。
+ * **发版时必须与 `package.json` 一起改**——清单见 CONTRIBUTING 的「构建与发布」
  */
-const LIBRARY_VERSION = '1.0.0'
+const LIBRARY_VERSION = '0.5.2'
 
 /**
  * 热更新前保存的状态备份

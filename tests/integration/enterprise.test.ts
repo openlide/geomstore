@@ -1,5 +1,5 @@
 /**
- * GeomStore v1.0.0 - 企业级方案集成测试
+ * GeomStore - 企业级方案集成测试
  *
  * 测试内容：
  * - 多账号隔离 Store
@@ -8,6 +8,9 @@
  * - 离线操作队列
  * - 后台/前台状态同步
  */
+
+import { readFileSync } from 'node:fs'
+import path from 'node:path'
 
 import { createStore } from '../../src/index.js'
 import {
@@ -1239,8 +1242,12 @@ describe('企业级方案 - 热更新初始化', () => {
 
     // 确认后：备份 + 待更新重启标记 + applyUpdate
     const backup = JSON.parse(mockStorage['store_backup_before_update_hot-update-init-test-store'])
+    // 版本取自 package.json 而非写死字面量：`hot-update.ts` 的 LIBRARY_VERSION 与
+    // package.json 是手工镜像关系（#327），写死字面量等于让「发版漏 bump」变成一次
+    // 需要人 remember 的检查；从 package.json 反查就把这条变成了红灯。
+    const { version: libraryVersion } = JSON.parse(readFileSync(path.resolve(__dirname, '../../package.json'), 'utf8')) as { version: string }
     expect(backup.state).toEqual({ counter: 42 })
-    expect(backup.version).toBe('1.0.0')
+    expect(backup.version).toBe(libraryVersion)
     expect(mockStorage['store_backup_before_update_hot-update-init-test-store__pending_update_launch']).toBe('true')
     expect(onBeforeUpdate).toHaveBeenCalled()
   })
