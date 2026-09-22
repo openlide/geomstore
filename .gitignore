@@ -46,3 +46,14 @@ examples/
 .env.*
 !.env.example
 
+# 代码审查素材与本地工作台账
+# ocr.md / review.json 是外部审查工具的原始输出，体积大且随轮次重生，不入库。
+# .ocr-fix 下的 ledger.tsv/json、state.json、groups/ 是可由 ocr.md 重跑的中间产物；
+# 已入库的判定台账（decisions.md、verdicts/*.md）作为 tracked 文件不受本规则影响。
+ocr.md
+review.json
+.ocr-fix/groups/
+.ocr-fix/ledger.tsv
+.ocr-fix/ledger.json
+.ocr-fix/state.json
+
