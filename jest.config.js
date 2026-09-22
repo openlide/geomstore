@@ -19,7 +19,8 @@ export default {
           esModuleInterop: true,
           allowSyntheticDefaultImports: true,
           experimentalDecorators: true,
-          emitDecoratorMetadata: true,
+          // 不开 emitDecoratorMetadata：isolatedModules 下 ts-jest 走 transpile-only，
+          // 无类型信息可生成可靠元数据；且全仓无任何 Reflect.getMetadata 消费方
           isolatedModules: true,
           verbatimModuleSyntax: false,
           types: ['jest', 'node'],

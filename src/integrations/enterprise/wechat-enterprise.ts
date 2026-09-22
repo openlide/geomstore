@@ -91,6 +91,11 @@ export function createEnterpriseApp(config: EnterpriseAppConfig = {}) {
 
   // 离线管理器实例（延迟初始化）
   let offlineManager: OfflineManager<UserState> | null = null
+  // 本轮 onShow 发起的同步是否仍在进行：OfflineManager.syncQueue 自带 syncing 互斥，
+  // 同步期间再次调用只会立刻 resolve 一个空跑的 promise。若据此再走一遍
+  // showLoading/hideLoading，第二次的 finally 会在首次同步仍在跑时提前收起转圈，
+  // 两次 showLoading/hideLoading 抢同一个全局 toast
+  let syncInFlight = false
 
   return {
     globalData: {
@@ -101,33 +106,58 @@ export function createEnterpriseApp(config: EnterpriseAppConfig = {}) {
 
     onLaunch() {
       if (!store) return
+      const currentStore = store
+
+      // 四个初始化步骤各自兜底：此前背靠背执行，任一步抛错（存储配额满、
+      // 宿主 wx API 不可用等）都会跳过后续步骤——离线管理器缺失会让 onShow 的
+      // 队列同步静默失效，异常还会沿框架生命周期外抛、中断宿主自己的启动逻辑
+      const initStep = (name: string, run: () => void): void => {
+        try {
+          run()
+        } catch (error) {
+          logger.error('App', `${name}初始化失败，已跳过该步骤继续`, error)
+        }
+      }
 
       // 1. 初始化热更新处理
-      initHotUpdate({
-        store,
-        onBeforeUpdate: () => logger.log('App', '准备更新，状态已备份'),
+      initStep('热更新', () => {
+        initHotUpdate({
+          store: currentStore,
+          onBeforeUpdate: () => logger.log('App', '准备更新，状态已备份'),
+        })
       })
 
       // 2. 尝试从热更新备份恢复
-      restoreFromHotUpdate(store)
+      initStep('热更新备份恢复', () => {
+        restoreFromHotUpdate(currentStore)
+      })
 
       // 3. 初始化后台/前台同步
-      initBackgroundSync({ store, maxInactiveTime })
+      initStep('后台/前台同步', () => {
+        initBackgroundSync({ store: currentStore, maxInactiveTime })
+      })
 
       // 4. 初始化离线管理
-      offlineManager = new OfflineManager(store)
-      this.globalData.offlineManager = offlineManager
+      initStep('离线管理器', () => {
+        offlineManager = new OfflineManager(currentStore)
+        this.globalData.offlineManager = offlineManager
+      })
     },
 
     onShow() {
+      if (syncInFlight) return
       if (offlineManager && offlineManager.getQueueLength() > 0) {
+        syncInFlight = true
         wx.showLoading({ title: '同步中...' })
         // syncQueue 可 reject（onDrop 回调抛错等），finally 前必须接住，
         // 避免 unhandled rejection；hideLoading 在成功与失败时都要执行
         offlineManager
           .syncQueue()
           .catch((error) => logger.error('App', '离线队列同步失败:', error))
-          .finally(() => wx.hideLoading())
+          .finally(() => {
+            syncInFlight = false
+            wx.hideLoading()
+          })
       }
     },
 

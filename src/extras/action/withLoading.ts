@@ -111,7 +111,11 @@ export function withLoading(options: ActionLoaderOptions = {}): MethodDecorator 
       }
 
       let loaderInstance: ActionLoader
-      if (typeof this === 'object' && this !== null) {
+      if (this !== null && (typeof this === 'object' || typeof this === 'function')) {
+        // 函数宿主（静态方法里 `this` 是类构造器）同样是合法的 WeakMap 键，
+        // 必须与对象宿主走同一条共享路径：否则每次调用都新建 loader，
+        // 各自的 loading 引用计数互不可见，先完成的 action 会把共享键提前置 false，
+        // ErrorBoundary 一类的按宿主状态也会丢掉历史
         let byOptions = loaderRegistry.get(this)
         if (!byOptions) {
           byOptions = new Map()
@@ -124,8 +128,9 @@ export function withLoading(options: ActionLoaderOptions = {}): MethodDecorator 
         }
         loaderInstance = loader
       } else {
-        // 宿主非对象（罕见）：一次性实例，不跨调用串扰
-        loaderInstance = new ActionLoader(options)
+        // 宿主为基本类型 / null / undefined（罕见）：WeakMap 无从按宿主存状态，
+        // 每次调用给一份独立计数，保证不跨调用串扰
+        loaderInstance = new ActionLoader({ ...options, sharedLoadingCounts: new Map() })
       }
 
       // 只绑定 this，参数由 wrapped(...args) 传入，避免参数被应用两次

@@ -95,22 +95,28 @@ export class OfflineManager<S extends State = State> {
 
   /**
    * 执行操作（支持离线缓存）
+   *
+   * 契约：失败不外抛。在线执行失败时与离线同样入队，返回 `null` 即
+   * 「本次未执行、已交由队列重放」。此前是「入队 + 抛错」并存：调用方拿到
+   * rejection 自行重试、队列稍后又会重放同一操作，非幂等操作（下单/提交表单）
+   * 会被执行两次，故把重放职责收敛给队列这一个入口。
+   *
+   * 重放按 `(type, payload)` 经 `store.dispatch` 组装（见 executeAction），
+   * 传入的 `action` 闭包本身不会被重放：payload 必须完整描述该 action 的参数
    */
   async execute<T>(type: string, action: () => Promise<T>, payload?: unknown): Promise<T | null> {
     if (this.isOnline) {
       try {
         return await action()
       } catch (error) {
-        this.enqueue(type, payload)
-        // 保留原始错误（网络/HTTP/业务错误）作为 cause，排障不被吞
-        const wrapped = new Error(`操作执行失败，已加入离线队列: ${type}`)
-        ;(wrapped as Error & { cause?: unknown }).cause = error
-        throw wrapped
+        // 原始错误（网络/HTTP/业务错误）在此记日志后由队列接管，排障信息不被吞
+        logger.error('OfflineManager', `操作执行失败，已转交离线队列重放: ${type}`, error)
       }
+    } else {
+      logger.log('OfflineManager', `操作已缓存（离线）: ${type}`)
     }
 
     this.enqueue(type, payload)
-    logger.log('OfflineManager', `操作已缓存（离线）: ${type}`)
     return null
   }
 
@@ -194,8 +200,11 @@ export class OfflineManager<S extends State = State> {
       // dispose 后账号可能已切换、共享键已由新实例接管，旧实例的联合视图
       // 会覆写新实例刚持久化的操作，造成内存与磁盘分叉、重启丢操作
       if (!this.disposed) {
-        // saveQueue 内部已尽力而为（storage.set 不外抛），此处无需再兜底
-        this.saveQueue()
+        // saveQueue 内部尽力而为（storage.set 不外抛），但失败必须可见：
+        // 未同步成功的操作此刻只活在内存里，进程被杀即丢失磁盘副本
+        if (!this.saveQueue()) {
+          logger.warn('OfflineManager', `同步后队列落盘失败，未同步操作仅存于内存: ${this.queueKey}`)
+        }
       }
     }
   }
@@ -248,7 +257,11 @@ export class OfflineManager<S extends State = State> {
       timestamp: Date.now(),
       retryCount: 0,
     })
-    this.saveQueue()
+    // 落盘失败必须告警：storage 层只记了「写入失败」，看不出后果——
+    // 操作此刻仅存内存，小程序进程被杀即永久丢失，违背本模块的 at-least-once 契约
+    if (!this.saveQueue()) {
+      logger.warn('OfflineManager', `队列落盘失败，操作仅存于内存（进程被杀即丢失）: ${type}`)
+    }
   }
 
   /**
@@ -317,14 +330,17 @@ export class OfflineManager<S extends State = State> {
    * 同步进行中时队列被拆为「已失败待重试 + 未处理剩余（含当前执行项）+ 新入队」三段，
    * 必须落盘完整联合视图：否则磁盘被仅含新项的队列覆写，
    * 进程在同步窗口内被杀会让未处理旧操作永久丢失（at-least-once）
+   *
+   * @returns 队列当前是否与存储一致。已释放实例不再持有该存储键（由接管的新实例
+   *   负责落盘），按一致处理，避免调用方对「无需落盘」误报丢失
    */
-  private saveQueue(): void {
+  private saveQueue(): boolean {
     // 已释放实例禁止再落盘：dispose 后账号可能已切换，同键已由新实例接管，
     // 旧实例的在途同步（或 dispose 后的 enqueue）落盘会覆写新实例的队列，
     // 磁盘丢失操作而新实例内存仍持有——重启即永久丢失
-    if (this.disposed) return
+    if (this.disposed) return true
     const view = this.syncing ? [...this.syncFailed, ...this.syncPending.slice(this.syncNextIndex), ...this.actionQueue] : this.actionQueue
-    storage.set(this.queueKey, view)
+    return storage.set(this.queueKey, view)
   }
 
   /**

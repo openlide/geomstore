@@ -293,26 +293,32 @@ export class ErrorHandlerImpl {
   /**
    * 获取错误统计信息
    *
-   * 返回按级别和操作类型分组的错误统计
+   * 两个分组字段都是**稀疏**的：只包含实际出现过的级别 / 操作类型，
+   * 未出现过的键不存在（而非 0），因此按 `Partial` 暴露——
+   * 把它们预置成 0 会让「`Object.keys(byLevel)` 的长度」这类聚合口径失真。
+   * 读侧请写 `stats.byLevel.warn ?? 0`。
    *
-   * @returns {{total: number, byLevel: Record<ErrorLevel, number>, byOperation: Record<OperationType, number>}} 错误统计对象
+   * @returns {{total: number, byLevel: Partial<Record<ErrorLevel, number>>, byOperation: Record<string, number>}} 错误统计对象
+   *
+   * 键类型为 `string`（而非 `OperationType`）是刻意的：`OperationType` 是开放字符串
+   * 联合的聚合口径，调用方传入自定义 operation 时也会原样出现在这里。
    *
    * @example
    * ```typescript
    * const stats = errorHandler.getErrorStats()
    * console.log(`Total: ${stats.total}`)
-   * console.log(`Critical: ${stats.byLevel.critical}`)
-   * console.log(`Action errors: ${stats.byOperation['action-execution']}`)
+   * console.log(`Critical: ${stats.byLevel.critical ?? 0}`)
+   * console.log(`Action errors: ${stats.byOperation['action-execution'] ?? 0}`)
    * ```
    */
   getErrorStats(): {
     total: number
-    byLevel: Record<ErrorLevel, number>
+    byLevel: Partial<Record<ErrorLevel, number>>
     byOperation: Record<string, number>
   } {
     const stats = {
       total: this.errorLog.length,
-      byLevel: {} as Record<ErrorLevel, number>,
+      byLevel: {} as Partial<Record<ErrorLevel, number>>,
       byOperation: {} as Record<string, number>,
     }
 

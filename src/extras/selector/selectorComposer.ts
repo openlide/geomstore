@@ -181,10 +181,21 @@ export class SelectorComposer {
   /**
    * 创建对象选择器
    *
-   * 对对象的每个键应用选择器
+   * 对状态的**每个自有可枚举字符串键**应用选择器，返回同键名的对象。
+   *
+   * ⚠️ `K` 必须是 `keyof S` 中除 Symbol 外的全部键（即 `K = Extract<keyof S, string>`），
+   * 不能只填其中一部分：实现的键集来自运行期的 `Object.keys(state)`，与类型参数无关。
+   * 把 `K` 声明成子集（如 `createObjectSelector<S, 'a', R>((key: 'a') => ...)`）会让
+   * `keySelector` 收到它声明域之外的键、返回对象多出 `Record<K, R>` 之外的键——类型不会报错，
+   * 只表现为结果比预期多键。之所以不把签名改成 `(key: keyof S) => Selector<S, R>`
+   * （`keyof S` / `keyof S & string` / `Extract<keyof S, string>` 三种写法均已实测）：
+   * 键参数的类型一旦依赖 `S`，`(key) => (s: MyState) => s[key]` 这一最常见写法就会因
+   * 循环推断把 `S` 退回约束 `object`、`key` 退化成 `never` 而直接编译失败，
+   * 为了一个不产生错误数据的宽松性牺牲全部调用点的类型推断不值得。
+   * 确实只想派生固定子集时请改用 {@link SelectorComposer#combine}（键集由 selectors 显式列出）
    *
    * @template S - 状态类型
-   * @template K - 键类型
+   * @template K - 键类型，须为 `keyof S` 的非 Symbol 全部键（见上）
    * @template R - 值类型
    * @param {(key: K) => Selector<S, R>} keySelector - 键选择器工厂
    * @returns {Selector<S, Record<K, R>>} 对象选择器
@@ -405,17 +416,23 @@ export class SelectorComposer {
    * ```
    */
   static createThrottledSelector<S extends State, R>(selector: Selector<S, R>, interval: number = 300): Selector<S, R> {
+    // 「是否已算过一次」必须是显式标记，不能借时钟值当哨兵：旧写法 `lastCall === 0` 在注入式
+    // 时钟 / fake timers 把 Date.now 定为 epoch 0 时永远成立不了（赋值回去还是 0），
+    // 节流会静默退化成每次调用都重算。不用 -Infinity 作初值是为了保住 interval 为 NaN 时
+    // 「首次仍计算、此后长期复用」的既有表现（负初值会让 Inf >= NaN 为 false，首调用直接返回 undefined）
+    let computed = false
     let lastCall = 0
-    let lastValue: R
+    let lastValue!: R
 
     return (state: S): R => {
       const now = Date.now()
 
-      if (lastCall === 0 || now - lastCall >= interval) {
+      if (!computed || now - lastCall >= interval) {
         // 取值成功后才提交节流状态：若 selector 抛错，lastCall 保持旧值，
         // 窗口内的重试仍会走到重算分支——否则首次抛错会把 lastCall 推进到
         // 当前时刻，窗口内后续调用全部静默返回 undefined（比抛错难排查得多）
         const value = selector(state)
+        computed = true
         lastCall = now
         lastValue = value
         return value

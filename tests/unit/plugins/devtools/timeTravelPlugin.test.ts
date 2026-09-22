@@ -742,19 +742,61 @@ describe('timeTravelPlugin - export/import history', () => {
     store.setState('count', 1)
     const beforeCount = (store as any).__timeTravel__.getSnapshotCount()
 
-    // 所有条目均不合法：state 非对象或 timestamp 非数字
-    const invalidJson = JSON.stringify({
-      snapshots: [
-        { state: 42, timestamp: 1 },
-        { state: null, timestamp: 2 },
-        { state: {}, timestamp: 'x' },
-      ],
-      currentIndex: 0,
-    })
+    // 所有条目均不合法：state 非对象、state 为数组（$replaceState 明确拒绝）、
+    // 条目 / state 自带 __proto__ 自有键（只有 JSON.parse 的字符串写法才产生数据属性）
+    const invalidJson =
+      '{"snapshots":[' +
+      '{"state":42,"timestamp":1},' +
+      '{"state":null,"timestamp":2},' +
+      '{"state":{},"timestamp":"x"},' +
+      '{"state":[],"timestamp":4},' +
+      '{"state":[1,2,3],"timestamp":5},' +
+      '{"state":{"__proto__":{"injected":1},"count":1},"timestamp":6},' +
+      '{"__proto__":{"marker":1},"state":{"count":1},"timestamp":7}' +
+      '],"currentIndex":0}'
 
     expect(() => (store as any).__timeTravel__.importHistory(invalidJson)).not.toThrow()
     // 有效条目数为 0 时直接返回，不污染现有历史
     expect((store as any).__timeTravel__.getSnapshotCount()).toBe(beforeCount)
+  })
+
+  it('#376 回归: 数组 state 的条目应被跳过，合法条目照常导入且 goTo 不再打核心 TypeError', () => {
+    const store = createStore({
+      name: 'import-array-state-store',
+      state: { count: 0 },
+    })
+
+    store.use(timeTravelPlugin())
+
+    // 报告给出的原始载荷：数组 state 此前能通过 typeof === 'object' 校验并留在历史里
+    const api = (store as any).__timeTravel__
+    api.importHistory('{"snapshots":[{"state":[],"timestamp":1},{"state":{"count":7},"timestamp":2}],"currentIndex":0}')
+
+    // 只接受合法的那一条，索引据此钳制
+    expect(api.getSnapshotCount()).toBe(1)
+    expect(api.getCurrentIndex()).toBe(0)
+    expect(() => api.goTo(0)).not.toThrow()
+    expect(store.getState()).toEqual({ count: 7 })
+    expect(Object.getPrototypeOf(store.getState())).toBe(Object.prototype)
+  })
+
+  it('#376 回归: 自带 __proto__ 自有键的导入载荷应被跳过', () => {
+    const store = createStore({
+      name: 'import-proto-key-store',
+      state: { count: 0 },
+    })
+
+    store.use(timeTravelPlugin())
+    const api = (store as any).__timeTravel__
+    const beforeCount = api.getSnapshotCount()
+
+    // JSON.parse 把 "__proto__" 造成为自持数据属性（不触发 setter），因此必须显式排除
+    api.importHistory('{"snapshots":[{"state":{"__proto__":{"injected":1}},"timestamp":1}],"currentIndex":0}')
+
+    expect(api.getSnapshotCount()).toBe(beforeCount)
+    expect(({} as any).injected).toBeUndefined()
+    // 活状态里也不得出现自持的 __proto__ 数据属性（读起来不是原型的怪对象）
+    expect(Object.prototype.hasOwnProperty.call(store.getState(), '__proto__')).toBe(false)
   })
 
   it('导入超过 maxSize 时应该淘汰最旧快照并修正索引', () => {

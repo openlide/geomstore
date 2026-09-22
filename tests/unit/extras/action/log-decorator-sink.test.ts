@@ -62,7 +62,7 @@ describe('withLog 生产构建下的缺省摘要', () => {
     process.env.NODE_ENV = 'production'
     let loaded: typeof import('@/extras/action/decorators/log.js') | undefined
     jest.isolateModules(() => {
-      loaded = require('@/extras/action/decorators/log.js') as typeof import('@/extras/action/decorators/log.js')
+      loaded = jest.requireActual('@/extras/action/decorators/log.js') as typeof import('@/extras/action/decorators/log.js')
     })
     return loaded as typeof import('@/extras/action/decorators/log.js')
   }

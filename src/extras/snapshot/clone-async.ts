@@ -77,117 +77,133 @@ export function processNodeAsync(
     return SKIP_CLONE_NODE
   }
 
-  // 处理特殊类型
-  if (value instanceof Date) {
-    return new Date(value.getTime())
-  }
+  // 类型判定与容器外壳构造同样纳入 try（理由见 catch 前注释）。
+  // 本区间只产出「该节点的外壳 + 待填充的子任务」，任何抛错都属于本节点克隆失败，
+  // 与下方 keys / 属性循环走同一口径：落账 cloneError → 咨询 onError → 继续则丢子树。
+  // objectShell 由 try 末尾赋值后交给属性循环使用
+  let objectShell: Record<string, unknown>
+  try {
+    // 处理特殊类型
+    if (value instanceof Date) {
+      return new Date(value.getTime())
+    }
 
-  if (value instanceof RegExp) {
-    return new RegExp(value.source, value.flags)
-  }
+    if (value instanceof RegExp) {
+      return new RegExp(value.source, value.flags)
+    }
 
-  if (value instanceof Map) {
-    const cloned = new Map()
-    context.visited.set(value as object, cloned)
+    if (value instanceof Map) {
+      const cloned = new Map()
+      context.visited.set(value as object, cloned)
 
-    for (const [k, v] of value) {
-      // Map 键需要克隆完成后才能 set，且对象键罕见，同步克隆键
-      const clonedKey = cloneDeep(
-        k,
-        {
-          ...context,
-          path: `${context.path}.key`,
-          depth: context.depth + 1,
-        },
-        options,
-        errors,
-        stats,
-        counters,
-      )
+      for (const [k, v] of value) {
+        // Map 键需要克隆完成后才能 set，且对象键罕见，同步克隆键
+        const clonedKey = cloneDeep(
+          k,
+          {
+            ...context,
+            path: `${context.path}.key`,
+            depth: context.depth + 1,
+          },
+          options,
+          errors,
+          stats,
+          counters,
+        )
 
-      // 键被丢弃（自定义克隆器抛错且 onError 允许继续）时整条 entry 跳过：
-      // 把哨兵当键写入 Map 会让内部标记泄漏进用户数据
-      if (clonedKey === SKIP_CLONE_NODE) {
-        continue
+        // 键被丢弃（自定义克隆器抛错且 onError 允许继续）时整条 entry 跳过：
+        // 把哨兵当键写入 Map 会让内部标记泄漏进用户数据
+        if (clonedKey === SKIP_CLONE_NODE) {
+          continue
+        }
+
+        // 所有值统一入队：原始值立即 set、对象值延后填充会打乱 Map 迭代序
+        // （迭代序以 set 插入顺序为准，是 Map 语义的一部分）
+        enqueue({
+          value: v,
+          context: {
+            ...context,
+            path: `${context.path}[${String(k)}]`,
+            depth: context.depth + 1,
+            parent: value,
+            key: k,
+          },
+          target: { kind: 'mapValue', container: cloned, key: clonedKey },
+        })
       }
 
-      // 所有值统一入队：原始值立即 set、对象值延后填充会打乱 Map 迭代序
-      // （迭代序以 set 插入顺序为准，是 Map 语义的一部分）
-      enqueue({
-        value: v,
-        context: {
-          ...context,
-          path: `${context.path}[${String(k)}]`,
-          depth: context.depth + 1,
-          parent: value,
-          key: k,
-        },
-        target: { kind: 'mapValue', container: cloned, key: clonedKey },
-      })
+      stats.cloneOperations++
+      return cloned
     }
 
-    stats.cloneOperations++
-    return cloned
-  }
+    if (value instanceof Set) {
+      const cloned = new Set()
+      context.visited.set(value as object, cloned)
 
-  if (value instanceof Set) {
-    const cloned = new Set()
-    context.visited.set(value as object, cloned)
-
-    let index = 0
-    for (const item of value) {
-      // 所有条目统一入队：原始值立即 add、对象值延后填充会打乱 Set 迭代序
-      enqueue({
-        value: item,
-        context: {
-          ...context,
-          path: `${context.path}[${index}]`,
-          depth: context.depth + 1,
-          parent: value,
-          key: index,
-        },
-        target: { kind: 'setItem', container: cloned },
-      })
-      index++
-    }
-
-    stats.cloneOperations++
-    return cloned
-  }
-
-  // 处理数组
-  if (Array.isArray(value)) {
-    const cloned: unknown[] = []
-    context.visited.set(value as object, cloned)
-
-    for (let i = 0; i < value.length; i++) {
-      const item = value[i]
-      if (item !== null && typeof item === 'object') {
+      let index = 0
+      for (const item of value) {
+        // 所有条目统一入队：原始值立即 add、对象值延后填充会打乱 Set 迭代序
         enqueue({
           value: item,
           context: {
             ...context,
-            path: `${context.path}[${i}]`,
+            path: `${context.path}[${index}]`,
             depth: context.depth + 1,
             parent: value,
-            key: i,
+            key: index,
           },
-          target: { kind: 'index', container: cloned, key: i },
+          target: { kind: 'setItem', container: cloned },
         })
-      } else {
-        cloned[i] = item
+        index++
       }
+
+      stats.cloneOperations++
+      return cloned
     }
 
-    stats.cloneOperations++
-    return cloned
+    // 处理数组
+    if (Array.isArray(value)) {
+      const cloned: unknown[] = []
+      context.visited.set(value as object, cloned)
+
+      for (let i = 0; i < value.length; i++) {
+        const item = value[i]
+        if (item !== null && typeof item === 'object') {
+          enqueue({
+            value: item,
+            context: {
+              ...context,
+              path: `${context.path}[${i}]`,
+              depth: context.depth + 1,
+              parent: value,
+              key: i,
+            },
+            target: { kind: 'index', container: cloned, key: i },
+          })
+        } else {
+          cloned[i] = item
+        }
+      }
+
+      stats.cloneOperations++
+      return cloned
+    }
+
+    // 处理普通对象
+    // 保留源对象原型：类实例快照后仍是该类实例（方法/继承链可用），
+    // 仅复制自有可枚举属性，不触发任何构造器或 getter
+    objectShell = Object.create(Object.getPrototypeOf(value) as object | null) as Record<string, unknown>
+    context.visited.set(value as object, objectShell)
+  } catch (error) {
+    // 本区间的抛错此前会绕过 errors[] + options.onError：Proxy 包装的值上，
+    // instanceof 走 getPrototypeOf 陷阱、Date/RegExp/Map/Set 的内建方法在代理接收者上
+    // 抛 TypeError（"incompatible receiver"）、getOwnPropertyDescriptor 陷阱可返回非法值。
+    // 让它们直达驱动层只会留下一条路径含糊的 cloneError 并剥夺调用方的降级决定权
+    handleCloneError(error, { path: context.path, depth: context.depth, value }, options, errors, stats)
+    return SKIP_CLONE_NODE
   }
 
-  // 处理普通对象
-  // 保留源对象原型：类实例快照后仍是该类实例（方法/继承链可用），
-  // 仅复制自有可枚举属性，不触发任何构造器或 getter
-  const cloned: Record<string, unknown> = Object.create(Object.getPrototypeOf(value) as object | null) as Record<string, unknown>
-  context.visited.set(value as object, cloned)
+  const cloned = objectShell
 
   // keys 计算纳入 try（与同步路径同语义：共用 handleCloneError，中止信号原样上抛）
   let keys: string[]

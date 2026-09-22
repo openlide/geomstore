@@ -35,11 +35,24 @@ interface ThrottleState {
   /** 窗口内最近一次被抑制调用的参数（trailing 补发用） */
   pendingArgs: unknown[] | null
   timer: ReturnType<typeof setTimeout> | null
+  /**
+   * 该 (宿主, 方法) 上是否观测到过 Promise 返回值
+   *
+   * 必须随状态按 (宿主, 方法) 存放：若放在装饰器作用域，任一实例的首次调用
+   * 就会把标记锁给所有宿主，之后别的主机被抑制的调用会突然从 `undefined`
+   * 变成 `Promise` —— 返回类型随调用顺序/实例而变，调用方无从依赖。
+   */
+  sawPromise: boolean
 }
+
+/** interval 缺省值，同时是非法值（NaN/Infinity/<=0）的回退值 */
+const DEFAULT_INTERVAL = 300
 /**
  * 创建节流装饰器
  *
- * @param {number} [interval=300] - 执行间隔（毫秒）
+ * @param {number} [interval=300] - 执行间隔（毫秒）；非有限值或 <=0 视为配置错误，
+ *        回退为 300（NaN 会让窗口判断恒不成立、`Math.max(0, NaN)` 又被 `setTimeout`
+ *        当作 0，节流形同失效）
  * @param {ThrottleDecoratorOptions} [options] - leading/trailing 配置（默认双开启）
  * @returns {MethodDecorator} 方法装饰器
  *
@@ -58,7 +71,7 @@ interface ThrottleState {
  * }
  * ```
  */
-export function withThrottle(interval: number = 300, options: ThrottleDecoratorOptions = {}): MethodDecorator {
+export function withThrottle(interval: number = DEFAULT_INTERVAL, options: ThrottleDecoratorOptions = {}): MethodDecorator {
   // 双 false 永不执行无意义，退化为纯 leading（与 lodash 处理一致）
   const trailing = options.trailing ?? true
   const assumeAsync = options.assumeAsync ?? false
@@ -67,6 +80,9 @@ export function withThrottle(interval: number = 300, options: ThrottleDecoratorO
   if (!leading && !trailing) {
     leading = true
   }
+  // 与 PerformanceMonitor.normalizeMaxSize 同一口径：非法配置回退默认值而非抛错，
+  // 装饰器在类定义期求值，抛错会把一个参数笔误升级成模块加载失败
+  const window = Number.isFinite(interval) && interval > 0 ? interval : DEFAULT_INTERVAL
 
   // 按宿主 + 方法键隔离状态：同一装饰器实例装饰多个方法时互不干扰。
   // 键保留原始 propertyKey（含 Symbol 身份）：String() 折叠会让同名 Symbol
@@ -77,7 +93,6 @@ export function withThrottle(interval: number = 300, options: ThrottleDecoratorO
     const originalMethod = descriptor.value
     const methodKey = propertyKey
     const isAsyncMethod = isAsyncFunction(originalMethod)
-    let observesPromise = false
 
     descriptor.value = function (this: unknown, ...args: unknown[]) {
       const now = Date.now()
@@ -94,27 +109,32 @@ export function withThrottle(interval: number = 300, options: ThrottleDecoratorO
       }
       let state = byMethod.get(methodKey)
       if (!state) {
-        state = { lastCallTime: 0, pendingArgs: null, timer: null }
+        state = { lastCallTime: 0, pendingArgs: null, timer: null, sawPromise: false }
         byMethod.set(methodKey, state)
       }
+      const hostState = state
 
-      const fireTrailing = (): void => {
-        state.timer = null
-        /* istanbul ignore else -- 空参数侧要求「微任务先于同刻到期的定时器执行」这一竞态：
-           trailing 定时器恰在窗口结束时到期，而清空 pendingArgs 的 leading 调用最早也只能
-           发生在窗口结束时刻，fake timers 无法确定性地让微任务抢在已到期定时器之前（见
-           throttle-leading-trailing 用例注释），故该侧在测试环境不可稳定复现 */
-        if (state.pendingArgs !== null) {
-          const trailingArgs = state.pendingArgs
-          state.pendingArgs = null
-          state.lastCallTime = Date.now()
+      const fireTrailing = (handle: ReturnType<typeof setTimeout>): void => {
+        // 只清自己这次句柄：无条件置 null 会让「已被 scheduleTrailingAt 替换掉、
+        // 但回调已入队」的旧定时器抹掉新定时器的引用，此后既 clearTimeout 不到
+        // 真正的待发定时器，它还会在错误的时刻再补发一次
+        if (hostState.timer === handle) {
+          hostState.timer = null
+        }
+        /* istanbul ignore if -- 新窗口 leading 分支已作废上一窗口的尾调用定时器，
+           且 scheduleTrailingAt 保证同时只有一个活定时器，「无参数可补发」在
+           正常时序下不可达，仅作为对未来改动的防御 */
+        if (hostState.pendingArgs !== null) {
+          const trailingArgs = hostState.pendingArgs
+          hostState.pendingArgs = null
+          hostState.lastCallTime = Date.now()
           // fire-and-forget：返回值不回传，且调用方早已返回——尾随执行的失败
           // 不可能再抛给调用方，必须就地兜住：同步抛错会变成 uncaughtException，
           // 异步 rejection 会变成 unhandledRejection
           try {
             const result = originalMethod.apply(this, trailingArgs) as unknown
             if (result instanceof Promise) {
-              observesPromise = true
+              hostState.sawPromise = true
               result.catch((error) => {
                 console.error('[withThrottle] trailing invocation failed:', error)
               })
@@ -125,37 +145,44 @@ export function withThrottle(interval: number = 300, options: ThrottleDecoratorO
         }
       }
       const scheduleTrailingAt = (delay: number): void => {
-        if (state.timer !== null) {
-          clearTimeout(state.timer)
+        if (hostState.timer !== null) {
+          clearTimeout(hostState.timer)
         }
-        state.timer = setTimeout(fireTrailing, Math.max(0, delay))
+        const handle = setTimeout(() => fireTrailing(handle), Math.max(0, delay))
+        hostState.timer = handle
       }
 
-      if (now - state.lastCallTime >= interval) {
+      if (now - hostState.lastCallTime >= window) {
         // 新窗口
         if (leading) {
-          state.lastCallTime = now
-          state.pendingArgs = null
+          // 上一窗口残留的尾调用必须作废：新窗口以本次参数为准（下方 pendingArgs = null
+          // 已经丢弃旧参数），留着它只会抹掉新定时器引用并在窗口结束前空转一次
+          if (hostState.timer !== null) {
+            clearTimeout(hostState.timer)
+            hostState.timer = null
+          }
+          hostState.lastCallTime = now
+          hostState.pendingArgs = null
           const result = originalMethod.apply(this, args)
           if (result instanceof Promise) {
-            observesPromise = true
+            hostState.sawPromise = true
           }
           return result
         }
         // leading=false：首次调用延后到窗口结束执行
-        state.lastCallTime = now
-        state.pendingArgs = args
-        scheduleTrailingAt(interval)
-        return isAsyncMethod || observesPromise || assumeAsync ? Promise.resolve(undefined) : undefined
+        hostState.lastCallTime = now
+        hostState.pendingArgs = args
+        scheduleTrailingAt(window)
+        return isAsyncMethod || hostState.sawPromise || assumeAsync ? Promise.resolve(undefined) : undefined
       }
 
       // 窗口内被抑制
       if (trailing) {
         // 始终保存最新参数并保证窗口结束时有且仅有一次补发
-        state.pendingArgs = args
-        scheduleTrailingAt(state.lastCallTime + interval - now)
+        hostState.pendingArgs = args
+        scheduleTrailingAt(hostState.lastCallTime + window - now)
       }
-      return isAsyncMethod || observesPromise || assumeAsync ? Promise.resolve(undefined) : undefined
+      return isAsyncMethod || hostState.sawPromise || assumeAsync ? Promise.resolve(undefined) : undefined
     }
 
     return descriptor

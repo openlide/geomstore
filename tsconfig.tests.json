@@ -6,8 +6,7 @@
     "noImplicitAny": false,
     "noUnusedLocals": false,
     "noUnusedParameters": false,
-    "rootDir": ".",
-    "paths": { "@/*": ["./src/*"], "@tests/*": ["./tests/*"] }
+    "rootDir": "."
   },
   "include": ["src/**/*", "tests/**/*"],
   "exclude": ["node_modules", "dist", "packages", "src/**/*.example.ts", "**/*.example.ts"]

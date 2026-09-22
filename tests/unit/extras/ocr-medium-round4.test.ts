@@ -49,10 +49,11 @@ const REAL_SET_TIMEOUT = globalThis.setTimeout
 /** 让退避/超时的真实等待不发生，只记录宿主收到的延时数值 */
 function recordTimeoutDelays(): unknown[] {
   const delays: unknown[] = []
-  jest.spyOn(globalThis, 'setTimeout').mockImplementation(((handler: TimerHandler, ms?: number, ...rest: unknown[]) => {
+  jest.spyOn(globalThis, 'setTimeout').mockImplementation(((handler: unknown, ms?: number, ...rest: unknown[]) => {
     delays.push(ms)
 
-    return REAL_SET_TIMEOUT(handler, 0, ...rest)
+    // 不借用 DOM 的 TimerHandler 类型：Node 与 DOM 两套 setTimeout 签名在 lib 之间不可移植
+    return (REAL_SET_TIMEOUT as (h: unknown, ms: number | undefined, args: unknown[]) => unknown)(handler, 0, rest)
   }) as unknown as typeof setTimeout)
 
   return delays

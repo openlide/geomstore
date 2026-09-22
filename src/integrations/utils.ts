@@ -14,10 +14,10 @@ import type { Store, State } from '../types/store.js'
  * - 数组: ['key1', 'key2'] → { key1: 'key1', key2: 'key2' }
  * - 对象: { local: 'store' } → { local: 'store' }
  *
- * 键经 String() 归一（类型层面接受 PropertyKey，实际状态键均为字符串）
+ * 键与值均经 String() 归一（类型层面接受 PropertyKey，实际状态键均为字符串）
  *
  * @param mapping - 映射配置（数组或对象）
- * @returns 统一格式的键值对映射
+ * @returns 统一格式的键值对映射（新建对象，与入参不共享引用）
  *
  * @example
  * ```typescript
@@ -31,10 +31,33 @@ import type { Store, State } from '../types/store.js'
  * ```
  */
 export function parseMapping(mapping: ReadonlyArray<PropertyKey> | Record<string, PropertyKey>): Record<string, string> {
+  // 两个分支统一走一次归一化后返回新对象：
+  // 对象分支此前直接 `as Record<string, string>` 强转并返回入参本身，
+  // 数字/符号值仍按原始类型流向 storeKey 查表（符号键查不到状态），
+  // 且调用方对返回值的任何写入会回灌用户的配置对象
+  const result: Record<string, string> = {}
   if (Array.isArray(mapping)) {
-    return mapping.reduce<Record<string, string>>((acc, key) => ({ ...acc, [String(key)]: String(key) }), {})
+    // 赋值累积而非 `{ ...acc }` 展开：展开每次重建累积器，整体 O(n²)
+    for (const key of mapping) {
+      const normalized = String(key)
+      setOwnEntry(result, normalized, normalized)
+    }
+    return result
   }
-  return mapping as Record<string, string>
+  for (const [key, value] of Object.entries(mapping)) {
+    setOwnEntry(result, key, String(value))
+  }
+  return result
+}
+
+/**
+ * 以自有数据属性写入映射项。
+ *
+ * 映射键来自调用方配置，`'__proto__'` 用普通赋值会命中 Object.prototype 的 setter
+ * 改坏结果对象的原型链（而非落下该键），故统一用 defineProperty 写入
+ */
+function setOwnEntry(target: Record<string, string>, key: string, value: string): void {
+  Object.defineProperty(target, key, { value, writable: true, enumerable: true, configurable: true })
 }
 
 /** ConnectOptions 中参与解析的四类映射字段（结构类型，避免耦合具体泛型） */
@@ -241,7 +264,10 @@ export function bindActions<S extends State = State>(target: Record<string, unkn
 /**
  * 自动注入 Store 值到目标对象
  *
- * 根据注入映射，将 Store 缓存的值自动注入到目标对象
+ * 根据注入映射，将 Store 缓存的值自动注入到目标对象。
+ * 无缓存（含值本身为 undefined）的源键不注入并汇总告警：Store 只暴露 getCached、
+ * 未提供 hasCached，无法区分「未缓存」与「值确为 undefined」，
+ * 静默跳过会让宿主数据与注入映射长期不一致且无从排查
  *
  * @template S - 状态类型
  * @param target - 目标对象
@@ -270,12 +296,19 @@ export function performAutoInject<S extends State = State>(
   }
 
   const updates: Record<string, unknown> = {}
+  const skipped: string[] = []
 
   for (const [sourceKey, targetKey] of Object.entries(injectMapping)) {
     const value = store.getCached(sourceKey as keyof S)
-    if (value !== undefined) {
-      updates[targetKey] = value
+    if (value === undefined) {
+      skipped.push(sourceKey)
+      continue
     }
+    updates[targetKey] = value
+  }
+
+  if (skipped.length > 0) {
+    console.warn(`[performAutoInject] 以下注入源无缓存值，已跳过注入: ${skipped.join(', ')}`)
   }
 
   // 批量调用 setter，避免多次触发更新
@@ -287,7 +320,8 @@ export function performAutoInject<S extends State = State>(
 /**
  * 暴露 Store API 到目标实例
  *
- * 在 App 实例上暴露常用的 Store API 方法
+ * 在 App 实例上暴露常用的 Store API 方法，同时挂一份到 `__store__` 调试入口。
+ * 返回的清理函数只移除本次新增的成员，宿主同名自有成员按原值还原
  *
  * @template S - 状态类型
  * @param target - 目标实例（通常是 App 实例）
@@ -301,42 +335,46 @@ export function performAutoInject<S extends State = State>(
  * ```
  */
 export function exposeStoreAPI<S extends State = State>(target: Record<string, unknown>, store: Store<S>): () => void {
-  // 暴露 Store 实例
-  target.store = store
-
-  // 暴露常用 API 方法
-  target.getStore = () => store
-  target.getState = () => store.getState()
-  target.getCached = (key: keyof S) => store.getCached(key)
-  target.dispatch = (actionName: string, ...args: unknown[]) => {
-    return store.dispatch(actionName, ...args)
-  }
-  target.subscribe = (callback: (state: S) => void) => {
-    return store.subscribe(callback)
-  }
-
-  // 暴露调试 API 对象
-  target.__store__ = {
+  // 五个调试方法只定义一次，同时挂到 target 与 target.__store__：
+  // 此前两处各写一份字面量，后续改动极易只改一处导致两个入口行为分叉
+  const api = {
     getStore: () => store,
     getState: () => store.getState(),
     getCached: (key: keyof S) => store.getCached(key),
     dispatch: (actionName: string, ...args: unknown[]) => {
       return store.dispatch(actionName, ...args)
     },
-    subscribe: (callback: (state: S) => void) => {
-      return store.subscribe(callback)
+    // 默认按只读订阅注册：宿主侧 subscribe 用于观察状态、从不修改载荷。
+    // 若以可写订阅登记，会翻转 Store 的全局 needsClone 判定，
+    // 让 persistence/logger 等只读订阅者一并承担每次通知的整树深拷贝。
+    // 确需就地改载荷的调用方显式传 { readOnly: false }
+    subscribe: (callback: (state: S) => void, options?: { readOnly?: boolean }) => {
+      return store.subscribe(callback, options ?? { readOnly: true })
     },
   }
 
-  // 返回取消暴露函数
+  const exposedKeys = ['store', 'getStore', 'getState', 'getCached', 'dispatch', 'subscribe', '__store__'] as const
+  // 记录调用前已存在的自有成员：一律 delete 会把宿主自己定义的 getState 等一并抹掉
+  const originals = new Map<string, unknown>()
+  for (const key of exposedKeys) {
+    if (Object.prototype.hasOwnProperty.call(target, key)) {
+      originals.set(key, target[key])
+    }
+  }
+
+  target.store = store
+  Object.assign(target, api)
+  target.__store__ = api
+
+  // 返回取消暴露函数：本次新增的删除，宿主原有的还原
   return () => {
-    delete target.store
-    delete target.getStore
-    delete target.getState
-    delete target.getCached
-    delete target.dispatch
-    delete target.subscribe
-    delete target.__store__
+    for (const key of exposedKeys) {
+      if (originals.has(key)) {
+        target[key] = originals.get(key)
+      } else {
+        delete target[key]
+      }
+    }
   }
 }
 

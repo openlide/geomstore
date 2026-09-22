@@ -6,10 +6,17 @@ on:
   pull_request:
   workflow_dispatch:
 
+# 最小权限：本工作流只需读取仓库（checkout）与写制品（upload-artifact）。
+# actions: write 是 upload/download-artifact 调用 Runtime Tools API 的前置权限，缺失会 403。
+permissions:
+  contents: read
+  actions: write
+
 jobs:
   verify:
     name: Lint / Typecheck / Test / Build (Node ${{ matrix.node-version }})
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -51,7 +58,11 @@ jobs:
       - name: Smoke test dist bundles (ESM + subpath)
         run: |
           node --input-type=module -e '
-            const s = await import("./dist/index.js")
+            const { readFileSync } = await import("node:fs")
+            const { exports: exp } = JSON.parse(readFileSync("package.json", "utf8"))
+            const base = import.meta.resolve("./")
+            const viaExports = (key) => import(new URL("./" + exp[key].default.replace(/^\.\//, ""), base).href)
+            const s = await viaExports(".")
             const store = s.createStore({
               name: "ci-smoke",
               state: { count: 1 },
@@ -60,15 +71,15 @@ jobs:
             store.dispatch("inc")
             if (store.getState().count !== 2) throw new Error("esm smoke failed")
             if (typeof s.composeStore !== "function") throw new Error("composeStore missing")
-            const err = await import("./dist/extras/error/index.js")
+            const err = await viaExports("./extras/error")
             if (typeof err.GeomStoreError !== "function") throw new Error("error subpath failed")
-            const plugins = await import("./dist/extras/plugins.js")
+            const plugins = await viaExports("./extras/plugins")
             if (!plugins.loggerPlugin) throw new Error("plugins subpath failed")
-            const selector = await import("./dist/extras/selector/index.js")
+            const selector = await viaExports("./extras/selector")
             if (typeof selector.createSelector !== "function") throw new Error("selector subpath failed")
-            const integrations = await import("./dist/integrations/index.js")
+            const integrations = await viaExports("./integrations")
             if (typeof integrations.bindMappings !== "function") throw new Error("integrations subpath failed")
-            console.log("ESM SMOKE OK")
+            console.log("ESM SMOKE OK (exports map exercised)")
           '
 
       - name: Upload coverage report

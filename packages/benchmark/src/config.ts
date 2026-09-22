@@ -11,7 +11,6 @@ export type { DatasetSize, BenchmarkScenario, BenchmarkConfig }
  */
 export const defaultBenchmarkConfig: BenchmarkConfig = {
   general: {
-    iterations: 10000,
     warmupIterations: 1000,
     enableWarmup: true,
     skipGC: false,
@@ -59,36 +58,46 @@ export const defaultBenchmarkConfig: BenchmarkConfig = {
 
 /**
  * 宽松配置（用于开发环境或 CI）
+ *
+ * 由 mergeConfig 派生而非手写展开：只覆盖需要放松的分组，同时保证 datasets / scenarios
+ * 是新副本，不会与 defaultBenchmarkConfig 共享引用。
  */
-export const relaxedBenchmarkConfig: BenchmarkConfig = {
-  ...defaultBenchmarkConfig,
+export const relaxedBenchmarkConfig: BenchmarkConfig = mergeConfig(defaultBenchmarkConfig, {
+  general: { ...defaultBenchmarkConfig.general, warmupIterations: 100 },
   thresholds: {
     operationTime: { setState: 5, $patch: 10, $replaceState: 20, dispatch: 10, getter: 2, subscribe: 5 },
     memory: { perStore: 1000000, perStateItem: 10000, perSubscriber: 5000 },
     throughput: { setState: 1000, dispatch: 500, getter: 2000 },
     cacheHitRate: 50,
   },
-  general: { ...defaultBenchmarkConfig.general, warmupIterations: 100 },
-}
+})
 
 /**
  * 合并配置
+ *
+ * 返回值与各分组、每个数据集档位、scenarios 数组都是副本：单层展开只复制引用，
+ * 调用方拿到配置后改一处就会污染模块级默认配置，后续所有基准的输入都被悄悄换掉。
  */
 export function mergeConfig(base: BenchmarkConfig, custom?: Partial<BenchmarkConfig>): BenchmarkConfig {
-  if (!custom) return base
-
   return {
     ...base,
-    ...custom,
-    general: { ...base.general, ...custom.general },
-    datasets: { ...base.datasets, ...custom.datasets },
+    general: { ...base.general, ...custom?.general },
+    // 逐档位合并：整档覆盖会让 `{ datasets: { medium: { stateKeys: 50 } } }`
+    // 悄悄丢掉 actions / getters / subscribers / nestingDepth
+    datasets: {
+      small: { ...base.datasets.small, ...custom?.datasets?.small },
+      medium: { ...base.datasets.medium, ...custom?.datasets?.medium },
+      large: { ...base.datasets.large, ...custom?.datasets?.large },
+      xlarge: { ...base.datasets.xlarge, ...custom?.datasets?.xlarge },
+    },
     thresholds: {
       ...base.thresholds,
-      ...custom.thresholds,
-      operationTime: { ...base.thresholds.operationTime, ...custom.thresholds?.operationTime },
-      memory: { ...base.thresholds.memory, ...custom.thresholds?.memory },
-      throughput: { ...base.thresholds.throughput, ...custom.thresholds?.throughput },
+      ...custom?.thresholds,
+      operationTime: { ...base.thresholds.operationTime, ...custom?.thresholds?.operationTime },
+      memory: { ...base.thresholds.memory, ...custom?.thresholds?.memory },
+      throughput: { ...base.thresholds.throughput, ...custom?.thresholds?.throughput },
     },
-    scenarios: custom.scenarios || base.scenarios,
+    // scenarios 保持整组替换语义（自定义即覆盖默认场景集），但返回副本
+    scenarios: [...(custom?.scenarios ?? base.scenarios)],
   }
 }

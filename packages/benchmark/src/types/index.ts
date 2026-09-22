@@ -2,7 +2,16 @@
  * @geomstore/benchmark - 基准测试类型定义
  */
 
-export type { State, CacheStats, BenchmarkStore, StoreConfig, StoreFactory, ComposeStoreFn } from './store.js'
+export type {
+  State,
+  CacheStats,
+  StoreAction,
+  ActionMap,
+  BenchmarkStore,
+  StoreConfig,
+  StoreFactory,
+  ComposeStoreFn,
+} from './store.js'
 
 /**
  * 数据集规模
@@ -25,6 +34,10 @@ export interface CacheTestConfig {
 
 /**
  * 基准测试场景
+ *
+ * 迭代与预热参数只在场景这一层定义、也只在场景这一层生效：`general` 里的
+ * `enableWarmup`/`warmupIterations` 管的是整轮运行开始前那次统一预热（把 JIT 跑热），
+ * 与场景内的 `warmup`/`warmupIterations` 是两件事，彼此不继承、不覆盖。
  */
 export interface BenchmarkScenario {
   /** 场景名称 */
@@ -33,13 +46,13 @@ export interface BenchmarkScenario {
   description: string
   /** 数据集规模 */
   datasetSize: DatasetSize
-  /** 迭代次数 */
+  /** 迭代次数（本场景独占，不从 general 回落） */
   iterations: number
   /** 并发数 */
   concurrency?: number
-  /** 是否预热 */
+  /** 是否在本场景正式计数前额外预热一轮 */
   warmup?: boolean
-  /** 预热迭代次数 */
+  /** 本场景的预热迭代次数（`warmup` 为假时不参与任何计算） */
   warmupIterations?: number
   /** 缓存测试配置 */
   cacheConfig?: CacheTestConfig
@@ -51,11 +64,14 @@ export interface BenchmarkScenario {
 export interface BenchmarkConfig {
   /** 总体配置 */
   general: {
-    /** 迭代次数 */
-    iterations: number
-    /** 预热次数 */
+    /**
+     * 整轮运行开始前的统一预热次数
+     *
+     * 这里有意不放 iterations：迭代次数只由场景自己决定，留一个没有任何读取方的
+     * 同名默认值只会让人以为场景可以省略它而回落。
+     */
     warmupIterations: number
-    /** 是否启用预热 */
+    /** 是否执行上面的统一预热 */
     enableWarmup: boolean
     /** 是否跳过 GC（如果可用） */
     skipGC?: boolean
@@ -120,8 +136,13 @@ export interface BenchmarkConfig {
 export interface BenchmarkResult {
   /** 场景名称 */
   scenario: string
-  /** 数据集规模 */
-  datasetSize: string
+  /**
+   * 数据集规模
+   *
+   * 必须是 DatasetSize：产出方（`scenario.datasetSize` 与 `ResultBuilder.inferDatasetSize`）
+   * 给出的都是这个联合类型，写成 string 等于允许把报告里的规模名漂成 `datasets` 查不到的键。
+   */
+  datasetSize: DatasetSize
   /** 迭代次数 */
   iterations: number
   /** 执行结果 */
@@ -186,9 +207,6 @@ export interface BenchmarkResult {
       evictions?: number
     }
   }
-
-  /** 性能评分（0-100） */
-  score?: number
 
   /** 是否通过阈值检查 */
   passed: boolean
@@ -260,7 +278,12 @@ export interface BenchmarkReport {
   /** 结果 */
   results: BenchmarkResult[]
 
-  /** 汇总统计 */
+  /**
+   * 汇总统计
+   *
+   * 没有「平均性能评分」这类字段：包内没有任何评分口径，所有产出点也不会给 score 赋值，
+   * 留着只会在 JSON 报告里恒显 0。要加回来先定义归一化口径。
+   */
   summary: {
     /** 总场景数 */
     totalScenarios: number
@@ -268,8 +291,6 @@ export interface BenchmarkReport {
     passedScenarios: number
     /** 失败场景数 */
     failedScenarios: number
-    /** 平均性能评分 */
-    avgScore: number
     /** 总执行时间（秒） */
     totalDuration: number
     /** 总内存增量（字节） */
@@ -282,14 +303,13 @@ export interface BenchmarkReport {
 
 /**
  * 操作类型
+ *
+ * 与耗时阈值共用同一份名字来源：前六个成员直接取 `thresholds.operationTime` 的键，
+ * 增删或改名一处不会再悄悄脱钩（阈值表对不上操作名时编译期就报错）。其余成员是
+ * 生命周期/缓存类操作，本就没有耗时阈值，只能显式列出。
  */
 export type OperationType =
-  | 'setState'
-  | '$patch'
-  | '$replaceState'
-  | 'dispatch'
-  | 'getter'
-  | 'subscribe'
+  | keyof BenchmarkConfig['thresholds']['operationTime']
   | 'unsubscribe'
   | 'compose'
   | 'cacheGet'
@@ -316,6 +336,22 @@ export interface OperationContext {
   error?: string
   /** 内存使用（字节） */
   memoryUsage?: number
+}
+
+/**
+ * 单轮迭代的产出
+ *
+ * 带着 error 而不是让某一轮抛错就把整次运行作废：基准测试要回答的正是「第几轮开始崩、
+ * 崩之前的分布长什么样」，让一次失败连带丢掉已测量的所有轮次等于把答案扔掉再报错。
+ * 失败轮的 duration 是「调用到抛出」的耗时，参与统计会偏小，需要统计时先过滤 error。
+ */
+export interface IterationOutcome<T> {
+  /** 本轮返回值；本轮失败时为 undefined */
+  result: T | undefined
+  /** 本轮耗时（毫秒） */
+  duration: number
+  /** 本轮的失败原因，成功时不存在 */
+  error?: string
 }
 
 /**

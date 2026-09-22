@@ -1487,8 +1487,11 @@ describe('SnapshotManager', () => {
       node1.next = { leaf: 'a' }
       node2.next = { leaf: 'b' }
 
-      const snapshot1 = manager.createSnapshot(deep1)
-      const snapshot2 = manager.createSnapshot(deep2)
+      // 快照的 maxDepth 必须大于链深：默认 100 会让两侧在第 101 层都被截断成同一个
+      // '[MaxDepth Exceeded]' 占位串，两份快照便真的等价了（差异只存在于原始数据里），
+      // 此时 compareSnapshots 报 changed 反而是误报
+      const snapshot1 = manager.createSnapshot(deep1, { maxDepth: 500 })
+      const snapshot2 = manager.createSnapshot(deep2, { maxDepth: 500 })
 
       // 不应栈溢出，应正常返回差异结果
       const diff = manager.compareSnapshots(snapshot1, snapshot2)

@@ -66,9 +66,17 @@ export function compareSnapshots<T1, T2>(snapshot1: SnapshotResult<T1>, snapshot
   }
 
   const compareValues = (obj1: unknown, obj2: unknown, path: string, depth: number): void => {
-    // 深度保护：超出最大深度后停止递归，避免深层嵌套导致栈溢出
+    // 深度保护：超出最大深度后停止递归，避免深层嵌套导致栈溢出。
+    // 护栏只终止「逐路径展开」，不等于「判定有差异」：无条件 push 会让任何深过护栏的结构
+    // 永远被报为 changed（两侧子树逐字节相同也一样），依赖该结果的缓存/去重随之全量失效。
+    // 故此处退化为整体 deepEqual：它是迭代实现（栈安全）、按「对象对」登记循环引用，
+    // 只有内容确实不同才记账。深度预算传 Infinity：本函数已在 100 层之外，deepEqual 的
+    // 默认 1000 层预算从子树根重新起算，超深结构会二次触发它的告警并按「不相等」返回，
+    // 等于把要消除的误报换个位置重新引入
     if (depth > MAX_COMPARE_DEPTH) {
-      changes.push({ path, oldValue: obj1, newValue: obj2 })
+      if (!deepEqual(obj1, obj2, Number.POSITIVE_INFINITY)) {
+        changes.push({ path, oldValue: obj1, newValue: obj2 })
+      }
       return
     }
 

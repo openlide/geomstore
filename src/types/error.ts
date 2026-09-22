@@ -9,8 +9,17 @@ export type OperationType = 'setState' | 'patch' | 'replaceState' | 'dispatch' |
 
 /**
  * 错误级别
+ *
+ * 规范集合为 `'error' | 'warning' | 'critical' | 'info'`：
+ * - `'critical'` 不是 `'error'` 的同义词，它表示「需人工介入」的致命级别，
+ *   默认处理器按 error 同级输出（含堆栈），级别标签保留 CRITICAL。
+ * - `'warn'` 是 `'warning'` 的历史别名（同义拼写），并非独立级别：它已随
+ *   `ErrorContext` 发布给外部调用方，且 `tests/unit/core/error/ErrorHandler.test.ts`
+ *   的 #36 回归（「warn 别名走 warning 通道」）与 `error-boundaries.test.ts` 仍在断言它，
+ *   删除即为破坏性变更。故保留兼容，但默认处理器与 `'warning'` 归入同一分支输出。
+ *   新代码一律使用 `'warning'`。
  */
-export type ErrorLevel = 'error' | 'warning' | 'info' | 'warn' | 'critical'
+export type ErrorLevel = 'error' | 'warning' | 'critical' | 'info' | /** @deprecated 同义别名，请改用 `'warning'` */ 'warn'
 
 /**
  * 错误上下文
@@ -61,23 +70,40 @@ export interface ErrorBoundaryOptions<S = unknown, F = unknown> {
 }
 
 /**
+ * 取可打印的错误消息文本
+ *
+ * `ErrorContext.error` 的契约类型是 `Error`，但 JS 允许 `throw null` / `throw 'boom'`，
+ * 而库内外通行写法是 `handle(name, op, error as Error)`（见 `ErrorHandler.handle` 的 JSDoc）——
+ * 断言不做运行时校验，这里就可能拿到非 Error 值。直接 `.message` 取值时
+ * `null` / `undefined` 会在处理器内部抛 TypeError 顶掉原始失败，字符串抛值则打印 `undefined`。
+ * 统一兜底为字符串化，保证处理器自身不再抛错。
+ */
+function describeErrorProperty(error: Error, property: 'message' | 'stack'): string | undefined {
+  const value = (error as { message?: unknown; stack?: unknown } | undefined | null)?.[property]
+  return typeof value === 'string' ? value : undefined
+}
+
+/**
  * 默认错误处理器
  */
 export const defaultErrorHandler: ErrorHandler = (context: ErrorContext): void => {
   const { storeName, operation, error, level } = context
   const prefix = `[GeomStore][${level.toUpperCase()}][${storeName}]`
+  // 非 Error 抛值（字符串 / null / undefined）兜底为字符串化，避免处理器自身抛错掩盖原始失败
+  const message = describeErrorProperty(error, 'message') ?? String(error)
 
   // 'critical' 与 'warn' 别名此前落入 info 分支：致命错误只打 console.info、
   // 无堆栈，监控台几乎不可见——分别映射到 error / warning 同级处理
   if (level === 'error' || level === 'critical') {
     console.error(prefix, `Error in ${operation}:`, error)
-    if (error.stack) {
-      console.error(prefix, 'Stack:', error.stack)
+    const stack = describeErrorProperty(error, 'stack')
+    if (stack) {
+      console.error(prefix, 'Stack:', stack)
     }
   } else if (level === 'warning' || level === 'warn') {
-    console.warn(prefix, `Warning in ${operation}:`, error.message)
+    console.warn(prefix, `Warning in ${operation}:`, message)
   } else {
-    console.info(prefix, `Info in ${operation}:`, error.message)
+    console.info(prefix, `Info in ${operation}:`, message)
   }
 }
 

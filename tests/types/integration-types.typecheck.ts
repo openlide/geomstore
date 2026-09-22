@@ -12,7 +12,7 @@
  * @file tests/types/integration-types.typecheck.ts
  */
 
-import type { ExtractMappedActions } from '@/types/integration.js'
+import type { ExtractMappedActions, PageOwnMethods } from '@/types/integration.js'
 import {
   withPageStore,
   withComponentStore,
@@ -20,6 +20,7 @@ import {
   createStore,
   type State,
   type Actions,
+  type Getters,
   type ConnectOptions,
   type PageThis,
   type ComponentThis,
@@ -27,6 +28,14 @@ import {
 } from '@/index.js'
 
 // ==================== 示例类型 ====================
+
+/**
+ * 双向精确类型相等断言（`Equal<A, B>` 为 true 才通过）
+ *
+ * 「可赋值」断言在**函数参数逆变**下会被白送：窄形参的 getter 一样能赋给宽形参目标，
+ * 于是看着在锁类型、实际什么都没锁（#432 的空转点）。需要「就是这个类型」时用本 helper。
+ */
+type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false
 
 interface UserState extends State {
   userInfo: { name: string } | null
@@ -41,16 +50,25 @@ interface UserActions extends Actions {
 
 // ==================== 数组形式 mapActions 精确签名 ====================
 
-type ArrayMapped = ExtractMappedActions<UserActions, { mapActions: ['login', 'setCount'] }>
+type ArrayMapped = ExtractMappedActions<UserActions, { mapActions: ['login', 'setCount', 'logout'] }>
 declare const arrayMapped: ArrayMapped
 
 // 正例：精确参数与返回类型
 const _loginResult: Promise<boolean> = arrayMapped.login({ username: 'u', password: 'p' })
 arrayMapped.setCount(1)
 
+// logout 的精确签名（#433：整份 fixture 里此前从未被断言过）：零参、返回 void
+const _logoutResult: void = arrayMapped.logout()
+// @ts-expect-error logout 不接受任何参数
+arrayMapped.logout('x')
+
 // 反例：传错参数类型
 // @ts-expect-error setCount 期望 number，传入 string 应报错
 arrayMapped.setCount('wrong')
+
+// 反例：漏传必填 payload
+// @ts-expect-error login 需要一个参数
+arrayMapped.login()
 
 // 反例：拼错方法名
 // @ts-expect-error setcount 不存在，应报错
@@ -81,10 +99,14 @@ const typedStore = createStore({
   state: { userInfo: null as { name: string } | null, count: 0 },
   actions: {
     login: (payload: { username: string; password: string }) => Promise.resolve(true),
+    logout: () => {},
     setCount: (n: number) => {},
   },
   getters: {
-    double: (state: { count: number }) => state.count * 2,
+    // 形参标注为 fixture 的完整状态类型：写成 `(state: { count: number })` 这种手抄窄形状时，
+    // 参数逆变会让它照样赋给 `(state: UserState) => number`，下方赋值断言于是恒真、
+    // 完全不校验「getter 的 state 由 store 状态推断」（#432）
+    double: (state: UserState) => state.count * 2,
   },
 })
 
@@ -126,7 +148,13 @@ withPageStore(typedStore, { mapActions: { doLogin: 'logn' } })
 
 type TypedGetters = (typeof typedStore)['getters']
 declare const typedGetters: TypedGetters
-const _doubleFn: (state: { userInfo: { name: string } | null; count: number }) => number = typedGetters.double
+const _doubleFn: (state: UserState) => number = typedGetters.double
+void _doubleFn
+// 精确锁定（#432）：可赋值断言在逆变下会被窄形参白送，这里要求 getters 保留的
+// 就是 `(state: UserState) => number` 本身——getters 类型一旦被擦回
+// `Getters<State>` / `(state: State) => unknown`，本行立即报错
+const _doubleExact: Equal<typeof typedGetters.double, (state: UserState) => number> = true
+void _doubleExact
 // 反例：拼错 getter 名应报错
 // @ts-expect-error 'doubl' 不在 getters 上
 typedGetters.doubl
@@ -160,6 +188,40 @@ const _tapResult: number = componentOutput.methods.handleTap()
 // 反例：访问不存在的方法应报错
 // @ts-expect-error 'missing' 不在原配置上
 componentOutput.methods.missing()
+
+// ==================== withComponentStore 编译期键约束（#433 补齐反向用例） ====================
+// 此前组件块只有一个正向用例：与 page / app 两块的断言清单保持同口径，
+// 否则 withComponentStore 泛型一旦回归（例如键约束被 [key: string]: any 抹平）这里查不出来
+
+// 正例：三组映射键均合法
+withComponentStore(typedStore, {
+  mapState: ['count', 'userInfo'],
+  mapGetters: ['double'],
+  mapActions: ['login', 'setCount'],
+})
+
+// 正例：对象别名形式，键与值都受约束
+withComponentStore(typedStore, {
+  mapState: { myCount: 'count' },
+  mapGetters: { myDouble: 'double' },
+  mapActions: { doTap: 'setCount' },
+})
+
+// 反例：拼错 state 键应报错
+// @ts-expect-error 'cont' 不是状态键
+withComponentStore(typedStore, { mapState: ['cont'] })
+
+// 反例：拼错 getter 名应报错
+// @ts-expect-error 'doubl' 不是 getter 名
+withComponentStore(typedStore, { mapGetters: ['doubl'] })
+
+// 反例：拼错 action 名应报错
+// @ts-expect-error 'logn' 不是 action 名
+withComponentStore(typedStore, { mapActions: ['logn'] })
+
+// 反例：别名形式的值同样受键约束
+// @ts-expect-error 'doubl' 不是 getter 名
+withComponentStore(typedStore, { mapGetters: { myDouble: 'doubl' } })
 
 // ==================== withAppStore / createApp 编译期键约束（S/A/G 从 store 推断） ====================
 
@@ -200,3 +262,48 @@ const _extra: number = appOutput.globalData.extra
 // 反例：访问不存在的成员应报错
 // @ts-expect-error 'notExist' 不在原配置上
 appOutput.notExist
+
+// ==================== PageOwnMethods / PageReservedKeys 的框架键清单（#427） ====================
+
+type PageCfgShape = {
+  data: { local: string }
+  setData: (data: Record<string, unknown>) => void
+  onLoad: (query: Record<string, string>) => void
+  onShow: () => void
+  onPullDownRefresh: () => void
+  onShareAppMessage: () => { title: string }
+  onShareTimeline: () => { title: string }
+  onAddToFavorites: () => { title: string }
+  onSaveExitState: () => { data: unknown }
+  onTabItemTap: (index: string) => void
+  onResize: (size: { windowWidth: number }) => void
+  options: { additive: boolean }
+  __geomUnbinds: Array<() => void>
+  customMethod: (n: number) => string
+}
+
+type PageCustom = PageOwnMethods<PageCfgShape>
+
+// 正例：只剩用户自定义方法，且签名保持（this 被刻意剥离，与 ComponentOwnMethods 同口径）
+const _custom: string = (null as unknown as PageCustom).customMethod(1)
+void _custom
+// 基例断言：自定义方法集合恰为 { customMethod }。
+// 少收任何一个框架键（含基础库提供的 onShareTimeline / onAddToFavorites / onSaveExitState、
+// 以及非函数的 options）都会让它出现在 keyof 里，下面两条断言随即报错。
+const _keys: 'customMethod' = null as unknown as keyof PageCustom
+void _keys
+// @ts-expect-error 反向确认：keyof PageCustom 不含框架键
+const _keysBad: 'onShareTimeline' = null as unknown as keyof PageCustom
+void _keysBad
+
+// ==================== PageThis 的 ExtraMethods 默认不注入（#428 现状记录） ====================
+
+declare const bareThis: PageThis<UserState, UserActions, Getters<UserState>, { mapState: ['count']; mapActions: ['login'] }>
+const _bareCount: number = bareThis.data.count
+const _bareLogin: Promise<boolean> = bareThis.login({ username: 'u', password: 'p' })
+void [_bareCount, _bareLogin]
+// @ts-expect-error 未传第 5 个泛型 ExtraMethods 时，同页自定义方法在 this 上不可见
+// （withPageStore 当前正是按默认值实例化 PageThis 的；接线属集成层，见本轮待办）
+bareThis.customMethod
+
+export {}

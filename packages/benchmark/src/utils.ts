@@ -2,13 +2,24 @@
  * @geomstore/benchmark - 基准测试工具类
  */
 
+import v8 from 'node:v8'
+
 // Node.js 环境类型声明
 declare const global: typeof globalThis & { gc?: () => void }
 declare const process: {
   memoryUsage(): { heapTotal: number; heapUsed: number; external: number }
 }
 
-import type { MemorySnapshot, BenchmarkUtils as IBenchmarkUtils } from './types/index.js'
+import type { IterationOutcome, MemorySnapshot, BenchmarkUtils as IBenchmarkUtils } from './types/index.js'
+
+/**
+ * 进程真实的 V8 堆上限（字节）
+ *
+ * 堆上限在进程启动时就定下，取一次缓存即可（getMemorySnapshot 在热循环里每轮都调）。
+ * 原先编造为 `heapTotal * 2`：本机实测 heapTotal*2 ≈ 104MB，而真实
+ * `heap_size_limit` ≈ 4.1GB，用它算「还剩多少堆」会差一个数量级。
+ */
+const HEAP_SIZE_LIMIT = v8.getHeapStatistics().heap_size_limit
 
 /**
  * 基准测试工具类实现
@@ -58,7 +69,14 @@ export class BenchmarkUtils implements IBenchmarkUtils {
   calculatePercentile(values: number[], percentile: number): number {
     if (values.length === 0) return 0
     const sorted = [...values].sort((a, b) => a - b)
-    const index = Math.ceil((percentile / 100) * sorted.length) - 1
+    // 百分位与下标都要夹住：percentile <= 0 时下标算成 -1、> 100 时越出右边界，
+    // 两种越界都让 sorted[index] 取到 undefined，直接违背签名的 number；
+    // NaN 走 Math.min/Math.max 也会得 NaN，单独贴到 0 一侧（±Infinity 仍按夹取走两端）
+    const clamped = Number.isNaN(percentile) ? 0 : Math.min(100, Math.max(0, percentile))
+    const index = Math.min(
+      sorted.length - 1,
+      Math.max(0, Math.ceil((clamped / 100) * sorted.length) - 1)
+    )
     return sorted[index]
   }
 
@@ -93,7 +111,7 @@ export class BenchmarkUtils implements IBenchmarkUtils {
       timestamp: Date.now(),
       heapTotal: memory.heapTotal,
       heapUsed: memory.heapUsed,
-      heapLimit: memory.heapTotal * 2,
+      heapLimit: HEAP_SIZE_LIMIT,
       external: memory.external,
     }
   }
@@ -141,11 +159,30 @@ export class BenchmarkUtils implements IBenchmarkUtils {
     return new Promise((resolve) => setTimeout(resolve, ms))
   }
 
-  async repeat<T>(fn: () => T | Promise<T>, iterations: number): Promise<Array<{ result: T; duration: number }>> {
-    const results: Array<{ result: T; duration: number }> = []
+  /**
+   * 跑一轮，并把该轮的异常收进结果而不是往上抛
+   *
+   * 单次 fn 抛错原本会让整个 repeat/parallel 一起 reject、已测量的每一轮数据全丢；
+   * 基准测试要回答的恰恰是「第几轮开始崩、崩之前的分布长什么样」，故在此就地吸收。
+   */
+  private async measureIteration<T>(fn: () => T | Promise<T>): Promise<IterationOutcome<T>> {
+    const startTime = performance.now()
+    try {
+      const result = await fn()
+      return { result, duration: performance.now() - startTime }
+    } catch (error) {
+      return {
+        result: undefined,
+        duration: performance.now() - startTime,
+        error: error instanceof Error ? error.message : String(error),
+      }
+    }
+  }
+
+  async repeat<T>(fn: () => T | Promise<T>, iterations: number): Promise<IterationOutcome<T>[]> {
+    const results: IterationOutcome<T>[] = []
     for (let i = 0; i < iterations; i++) {
-      const { result, duration } = await this.measureTimeAsync(async () => await fn())
-      results.push({ result, duration })
+      results.push(await this.measureIteration(fn))
     }
     return results
   }
@@ -154,8 +191,8 @@ export class BenchmarkUtils implements IBenchmarkUtils {
     fn: () => T | Promise<T>,
     concurrency: number,
     total: number
-  ): Promise<Array<{ result: T; duration: number }>> {
-    const results: Array<{ result: T; duration: number }> = []
+  ): Promise<IterationOutcome<T>[]> {
+    const results: IterationOutcome<T>[] = []
     const workers: Promise<void>[] = []
     let completed = 0
 
@@ -167,8 +204,7 @@ export class BenchmarkUtils implements IBenchmarkUtils {
             // `completed < total` 判断，实际执行次数超过 total，结果条数与时序都不确定
             const index = completed++
             if (index >= total) return
-            const { result, duration } = await this.measureTimeAsync(async () => await fn())
-            results[index] = { result, duration }
+            results[index] = await this.measureIteration(fn)
           }
         })()
       )
@@ -194,8 +230,15 @@ export class BenchmarkUtils implements IBenchmarkUtils {
 
     const total = durations.reduce((sum, d) => sum + d, 0)
     const avg = total / durations.length
-    const min = Math.min(...durations)
-    const max = Math.max(...durations)
+    // 单次遍历取极值：`Math.min(...durations)` 会把每个元素变成一个实参，实测
+    // 12.8 万轮迭代就抛 RangeError: Maximum call stack size exceeded，
+    // 而 xlarge 档跑满迭代数正是这个量级
+    let min = Infinity
+    let max = -Infinity
+    for (const d of durations) {
+      if (d < min) min = d
+      if (d > max) max = d
+    }
     const median = this.calculateMedian(durations)
     const p95 = this.calculatePercentile(durations, 95)
     const p99 = this.calculatePercentile(durations, 99)

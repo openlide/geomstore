@@ -40,7 +40,7 @@ export class ResultBuilder {
     const { scenario, iterations, timeStats, memoryStats, cacheStats, passedCheck, warnings, errors } = options
 
     const throughput = this.calculateThroughput(iterations, timeStats)
-    const cache = cacheStats ? this.buildCacheResult(cacheStats) : this.emptyCacheStats()
+    const cache = cacheStats ? buildCacheResult(cacheStats) : emptyCacheResult()
     const memory = memoryStats ?? this.emptyMemoryStats()
     const passed = passedCheck?.() ?? true
 
@@ -61,17 +61,6 @@ export class ResultBuilder {
 
   static emptyMemoryStats(): MemoryStats {
     return { initial: 0, peak: 0, final: 0, delta: 0, avg: 0 }
-  }
-
-  private static emptyCacheStats(): BenchmarkResult['results']['cache'] {
-    return { enabled: false, totalAccesses: 0, hits: 0, misses: 0, hitRate: 0, missRate: 0 }
-  }
-
-  private static buildCacheResult(stats: CacheStats): BenchmarkResult['results']['cache'] {
-    const total = stats.hits + stats.misses
-    const hitRate = total > 0 ? (stats.hits / total) * 100 : 0
-    const missRate = total > 0 ? (stats.misses / total) * 100 : 0
-    return { enabled: stats.enabled, totalAccesses: total, hits: stats.hits, misses: stats.misses, hitRate, missRate, evictions: stats.evictions }
   }
 
   private static calculateThroughput(iterations: number, timeStats: TimeStats): BenchmarkResult['results']['throughput'] {
@@ -95,7 +84,7 @@ export class ResultBuilder {
         executionTime: this.emptyTimeStats(),
         memory: this.emptyMemoryStats(),
         throughput: { opsPerSecond: 0, peakInstantRate: 0 },
-        cache: this.emptyCacheStats(),
+        cache: emptyCacheResult(),
       },
       passed: false,
       errors: [error instanceof Error ? error.message : error],
@@ -107,15 +96,18 @@ export class ResultBuilder {
 
     const totalIterations = results.reduce((sum, r) => sum + r.iterations, 0)
     const passedCount = results.filter((r) => r.passed).length
+    // 只合并一次：executionTime 与 throughput 必须来自同一份耗时统计，
+    // 原先两处各调一次 mergeTimeStats（排序 + 标准差全做两遍），改一处就会让两者背离
+    const mergedTimeStats = this.mergeTimeStats(results.map((r) => r.results.executionTime))
 
     return {
       scenario,
       datasetSize: this.inferDatasetSize(totalIterations),
       iterations: totalIterations,
       results: {
-        executionTime: this.mergeTimeStats(results.map((r) => r.results.executionTime)),
+        executionTime: mergedTimeStats,
         memory: this.mergeMemoryStats(results.map((r) => r.results.memory)),
-        throughput: this.calculateThroughput(totalIterations, this.mergeTimeStats(results.map((r) => r.results.executionTime))),
+        throughput: this.calculateThroughput(totalIterations, mergedTimeStats),
         cache: this.mergeCacheStats(results.map((r) => r.results.cache)),
       },
       passed: passedCount === results.length,
@@ -152,7 +144,7 @@ export class ResultBuilder {
 
   private static mergeCacheStats(stats: BenchmarkResult['results']['cache'][]): BenchmarkResult['results']['cache'] {
     const enabledStats = stats.filter((s) => s.enabled)
-    if (enabledStats.length === 0) return this.emptyCacheStats()
+    if (enabledStats.length === 0) return emptyCacheResult()
     const totalHits = enabledStats.reduce((sum, s) => sum + s.hits, 0)
     const totalMisses = enabledStats.reduce((sum, s) => sum + s.misses, 0)
     const total = totalHits + totalMisses
@@ -241,6 +233,8 @@ export function warmupCache<S extends Record<string, unknown>>(
 ): void {
   const state = store.getState()
   const keys = Object.keys(state)
+  // 空状态时 `i % 0` 得到 NaN，取出的键是 undefined，预热就变成了用 undefined 打缓存
+  if (keys.length === 0) return
   for (let i = 0; i < iterations; i++) {
     const key = keys[i % keys.length]
     store.getCached(key)

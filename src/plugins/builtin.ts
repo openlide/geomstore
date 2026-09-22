@@ -14,11 +14,15 @@ import { registerGlobalEntry } from './globalRegistry.js'
  * JS 调用方仍可能传入异步实现（如 localStorage 的 Promise 封装），
  * 静默使用会导致恢复时 JSON.parse(Promise) 抛错、保存时异步 rejection 逃出
  * try/catch —— 数据丢失且无感知，因此必须显式报错。
+ *
+ * @param methodLabel 出错方法的完整定位串（`storage.getItem` / `wx.getStorageSync`）：
+ * 用户后端与内置 wx 适配器共用本守卫，只写 `storage.xxx` 会让「压根没传 storage」的
+ * 兼容层场景指向一个调用方并没有用的选项
  */
-function assertSyncStorageResult(result: unknown, method: string): void {
+function assertSyncStorageResult(result: unknown, methodLabel: string): void {
   if (result !== null && (typeof result === 'object' || typeof result === 'function') && typeof (result as PromiseLike<unknown>).then === 'function') {
     throw new Error(
-      `[GeomStore][persistence] storage.${method}() 返回了 Promise：persistencePlugin 仅支持同步存储后端` +
+      `[GeomStore][persistence] ${methodLabel}() 返回了 Promise：persistencePlugin 仅支持同步存储后端` +
         `（如 wx.getStorageSync、WxStorageBackend 或同步封装的 localStorage）。` +
         `异步后端请在外部自行订阅 store 实现持久化。`,
     )
@@ -84,7 +88,7 @@ export const loggerPlugin: Plugin = {
  *    ```
  * 2. 作为工厂函数传入选项：
  *    ```ts
- *    store.use(persistencePlugin({ key: 'app-state', storage: wx }))
+ *    store.use(persistencePlugin({ key: 'app-state', storage: new WxStorageBackend() }))
  *    ```
  */
 // 使用工厂函数创建"可调用 + 可安装"的插件：
@@ -135,50 +139,90 @@ function installPersistence<S extends State>(store: Store<S>, options: Persisten
 
   const storageKey = typeof key === 'function' ? key(store.name) : key
 
-  // 解析存储后端：优先使用传入的 storage（符合 getItem/setItem 接口），
+  // 解析存储后端：传入 storage 时必须完整实现三个同步方法（缺一即在安装期抛错），
   // 否则使用微信小程序的 wx.getStorageSync / setStorageSync / removeStorageSync；
   // 非微信环境（如测试/Node）wx 不存在，降级为内存存储避免 ReferenceError
   const userStorage = options.storage
   let storageAdapter: StorageBackend
-  if (userStorage && typeof userStorage === 'object' && 'getItem' in userStorage) {
-    const backend = userStorage as StorageBackend
-    // 包装用户后端：拦截异步返回值并显式报错，避免恢复/保存被静默丢弃
+  if (userStorage !== undefined && userStorage !== null) {
+    // 安装期一次性校验三个方法形状：只检查 getItem 时，缺 setItem / removeItem 的后端
+    // （只读适配器、键名拼错的对象）会把错误推迟到首次落盘，抛出的
+    // `backend.setItem is not a function` 又被 saveState 的 try/catch 吞成一条日志，
+    // 卸载时的 removeItem 更是静默失败——调用方始终不知道用错了后端。
+    // 也不能「校验不通过就悄悄改用 wx / 内存」：那会把数据写到另一个后端，
+    // 比立刻报错更难排查，故此处直接抛错（与 assertSyncStorageResult 同一严格口径）
+    const requiredMethods = ['getItem', 'setItem', 'removeItem'] as const
+    const candidate = userStorage as Partial<StorageBackend>
+    const missing = requiredMethods.filter((method) => typeof candidate[method] !== 'function')
+    if (missing.length > 0) {
+      throw new TypeError(
+        `[GeomStore][persistence] storage 选项必须同时提供 ${requiredMethods.join(' / ')} 三个同步方法，` +
+          `当前缺少或不是函数：${missing.join(' / ')}。` +
+          `接入微信小程序存储请传 new WxStorageBackend()；不传 storage 时本插件会自动使用 wx 同步 API（无 wx 则降级为内存存储）。`,
+      )
+    }
+    // 形状校验通过后按 StorageBackend 契约调用；再包一层用于拦截异步返回值，
+    // 避免恢复/保存被静默丢弃
+    const backend = userStorage
     storageAdapter = {
       getItem: (k: string) => {
         const value = backend.getItem(k)
-        assertSyncStorageResult(value, 'getItem')
+        assertSyncStorageResult(value, 'storage.getItem')
         return value
       },
       setItem: (k: string, v: string) => {
         const result = backend.setItem(k, v)
-        assertSyncStorageResult(result, 'setItem')
+        assertSyncStorageResult(result, 'storage.setItem')
       },
       removeItem: (k: string) => {
         const result = backend.removeItem(k)
-        assertSyncStorageResult(result, 'removeItem')
+        assertSyncStorageResult(result, 'storage.removeItem')
       },
     }
   } else {
-    // 微信小程序 wx 为全局变量，经 globalThis 读取避免直接引用未声明标识符（TS2304）
+    // 微信小程序 wx 为全局变量，经 globalThis 读取避免直接引用未声明标识符（TS2304）。
+    // set/remove 的返回类型取 unknown（而非 void）：下方要把实际返回值交给异步守卫检查
     const wxGlobal = (
-      globalThis as { wx?: { getStorageSync(k: string): unknown; setStorageSync(k: string, v: string): void; removeStorageSync(k: string): void } }
+      globalThis as {
+        wx?: { getStorageSync(k: string): unknown; setStorageSync(k: string, v: string): unknown; removeStorageSync(k: string): unknown }
+      }
     ).wx
     if (wxGlobal && typeof wxGlobal.getStorageSync === 'function') {
+      // wx 适配器同样逐方法过 assertSyncStorageResult：本文件的核心防护此前只包住
+      // 用户传入的 storage，运行在提供 Promise 版同步存储 API 的兼容层（Taro / uni-app
+      // 等 polyfill）下时，写入会变成一个无人处理的 Promise rejection —— 正是
+      // 「数据丢失且无感知」的场景
       storageAdapter = {
         // 微信小程序同步存储
         getItem: (k: string) => {
           const v = wxGlobal.getStorageSync(k)
+          assertSyncStorageResult(v, 'wx.getStorageSync')
           return v === undefined || v === null ? null : (v as string)
         },
-        setItem: (k: string, v: string) => wxGlobal.setStorageSync(k, v),
-        removeItem: (k: string) => wxGlobal.removeStorageSync(k),
+        setItem: (k: string, v: string) => {
+          const result = wxGlobal.setStorageSync(k, v)
+          assertSyncStorageResult(result, 'wx.setStorageSync')
+        },
+        removeItem: (k: string) => {
+          const result = wxGlobal.removeStorageSync(k)
+          assertSyncStorageResult(result, 'wx.removeStorageSync')
+        },
       }
     } else {
       // 降级：进程内存存储（重启即失，仅保证不抛错）
+      const degradeMessage = '[GeomStore][persistence] 未检测到可用的 storage 后端（非微信环境且未传入 storage），降级为内存存储，持久化不生效'
       if (!isProduction()) {
-        console.warn('[GeomStore][persistence] 未检测到可用的 storage 后端（非微信环境且未传入 storage），降级为内存存储，持久化不生效')
+        console.warn(degradeMessage)
+      } else {
+        // 生产环境不刷控制台，但必须留一个可编程感知的信号：否则持久化彻底静默失效
+        // （恢复读不到数据、保存成功写进下面的 Map 并随进程消失），H5/SSR 与「被摇树
+        // 丢掉 storage 配置」的场景调用方完全无从发现
+        store.hooks.emit('onError', new Error(degradeMessage), 'persistence')
       }
       const memoryMap = new Map<string, string>()
+      // 内存后端无需 assertSyncStorageResult：三个方法的返回值都由本闭包产出
+      // （`?? null` / `void` 归一为 undefined），外部实现不可能在这里返回 Promise，
+      // 包一层只是永不命中的死分支
       storageAdapter = {
         getItem: (k: string) => memoryMap.get(k) ?? null,
         setItem: (k: string, v: string) => void memoryMap.set(k, v),
@@ -314,8 +358,11 @@ function installPersistence<S extends State>(store: Store<S>, options: Persisten
     if (clearOnUninstall) {
       try {
         storageAdapter.removeItem(storageKey)
-      } catch {
-        // 存储不可用时静默失败
+      } catch (error) {
+        // 清理失败不得静默：磁盘上残留的旧数据会在下次启动恢复出「已卸载」的状态
+        // （已清除却复活）。与 saveState 同口径上报，调用方才有机会介入
+        console.error('[GeomStore] Failed to clear persisted state:', error)
+        store.hooks.emit('onError', error as Error, 'persistence')
       }
     }
   }
@@ -366,8 +413,10 @@ export const devtoolsPlugin: Plugin = {
         store.$replaceState(newState as never)
       },
 
-      subscribe: (callback: (state: unknown) => void) => {
-        return store.subscribe(callback)
+      subscribe: (callback: (state: unknown) => void, options?: { readOnly?: boolean }) => {
+        // 默认只读：调试入口的订阅只观察状态，以可写订阅登记会翻转 Store 的
+        // needsClone 判定，让 persistence/logger 等只读订阅者一并承担整树深拷贝
+        return store.subscribe(callback, options ?? { readOnly: true })
       },
 
       use: (plugin: unknown) => {

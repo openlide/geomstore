@@ -16,6 +16,10 @@
  * 清理失败只告警不中断构建：tsc 仍会覆盖同名产物，残留属于「未清理干净」而非「构建错误」，
  * 为环境怪癖中断开发链路得不偿失。
  *
+ * 上述「只告警」的豁免不适用于「目标不可信」：dist 若是符号链接 / Windows junction，
+ * existsSync/readdirSync 会跟随到链接的真实落点，删掉的就是仓库外的文件——不可回滚，
+ * 与环境怪癖不同类，必须以退出码 1 中止（prebuild 失败会阻断整条构建链）。
+ *
  * 与 postbuild-dist.mjs 的分工：本脚本负责「清空」，postbuild 负责「补丁」
  * （写 type 标记、剔除 sourcemap）。
  */
@@ -24,7 +28,8 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const distDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'dist')
+const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+const distDir = path.join(projectRoot, 'dist')
 
 /** 递归统计文件数（仅用于日志） */
 function countFiles(dir) {
@@ -33,6 +38,30 @@ function countFiles(dir) {
     n += entry.isDirectory() ? countFiles(path.join(dir, entry.name)) : 1
   }
   return n
+}
+
+/**
+ * 确认 dist 就是「仓库内那个真实目录」，返回 null 或人可读的拒绝理由。
+ *
+ * 删除不可回滚，所以判定取 realpath 全等而不是「仍在项目根之内」：
+ * 指向仓库内别处（例如被误链到 src）的重解析点同样必须拒绝。
+ * Windows junction 的 lstat().isSymbolicLink() 行为不稳定，realpathSync 则一定解析重解析点，
+ * 故以 realpath 为准；lstat 只用于把「是链接」这件事说清楚。
+ */
+function rejectUntrustedTarget() {
+  const realDist = fs.realpathSync(distDir)
+  const expected = path.join(fs.realpathSync(projectRoot), 'dist')
+  // Windows 路径大小写不敏感（盘符 D: / d: 都可能出现），直接 === 会误判成「不可信」
+  const same =
+    process.platform === 'win32' ? realDist.toLowerCase() === expected.toLowerCase() : realDist === expected
+  if (!same) {
+    const via = fs.lstatSync(distDir).isSymbolicLink() ? '符号链接' : '链接或 junction'
+    return `dist 是${via}，真实落点为 ${realDist}（期望 ${expected}）`
+  }
+  if (!fs.statSync(realDist).isDirectory()) {
+    return `dist 不是目录，而是文件：${realDist}`
+  }
+  return null
 }
 
 /** 自底向上删除目录树（见文件头「实现说明」） */
@@ -51,6 +80,15 @@ function removeDirTree(dir) {
 if (!fs.existsSync(distDir)) {
   console.log('[clean-dist] dist not present; nothing to clean')
 } else {
+  const untrusted = rejectUntrustedTarget()
+  if (untrusted) {
+    console.error(
+      `[clean-dist] 已中止：${untrusted}。\n` +
+        '            自底向上的 unlink/rmdir 会删掉链接目标里的真实文件（可能在仓库之外），不可回滚。\n' +
+        '            请让 dist 恢复为仓库内的真实目录后再构建。',
+    )
+    process.exit(1)
+  }
   // 统计仅用于日志，且发生在删除之前：readdirSync 抛错（EACCES/ENOTDIR/Windows 占用）
   // 若不被兜住会让整个 prebuild 中断，违背本脚本「清理失败只告警不中断构建」的承诺
   let before = 0

@@ -108,8 +108,11 @@ function installAppLifecycleHooks(): void {
   }
 
   const wrappedApp = function (this: unknown, options: Record<string, unknown> = {}): unknown {
-    const userOnShow = options.onShow as ((this: unknown, ...args: unknown[]) => void) | undefined
-    const userOnHide = options.onHide as ((this: unknown, ...args: unknown[]) => void) | undefined
+    // 先按 typeof 校验再取用户回调：options 来自 App({...})，JS 调用方或 `as any`
+    // 可传入非函数的真值（字符串/对象）。可选链 `userOnShow?.apply` 不校验可调用性，
+    // 会抛 TypeError 并让本次 onShow 之后的生命周期逻辑一并中断
+    const userOnShow = typeof options.onShow === 'function' ? (options.onShow as (this: unknown, ...args: unknown[]) => void) : undefined
+    const userOnHide = typeof options.onHide === 'function' ? (options.onHide as (this: unknown, ...args: unknown[]) => void) : undefined
 
     // 先执行时效性检查再调用用户回调，保证切前台时状态刷新优先
     options.onShow = function (this: unknown, ...args: unknown[]): void {
@@ -138,10 +141,10 @@ function installAppLifecycleHooks(): void {
 /**
  * 确保全局 App 已被本模块包装（幂等，不触碰处理器注册表）
  *
- * 与 initBackgroundSync 的区别：后者在「全局 App 已被外部替换」时会清空
- * backgroundSyncHandlers 再重装（旧包装已失效，残留处理器无意义）；本函数只负责
- * 把包装就位，供 createEnterpriseApp 在返回配置前调用——包装通过替换全局 App 来
- * 拦截 options.onShow/onHide，必须早于 App(options) 执行，否则拦截不到任何回调。
+ * 与 initBackgroundSync 的区别：后者在「全局 App 被外部替换」时还会为保留已有处理器
+ * 给出告警；本函数只负责把包装就位，供 createEnterpriseApp 在返回配置前调用——包装通过
+ * 替换全局 App 来拦截 options.onShow/onHide，必须早于 App(options) 执行，否则拦截不到
+ * 任何回调。
  */
 export function ensureAppLifecycleHooks(): void {
   const globalObj = globalThis as { App?: unknown }
@@ -170,7 +173,8 @@ export function unregisterBackgroundSync<S extends State = State>(store: Store<S
  *
  * 多次调用不会重复包装全局 App：
  * 若全局 App 仍为本模块安装的包装函数，则仅注册新的处理器；
- * 若全局 App 已被外部替换（如测试重置），则重新安装并重置注册表
+ * 若全局 App 已被外部替换（如测试重置），则重新安装包装，
+ * 已有处理器注册表原样保留（新包装遍历同一注册表，清空只会丢弃其他调用方的注册）
  */
 export function initBackgroundSync<S extends State = State>(config: BackgroundSyncConfig<S>): void {
   const { store, maxInactiveTime = DEFAULT_MAX_INACTIVE_MS, onForeground, onBackground } = config
@@ -179,7 +183,12 @@ export function initBackgroundSync<S extends State = State>(config: BackgroundSy
   if (typeof globalObj.App !== 'function') return
 
   if (globalObj.App !== installedAppWrapper) {
-    backgroundSyncHandlers.length = 0
+    // 全局 App 被外部替换：重装后的新包装遍历的仍是同一个模块级注册表，
+    // 旧条目照样会被调用。此前在此清空整表，会静默丢弃其他调用方
+    // （另一处 initBackgroundSync）已注册的处理器，且无任何重新注册的机会
+    if (backgroundSyncHandlers.length > 0) {
+      logger.warn('BackgroundSync', `全局 App 构造器已被替换，已重新安装包装并保留 ${backgroundSyncHandlers.length} 个已注册的处理器`)
+    }
     installAppLifecycleHooks()
   }
 

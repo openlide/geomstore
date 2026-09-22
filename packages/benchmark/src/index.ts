@@ -7,6 +7,8 @@
 // 类型定义
 export type * from './types/index.js'
 
+import type { ActionMap, BenchmarkStore, CacheStats } from './types/index.js'
+
 // 核心类
 export { BenchmarkRunner } from './runner.js'
 export { BenchmarkReporter, benchmarkReporter } from './reporter.js'
@@ -51,14 +53,15 @@ export function createBenchmarkAdapter<S extends Record<string, unknown>>(
     setState: <K extends keyof S>(key: K, value: S[K]) => void
     $patch: (partial: Partial<S>) => void
     $replaceState: (state: S) => void
-    actions: Record<string, (...args: unknown[]) => unknown>
+    actions: ActionMap<S>
     dispatch: (name: string, ...args: unknown[]) => unknown
     subscribe: (listener: () => void) => () => void
     getCached?: (key: string) => unknown
-    getCacheStats: () => { enabled: boolean; hits: number; misses: number; evictions?: number }
+    getCacheStats?: () => CacheStats
     destroy: () => void
   }
-): import('./types/index.js').BenchmarkStore<S> {
+): BenchmarkStore<S> {
+  const { getCacheStats } = store
   return {
     getState: () => store.getState(),
     setState: (key, value) => store.setState(key, value),
@@ -69,8 +72,13 @@ export function createBenchmarkAdapter<S extends Record<string, unknown>>(
     },
     dispatch: (name, ...args) => store.dispatch(name, ...args),
     subscribe: (listener) => store.subscribe(listener),
-    getCached: store.getCached ? (key) => store.getCached?.(key) : undefined,
-    getCacheStats: () => store.getCacheStats(),
+    // getCached 每次调用现取：被适配的库常在 enableCache()/懒初始化之后才挂上它，
+    // 构造期做特性探测会把「当时没有」固化成永久 undefined，缓存读分支于是静默空转
+    getCached: (key) => store.getCached?.(key),
+    // getCacheStats 相反地保持构造期判定：它的「有没有」本身就是 runner 用来上报
+    // 「缓存未启用」的契约信号（见 BenchmarkStore.getCacheStats 注释），改成恒有值会让
+    // 没有缓存的库被当成有缓存统计
+    getCacheStats: getCacheStats ? () => getCacheStats.call(store) : undefined,
     destroy: () => store.destroy(),
   }
 }

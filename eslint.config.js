@@ -104,15 +104,6 @@ export default [
     },
   },
 
-  // 测试 setup 文件配置（注入小程序全局对象，需写 globalThis）
-  {
-    files: ['tests/setup.ts'],
-    rules: {
-      'no-undef': 'off',
-      'no-global-assign': 'off',
-    },
-  },
-
   // 示例文件配置
   {
     files: ['examples/**/*.ts', 'src/**/*.example.ts', 'src/**/*.example/**/*.ts'],

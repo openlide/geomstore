@@ -6,10 +6,51 @@ import os from 'node:os'
 
 declare const process: { version: string; platform: string; arch: string }
 
-import type { BenchmarkResult, BenchmarkReport, BenchmarkScenario, BenchmarkConfig, MemorySnapshot, State, BenchmarkStore } from './types/index.js'
+import type { BenchmarkResult, BenchmarkReport, BenchmarkScenario, BenchmarkConfig, DatasetSize, MemorySnapshot, State, BenchmarkStore } from './types/index.js'
 import { benchmarkUtils } from './utils.js'
 import { defaultBenchmarkConfig, mergeConfig } from './config.js'
-import { ResultBuilder } from './helpers.js'
+import { ResultBuilder, buildCacheResult, emptyCacheResult } from './helpers.js'
+
+/**
+ * 档位放宽倍数：数据集越大单次操作越贵，但耗时/内存不是按状态键数量线性增长
+ * （写路径的成本在变更的键与订阅者上），故取值远小于状态键的 10 倍递增。
+ * 键集即 DatasetSize，编译器保证四档全覆盖，无需再写回落值。
+ */
+const SIZE_MULTIPLIERS: Record<DatasetSize, number> = { small: 1, medium: 3, large: 10, xlarge: 50 }
+
+/**
+ * `quick-` 前缀场景（CI 冒烟用）的额外放宽：迭代数极少、采样抖动占比高，
+ * 耗时与内存门限按此倍数再放宽（吞吐门限不套用，它只按档位倍数下调）
+ */
+const QUICK_MODE_HEADROOM = 5
+
+/**
+ * 耗时门限在档位倍数之外再放宽的量：一轮迭代执行的是 setState / $patch(≤5 键) /
+ * getCached / dispatch 四者之一，而门限只有 setState 一档，$patch 与 dispatch
+ * 天生比单键写贵
+ */
+const TIME_HEADROOM = 10
+
+/**
+ * 吞吐门限的松弛系数：ops/s 由「迭代数 ÷ 累计耗时」反推，比耗时本身更容易被
+ * 单轮抖动放大，故在档位倍数之外再下调一个数量级
+ */
+const THROUGHPUT_RELAXATION = 0.1
+
+/**
+ * 缓存场景的命中率下限：这类场景刻意把键空间配得比容量大（keySpaceMultiplier > 1）
+ * 来制造淘汰，未命中是设计目标，不能套用 `thresholds.cacheHitRate` 那种全量门限
+ */
+const CACHE_SCENARIO_MIN_HIT_RATE = 20
+
+/**
+ * 判定通过所需的检查项占比。
+ *
+ * 配合 `Math.ceil` 的实际语义：非缓存场景 3 项 ⇒ 需要 3 项全过，
+ * 缓存场景 4 项 ⇒ 允许 1 项不达标。占比不是「按项加权」，而是刻意让
+ * 只有耗时/内存/吞吐三项时没有任何豁免额度。
+ */
+const MIN_PASS_RATIO = 0.67
 
 /**
  * 基准测试运行器
@@ -81,6 +122,12 @@ export class BenchmarkRunner {
 
   private async runScenario(scenario: BenchmarkScenario): Promise<BenchmarkResult> {
     const datasetConfig = this.config.datasets[scenario.datasetSize]
+    // 空数据集时 keys.length === 0，取键会得到 undefined，整轮测量都是噪声；
+    // 与其产出一份看似正常的假结果，不如让场景失败并计入 errors
+    if (!datasetConfig || datasetConfig.stateKeys <= 0) {
+      throw new Error(`场景 "${scenario.name}" 的数据集配置无效: ${scenario.datasetSize}`)
+    }
+
     const durations: number[] = []
     const timestamps: number[] = []
     const memSnapshots: MemorySnapshot[] = []
@@ -111,7 +158,6 @@ export class BenchmarkRunner {
       }
 
       const finalMemory = benchmarkUtils.getMemorySnapshot()
-      const cacheStats = store.getCacheStats()
       const timeStats = benchmarkUtils.calculateTimeStats(durations)
 
       const totalTime = timeStats.total / 1000
@@ -130,19 +176,15 @@ export class BenchmarkRunner {
             initial: initialMemory.heapUsed,
             peak: peakMemory,
             final: finalMemory.heapUsed,
+            // 门限比的是「峰值增量」而非首尾差：peakMemory 以初始值为起点、只在上探时抬高，
+            // 因此 delta 恒 >= 0（迭代之间发生 GC 只会让 final 回落、动不了峰值），
+            // 不存在负增量绕过内存门限的路径
             delta: peakMemory - initialMemory.heapUsed,
             avg: memSnapshots.reduce((sum, s) => sum + s.heapUsed, 0) / memSnapshots.length,
           },
           throughput,
-          cache: {
-            enabled: cacheStats.enabled,
-            totalAccesses: cacheStats.hits + cacheStats.misses,
-            hits: cacheStats.hits,
-            misses: cacheStats.misses,
-            hitRate: cacheStats.hits + cacheStats.misses > 0 ? (cacheStats.hits / (cacheStats.hits + cacheStats.misses)) * 100 : 0,
-            missRate: cacheStats.hits + cacheStats.misses > 0 ? (cacheStats.misses / (cacheStats.hits + cacheStats.misses)) * 100 : 0,
-            evictions: cacheStats.evictions,
-          },
+          // getCacheStats 是可选契约：被适配的库没有缓存时省略它，此处按「缓存未启用」上报
+          cache: store.getCacheStats ? buildCacheResult(store.getCacheStats()) : emptyCacheResult(),
         },
         passed: true,
       }
@@ -177,7 +219,13 @@ export class BenchmarkRunner {
   private createTestStore(stateKeys: number, scenario?: BenchmarkScenario): BenchmarkStore<Record<string, unknown>> {
     const storeConfig = benchmarkUtils.createTestStoreConfig(stateKeys)
     const cacheTestConfig = scenario?.cacheConfig
-    const cacheCapacity = cacheTestConfig?.capacity ?? Math.floor(stateKeys / 2)
+    const explicitCapacity = cacheTestConfig?.capacity
+    // 容量为 0（或 NaN/负数）的缓存永远不可能命中，测出来的命中率与淘汰数都是假的；
+    // 显式配置给非法值就报错，推导值（stateKeys 过小会让 floor(N/2) === 0）兜到 1
+    if (explicitCapacity !== undefined && (!Number.isFinite(explicitCapacity) || explicitCapacity < 1)) {
+      throw new Error(`场景 "${scenario?.name}" 的 cacheConfig.capacity 无效: ${explicitCapacity}`)
+    }
+    const cacheCapacity = explicitCapacity ?? Math.max(1, Math.floor(stateKeys / 2))
     const cacheTTL = cacheTestConfig?.ttl ?? 0
 
     const store = this.createStore({
@@ -216,6 +264,9 @@ export class BenchmarkRunner {
       if (scenario.cacheConfig) {
         const { capacity = 50, keySpaceMultiplier = 1, readWriteRatio = 0.7 } = scenario.cacheConfig
         const keySpaceSize = Math.min(Math.floor(capacity * keySpaceMultiplier), allKeysCount)
+        // 键空间为 0（capacity 或 keySpaceMultiplier 配成 0）时 `Math.random() * 0` 恒等于 0，
+        // 空状态还会取到 undefined 键并喂给 setState；这一轮什么都不测，直接收尾
+        if (keySpaceSize < 1) return store.getState()
         const isRead = Math.random() < readWriteRatio
 
         if (isRead) {
@@ -282,30 +333,28 @@ export class BenchmarkRunner {
     const thresholds = this.config.thresholds
     const r = result.results
 
-    const sizeMultipliers: Record<string, number> = { small: 1, medium: 3, large: 10, xlarge: 50 }
-    const sizeMultiplier = sizeMultipliers[scenario.datasetSize] || 1
-    const isQuickMode = scenario.name.startsWith('quick-')
-    const modeMultiplier = isQuickMode ? 5 : 1
+    const sizeMultiplier = SIZE_MULTIPLIERS[scenario.datasetSize]
+    const modeMultiplier = scenario.name.startsWith('quick-') ? QUICK_MODE_HEADROOM : 1
 
     const details: Array<{ passed: boolean }> = []
 
-    const timeThreshold = thresholds.operationTime.setState * sizeMultiplier * modeMultiplier * 10
+    const timeThreshold = thresholds.operationTime.setState * sizeMultiplier * modeMultiplier * TIME_HEADROOM
     details.push({ passed: r.executionTime.avg <= timeThreshold })
 
     const memoryThreshold = thresholds.memory.perStore * sizeMultiplier * modeMultiplier
     details.push({ passed: r.memory.delta <= memoryThreshold })
 
-    const throughputThreshold = (thresholds.throughput.setState / sizeMultiplier) * 0.1
+    const throughputThreshold = (thresholds.throughput.setState / sizeMultiplier) * THROUGHPUT_RELAXATION
     details.push({ passed: r.throughput.opsPerSecond >= throughputThreshold })
 
     if (r.cache.enabled) {
       const isCacheTestScenario = scenario.cacheConfig !== undefined
-      const hitRateThreshold = isCacheTestScenario ? 20 : thresholds.cacheHitRate
+      const hitRateThreshold = isCacheTestScenario ? CACHE_SCENARIO_MIN_HIT_RATE : thresholds.cacheHitRate
       details.push({ passed: r.cache.hitRate >= hitRateThreshold })
     }
 
     const passedChecks = details.filter((d) => d.passed).length
-    return passedChecks >= Math.ceil(details.length * 0.67)
+    return passedChecks >= Math.ceil(details.length * MIN_PASS_RATIO)
   }
 
   private generateReport(): BenchmarkReport {
@@ -313,8 +362,6 @@ export class BenchmarkRunner {
     const totalDuration = (endTime - this.startTime) / 1000
     const passedScenarios = this.results.filter((r) => r.passed).length
     const failedScenarios = this.results.filter((r) => !r.passed).length
-    const scores = this.results.map((r) => r.score).filter((s): s is number => s !== undefined)
-    const avgScore = scores.length > 0 ? scores.reduce((sum, s) => sum + s, 0) / scores.length : 0
     const totalMemoryUsage = this.results.reduce((sum, r) => sum + r.results.memory.delta, 0)
 
     return {
@@ -337,7 +384,6 @@ export class BenchmarkRunner {
         totalScenarios: this.results.length,
         passedScenarios,
         failedScenarios,
-        avgScore,
         totalDuration,
         totalMemoryUsage,
       },

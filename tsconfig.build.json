@@ -1,16 +1,10 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": {
-    "module": "NodeNext",
-    "moduleResolution": "nodenext",
-    "allowImportingTsExtensions": false,
-    "outDir": "./dist",
-    "rootDir": "./src",
-    "declaration": true,
-    "declarationMap": true,
-    "sourceMap": true,
-    "noEmit": false
-  },
-  "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist", "tests", "packages", "**/*.example.ts"]
+    // 相对基线的全部真实 override：产出 dist 并关闭 map——postbuild 会删光 dist 下的
+    // .map，若 emit 则产物中的 sourceMappingURL 成死链；其余选项一律继承 tsconfig.json
+    "noEmit": false,
+    "declarationMap": false,
+    "sourceMap": false
+  }
 }

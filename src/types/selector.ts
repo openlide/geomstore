@@ -48,18 +48,30 @@ export interface SelectorCacheItem<R> {
 
 /**
  * 组合选择器参数
+ *
+ * `R` 是组合结果的类型，与 `SelectorComposer.combine<S, R>` 的 `R` 同一个：
+ * 由 `combiner` 的返回类型直接给出，`combine` 侧不再需要 `as R` 断言
+ * （该断言此前把「combiner 返回了别的东西」——例如拼错的属性名——静默当成 `R`）。
+ * 默认 `unknown` 保持既有两参数写法 `SelectorComposerInput<S, T>` 的行为不变。
  */
-export interface SelectorComposerInput<S extends State = Record<string, unknown>, T extends readonly Selector<S, unknown>[] = readonly Selector<S, unknown>[]> {
+export interface SelectorComposerInput<
+  S extends State = Record<string, unknown>,
+  T extends readonly Selector<S, unknown>[] = readonly Selector<S, unknown>[],
+  R = unknown,
+> {
   /** 选择器数组 */
   selectors: [...T]
   /**
    * 组合函数
    *
-   * 参数刻意保持 any[]：元组 mapped type 在严格泛型下推断失效
-   * （combiner 实参类型由调用方泛型推断保证，见 compose.ts）
+   * 参数刻意保持 `any[]`（实测改 `unknown[]` 即破功）：调用方的 combiner 普遍写成
+   * `(base: number, tax: number) => number` 这类**具体形参**，参数逆变下
+   * `(a: number) => …` 不满足 `(a: unknown) => …`，直接编译失败；
+   * 且 `combine` 内部是 `combiner(...results)` 的透传调用，形参类型由调用方泛型推断保证。
+   * 返回值不再是 `unknown` 而是 `R`，见上方类型参数说明。
    */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  combiner: (...results: any[]) => unknown
+  combiner: (...results: any[]) => R
 }
 
 /**

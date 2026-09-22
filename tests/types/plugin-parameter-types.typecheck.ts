@@ -64,6 +64,18 @@ persistencePlugin<UserState>({
 })
 userStore.use(persistencePlugin<UserState>({ debounce: 10 }))
 
+// 工厂的**返回值**同样必须带上 S（#436）：历史缺陷是返回类型被抹平为 `Plugin`（= Plugin<State>），
+// 而 `Store.use(plugin: Plugin<NoInfer<S>> | Plugin<State>)` 的联合里就有 Plugin<State>，
+// 于是「只校验入参」的上面几行在回归后仍全部通过。正向先取回带 S 的返回类型……
+const typedPersistence: Plugin<UserState> = persistencePlugin<UserState>({ debounce: 10 })
+userStore.use(typedPersistence)
+// ……再反向下到状态不匹配的 Store 上；返回类型一旦被抹平，这行会重新被接受，
+// 未命中的 @ts-expect-error 直接编译失败，从而真正守住返回泛型
+// @ts-expect-error 工厂返回值保留 S：UserState 插件不能安装到 CartState 的 Store
+cartStore.use(persistencePlugin<UserState>({ debounce: 10 }))
+// @ts-expect-error 同上：显式取回的 Plugin<UserState> 也不能装到 CartState 的 Store
+cartStore.use(typedPersistence)
+
 // 反例：针对其他状态类型声明的插件不得安装到本 Store
 // @ts-expect-error UserState 插件不能安装到 CartState 的 Store
 cartStore.use(userPlugin)

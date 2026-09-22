@@ -14,6 +14,11 @@ export const DEFAULT_ITERATIONS = 10000
 
 /**
  * 时间阈值配置（毫秒）
+ *
+ * 组织维度是「操作」，不是「场景」：`SCENARIO_NAMES` 里的 cache-* / *-memory 系列场景
+ * 不在此表逐条设阈，它们分别由 CACHE_THRESHOLDS（命中率）、MEMORY_THRESHOLDS
+ * （每 Store / 每状态项 / 每订阅 / 每缓存项的字节数）与下面的 CACHE_AVG 覆盖。
+ * 每个进入 runner 的操作都必须有 AVG 档，缺档即「该操作没有任何东西可校验」。
  */
 export const TIME_THRESHOLDS = {
   /** setState 平均执行时间阈值 */
@@ -26,10 +31,31 @@ export const TIME_THRESHOLDS = {
   PATCH_P99: 2,
   /** $replaceState 平均执行时间阈值 */
   REPLACE_STATE_AVG: 0.3,
+  /**
+   * $replaceState P99 执行时间阈值
+   *
+   * 整对象替换会重建状态引用并让全部订阅者重算，尾部主要由 GC 决定；
+   * 对 AVG 取约 3 倍余量，与 PATCH_P99/PATCH_AVG 的 4 倍同一量级。
+   */
+  REPLACE_STATE_P99: 1,
   /** dispatch 平均执行时间阈值 */
   DISPATCH_AVG: 0.2,
   /** getter 平均执行时间阈值 */
   GETTER_AVG: 0.05,
+  /**
+   * subscribe 平均执行时间阈值
+   *
+   * 与 `config.thresholds.operationTime.subscribe` 取同一数值：两处描述的是同一个操作，
+   * 一份 0.1 一份别的数就会让「按配置判定」和「按常量判定」给出不同结论。
+   */
+  SUBSCRIBE_AVG: 0.1,
+  /**
+   * subscribe P99 执行时间阈值
+   *
+   * 登记监听器是 O(1) 数组推入，尾部来自订阅者数组扩容，故余量取 5 倍，
+   * 落在 PATCH 的 4 倍与 SET_STATE 的 10 倍之间。
+   */
+  SUBSCRIBE_P99: 0.5,
   /** 缓存操作平均执行时间阈值 */
   CACHE_AVG: 0.01,
 } as const
@@ -72,6 +98,8 @@ export const THROUGHPUT_THRESHOLDS = {
   DISPATCH_MIN: deriveThroughputMin(TIME_THRESHOLDS.DISPATCH_AVG),
   /** getter 最小吞吐量 */
   GETTER_MIN: deriveThroughputMin(TIME_THRESHOLDS.GETTER_AVG),
+  /** subscribe 最小吞吐量（SUBSCRIBE 场景的校验依据，缺档即该场景无门限可比） */
+  SUBSCRIBE_MIN: deriveThroughputMin(TIME_THRESHOLDS.SUBSCRIBE_AVG),
   /** 缓存操作最小吞吐量 */
   CACHE_MIN: deriveThroughputMin(TIME_THRESHOLDS.CACHE_AVG),
 } as const
@@ -99,14 +127,23 @@ export const DATASET_SIZE_THRESHOLDS = {
 } as const
 
 /**
+ * 单次场景最多保留的内存采样条数
+ *
+ * 先抽成独立常量再喂给 SAMPLING_CONFIG：让常量对象里的箭头函数反过来读自己的宿主，
+ * 只是靠「函数体延迟求值」才没出问题，一旦在初始化早期调用、或把 SAMPLING_CONFIG
+ * 拆开重排就会拿到 undefined。
+ */
+const MAX_MEMORY_SAMPLES = 100
+
+/**
  * 内存采样间隔配置
  */
 export const SAMPLING_CONFIG = {
   /** 最大采样数量 */
-  MAX_SAMPLES: 100,
+  MAX_SAMPLES: MAX_MEMORY_SAMPLES,
   /** 计算采样间隔 */
   getSampleInterval: (iterations: number): number =>
-    Math.max(1, Math.floor(iterations / SAMPLING_CONFIG.MAX_SAMPLES)),
+    Math.max(1, Math.floor(iterations / MAX_MEMORY_SAMPLES)),
 } as const
 
 /**

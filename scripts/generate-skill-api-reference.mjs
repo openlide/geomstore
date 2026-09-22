@@ -18,6 +18,10 @@
  *   pnpm build && pnpm skill:api
  *
  * 产出目录由脚本独占：每次生成会先清空其中的 .md，并删除历史单文件版本 references/api.md。
+ *
+ * 失败即中止、不动输出：入口 .d.ts 解析不通、或某个入口一个符号都没解析出来时，
+ * 以退出码 1 结束并在清空输出目录**之前**返回——宁可留着上一版正确的参考，
+ * 也不产出一份「看起来成功、实则缺项」的 API 文档（跨项目唯一 API 依据就是它）。
  */
 
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
@@ -82,11 +86,31 @@ function main() {
     target: ts.ScriptTarget.ESNext,
     module: ts.ModuleKind.NodeNext,
     moduleResolution: ts.ModuleResolutionKind.NodeNext,
+    // 必须保持 true：dist/types/global.d.ts 里有 `declare global`，关掉会连带检查
+    // 全部被引用的 .d.ts（含 @types/node 缺席导致的噪音）而误报。
+    // 代价是 .d.ts 内部的类型错误不会被诊断出来——那一层由「零导出即中止」兜住。
     skipLibCheck: true,
     noEmit: true,
     types: [],
   })
   const checker = program.getTypeChecker()
+
+  /** 诊断必须被消费：此前一次都没读过 diagnostics，破损输入也会「成功」产出 */
+  function collectProblems() {
+    const problems = []
+    const describe = (kind, d) =>
+      `${kind} TS${d.code} @ ${d.file ? path.relative(root, d.file.fileName) : '(全局)'}：${ts.flattenDiagnosticMessageText(d.messageText, ' ')}`
+    for (const file of entryFiles) {
+      const sourceFile = program.getSourceFile(file)
+      if (!sourceFile) {
+        problems.push(`入口源文件未被程序接收：${path.relative(root, file)}`)
+        continue
+      }
+      for (const d of program.getSyntacticDiagnostics(sourceFile)) problems.push(describe('[语法]', d))
+      for (const d of program.getSemanticDiagnostics(sourceFile)) problems.push(describe('[语义]', d))
+    }
+    return problems
+  }
 
   /** 沿别名解析到真实声明，返回该符号的**全部**声明（重载函数有多个签名） */
   function getDeclarations(symbol) {
@@ -94,8 +118,11 @@ function main() {
     if (target.flags & ts.SymbolFlags.Alias) {
       try {
         target = checker.getAliasedSymbol(target)
-      } catch {
-        /* 解析失败则退回别名自身 */
+      } catch (error) {
+        // 不静默退回别名自身：那会让 `export * from` 链断掉的入口产出一份
+        // 「只有再导出语句、没有真实声明」的参考，看起来完全正常却缺内容
+        console.error(`[skill-api] getAliasedSymbol 失败，符号：${symbol.getName()}：`, error)
+        throw error
       }
     }
     const declared = target.declarations ?? []
@@ -112,8 +139,25 @@ function main() {
       .map((symbol) => ({ name: symbol.getName(), declarations: getDeclarations(symbol) }))
       .filter((item) => item.declarations.length > 0)
       .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
-    return { ...entry, items }
+    return { ...entry, items, undeclared: symbols.length - items.length }
   })
+
+  // 校验前置于清空：此时输出目录还是上一版的正确产物
+  const problems = collectProblems()
+  const warnings = []
+  for (const entry of resolvedEntries) {
+    if (entry.items.length === 0) {
+      problems.push(`入口 \`${entry.sub}\`（${entry.types}）未解析出任何可导出的符号`)
+    } else if (entry.undeclared > 0) {
+      // 单个符号没有声明可以输出（例如仅由外部模块再导出）不足以判定整份输入不可信
+      warnings.push(`入口 \`${entry.sub}\` 有 ${entry.undeclared} 个符号没有可输出的声明，已跳过`)
+    }
+  }
+  if (problems.length > 0) {
+    console.error(`[skill-api] 中止（输入不可信，未改动已有产出）：\n  ${problems.join('\n  ')}`)
+    process.exit(1)
+  }
+  for (const warning of warnings) console.warn(`[skill-api] WARN: ${warning}`)
 
   // 目录由脚本独占：清掉历史 .md 与单文件版本，避免改名/删除入口后留下孤儿文件
   mkdirSync(OUT_DIR, { recursive: true })
@@ -179,9 +223,9 @@ function main() {
       ]),
     ]
 
-    if (entry.items.length === 0) {
-      lines.push('（无导出）', '')
-    } else if (NAME_ONLY.has(entry.sub)) {
+    // 此处不再需要「（无导出）」分支：零导出的入口在上面就已经中止，
+    // 保留那个占位文案等于给破损输入留一条「看起来正常」的出路
+    if (NAME_ONLY.has(entry.sub)) {
       lines.push('符号清单（详细声明见对应子入口文件）：', '')
       for (const item of entry.items) lines.push(`- \`${item.name}\``)
       lines.push('')

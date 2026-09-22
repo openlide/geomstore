@@ -331,6 +331,21 @@ export class SnapshotManager {
       if (!hasTimedOut) queue.push(task)
     }
 
+    // prop 占位的统一清理
+    // 对象子值的占位在子任务被填充前就以 `key: undefined` 挂在父容器上（挂它是为了保住
+    // 源对象的键序：填充按队列顺序发生，不占位会让克隆结果的键序与源不一致）。
+    // 因此凡「本轮不会填充」的出口都必须摘掉占位，否则交付的 data 里会出现源数据中
+    // 并不存在的 undefined 值——与同步路径「丢弃该属性则不写入」的口径也对不上
+    const discardPropPlaceholder = (target: AsyncCloneTask['target']): void => {
+      if (target && target.kind === 'prop') {
+        try {
+          delete (target.container as Record<string, unknown>)[target.key as string]
+        } catch {
+          // 占位清理失败不影响整体流程
+        }
+      }
+    }
+
     // 处理队列：每批处理 batchSize 个节点，批间让出控制权
     const processQueue = async (): Promise<void> => {
       try {
@@ -367,6 +382,8 @@ export class SnapshotManager {
                 path: task.context.path,
                 originalError: error instanceof Error ? error : undefined,
               })
+              // 该节点不会被填充，占位同样要摘掉（与下方 SKIP 分支同一口径）
+              discardPropPlaceholder(task.target)
               processedCount++
               continue
             }
@@ -374,14 +391,7 @@ export class SnapshotManager {
             if (result === SKIP_CLONE_NODE) {
               // onError 选择继续但节点被丢弃：跳过填充；prop 占位一并移除，
               // 与同步路径「丢弃该属性」的语义一致（Map/Set/数组位置本就无占位）
-              const skipped = task.target
-              if (skipped && skipped.kind === 'prop') {
-                try {
-                  delete (skipped.container as Record<string, unknown>)[skipped.key as string]
-                } catch {
-                  // 占位清理失败不影响整体流程
-                }
-              }
+              discardPropPlaceholder(task.target)
               continue
             }
             // stats.cloneOperations 由 processNodeAsync 内部按克隆节点累加
@@ -434,6 +444,14 @@ export class SnapshotManager {
           } else {
             await new Promise((r) => setTimeout(r, 0))
           }
+        }
+
+        // 超时退出时队列里仍有未处理的任务：它们永远不会有填充那一步，挂在父容器上的
+        // prop 占位就以 `key: undefined` 的形式留在交付的半成品 data 里。摘掉后调用方
+        // 读到的是「该键缺失」（与节点被丢弃的口径一致），而不是源数据中并不存在的 undefined 值。
+        // 队列正常排空时本循环体不执行（queueHead === queue.length）
+        for (let i = queueHead; i < queue.length; i++) {
+          discardPropPlaceholder(queue[i].target)
         }
       } finally {
         // 无论正常结束还是中途异常都交付根结果，防止外层 await 永久挂起

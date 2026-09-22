@@ -139,7 +139,16 @@ export type WithPageThis<C, T> = {
 }
 
 /**
- * Page 保留键（框架生命周期 + 内部字段），不参与自定义方法提取
+ * Page 保留键（框架生命周期 + 页面事件处理函数 + 内部字段），不参与自定义方法提取
+ *
+ * 页面事件处理函数一栏来自小程序基础库、**仓库内没有任何地方声明**（本库不依赖 miniprogram-api-typings），
+ * 因此只能在这里逐个列全：漏掉的键会被 `PageOwnMethods` 当成用户自定义方法，
+ * 其方法签名里的 `this` 被剥离（该映射刻意去掉 this），并作为 ExtraMethods 并入 `this`，污染页面类型。
+ *
+ * - `onShareTimeline`：分享到朋友圈（基础库 2.11.3+）
+ * - `onAddToFavorites`：添加到收藏（基础库 2.8.1+）
+ * - `onSaveExitState`：退出时保存状态（基础库 2.11.0+）
+ * - `options`：页面级配置项（非函数，但同样是框架键，不应被当作自定义方法）
  */
 export type PageReservedKeys =
   | 'data'
@@ -155,10 +164,19 @@ export type PageReservedKeys =
   | 'onShareAppMessage'
   | 'onResize'
   | 'onTabItemTap'
+  | 'onShareTimeline'
+  | 'onAddToFavorites'
+  | 'onSaveExitState'
+  | 'options'
   | '__geomUnbinds'
 
 /**
  * 从 Page 配置提取用户自定义方法（排除保留键，方法 this 不检查以避免循环兼容性）
+ *
+ * 现状（#428）：`withPageStore` 目前实例化的是 `PageThis<S, A, G, O>`，**没有**把本映射作为
+ * 第 5 个泛型 `ExtraMethods` 传进去（组件侧 `withComponentStore` 则确实传了 `ComponentOwnMethods<C>`），
+ * 故页面方法内的 `this` 暂时看不到同页自定义方法。保留键清单见 `PageReservedKeys`。
+ * 与 Component 对齐的接线在集成层（`src/integrations/with-store.ts`），不在类型层。
  */
 export type PageOwnMethods<C> = {
   [K in keyof Omit<C, PageReservedKeys>]: C[K] extends (...args: infer P) => infer R ? (...args: P) => R : C[K]
@@ -175,8 +193,11 @@ export type ComponentOwnMethods<C> = C extends { methods: infer M } ? (M extends
  *
  * 由 withPageStore 装饰器自动构造并注入方法签名，用户无需手动填写泛型参数。
  * 方法内 `this.data` 包含完整状态 + 映射的 state/getters（精确类型），
- * 映射的 action 以精确签名挂载到 this（参数/返回值类型不丢失），
- * 用户自定义方法（排除保留键）也作为 ExtraMethods 注入 this。
+ * 映射的 action 以精确签名挂载到 this（参数/返回值类型不丢失）。
+ *
+ * 第 5 个泛型 `ExtraMethods` 是「同页自定义方法」的注入位点，默认 `object`（即不注入）：
+ * `withPageStore` 目前正是按默认值实例化本类型的（见 #428 与 `PageOwnMethods` 的说明），
+ * 所以页面方法内的 `this` 尚看不到自定义方法；接线需在集成层传 `PageOwnMethods<C>`。
  *
  * @example
  * ```typescript

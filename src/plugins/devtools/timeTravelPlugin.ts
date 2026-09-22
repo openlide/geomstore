@@ -84,6 +84,24 @@ export interface TimeTravelOptions<S extends State = State> {
 }
 
 /**
+ * 外部输入对象的结构准入判断（importHistory 专用）
+ *
+ * 三条口径与 `Store.$replaceState` 的准入条件对齐（见 core/store/Store.ts）：
+ * - 非 null 的 `typeof === 'object'`
+ * - **排除数组**：数组同样过 `typeof === 'object'`，放行后 `goTo/undo/redo` 会打到
+ *   核心的 `[GeomStore] $replaceState: newState must be a plain object`，
+ *   与本文件「畸形数据直接跳过，避免污染历史」的注释自相矛盾
+ * - 排除自带 `__proto__` 自有键的对象：`JSON.parse` 产出的是**数据属性**（不触发 setter），
+ *   会一路通过校验，把 `state.__proto__` 读起来不是原型的怪对象塞进活状态。
+ *   （core/utils/clone.ts 已在克隆处用 defineProperty 复刻该键、原型未被导入数据接管，
+ *   实测全局原型也不受影响，故这里是「入口收紧」而非唯一防线；更深层的 `__proto__`
+ *   键仍由克隆层的同一防护兜底）
+ */
+function isImportableObject(value: unknown): boolean {
+  return value !== null && typeof value === 'object' && !Array.isArray(value) && !Object.prototype.hasOwnProperty.call(value as object, '__proto__')
+}
+
+/**
  * 时间旅行插件
  *
  * 提供状态历史记录和时间旅行功能
@@ -350,15 +368,11 @@ export const timeTravelPlugin = <S extends State = State>(options: TimeTravelOpt
           if (!data || typeof data !== 'object' || !Array.isArray(data.snapshots)) {
             return
           }
-          // 结构校验：仅接受合法快照条目（state 为对象、timestamp 为数字），
+          // 结构校验：仅接受合法快照条目（state 为可导入对象、timestamp 为数字），
           // 畸形数据直接跳过，避免污染历史导致 goTo/undo 异常
           const valid = data.snapshots.filter(
             (s: unknown): s is { state: S; timestamp: number } =>
-              s !== null &&
-              typeof s === 'object' &&
-              (s as { state?: unknown }).state !== null &&
-              typeof (s as { state?: unknown }).state === 'object' &&
-              typeof (s as { timestamp?: unknown }).timestamp === 'number',
+              isImportableObject(s) && isImportableObject((s as { state?: unknown }).state) && typeof (s as { timestamp?: unknown }).timestamp === 'number',
           )
           if (valid.length === 0) {
             return

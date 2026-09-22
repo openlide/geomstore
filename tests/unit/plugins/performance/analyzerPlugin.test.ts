@@ -723,28 +723,54 @@ describe('analyzerPlugin - BUG-F2 错误路径清理配对栈', () => {
     expect(monitor.currentOperations.size).toBe(0)
   })
 
-  it('通过 onError 钩子手动触发时也应清空全部类型栈', () => {
+  it('#425 回归: 与计时无关的 source（persistence）不得弹掉任何进行中的配对计时', () => {
     const store = createStore({
-      name: 'f2-manual-onerror-store',
+      name: 'f2-unrelated-source-store',
       state: { count: 0 },
     })
 
     store.use(analyzerPlugin)
 
-    // 制造残留：emit beforeXxx 而不 emit afterXxx
+    store.hooks.emit('beforePatch', {})
     store.hooks.emit('beforeSetState', 'count', 1)
-    store.hooks.emit('beforeDispatch', 'whatever', [])
-
-    // 手动触发 onError：残留计时应被立即结束（记录到错误为止），
-    // 后续 afterXxx 弹空栈不产生重复指标
-    store.hooks.emit('onError', new Error('manual'), 'manual')
-    expect(() => store.hooks.emit('afterSetState', 'count', 1)).not.toThrow()
-    expect(() => store.hooks.emit('afterDispatch', 'whatever', [], undefined)).not.toThrow()
-
     const monitor = (store as any).__performanceMonitor__
+    expect(monitor.currentOperations.size).toBe(2)
+
+    // 落盘失败与进行中的计时毫无关系，此前会连带弹掉每一类栈顶
+    expect(() => store.hooks.emit('onError', new Error('persist failed'), 'persistence')).not.toThrow()
+    expect(monitor.currentOperations.size).toBe(2)
+    expect(monitor.getMetrics()).toHaveLength(0)
+
+    // 两条计时仍能与各自的 after* 钩子正确配对
+    store.hooks.emit('afterSetState', 'count', 1)
+    store.hooks.emit('afterPatch', {})
     expect(monitor.currentOperations.size).toBe(0)
-    // 每个操作各1条指标，不因清栈重复记录
-    expect(monitor.getMetrics().length).toBe(2)
+    expect(monitor.getMetrics().map((m: { operation: string }) => m.operation)).toEqual(['setState:count', 'patch'])
+  })
+
+  it('#425 回归: source 为出错的钩子名时只结束该类型的栈顶，外层计时保留', () => {
+    const store = createStore({
+      name: 'f2-scoped-source-store',
+      state: { count: 0 },
+    })
+
+    store.use(analyzerPlugin)
+
+    // 嵌套场景：$patch 内部的 setState（patch 计时尚未结束）
+    store.hooks.emit('beforePatch', {})
+    store.hooks.emit('beforeSetState', 'count', 1)
+    const monitor = (store as any).__performanceMonitor__
+
+    // HookSystem 在处理器抛错时以出错的 hookName 作第二参转发 onError
+    store.hooks.emit('onError', new Error('handler boom'), 'beforeSetState')
+
+    // 内层 setState 计时被结束，外层 patch 的计时不受影响
+    expect(monitor.getMetrics().map((m: { operation: string }) => m.operation)).toEqual(['setState:count'])
+    expect(monitor.currentOperations.size).toBe(1)
+
+    store.hooks.emit('afterPatch', {})
+    expect(monitor.currentOperations.size).toBe(0)
+    expect(monitor.getMetrics().map((m: { operation: string }) => m.operation)).toEqual(['setState:count', 'patch'])
   })
 })
 
@@ -787,6 +813,38 @@ describe('analyzerPlugin - BUG-F16 getter 包装链防护', () => {
     const result = store.getter('double')
     expect(result).toBe(4)
     expect(laterWrappedCalls).toContain('double')
+  })
+
+  it('#424 回归: 包装被后续插件持有时，卸载后不得再向已失效的 monitor 写入指标', () => {
+    jest.spyOn(console, 'warn').mockImplementation(() => {})
+    const store = createStore({
+      name: 'f16-ghost-store',
+      state: { count: 2 },
+      getters: {
+        double: (state: any) => state.count * 2,
+      },
+    })
+
+    // 卸载后 __performanceMonitor__ 与全局条目都会被清掉，故先留住 monitor 句柄观察
+    const uninstallAnalyzer = store.use(analyzerPlugin)
+    const monitor = (store as any).__performanceMonitor__
+
+    const getterAfterAnalyzer = store.getter
+    ;(store as any).getter = function (this: unknown, ...args: unknown[]): unknown {
+      return (getterAfterAnalyzer as (...a: unknown[]) => unknown).apply(this, args)
+    }
+
+    uninstallAnalyzer()
+
+    // 身份判断失败 → 本插件的包装被后续包装继续持有
+    expect((store as any).__performanceMonitor__).toBeUndefined()
+
+    // 调用仍走包装链且结果正确……
+    expect(store.getter('double')).toBe(4)
+    expect(store.getter('double')).toBe(4)
+    // ……但卸载后不应再产生任何计时（改前每次调用都往已 clear() 的 monitor 里塞一条）
+    expect(monitor.getMetrics()).toHaveLength(0)
+    expect(monitor.currentOperations.size).toBe(0)
   })
 
   it('getter 未被重新包装时卸载应正常恢复原始实现', () => {

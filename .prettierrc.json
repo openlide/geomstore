@@ -4,7 +4,6 @@
   "useTabs": false,
   "semi": false,
   "singleQuote": true,
-  "documentSelectors": ["**/*.wxml", "**/*.wxss"],
   "jsxSingleQuote": false,
   "bracketSpacing": true,
   "bracketSameLine": true,
@@ -16,7 +15,6 @@
   "htmlWhitespaceSensitivity": "ignore",
   "endOfLine": "auto",
   "vueIndentScriptAndStyle": false,
-  "disableLanguages": ["vue"],
   "overrides": [
     {
       "files": ["*.wxss"],
@@ -42,6 +40,5 @@
         "parser": "babel"
       }
     }
-  ],
-  "extends": ["prettier", "prettier/vue"]
+  ]
 }
