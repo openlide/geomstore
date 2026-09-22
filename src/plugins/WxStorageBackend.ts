@@ -21,9 +21,10 @@ import type { StorageBackend } from '../types/persistence.js'
 /**
  * 小程序 `wx` 同步存储 API 在本库视角下的最小形状
  *
- * 三个方法都可选：真机 / 开发者工具 / Node 测试环境下 `wx` 可能整体缺失或只缺单个方法，
- * 调用点统一用 `?.` 兜底。set/remove 的返回类型取 `unknown`（而非 `void`）：实际返回值
- * 要交给 {@link assertSyncStorageResult} 检查——Promise 版 polyfill 正是在这里返回 Promise。
+ * 三个方法都可选：真机 / 开发者工具 / Node 测试环境下 `wx` 可能整体缺失或只缺单个方法。
+ * 可选只是**类型层面**承认这种残缺环境存在，调用点并不因此短路——`WxStorageBackend` 取用
+ * 前逐个校验，缺失即抛错（理由见类注释）。set/remove 的返回类型取 `unknown`（而非 `void`）：
+ * 实际返回值要交给 {@link assertSyncStorageResult} 检查——Promise 版 polyfill 正是在这里返回 Promise。
  *
  * 单点声明（原先在 getter 签名、`globalThis` 断言、以及 `builtin.ts` 内联适配器里各写一份
  * 字面量，改动时极易只改一处）：形状沿用小程序 API 的命名与返回类型（`getStorageSync` 返回
@@ -90,6 +91,14 @@ export function normalizeWxStoredValue(value: unknown): string | null {
 
 /**
  * 微信存储后端
+ *
+ * 三个方法都要求 `wx` 与对应 API 真实存在：缺失时**抛错**，绝不 `?.` 短路成 no-op。
+ * no-op 的代价是静默的数据损失——`setStorageSync`/`removeStorageSync` 缺失会让写入与删除
+ * 「看起来成功」（卸载时 `clearOnUninstall` 因此误报已清除），`getStorageSync` 缺失会被
+ * {@link normalizeWxStoredValue} 洗成「键无数据」，随后一次落盘即覆盖真实数据。
+ *
+ * 环境整体不具备可用 wx 同步存储时应走 `persistencePlugin` 的降级分支（判定见
+ * {@link isWxStorageSyncAvailable}），而不是把本类当内存存储用。
  */
 export class WxStorageBackend implements StorageBackend {
   /** 经 globalThis 读取 wx，避免直接引用未声明的小程序全局标识符 */
@@ -97,39 +106,66 @@ export class WxStorageBackend implements StorageBackend {
     return readWxStorageSyncApi()
   }
 
-  getItem(key: string): string | null {
+  /**
+   * 取出 `wx.<name>` 方法本体及其宿主，缺失或不 callable 时抛错。
+   *
+   * 返回 `{ api, fn }` 而不是只返回函数：`fn.call(api, …)` 保留 wx 的接收者，
+   * 部分基础库实现依赖它。
+   */
+  private resolve<K extends keyof WxStorageApi>(name: K): { api: WxStorageApi; fn: NonNullable<WxStorageApi[K]> } {
+    const api = this.wxApi
+    const fn = api?.[name]
+    if (!api || typeof fn !== 'function') {
+      throw new Error(
+        `[GeomStore][persistence] wx.${name} 不可用：WxStorageBackend 需要小程序同步存储 API，` +
+          `静默跳过会让写入丢失而调用方看到成功。请改用自建 storage 后端（persistencePlugin 的 storage 选项），` +
+          `或确认运行环境已注入 wx。`,
+      )
+    }
+    // indexed access 收窄不到具体签名，运行时已校验过 callable
+    return { api, fn: fn as NonNullable<WxStorageApi[K]> }
+  }
+
+  /**
+   * 统一「记录 + 重抛」口径：三个方法的失败都必须让调用方看见。
+   *
+   * 读失败不得退化成「键无数据」（随后一次落盘即覆盖真实数据），写/删失败不得静默成功
+   * （`clearOnUninstall` 会据此报告「已清除」而数据仍在）。抽成一个方法是为了新增操作时
+   * 不会只补上一半行为（只 log 不抛、或只抛不 log），错误文案也只需改一处
+   */
+  private run<T>(method: string, fn: () => T): T {
     try {
-      const value = this.wxApi?.getStorageSync?.(key)
+      return fn()
+    } catch (error) {
+      console.error(`[WxStorage] ${method} error:`, error)
+      throw error
+    }
+  }
+
+  getItem(key: string): string | null {
+    return this.run('getItem', () => {
+      const { api, fn } = this.resolve('getStorageSync')
+      const value = fn.call(api, key)
       // 守卫必须在归一化之前：Promise 不是字符串，先归一化就会把「异步后端」洗成
       // 「键无数据」，随后的一次落盘即覆盖真实数据。本类同时是 `persistencePlugin`
       // 未传 `storage` 时的默认后端，那条路径就靠这里报错
       assertSyncStorageResult(value, 'wx.getStorageSync')
 
       return normalizeWxStoredValue(value)
-    } catch (error) {
-      console.error('[WxStorage] getItem error:', error)
-      // 与 setItem/removeItem 同口径：记录后重抛。吞掉异常会让「存储读取失败」
-      // 退化成「键无数据」，随后的一次落盘就把真实数据覆盖掉（#390）
-      throw error
-    }
+    })
   }
 
   setItem(key: string, value: string): void {
-    try {
-      assertSyncStorageResult(this.wxApi?.setStorageSync?.(key, value), 'wx.setStorageSync')
-    } catch (error) {
-      console.error('[WxStorage] setItem error:', error)
-      throw error
-    }
+    this.run('setItem', () => {
+      const { api, fn } = this.resolve('setStorageSync')
+      assertSyncStorageResult(fn.call(api, key, value), 'wx.setStorageSync')
+    })
   }
 
   removeItem(key: string): void {
-    try {
-      assertSyncStorageResult(this.wxApi?.removeStorageSync?.(key), 'wx.removeStorageSync')
-    } catch (error) {
-      console.error('[WxStorage] removeItem error:', error)
-      // 删除失败必须让调用方看见：否则 clearOnUninstall 会报告「已清除」而数据仍在
-      throw error
-    }
+    this.run('removeItem', () => {
+      const { api, fn } = this.resolve('removeStorageSync')
+      assertSyncStorageResult(fn.call(api, key), 'wx.removeStorageSync')
+    })
   }
 }

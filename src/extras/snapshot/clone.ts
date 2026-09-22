@@ -82,7 +82,10 @@ export function makeCloneError(path: string, error: unknown): SnapshotError {
 }
 
 /**
- * cloneError 的统一降级 / 中止处理（同步三处 catch 与异步两处 catch 共用）。
+ * cloneError 的统一降级 / 中止处理（两条克隆路径的失败收尾都汇到此处）。
+ *
+ * 直接调用点是 customCloner 与属性循环两处 catch；节点级丢弃（类型判定 / 外壳构造 /
+ * keys 枚举失败）先经 {@link dropFailedNode} 从 visited 除名再转来，两侧合计四处。
  *
  * 收敛四件事，避免同一策略在各处漂移：计一次克隆操作 → 落账 cloneError（静默丢弃会让
  * 隔离降级对调用方不可见，也让 success 判定认不出失败）→ 咨询 onError → 用户拒绝继续时
@@ -110,11 +113,32 @@ export function handleCloneError(
     path: target.path,
     depth: target.depth,
     value: target.value,
-    recoverable: true,
   })
   if (!shouldContinue) {
     throw new SnapshotAbortError(error)
   }
+}
+
+/**
+ * 节点克隆失败时的统一收尾（同步两处 catch 与异步两处 catch 共用）：
+ * 先把该节点从 visited 登记表上摘掉，再按 cloneError 落账并咨询 onError。
+ *
+ * 除名不是可选项：容器分支在建好壳后立刻登记（好让环上的多处引用指向同一克隆），
+ * 而本节点随后被丢弃时若留着登记，同一源对象的后续兄弟引用会命中 visited 快路径、
+ * 静默拿到这副被丢弃的半成品壳——按 SKIP 语义它本该在那些位置同样不出现
+ *
+ * @throws {SnapshotAbortError} error 是中止信号，或 onError 拒绝继续
+ */
+export function dropFailedNode(
+  value: object,
+  context: CloneContext,
+  error: unknown,
+  options: Pick<Required<SnapshotOptions>, 'onError'>,
+  errors: SnapshotError[],
+  stats: SnapshotStats,
+): void {
+  context.visited.delete(value)
+  handleCloneError(error, { path: context.path, depth: context.depth, value }, options, errors, stats)
 }
 
 /**
@@ -184,25 +208,53 @@ export function normalizeDescriptorFlags(
 }
 
 /**
+ * 递归克隆的栈安全硬上限：与调用方的 `maxDepth` 取小后生效。
+ *
+ * 递归实现的栈深度等于数据深度，把上限完全交给调用方会让溢出（`RangeError: Maximum call
+ * stack size exceeded`）落在任意一帧上，被那一层的属性 `try` 归因成一条 `cloneError`，
+ * 快照在该处静默截断且 `success` 被判为 false。实测（Node 默认栈）单键链约 2000 层溢出，
+ * 微信基础库的栈上限更低，故取 1000 留出一倍余量。
+ * 超出部分按既有的 `maxDepth` 降级口径报告（计入 errors/stats、不影响 success），
+ * 需要处理更深结构请走异步路径（clone-async：子值入队而非递归）
+ */
+export const HARD_MAX_CLONE_DEPTH = 1000
+
+/**
+ * 同步递归克隆的有效深度上限：调用方选项与栈安全硬上限取小
+ *
+ * 异步队列本身不递归、不受该上限约束（仅其 Map 键子树经 cloneDeep 时同样受保护）
+ */
+export function syncDepthLimit(requestedMaxDepth: number): number {
+  // 用 `<` 而不是 Math.min：NaN / Infinity 一并落到硬上限——`depth > NaN` 恒为 false，
+  // Math.min(NaN, 上限) 也是 NaN，那等于取消一切上限，本函数要堵的「溢出伪装成某属性的
+  // cloneError」就回来了。负值仍原样返回：调用方要的就是「根节点即降级」，不该被抬高
+  return requestedMaxDepth < HARD_MAX_CLONE_DEPTH ? requestedMaxDepth : HARD_MAX_CLONE_DEPTH
+}
+
+/**
  * 克隆前置公共判定（同步 cloneDeep / 异步 processNodeAsync 共用）：
- * maxDepth 超限、节点计数、原语直返、循环引用检测与 onError 咨询。
+ * 深度超限、节点计数、原语直返、循环引用检测与 onError 咨询。
+ *
+ * 深度上限由调用方以 `depthLimit` 显式传入而非在此读 options：两条路径的上限口径不同
+ * （同步要叠加栈安全硬上限、异步不叠加），藏进选项就会让差异失去落点
  *
  * @returns `{ done: true, value }` 表示可直接返回该值；`{ done: false }` 表示需继续按类型克隆
  */
 export function clonePrelude(
   value: unknown,
   context: CloneContext,
-  options: Pick<Required<SnapshotOptions>, 'maxDepth' | 'detectCircular' | 'onError'>,
+  depthLimit: number,
+  options: Pick<Required<SnapshotOptions>, 'detectCircular' | 'onError'>,
   errors: SnapshotError[],
   stats: SnapshotStats,
   counters: { nodeCount: number; maxDepthReached: number; estimatedSize: number; hasCircular: boolean },
 ): { done: true; value: unknown } | { done: false } {
   // 检查最大深度
-  if (context.depth > options.maxDepth) {
+  if (context.depth > depthLimit) {
     stats.maxDepthHits++
     errors.push({
       type: 'maxDepth',
-      message: `Maximum depth ${options.maxDepth} exceeded at ${context.path}`,
+      message: `Maximum depth ${depthLimit} exceeded at ${context.path}`,
       path: context.path,
     })
     // 基本类型不可变，直接返回不影响隔离；对象若原样返回，
@@ -228,21 +280,25 @@ export function clonePrelude(
     counters.hasCircular = true
     stats.circularReferences++
 
-    // detectCircular 仅控制是否上报错误与是否可中断，检测本身始终生效
+    // detectCircular 只控制是否上报本条 circular 错误，检测本身始终生效；
+    // 它同样不构成中止点：onError 拒绝继续时该位置写占位字符串并继续克隆，
+    // 快照仍可按其它节点的降级结果交付（与 cloneError 的 SnapshotAbortError 分岔，
+    // 理由见 types.ts 的 SnapshotOptions#onError）
     if (options.detectCircular) {
-      const shouldContinue = options.onError(
-        {
-          type: 'circular',
-          message: `Circular reference detected at ${context.path}`,
-          path: context.path,
-        },
-        {
-          path: context.path,
-          depth: context.depth,
-          value,
-          recoverable: true,
-        },
-      )
+      const circularError: SnapshotError = {
+        type: 'circular',
+        message: `Circular reference detected at ${context.path}`,
+        path: context.path,
+      }
+      // 先落账再咨询：errors 是「本次快照遇到了什么」的完整账本，
+      // 只交给回调而不入账会让 result.errors 里看不到循环引用，
+      // 而 stats.circularReferences 与 metadata.hasCircular 已经在报它
+      errors.push(circularError)
+      const shouldContinue = options.onError(circularError, {
+        path: context.path,
+        depth: context.depth,
+        value,
+      })
 
       if (!shouldContinue) {
         return { done: true, value: '[Circular Reference]' }
@@ -258,13 +314,14 @@ export function clonePrelude(
 /**
  * 深度克隆（递归实现）
  *
- * 每遇到一个子容器就递归调用自身，故调用栈深度 = 数据深度。层数由 maxDepth 界定
- * （clonePrelude 在超限处直接返回占位值），默认 100 层远低于引擎栈上限；
- * 但把 maxDepth 抬到数千以上时深链结构仍会 RangeError: Maximum call stack size exceeded——
- * 溢出点总在递归深处，只有恰好落在某个属性的 try 内才会被记成一条 cloneError，
- * 快照因此在该层被静默截断（实测 3000 层输入约在 2000 层断掉，success 为 false），
- * 而非按 onError 的降级意愿继续。需要处理超深结构时走异步路径
- * （clone-async：容器子值入队而非递归，单节点工作量有界）。
+ * 每遇到一个子容器就递归调用自身，故调用栈深度 = 数据深度。上限由
+ * `syncDepthLimit(options.maxDepth)` 给出：它把调用方的 maxDepth 与栈安全硬上限
+ * （HARD_MAX_CLONE_DEPTH）取小，超限处按 maxDepth 降级返回占位值。
+ * 让硬上限参与判定而不是只信选项，是因为溢出（RangeError: Maximum call stack size
+ * exceeded）总在递归深处的**任意一帧**落下，会被恰好包住它的那个属性 try 归因成一条
+ * 该属性路径的 cloneError，快照因此静默截断且 success 被判 false——即「栈问题伪装成
+ * 节点克隆失败」。需要处理超深结构时走异步路径
+ * （clone-async：容器子值入队而非递归，单节点工作量与栈深度都无上限）。
  */
 export function cloneDeep<T>(
   value: T,
@@ -279,8 +336,9 @@ export function cloneDeep<T>(
     hasCircular: boolean
   },
 ): unknown {
-  // 前置公共判定（maxDepth / 计数器 / 原语 / 循环引用）：与异步克隆路径共用
-  const prelude = clonePrelude(value, context, options, errors, stats, counters)
+  // 前置公共判定（深度 / 计数器 / 原语 / 循环引用）：与异步克隆路径共用，
+  // 差别只在同步路径要叠加栈安全硬上限
+  const prelude = clonePrelude(value, context, syncDepthLimit(options.maxDepth), options, errors, stats, counters)
   if (prelude.done) {
     return prelude.value
   }
@@ -308,11 +366,16 @@ export function cloneDeep<T>(
   let objectShell: Record<string, unknown>
   try {
     // 处理特殊类型
+    // Date/RegExp 同样产出了一个新对象，故与下面的容器分支一样计一次克隆操作：
+    // 只在容器处累加会让 stats.cloneOperations 按 Date/RegExp 节点数系统性偏小
+    // （异步路径 clone-async 同口径，两条路径不要各自改）
     if (value instanceof Date) {
+      stats.cloneOperations++
       return new Date(value.getTime())
     }
 
     if (value instanceof RegExp) {
+      stats.cloneOperations++
       return new RegExp(value.source, value.flags)
     }
 
@@ -325,7 +388,9 @@ export function cloneDeep<T>(
           k,
           {
             ...context,
-            path: `${context.path}.key`,
+            // 键身份入路径：只写 `.key` 时同一 Map 的多个键失败会在 errors[] 里
+            // 留下完全相同的路径，无法定位到条目（与下方值分支同一写法）
+            path: `${context.path}.key[${String(k)}]`,
             depth: context.depth + 1,
           },
           options,
@@ -433,7 +498,7 @@ export function cloneDeep<T>(
   } catch (error) {
     // 中止信号在 handleCloneError 内原样上抛：父级克隆已就「是否继续」做过决定，
     // 在此二次咨询 onError 会把「中止」降级为丢子树且快照仍标记成功
-    handleCloneError(error, { path: context.path, depth: context.depth, value }, options, errors, stats)
+    dropFailedNode(value, context, error, options, errors, stats)
     return SKIP_CLONE_NODE
   }
 
@@ -447,8 +512,12 @@ export function cloneDeep<T>(
   } catch (error) {
     // 中止信号在 handleCloneError 内原样上抛：这是用户在更深层做出的决定，
     // 二次咨询 onError 会把「中止」被中途改答降级为静默丢子树且快照仍标记成功
-    handleCloneError(error, { path: context.path, depth: context.depth, value }, options, errors, stats)
-    return cloned
+    //
+    // 与本节点外壳构造失败走同一条收尾（丢节点 + 从 visited 除名）：返回那副还没写入
+    // 任何属性的壳等于把一个源数据里不存在的 `{}` 交进快照，而所有其它失败路径都是
+    // 「该位置不出现」——两种形状对下游 diff / 序列化的结论并不相同
+    dropFailedNode(value, context, error, options, errors, stats)
+    return SKIP_CLONE_NODE
   }
 
   for (const key of keys) {
@@ -462,8 +531,16 @@ export function cloneDeep<T>(
       // 访问器属性（getter/setter）：descriptor.value 恒为 undefined，
       // 直接取值会静默丢失数据——以 getter 求值结果克隆为数据属性
       // （getter 抛错由下方 catch 走 onError 路径）
+      //
+      // 取 descriptor 里捕获到的 getter 本身调用，而不是回读 `value[key]`：后者走的是
+      // 普通 [[Get]]，在 Proxy 上会重跑 `get` 陷阱，可能给出与刚才那份
+      // （来自 getOwnPropertyDescriptor 陷阱的）描述符毫不相关的值，克隆结果与被检查的
+      // 属性于是各说各话
+      //
+      // 只有 setter 的访问器无值可读，落为 undefined，并经 normalizeDescriptorFlags
+      // 还原成可写数据属性—— setter 本身不进快照（克隆品与活状态隔离，写回原对象既不可能也不应发生）
       const isAccessor = descriptor.get !== undefined || descriptor.set !== undefined
-      const sourceValue = isAccessor ? (descriptor.get ? (value as Record<string, unknown>)[key] : undefined) : descriptor.value
+      const sourceValue = isAccessor ? (descriptor.get ? descriptor.get.call(value) : undefined) : descriptor.value
 
       const clonedValue = cloneDeep(
         sourceValue,

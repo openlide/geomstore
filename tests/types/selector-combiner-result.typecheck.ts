@@ -70,6 +70,14 @@ void missingReturn
 
 // ==================== 兼容：两参数写法（R 默认 unknown）行为不变 ====================
 
+// 精确断言默认 R 就是 unknown：下面两条 legacy 用例只依赖 assignability，
+// 默认值若被漂回 any（或任何仍接受 string 返回的更宽类型）它们照样绿——
+// 而这正是本文件要防的「静默接受任意 combiner 返回」的回归，故补一道双向同形判定。
+type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false
+type DefaultCombinerResult = SelectorComposerInput<OrderState, [typeof base, typeof tax]>['combiner'] extends (...results: never[]) => infer R ? R : never
+const defaultRIsUnknown: Equal<DefaultCombinerResult, unknown> = true
+void defaultRIsUnknown
+
 const legacyInput: SelectorComposerInput<OrderState, [typeof base, typeof tax]> = {
   selectors: [base, tax],
   combiner: (b: number, t: number) => b + t,

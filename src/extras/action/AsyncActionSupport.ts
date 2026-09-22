@@ -25,7 +25,7 @@
 
 import type { AsyncActions, ActionResult } from '../../types/action.js'
 import type { Actions } from '../../types/store.js'
-import { retryWithBackoff, raceWithTimeout, toError } from './async-core.js'
+import { retryWithBackoff, raceWithTimeout, normalizeTimeout, toError } from './async-core.js'
 import { ActionHistoryTracker, type ActionStats } from './ActionHistory.js'
 
 /**
@@ -266,6 +266,11 @@ export class ActionExecutor<A extends Actions = AsyncActions> {
    * @remarks 历史按「一次逻辑调用」记账：逐次重试不单独入历史，`getStats()` 的 total
    * 与 `successRate` 因此反映调用结果而非单次尝试结果。
    *
+   * 同一条记录的 `duration`（以及派生的 `avgDuration`）是**端到端**耗时，包含
+   * `retryWithBackoff` 的全部退避等待（`delay * 2^(i-1)`）：`retries: 3, delay: 100`
+   * 的三次失败重试会给 `duration` 加上约 700ms。它衡量的是「这次调用等了多久」，
+   * 不是 action 自身的执行延迟——把它当性能指标读之前先想想重试次数。
+   *
    * @example
    * ```typescript
    * const result = await executor.executeWithRetry(
@@ -320,6 +325,10 @@ export class ActionExecutor<A extends Actions = AsyncActions> {
    * 其迟到结果被丢弃且不写入历史（本方法按「一次调用一条记录」记为超时失败）。
    * 需要真正中断请在 action 内部使用 AbortController 等取消机制。
    *
+   * 超时错误由公共内核 `raceWithTimeout` 统一构造，带 `code === TIMEOUT_ERROR_CODE`
+   * （见 `./async-core.js`）：判定是否超时请按该 code，文案 `Action timeout after <n>ms`
+   * 仅用于展示，不保证跨版本稳定。
+   *
    * @example
    * ```typescript
    * try {
@@ -331,7 +340,7 @@ export class ActionExecutor<A extends Actions = AsyncActions> {
    *   )
    *   console.log('Data fetched:', result)
    * } catch (error) {
-   *   if (error.message.includes('timeout')) {
+   *   if ((error as { code?: string }).code === TIMEOUT_ERROR_CODE) {
    *     console.error('Request timed out')
    *     showTimeoutError()
    *   } else {
@@ -347,6 +356,13 @@ export class ActionExecutor<A extends Actions = AsyncActions> {
     // 记账挂在 race 之外：超时先落地时本次调用即以 timeout 失败入历史，底层 action
     // 稍后结算不会再写一条（Promise 无法取消，见 JSDoc）——否则 getHistory/getStats
     // 会报出调用方从未观察到的结果
+    //
+    // timeout 必须**先于** `this.run(...)` 校验：raceWithTimeout 里的 normalizeTimeout 虽也会
+    // reject，但 action 已因实参求值被真实启动（副作用照发），且它拿不到任何处理器
+    // （Promise.race 还没装上就抛了），迟到 reject 会成 unhandledRejection；
+    // 这条纯配置错误的 RangeError 还会经 recordOutcome 记成一次 action 失败、污染 getStats
+    normalizeTimeout(timeout, 'executeWithTimeout')
+
     return this.recordOutcome(actionName, () => raceWithTimeout(this.run(actions, actionName, args), timeout, `Action timeout after ${timeout}ms`))
   }
 

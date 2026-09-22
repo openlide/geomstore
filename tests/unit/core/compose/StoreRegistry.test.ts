@@ -87,7 +87,12 @@ describe('StoreRegistry', () => {
     it('旧 store 的 destroy 抛错时仍完成覆盖注册', () => {
       const warnSpy = jest.spyOn(console, 'warn').mockImplementation()
       const errSpy = jest.spyOn(console, 'error').mockImplementation()
-      const brokenOld = { getState: jest.fn(), destroy: jest.fn(() => { throw new Error('destroy boom') }) } as any
+      const brokenOld = {
+        getState: jest.fn(),
+        destroy: jest.fn(() => {
+          throw new Error('destroy boom')
+        }),
+      } as any
       registry.register('test', brokenOld)
 
       const newStore = { ...mockStore }
@@ -96,7 +101,7 @@ describe('StoreRegistry', () => {
       // 覆盖必须完成：注册表与默认 store 都指向新实例，不能被半销毁的旧实例卡住
       expect(registry.get('test')).toBe(newStore)
       expect(brokenOld.destroy).toHaveBeenCalled()
-      expect(errSpy).toHaveBeenCalledWith(expect.stringContaining('Error destroying old store "test"'), expect.any(Error))
+      expect(errSpy).toHaveBeenCalledWith(expect.stringContaining('Error destroying store "test"'), expect.any(Error))
       warnSpy.mockRestore()
       errSpy.mockRestore()
     })

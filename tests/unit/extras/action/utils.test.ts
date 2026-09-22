@@ -212,8 +212,10 @@ describe('ActionUtils', () => {
       jest.advanceTimersByTime(100)
 
       const result1 = await promise1
-      const result2 = await promise2
-      const result3 = await promise3
+      // promise2/promise3 被防抖合并、与 promise1 同值：只 await 让微任务落定，
+      // 结果由 result1 一处断言，不再重复绑定
+      await promise2
+      await promise3
 
       expect(instance.callCount).toBe(1)
       expect(result1).toBe(30)
@@ -263,8 +265,10 @@ describe('ActionUtils', () => {
 
       const instance = new TestClass()
       const result1 = instance.method(5)
-      const result2 = instance.method(10)
-      const result3 = instance.method(15)
+      // 后两次调用是「窗口内被抑制 / 决定尾补发参数」的前提，返回值本用例不断言，
+      // 故只保留调用、不绑定
+      instance.method(10)
+      instance.method(15)
 
       expect(instance.callCount).toBe(1)
       expect(result1).toBe(10)

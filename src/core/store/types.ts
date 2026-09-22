@@ -8,7 +8,6 @@
  * 的 barrel 再导出（该 barrel 自述「供高级用户使用」），但该子路径**不在 package.json 的
  * exports 映射**里，消费者从包名只能拿到 `./core`（`src/core/index.ts`，未含这四个类型）。
  * 因此它们对包外仍是内部件：形状可能随重构变动，不承诺语义稳定，破坏性调整不必升主版本。
- * 原注释笼统写「不对外暴露」，与 barrel 的实际再导出不一致，故按上述口径更正。
  */
 
 import type { State, StateListener, StateProtectionOptions } from '../../types/store.js'

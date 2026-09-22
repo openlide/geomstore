@@ -107,8 +107,9 @@ describe('Builtin Plugins - 内置插件', () => {
 
     beforeEach(() => {
       // Mock wx API
-      (global as any).wx.setStorageSync = mockSetStorageSync
-      ;(global as any).wx.getStorageSync = mockGetStorageSync
+      const g = global as any
+      g.wx.setStorageSync = mockSetStorageSync
+      g.wx.getStorageSync = mockGetStorageSync
       mockSetStorageSync.mockClear()
       mockGetStorageSync.mockClear()
     })
@@ -495,7 +496,8 @@ describe('Builtin Plugins - 内置插件', () => {
         expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining('仅支持同步存储后端') }), 'persistence')
         expect(store.getState().count).toBe(5)
       } finally {
-        (global as any).wx = originalWx
+        const g = global as any
+        g.wx = originalWx
         consoleErrorSpy.mockRestore()
         consoleLogSpy.mockRestore()
       }
@@ -632,7 +634,8 @@ describe('Builtin Plugins - 内置插件', () => {
         state: { count: 0 },
         actions: {
           increment(n: number) {
-            (this.state as any).count += n
+            const state = this.state as any
+            state.count += n
           },
         } as any,
       })
@@ -837,8 +840,9 @@ describe('Builtin Plugins 补充覆盖', () => {
     const mockGetStorageSync = jest.fn()
 
     beforeEach(() => {
-      (global as any).wx.setStorageSync = mockSetStorageSync
-      ;(global as any).wx.getStorageSync = mockGetStorageSync
+      const g = global as any
+      g.wx.setStorageSync = mockSetStorageSync
+      g.wx.getStorageSync = mockGetStorageSync
       mockSetStorageSync.mockClear()
       mockGetStorageSync.mockClear()
     })
@@ -885,8 +889,9 @@ describe('Builtin Plugins 补充覆盖', () => {
     const mockGetStorageSync = jest.fn()
 
     beforeEach(() => {
-      (global as any).wx.setStorageSync = mockSetStorageSync
-      ;(global as any).wx.getStorageSync = mockGetStorageSync
+      const g = global as any
+      g.wx.setStorageSync = mockSetStorageSync
+      g.wx.getStorageSync = mockGetStorageSync
       mockSetStorageSync.mockClear()
       mockGetStorageSync.mockClear()
     })
@@ -1040,7 +1045,8 @@ describe('Builtin Plugins 补充覆盖', () => {
         store.setState('count', 5)
         expect(store.getState().count).toBe(5)
       } finally {
-        (global as any).wx = originalWx
+        const g = global as any
+        g.wx = originalWx
         consoleWarnSpy.mockRestore()
       }
     })
@@ -1413,7 +1419,8 @@ describe('Builtin Plugins 补充覆盖', () => {
       }
 
       // 先恢复 globalThis，再使用 expect
-      (global as any).globalThis = originalGlobalThis
+      const g = global as any
+      g.globalThis = originalGlobalThis
       expect(threw).toBe(false)
     })
 
@@ -1435,7 +1442,8 @@ describe('Builtin Plugins 补充覆盖', () => {
       }
 
       // 先恢复 globalThis，再使用 expect
-      (global as any).globalThis = originalGlobalThis
+      const g = global as any
+      g.globalThis = originalGlobalThis
       expect(threw).toBe(false)
     })
   })
@@ -1706,7 +1714,8 @@ describe('Builtin Plugins 补充覆盖', () => {
         // 内存存储 removeItem 静默成功即可
         expect(() => uninstall()).not.toThrow()
       } finally {
-        (global as any).wx = originalWx
+        const g = global as any
+        g.wx = originalWx
         consoleWarnSpy.mockRestore()
         consoleLogSpy.mockRestore()
       }
@@ -1734,7 +1743,10 @@ describe('Builtin Plugins 补充覆盖', () => {
         // 卸载本身不抛错（清理是尽力而为），但失败必须可见：
         // 磁盘上残留的旧数据会在下次启动恢复出已卸载的状态
         expect(() => uninstall()).not.toThrow()
-        expect(consoleErrorSpy).toHaveBeenCalledWith('[GeomStore] Failed to clear persisted state:', expect.objectContaining({ message: 'remove failed: quota' }))
+        expect(consoleErrorSpy).toHaveBeenCalledWith(
+          '[GeomStore] Failed to clear persisted state:',
+          expect.objectContaining({ message: 'remove failed: quota' }),
+        )
         expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'remove failed: quota' }), 'persistence')
       } finally {
         consoleErrorSpy.mockRestore()

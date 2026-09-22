@@ -47,11 +47,13 @@ class ComposedStore<S extends State = State> implements Store<S> {
 
   /** 防抖相关：实例级统一调度，避免多个订阅者各自维护标志导致非首个订阅者丢通知 */
   private _notificationScheduled: boolean = false
-  /** 当前活跃的订阅者：监听器 → 注册次数与其中可写份数。
+  /** 当前活跃的订阅者：监听器 → 注册次数。
    *  与 SubscriptionManager 同语义——同一函数注册 N 次通知 N 次，退订只减一，
    *  减到 0 才真正移除。此前用 Set 会使「退订其中一份」直接删除整个监听器，
-   *  用户仍持有的另一份退订句柄静默失效、永不再收到通知。 */
-  private _composedListeners: Map<StateListener<S>, { total: number; writable: number }> = new Map()
+   *  用户仍持有的另一份退订句柄静默失效、永不再收到通知。
+   *  值只存注册次数：可写份数由 _composedWritableCount 单点记账，
+   *  按监听器再存一份既无读取方又要人工同步（原 writable 字段全库只写不读） */
+  private _composedListeners: Map<StateListener<S>, number> = new Map()
   /** 可写（非只读）注册总次数：>0 时通知载荷必须是深拷贝（见 _notifyListeners 的隔离说明） */
   private _composedWritableCount = 0
   /** 对子 Store 的订阅句柄（destroy 时统一退订，避免闭包残留） */
@@ -187,11 +189,17 @@ class ComposedStore<S extends State = State> implements Store<S> {
     // 「缓存失效 + 调度通知」两件事。这样既保证子 store 变化能触发合并缓存重建，
     // 又不额外占用子 store 的订阅配额（此前多建一条缓存失效订阅会挤掉外部直连监听器）。
     // 构造期订阅失败（如子 store 已销毁/达上限）则优雅降级：放弃合并缓存，
-    // 后续读取退回每次重合并，避免失效订阅缺失导致缓存返回陈旧状态
+    // 后续读取退回每次重合并，避免失效订阅缺失导致缓存返回陈旧状态。
+    // 降级必须留痕：吞掉异常后「订阅建立失败」与「本来就没建缓存」在外部完全同形，
+    // 且该状态终身不可恢复（_mergedCacheEnabled 不会再置回 true），
+    // 排查性能问题的人会看到一个没有任何解释的每次重合并
     try {
       this._ensureChildSubscriptions()
-    } catch {
+    } catch (error) {
       this._mergedCacheEnabled = false
+      if (!isProduction()) {
+        console.warn('[composeStore] 子 store 订阅建立失败，合并状态缓存已禁用，后续读取将退化为每次重合并：', error)
+      }
     }
   }
 
@@ -388,7 +396,8 @@ class ComposedStore<S extends State = State> implements Store<S> {
     } else {
       // 裸名查找：多 store 命中同名 action 时提示冲突（仍取第一个，保持兼容）
       const matches = this._stores.filter((s) => s.actions && Object.prototype.hasOwnProperty.call(s.actions, actualAction))
-      if (matches.length > 1) {
+      if (matches.length > 1 && !isProduction()) {
+        // 歧义属配置问题，只在开发模式提示：dispatch 是业务热线，生产刷屏只会淹没真实日志
         console.warn(
           `[composeStore] Action "${actualAction}" 存在于多个 store（${matches.map((s) => s.name).join(', ')}），将调用第一个 store 的定义；建议启用命名空间消除歧义`,
         )
@@ -440,11 +449,14 @@ class ComposedStore<S extends State = State> implements Store<S> {
       targetStore = this._stores.find((s) => s.name === storeName)
     } else {
       // 使用 getGetterNames() 查找，避免 try/catch 异常驱动控制流；
-      // 多 store 命中同名 getter 时提示冲突（仍取第一个，保持兼容）
+      // 接口把它声明为必选，但组合层接受鸭子类型/桩 store（同 getGetterNames() 与
+      // plugins/builtin.ts 的口径），未实现时按「无 getter」降级，不让这条只读路径抛 TypeError
       const matches = this._stores.filter((s) => {
-        return s.getGetterNames().includes(actualGetter)
+        const names = s.getGetterNames ? s.getGetterNames() : []
+        return names.includes(actualGetter)
       })
-      if (matches.length > 1) {
+      if (matches.length > 1 && !isProduction()) {
+        // 歧义属配置问题，只在开发模式提示：命中路径在渲染/读取热线上，生产刷屏无处置价值
         console.warn(
           `[composeStore] Getter "${actualGetter}" 存在于多个 store（${matches.map((s) => s.name).join(', ')}），将返回第一个 store 的定义；建议启用命名空间消除歧义`,
         )
@@ -496,13 +508,15 @@ class ComposedStore<S extends State = State> implements Store<S> {
     // 且绕过子 store 的通知/钩子——存在可写订阅者时由组合层自己做一次深拷贝，
     // 与 Store._notifyListeners 的 hasWritableListeners() 判据同口径
     const state = this._composedWritableCount > 0 ? deepCloneState(this.getState()) : this.getState()
-    // 迭代前快照，防止订阅者在回调中退订导致集合变更
+    // 迭代前快照「监听器 + 本轮投递次数」：既防止订阅者在回调中退订导致集合变更，
+    // 也保证投递次数取的是进入本轮通知时的在册值——存数字而非可变的 entry 对象，
+    // 回调内退订只会改写 Map，不会截断同一轮剩余的投递（与 SubscriptionManager.notify 的扁平快照同语义）
     const entries = [...this._composedListeners]
     this._notifying = true
     try {
-      for (const [listener, entry] of entries) {
+      for (const [listener, times] of entries) {
         // 按注册次数展开：重复注册的监听器每次通知收到多次回调（与 SubscriptionManager 同语义）
-        for (let i = 0; i < entry.total; i++) {
+        for (let i = 0; i < times; i++) {
           try {
             listener(state)
           } catch (error) {
@@ -572,14 +586,13 @@ class ComposedStore<S extends State = State> implements Store<S> {
     // 不参与子 store 订阅的建立（子 store 侧本就单路复用一份）
     const existing = this._composedListeners.get(listener)
     if (existing !== undefined) {
-      existing.total += 1
+      this._composedListeners.set(listener, existing + 1)
       if (!readOnly) {
-        existing.writable += 1
         this._composedWritableCount += 1
       }
       return this._createUnsubscribe(listener, readOnly)
     }
-    this._composedListeners.set(listener, { total: 1, writable: readOnly ? 0 : 1 })
+    this._composedListeners.set(listener, 1)
     if (!readOnly) {
       this._composedWritableCount += 1
     }
@@ -608,15 +621,20 @@ class ComposedStore<S extends State = State> implements Store<S> {
   /**
    * 判断指定状态键自上次通知以来是否发生变更
    *
-   * 组合 Store 将多个子 store 的状态按 store 名合并，键空间与子 store 不对应，
-   * 无法精确映射到某个子 store 的脏键。这里保守返回 true（视为已变更），
-   * 使绑定层在对象值上保持「宁多勿漏」行为，确保正确性；
-   * 对象值的整体替换（引用变化）仍由引用比较兜底发送。
+   * 三个分支的口径不同，逐条说明（旧注释写着「始终返回 true」，与实现不符已有几轮）：
+   * - 合并缓存订阅未建立（构造期订阅失败的降级态）：没有任何脏追踪可用，保守返回 true；
+   * - 命名空间模式：组合状态键即子 store 名，`_dirtyStores` 能精确指出哪个子 store 变过，
+   *   据此返回真/假——集成层因此可跳过未变化的映射键，省掉一次冗余 setData（含符号键：
+   *   脏键表只按字符串子 store 名索引，符号键不可能命中，保守返回 true）；
+   * - 非命名空间模式：状态键是各子 store 内部 key 的平铺，无法反查归属，保守返回 true。
    *
-   * @param _key - 组合层状态键（即子 store 名）
-   * @returns 始终返回 true（保守：不跳过任何 setData）
+   * 「保守」的方向性始终是**宁多勿漏**：返回 true 只是多写一次 setData，
+   * 误返回 false 会让变更对所有监听器永久不可见。对象值的整体替换另有引用比较兜底。
+   *
+   * @param key - 组合层状态键（命名空间模式下即子 store 名；集成层也可能传符号键）
+   * @returns 该键自上次通知以来是否可能发生变更
    */
-  isStateKeyDirty(key: string): boolean {
+  isStateKeyDirty(key: string | symbol): boolean {
     // 合并缓存订阅未建立（降级场景）：无脏追踪，保守返回 true（不跳过 setData，避免丢失更新）
     if (!this._mergedCacheEnabled) {
       return true
@@ -624,14 +642,17 @@ class ComposedStore<S extends State = State> implements Store<S> {
     // 命名空间模式：组合状态键即子 store 名，可精确追踪哪个子 store 变更，
     // 使集成层据此跳过未变化映射键的冗余 setData（恢复此前被恒 true 抑制的跳过优化）
     if (this._namespace) {
-      return this._dirtyStores.has(key)
+      // 脏键表按子 store 名（字符串）索引；命名空间模式下能被集成层传入的符号键
+      // 不可能对应到某个子 store，落到「保守返回 true」这一侧，即不跳过任何 setData，
+      // 与下面非命名空间分支同一取向
+      return typeof key === 'string' ? this._dirtyStores.has(key) : true
     }
     // 非命名空间模式：状态键为子 store 内部 key 平铺，无法精确映射到脏子 store，
     // 保守返回 true（不跳过 setData），对象值整体替换仍由引用比较兜底
     return true
   }
 
-  /** 释放一份监听器注册：同一监听器减到 0 才真正移除。
+  /** 创建幂等退订句柄：同一句柄重复调用只释放一次注册。
    *
    *  注意：不再随「最后一个组合层监听器退订」撤销子 store 订阅——该订阅同时承担
    *  合并缓存失效（_invalidateMergedCache）职责，撤销后 getState() 会返回陈旧缓存，
@@ -654,16 +675,15 @@ class ComposedStore<S extends State = State> implements Store<S> {
    * 又被可写注册（用户订阅），退订时必须按各自的标记回收可写计数。
    */
   private _releaseListener(listener: StateListener<S>, readOnly: boolean): void {
-    const entry = this._composedListeners.get(listener)
-    if (entry === undefined) {
+    const total = this._composedListeners.get(listener)
+    if (total === undefined) {
       return
     }
     if (!readOnly) {
-      entry.writable -= 1
       this._composedWritableCount -= 1
     }
-    if (entry.total > 1) {
-      entry.total -= 1
+    if (total > 1) {
+      this._composedListeners.set(listener, total - 1)
       return
     }
     this._composedListeners.delete(listener)

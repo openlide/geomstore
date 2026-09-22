@@ -62,6 +62,19 @@ function pendingLaunchKey(backupKey: string): string {
 }
 
 /**
+ * 成对清理备份与待更新重启标记
+ *
+ * 两个键必须同进同出：只删标记会留下无人再读的备份，只删备份会让残留标记把之后的
+ * 普通冷启动误判为「更新后首启」，凭空执行一次无源恢复并把持久化变更回滚到旧备份点。
+ * 该不变量此前靠三处复制的 `remove(backup); remove(marker)` 维持，
+ * 漏一侧即回到上述某个 bug，故收敛到本函数
+ */
+function clearBackup(backupKey: string): void {
+  storage.remove(pendingLaunchKey(backupKey))
+  storage.remove(backupKey)
+}
+
+/**
  * 备份当前状态
  */
 function backupState<S extends State = State>(store: Store<S>, backupKey: string): void {
@@ -70,17 +83,13 @@ function backupState<S extends State = State>(store: Store<S>, backupKey: string
     state: store.$snapshot(),
     version: LIBRARY_VERSION,
   }
-  // 写入失败（配额满等）必须抛错：调用方据此跳过标记写入与 applyUpdate，
-  // 避免重启后凭空执行一次无源恢复
+  // 写入失败（配额满等）必须抛错：调用方据此跳过标记写入，
+  // 避免重启后凭空执行一次无源恢复（更新本身仍继续，损失的只是状态恢复）
   if (!storage.set(backupKey, backupData)) {
     throw new Error(`[HotUpdate] 备份写入 storage 失败: ${backupKey}`)
   }
 }
 
-/**
- * 初始化热更新处理
- * 在小程序更新时自动备份和恢复状态
- */
 /** 热更新当前保护的 store 配置：重复调用（账号切换）时切换保护目标 */
 let hotUpdateRegistration: { store: Store<State>; backupKey: string; onBeforeUpdate?: () => void } | null = null
 /** 已安装监听的 updateManager 实例集合：真实环境为全局单例（幂等安装防止监听累积），
@@ -91,6 +100,13 @@ let hotUpdateRegistration: { store: Store<State>; backupKey: string; onBeforeUpd
  *  弱引用键不阻止实例回收，也不改变单例场景下的行为 */
 const installedUpdateManagers = new WeakSet<object>()
 
+/**
+ * 初始化热更新处理
+ * 在小程序更新时自动备份和恢复状态
+ *
+ * 重复调用（账号切换）会切换保护目标；对同一 `updateManager` 实例的监听安装是幂等的
+ * （`onUpdateReady` 为累加式注册且无 off API，见 `installedUpdateManagers`）
+ */
 export function initHotUpdate<S extends State = State>(config: HotUpdateConfig<S>): void {
   const { store, backupKey, onBeforeUpdate } = config
   const resolvedBackupKey = resolveBackupKey(store, backupKey)
@@ -125,20 +141,38 @@ export function initHotUpdate<S extends State = State>(config: HotUpdateConfig<S
         // 重启后恢复会把「备份点之前弹窗期间已持久化的变更」整体回滚。
         // 确认时刻的内存状态 ≥ 此刻任何已持久化数据；残余窗口仅剩
         // 「确认到进程终止之间」最后一段（受防抖落盘时机影响，无法完全消除）
+        // 备份失败与宿主回调失败各自兜底：此前 onBeforeUpdate 与 backupState 共用一个
+        // try，宿主上报/落库逻辑抛错既被误记成「备份状态失败」，又会 return 掉用户
+        // 刚确认的更新且不给任何反馈（备份写不进只是失去恢复能力，不是不更新的理由）
+        let backedUp = false
         try {
           backupState(registration.store, registration.backupKey)
+          backedUp = true
+        } catch (error) {
+          logger.error('HotUpdate', '备份状态失败，本次更新不做状态恢复:', error)
+        }
+        try {
           registration.onBeforeUpdate?.()
         } catch (error) {
-          logger.error('HotUpdate', '备份状态失败:', error)
-          // 备份失败不阻断更新，但标记不能写：否则重启后会凭空执行一次无源恢复
-          return
+          logger.error('HotUpdate', 'onBeforeUpdate 回调执行失败:', error)
         }
         // 先写待更新重启标记再 applyUpdate：重启后凭标记区分「更新后首启」与
         // 「拒绝更新后的普通重启」，避免普通重启把备份点之后的持久化变更回滚。
+        // 备份没落盘时不写标记：否则重启后是一次凭空执行的无源恢复。
         // 标记写入失败（storage.set 已尽力而为，仅配额满等异常）不阻断更新：
         // 损失的只是恢复语义
-        storage.set(pendingLaunchKey(registration.backupKey), true)
-        updateManager.applyUpdate()
+        if (backedUp) {
+          storage.set(pendingLaunchKey(registration.backupKey), true)
+        }
+        // applyUpdate 抛错即更新未生效：刚写入的标记与备份必须成对清掉，
+        // 否则下一次普通冷启动会被误判为「更新后首启」并把备份点之后的变更整体回滚
+        // （与 onUpdateFailed 同口径，此前该出口只存在于「平台回调更新失败」一条路径上）
+        try {
+          updateManager.applyUpdate()
+        } catch (error) {
+          logger.error('HotUpdate', 'applyUpdate 失败，按更新未生效清理标记与备份:', error)
+          clearBackup(registration.backupKey)
+        }
       },
     })
   })
@@ -149,8 +183,7 @@ export function initHotUpdate<S extends State = State>(config: HotUpdateConfig<S
     // 「更新后首启」，把用户继续使用期间的持久化变更回滚到旧备份点
     /* istanbul ignore else -- initHotUpdate 必先写入 registration 再安装本监听，故此处恒为真 */
     if (hotUpdateRegistration) {
-      storage.remove(pendingLaunchKey(hotUpdateRegistration.backupKey))
-      storage.remove(hotUpdateRegistration.backupKey)
+      clearBackup(hotUpdateRegistration.backupKey)
     }
     wx.showToast({ title: '更新失败，请重试', icon: 'none' })
   })
@@ -164,7 +197,9 @@ export function restoreFromHotUpdate<S extends State = State>(store: Store<S>, b
   const markerKey = pendingLaunchKey(resolvedBackupKey)
   const backup = storage.get<BackupData>(resolvedBackupKey)
   if (!backup) {
-    // 备份不存在时顺带清理可能残留的孤儿标记
+    // 备份不存在时顺带清理可能残留的孤儿标记。刻意不走 clearBackup：本分支的前提是
+    // 「读不到备份」，而读取抛错也会被归一为 null——此时备份可能仍在存储里，
+    // 连它一起删会把一次瞬态读失败变成确定的数据丢失（只删标记最多让恢复能力作废）
     storage.remove(markerKey)
     return false
   }
@@ -177,8 +212,7 @@ export function restoreFromHotUpdate<S extends State = State>(store: Store<S>, b
   // 备份超过过期时间，清理并返回
   if (backupAge > BACKUP_EXPIRY_MS) {
     logger.warn('HotUpdate', '备份数据已过期或时间戳无效（视为过期）')
-    storage.remove(resolvedBackupKey)
-    storage.remove(markerKey)
+    clearBackup(resolvedBackupKey)
     return false
   }
 
@@ -196,8 +230,7 @@ export function restoreFromHotUpdate<S extends State = State>(store: Store<S>, b
   // 否则每次冷启动都会重复告警一遍
   if (!isPlainObject(backup.state)) {
     logger.warn('HotUpdate', '备份 state 不是纯对象，跳过恢复并清理')
-    storage.remove(resolvedBackupKey)
-    storage.remove(markerKey)
+    clearBackup(resolvedBackupKey)
     return false
   }
 
@@ -216,12 +249,13 @@ export function restoreFromHotUpdate<S extends State = State>(store: Store<S>, b
     // 更新前的旧版本，整树替换会把新版本新增的 state 键整体抹掉，新代码读这些键
     // 即得 undefined。plugins/builtin.ts 的持久化恢复也为此特意选用 $patch
     store.$patch(backup.state as Partial<S>)
-    storage.remove(resolvedBackupKey)
-    storage.remove(markerKey)
+    clearBackup(resolvedBackupKey)
     logger.log('HotUpdate', '状态已从备份恢复')
     return true
   } catch (error) {
     logger.error('HotUpdate', '恢复状态失败:', error)
+    // 刻意不清理：$patch 失败按瞬态故障处理（如 store 已被销毁），保留两个键让下一次
+    // 冷启动还能重试恢复；这里成对删掉才是不可逆的丢状态
     return false
   }
 }

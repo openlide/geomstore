@@ -77,7 +77,7 @@ describe('PerformanceMonitor 容量收缩', () => {
 
 describe('ErrorAggregator 组驱逐后的统计一致性', () => {
   const ctx = (storeName: string, message: string) =>
-    ({ level: 'error', error: createError(ErrorCode.ACTION_EXECUTION_ERROR, message), storeName, operation: 'op', timestamp: 1 } as never)
+    ({ level: 'error', error: createError(ErrorCode.ACTION_EXECUTION_ERROR, message), storeName, operation: 'op', timestamp: 1 }) as never
 
   it('超出 maxGroups 驱逐旧组时，byStore 随组一并收缩且求和等于 totalErrors', () => {
     const aggregator = new ErrorAggregator(2)
@@ -121,7 +121,10 @@ describe('ErrorMonitoring reportTimeout <= 0 表示不超时', () => {
     const reporter = {
       getName: () => 'slow',
       report: async () => {},
-      reportBatch: () => new Promise<void>((resolve) => { resolveReport = resolve }),
+      reportBatch: () =>
+        new Promise<void>((resolve) => {
+          resolveReport = resolve
+        }),
     }
     const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {})
     const monitoring = new ErrorMonitoring({ reporters: [reporter], reportTimeout: 0, batchThreshold: 1, batchInterval: 3_600_000 })
@@ -161,12 +164,9 @@ describe('ErrorBoundary 非 Error 抛出值', () => {
     const fallback = jest.fn(() => 'fb')
     const boundary = new ErrorBoundary<undefined, string>({ recoverable: true, fallback })
 
-    const result = boundary.execute(
-      () => {
-        throw 42
-      },
-      undefined,
-    )
+    const result = boundary.execute(() => {
+      throw 42
+    }, undefined)
 
     expect(result).toBe('fb')
     expect(fallback).toHaveBeenCalledWith(expect.objectContaining({ message: '42' }), undefined)

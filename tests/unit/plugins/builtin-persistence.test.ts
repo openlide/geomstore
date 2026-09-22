@@ -17,7 +17,15 @@ describe('持久化插件的清理边界', () => {
   })
 
   it('clearOnUninstall=true 且存在待清状态时执行清理', () => {
-    const store = createStore({ name: 'persist-clear', state: { x: 1 }, actions: { bump(this: any) { this.$patch({ x: (this.state as { x: number }).x + 1 }) } } })
+    const store = createStore({
+      name: 'persist-clear',
+      state: { x: 1 },
+      actions: {
+        bump(this: any) {
+          this.$patch({ x: (this.state as { x: number }).x + 1 })
+        },
+      },
+    })
     const storageBackend = { getItem: () => null, setItem: () => {}, removeItem: jest.fn() }
 
     const uninstall = store.use(persistencePlugin({ storage: storageBackend, clearOnUninstall: true }))

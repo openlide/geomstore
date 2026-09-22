@@ -59,12 +59,12 @@ export default {
   coverageReporters: ['text', 'text-summary', 'html', 'lcov', 'json'],
   // 源码与测试统一使用 ESM 规范写法（相对导入带 .js 扩展名），
   // 而 Jest 运行时由 ts-jest 以 CJS 加载 .ts，需把 .js 后缀映射回无后缀后再解析。
+  // 别名只保留 tsconfig.json `paths` 里真实存在的 `@/*`；曾有的 `@tests/*` 已随
+  // tsconfig 侧别名一起删除（全仓零引用），单边映射只会让人误以为别名仍可用。
   moduleNameMapper: {
     '^(\\.{1,2}/.*)\\.js$': '$1',
     '^@/(.*)\\.js$': '<rootDir>/src/$1',
-    '^@tests/(.*)\\.js$': '<rootDir>/tests/$1',
     '^@/(.*)$': '<rootDir>/src/$1',
-    '^@tests/(.*)$': '<rootDir>/tests/$1',
   },
   setupFilesAfterEnv: ['<rootDir>/tests/setup.ts'],
   testTimeout: 10000,

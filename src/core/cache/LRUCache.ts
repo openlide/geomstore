@@ -16,6 +16,11 @@ export type { CacheOptions, LRUCacheStats } from './types.js'
 
 import type { CacheOptions, LRUCacheStats, LRUNode } from './types.js'
 
+/** 高精度时间戳（毫秒）：performance.now 具亚毫秒精度，访问耗时统计依赖它 */
+function highResNow(): number {
+  return typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : Date.now()
+}
+
 // ==================== 增强型LRU缓存类 ====================
 
 /**
@@ -43,11 +48,6 @@ import type { CacheOptions, LRUCacheStats, LRUNode } from './types.js'
  * })
  * ```
  */
-/** 高精度时间戳（毫秒）：performance.now 具亚毫秒精度，访问耗时统计依赖它 */
-function highResNow(): number {
-  return typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : Date.now()
-}
-
 export class LRUCache<K, V> {
   /** 当前容量 */
   private capacity: number
@@ -71,6 +71,12 @@ export class LRUCache<K, V> {
    */
   private evicting = false
 
+  /**
+   * 「淘汰无法收敛」是否已报告过：每个实例只输出一次，
+   * 否则持续回填的缓存会把一次容量冲突变成每次写入一条日志的刷屏
+   */
+  private capacityViolationReported = false
+
   /** 命中次数 */
   private hitCount: number
 
@@ -83,8 +89,14 @@ export class LRUCache<K, V> {
   /** 总访问时间（毫秒） */
   private totalAccessTime: number
 
-  /** 配置选项 */
-  private options: Required<CacheOptions<K, V>>
+  /**
+   * 配置选项（不含 capacity）
+   *
+   * 容量只保存在 `this.capacity` 一份：此前 options 与 capacity 各存一份，
+   * 构造期的规范化（非有限值回退、小于 1 夹到 1）会让两者取值分叉，
+   * 后续任何按 `options.capacity` 做的淘汰判定都会绕开守卫、重新引入无界缓存
+   */
+  private options: Required<Omit<CacheOptions<K, V>, 'capacity'>>
 
   /**
    * 创建LRU缓存实例
@@ -110,17 +122,18 @@ export class LRUCache<K, V> {
       config = { capacity: config }
     }
 
+    // NaN/Infinity 容量会使 Math.max 产生 NaN，_size > NaN 恒为 false → 缓存无界；
+    // 非有限值回退默认容量。规范化结果即唯一副本（见 options 字段说明）
+    const requestedCapacity = config.capacity ?? 100
+    this.capacity = Number.isFinite(requestedCapacity) ? Math.max(1, requestedCapacity) : 100
+
     // 默认配置
     this.options = {
-      capacity: config.capacity ?? 100,
       enableStats: config.enableStats ?? true,
       trackAccessTime: config.trackAccessTime ?? true,
       onEvict: config.onEvict ?? (() => {}),
     }
 
-    // NaN/Infinity 容量会使 Math.max 产生 NaN，_size > NaN 恒为 false → 缓存无界；
-    // 非有限值回退默认容量
-    this.capacity = Number.isFinite(this.options.capacity) ? Math.max(1, this.options.capacity) : 100
     this.cache = new Map()
     this._size = 0
     this.hitCount = 0
@@ -260,22 +273,7 @@ export class LRUCache<K, V> {
     this.addToHead(newNode)
     this._size++
 
-    // 检查容量，执行LRU淘汰。
-    // 用循环而非单次 if：onEvict 回调可能重入 set()（回调里回填数据），
-    // 单次淘汰后尺寸可能仍超限，容量不变量会永久失效。
-    // 重入保护：淘汰进行中回调里再 set() 只写入、不开第二层淘汰循环（由本帧统一收敛），
-    // 否则「回填被逐出的键」会一层套一层递归，几百次写入即 RangeError 栈溢出。
-    // 预算取代「净尺寸没减少就 break」：回调回填会抵消淘汰带来的减量，按净尺寸判定会
-    // 提前收手、把容量永久留在超限档位（回填有限时应收敛到新容量）；
-    // 按「本轮至多淘汰 entrySize 个」判定则既收敛又有界。
-    // 残余限制：回调每次都把被逐出的键原样填回来时，淘汰与回填互相抵消，尺寸会随写入缓增
-    // ——这种回调本身就要了比容量更多的条目，库只保证不崩、不在单帧内无界循环
-    const evictionBudget = this._size
-    let evictions = 0
-    while (!this.evicting && this._size > this.capacity && evictions < evictionBudget) {
-      this.evictLRU()
-      evictions++
-    }
+    this._enforceCapacity()
 
     return this
   }
@@ -456,15 +454,9 @@ export class LRUCache<K, V> {
     const validCapacity = Number.isFinite(newCapacity) ? Math.max(1, newCapacity) : this.capacity
 
     // 先落定容量再淘汰：onEvict 回调可能重入 set()，只有容量已更新，
-    // 重入写入才不会按旧上限继续扩容；循环条件也保证回调重入后仍收敛到新容量。
-    // 淘汰预算与收敛判据同 set()：回调重入的写入由本帧继续淘汰
+    // 重入写入才不会按旧上限继续扩容
     this.capacity = validCapacity
-    const evictionBudget = this._size
-    let evictions = 0
-    while (!this.evicting && this._size > this.capacity && evictions < evictionBudget) {
-      this.evictLRU()
-      evictions++
-    }
+    this._enforceCapacity()
 
     return this
   }
@@ -670,6 +662,45 @@ export class LRUCache<K, V> {
       node.next = null
     }
     // 如果 prev 或 next 为 null，说明节点已不在链表中（孤立节点），无需操作
+  }
+
+  /**
+   * 把尺寸收敛到容量上限（set() 与 resize() 共用同一判据）
+   *
+   * 用循环而非单次 if：onEvict 回调可能重入 set()（回调里回填数据），
+   * 单次淘汰后尺寸可能仍超限，容量不变量会永久失效。
+   * 重入保护：淘汰进行中回调里再 set() 只写入、不开第二层淘汰循环（由本帧统一收敛），
+   * 否则「回填被逐出的键」会一层套一层递归，几百次写入即 RangeError 栈溢出。
+   * 预算取代「净尺寸没减少就 break」：回调回填会抵消淘汰带来的减量，按净尺寸判定会
+   * 提前收手、把容量永久留在超限档位（回填有限时应收敛到新容量）；
+   * 按「本轮至多淘汰 entrySize 个」判定则既收敛又有界。
+   */
+  private _enforceCapacity(): void {
+    const evictionBudget = this._size
+    let evictions = 0
+    while (!this.evicting && this._size > this.capacity && evictions < evictionBudget) {
+      this.evictLRU()
+      evictions++
+    }
+
+    // 预算耗尽仍超限：onEvict 在淘汰期间写入的条目抵消了淘汰的减量。
+    // 回填条数由回调决定、不受库约束，继续追淘汰只会把单帧变成无界循环，
+    // 因此这一支路只保证「有界 + 可见」，把无法收敛的事实报出来而不静默留档
+    if (!this.evicting && this._size > this.capacity) {
+      this._reportUnconvergedCapacity()
+    }
+  }
+
+  /** 淘汰预算耗尽、容量上限本轮无法达成时的单次诊断（见 _enforceCapacity） */
+  private _reportUnconvergedCapacity(): void {
+    if (this.capacityViolationReported) {
+      return
+    }
+    this.capacityViolationReported = true
+    console.warn(
+      `[LRUCache] 淘汰循环结束仍有 ${this._size} 条超出容量上限 ${this.capacity}：onEvict 回调在淘汰过程中写入了新条目。` +
+        '若每次淘汰都有回填，尺寸将随写入持续增长（每次净增一条），请在回调内停止回填或改用更大的容量',
+    )
   }
 
   /**

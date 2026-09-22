@@ -53,13 +53,9 @@ describe('#274 HttpReporter 请求头归一化', () => {
   it('#274 全局 Headers 不可见时的真实 Headers 实例不被静默丢空', async () => {
     const real = new Headers({ 'X-Trace': '1' })
     const sent: Record<string, string>[] = []
-    const reporter = new HttpReporter(
-      'https://example.com/report',
-      { headers: real as any },
-      async (_url, _body, _method, headers) => {
-        sent.push(headers)
-      },
-    )
+    const reporter = new HttpReporter('https://example.com/report', { headers: real as any }, async (_url, _body, _method, headers) => {
+      sent.push(headers)
+    })
 
     await withHiddenHeaders(async () => {
       await reporter.report({ error: new Error('boom'), storeName: 's', operation: 'op', level: 'error', timestamp: 1 } as any)
@@ -70,13 +66,9 @@ describe('#274 HttpReporter 请求头归一化', () => {
 
   it('#274 数组形式优先于鸭子类型判定（数组同样具备 forEach）', async () => {
     const sent: Record<string, string>[] = []
-    const reporter = new HttpReporter(
-      'https://example.com/report',
-      { headers: [['x-pair', 'v']] as any },
-      async (_url, _body, _method, headers) => {
-        sent.push(headers)
-      },
-    )
+    const reporter = new HttpReporter('https://example.com/report', { headers: [['x-pair', 'v']] as any }, async (_url, _body, _method, headers) => {
+      sent.push(headers)
+    })
 
     await reporter.report({ error: new Error('boom'), storeName: 's', operation: 'op', level: 'error', timestamp: 1 } as any)
 
@@ -154,7 +146,11 @@ describe('#286/#287 克隆引擎的统一降级口径', () => {
     expect(errors[0].path).toBe('root.boom')
     expect(onError).toHaveBeenCalledTimes(1)
     const context = (onError.mock.calls[0] as unknown[])[1] as Record<string, unknown>
-    expect(context).toMatchObject({ path: 'root.boom', recoverable: true })
+    // `recoverable` 已按 R5-239 从公开上下文里删除（两处咨询点都能降级，该标记恒真、
+    // 无分流价值），本用例只锁寻址信息；键集合的严格形状在这里一起钉住，
+    // 免得日后有人往上下文里塞回一个恒真字段而无人察觉
+    expect(context).toMatchObject({ path: 'root.boom' })
+    expect(Object.keys(context).sort()).toEqual(['depth', 'path', 'value'])
   })
 
   it('#287 函数按引用进入快照（与 core 克隆同口径：保留可调用性，不丢弃）', async () => {

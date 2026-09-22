@@ -7,6 +7,42 @@
 
 import type { PerformanceMetrics, PerformanceStats } from '../../types/performance.js'
 
+/** 单个操作的耗时汇总：所有按操作分组的统计都从 summarizeByOperation 的这份结果派生 */
+interface OperationSummary {
+  count: number
+  totalDuration: number
+  maxDuration: number
+}
+
+/**
+ * 按操作名分组汇总耗时（单次遍历）。
+ *
+ * 累加器用 Map 而非 Record：operation 名来自业务，可为 '__proto__'/'constructor' 等，
+ * 普通对象上 `if (!acc[op])` 会命中原型成员从而跳过初始化，随后 `acc[op].count++`
+ * 直接写脏 Object.prototype（全局污染），或在 push 路径抛 TypeError。
+ * 需要普通对象结果形的调用方自行 `Object.fromEntries`（按键定义为自有数据属性，
+ * 不触发 `__proto__` setter），读侧则没有原型链误命中的问题（Map.get 只认自有键）。
+ *
+ * 四个统计入口（computePerformanceStats / getHotPaths / analyzeBottlenecks /
+ * detectRegression）共用本函数：分组口径只需改一处。
+ */
+function summarizeByOperation(metrics: PerformanceMetrics[]): Map<string, OperationSummary> {
+  const byOperation = new Map<string, OperationSummary>()
+
+  for (const metric of metrics) {
+    let entry = byOperation.get(metric.operation)
+    if (!entry) {
+      entry = { count: 0, totalDuration: 0, maxDuration: -Infinity }
+      byOperation.set(metric.operation, entry)
+    }
+    entry.count++
+    entry.totalDuration += metric.duration
+    if (metric.duration > entry.maxDuration) entry.maxDuration = metric.duration
+  }
+
+  return byOperation
+}
+
 /**
  * 由指标数组计算性能统计（平均/最大/最小耗时、总次数、超阈值次数、按操作分组）。
  *
@@ -29,41 +65,19 @@ export function computePerformanceStats(metrics: PerformanceMetrics[]): Performa
   }
 
   // 循环累计而非 Math.max(...durations)：大样本下 spread 栈溢出
+  // 超阈值计数在同一趟循环里累加：再走一遍 metrics.filter(...).length 会让热路径
+  // 多一次全量遍历加一个中间数组，而这里正是被监控操作自己的路径
   let maxDuration = -Infinity
   let minDuration = Infinity
   let totalDuration = 0
+  let thresholdExceeded = 0
   for (const m of metrics) {
     totalDuration += m.duration
     if (m.duration > maxDuration) maxDuration = m.duration
     if (m.duration < minDuration) minDuration = m.duration
+    if (m.exceedThreshold) thresholdExceeded++
   }
   const avgDuration = totalDuration / metrics.length
-  const thresholdExceeded = metrics.filter((m) => m.exceedThreshold).length
-
-  // 按操作分组（单次遍历，避免 O(n×k) 的重复 filter）。
-  // 累加器用 Map 而非 Record：operation 名来自业务，可为 '__proto__'/'constructor' 等，
-  // 普通对象上 `if (!acc[op])` 会命中原型成员从而跳过初始化，随后 `acc[op].count++`
-  // 直接写脏 Object.prototype（全局污染），或在 push 路径抛 TypeError。
-  // 结果经 Object.fromEntries 落回普通对象（按键定义为自有属性，不触发 __proto__ setter）
-  const byOperation = new Map<string, { count: number; avgDuration: number; maxDuration: number }>()
-  // 累加器：记录每个操作的总时长
-  const opSums = new Map<string, number>()
-  for (const metric of metrics) {
-    const op = metric.operation
-    let entry = byOperation.get(op)
-    if (!entry) {
-      entry = { count: 0, avgDuration: 0, maxDuration: 0 }
-      byOperation.set(op, entry)
-      opSums.set(op, 0)
-    }
-    entry.count++
-    entry.maxDuration = Math.max(entry.maxDuration, metric.duration)
-    opSums.set(op, (opSums.get(op) as number) + metric.duration)
-  }
-  // 计算平均值
-  for (const [op, entry] of byOperation) {
-    entry.avgDuration = (opSums.get(op) as number) / entry.count
-  }
 
   return {
     avgDuration,
@@ -71,7 +85,20 @@ export function computePerformanceStats(metrics: PerformanceMetrics[]): Performa
     minDuration,
     totalCount: metrics.length,
     thresholdExceeded,
-    byOperation: Object.fromEntries(byOperation),
+    byOperation: Object.fromEntries(
+      Array.from(
+        summarizeByOperation(metrics),
+        ([operation, summary]) =>
+          [
+            operation,
+            {
+              count: summary.count,
+              avgDuration: summary.totalDuration / summary.count,
+              maxDuration: summary.maxDuration,
+            },
+          ] as [string, PerformanceStats['byOperation'][string]],
+      ),
+    ),
   }
 }
 
@@ -205,10 +232,10 @@ export class MetricsCollector {
    *
    * 根据谓词函数筛选指标，返回包含筛选结果的新采集器。
    *
-   * @param {(metrics: PerformanceMetrics) => boolean} predicate - 筛选函数
+   * @param {(metric: PerformanceMetrics) => boolean} predicate - 筛选函数
    * @returns {MetricsCollector} 包含筛选结果的新采集器
    */
-  filter(predicate: (metrics: PerformanceMetrics) => boolean): MetricsCollector {
+  filter(predicate: (metric: PerformanceMetrics) => boolean): MetricsCollector {
     const collector = new MetricsCollector(this._maxSize)
     collector.collectBatch(this._ordered().filter(predicate))
     return collector
@@ -285,30 +312,20 @@ export class MetricsCollector {
    *
    * 返回最频繁操作列表，包含执行次数和平均耗时。
    *
-   * @param {number} [limit=5] - 返回的热路径数量
+   * @param {number} [limit=5] - 返回的热路径数量；小数向下取整，非有限值（NaN/Infinity）、
+   *   0 与负数一律按 0 处理（返回空数组），与 PerformanceMonitor.getRecentMetrics 同口径
    * @returns {Array<{operation: string, count: number, avgDuration: number}>} 热路径数组
    */
   getHotPaths(limit: number = 5): Array<{ operation: string; count: number; avgDuration: number }> {
-    // Map 累加：操作名可为 '__proto__'，普通对象累加会命中原型成员（同 computePerformanceStats）
-    const operationCounts = new Map<string, { count: number; totalDuration: number }>()
+    const take = Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : 0
 
-    for (const metric of this._ordered()) {
-      let entry = operationCounts.get(metric.operation)
-      if (!entry) {
-        entry = { count: 0, totalDuration: 0 }
-        operationCounts.set(metric.operation, entry)
-      }
-      entry.count++
-      entry.totalDuration += metric.duration
-    }
-
-    return Array.from(operationCounts, ([operation, data]) => ({
+    return Array.from(summarizeByOperation(this._ordered()), ([operation, summary]) => ({
       operation,
-      count: data.count,
-      avgDuration: data.totalDuration / data.count,
+      count: summary.count,
+      avgDuration: summary.totalDuration / summary.count,
     }))
       .sort((a, b) => b.count - a.count)
-      .slice(0, limit)
+      .slice(0, take)
   }
 }
 
@@ -343,27 +360,11 @@ export class PerformanceAnalyzer {
     maxDuration: number
     severity: 'low' | 'medium' | 'high'
   }> {
-    // Map 分组：操作名可为 '__proto__'，普通对象累加会命中原型成员（同 computePerformanceStats）
-    const byOperation = new Map<string, PerformanceMetrics[]>()
+    // 分组走共享累加器：本函数只需要次数/平均/最大三项，无须先攒出每组的消息数组再重算
+    const groups = summarizeByOperation(metrics)
 
-    for (const metric of metrics) {
-      let ops = byOperation.get(metric.operation)
-      if (!ops) {
-        ops = []
-        byOperation.set(metric.operation, ops)
-      }
-      ops.push(metric)
-    }
-
-    return Array.from(byOperation, ([operation, ops]) => {
-      const count = ops.length
-      let totalDuration = 0
-      let maxDuration = -Infinity
-      for (const o of ops) {
-        totalDuration += o.duration
-        if (o.duration > maxDuration) maxDuration = o.duration
-      }
-      const avgDuration = totalDuration / count
+    return Array.from(groups, ([operation, summary]) => {
+      const avgDuration = summary.totalDuration / summary.count
 
       let severity: 'low' | 'medium' | 'high' = 'low'
       if (avgDuration > threshold * 3) {
@@ -374,9 +375,9 @@ export class PerformanceAnalyzer {
 
       return {
         operation,
-        count,
+        count: summary.count,
         avgDuration,
-        maxDuration,
+        maxDuration: summary.maxDuration,
         severity,
       }
     }).sort((a, b) => b.avgDuration - a.avgDuration)
@@ -414,8 +415,11 @@ export class PerformanceAnalyzer {
       changePercent: number
     }> = []
 
-    for (const [operation, currentDuration] of Object.entries(currentStats)) {
-      const baselineDuration = baselineStats[operation]
+    for (const [operation, currentDuration] of currentStats) {
+      // 读侧同样按 Map 取：落回普通对象后 `baselineStats[operation]` 对未出现在基线里、
+      // 却命中原型成员的操作名（'constructor'/'toString'/'hasOwnProperty'…）会取到继承的
+      // 函数，`!== undefined` 守卫随之放行，change/changePercent 变 NaN 且这条被静默丢弃
+      const baselineDuration = baselineStats.get(operation)
 
       // 基线为 0（亚毫秒取整）此前被 falsy 判断静默跳过，回归不上报；
       // 0 基线且当前恶化时按无限恶化处理
@@ -452,29 +456,17 @@ export class PerformanceAnalyzer {
    *
    * @private
    * @param {PerformanceMetrics[]} metrics - 性能指标数组
-   * @returns {Record<string, number>} 按操作分组的平均持续时间
+   * @returns {Map<string, number>} 按操作分组的平均持续时间
    */
-  private static calculateAvgDurations(metrics: PerformanceMetrics[]): Record<string, number> {
-    // Map 累加后由 Object.fromEntries 落回普通对象：普通对象按操作名累加时，
-    // '__proto__'/'constructor' 之类的操作名会命中原型成员，写入即污染 Object.prototype
-    const byOperation = new Map<string, { sum: number; count: number }>()
-
-    for (const metric of metrics) {
-      let entry = byOperation.get(metric.operation)
-      if (!entry) {
-        entry = { sum: 0, count: 0 }
-        byOperation.set(metric.operation, entry)
-      }
-      entry.sum += metric.duration
-      entry.count++
+  private static calculateAvgDurations(metrics: PerformanceMetrics[]): Map<string, number> {
+    // 返回 Map 而非 Record：读侧按操作名取值时不会沿原型链命中原型成员，
+    // 调用方（detectRegression）因此无需自备 own-property 守卫
+    const averages = new Map<string, number>()
+    for (const [operation, summary] of summarizeByOperation(metrics)) {
+      averages.set(operation, summary.totalDuration / summary.count)
     }
 
-    const result = new Map<string, number>()
-    for (const [op, data] of byOperation) {
-      result.set(op, data.sum / data.count)
-    }
-
-    return Object.fromEntries(result)
+    return averages
   }
 }
 

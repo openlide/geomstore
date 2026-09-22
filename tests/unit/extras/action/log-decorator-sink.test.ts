@@ -32,15 +32,18 @@ describe('withLog 的 sink 与 redact', () => {
       log: (message: string, data: unknown) => out.push(['log:' + message, data]),
       error: (message: string, data: unknown) => out.push(['error:' + message, data]),
     }
-    const decorated = apply((): number => {
-      throw new Error('secret-token')
-    }, withLog('login', {
-      sink,
-      redact: (value, phase) => {
-        phases.push(phase)
-        return phase === 'error' ? '[redacted]' : value
+    const decorated = apply(
+      (): number => {
+        throw new Error('secret-token')
       },
-    }))
+      withLog('login', {
+        sink,
+        redact: (value, phase) => {
+          phases.push(phase)
+          return phase === 'error' ? '[redacted]' : value
+        },
+      }),
+    )
 
     expect(() => decorated()).toThrow('secret-token')
     expect(out[0][1]).toEqual([])
@@ -87,18 +90,31 @@ describe('withLog 生产构建下的缺省摘要', () => {
       'number',
       'Array(3)',
       'Object{2 keys}',
-      'TypeError: inner',
+      // R5-178：`Error` 只留 `name`——message 是内容而非结构，且最常夹带 token/PII
+      'TypeError',
       'null',
       'undefined',
     ])
   })
 
-  it('显式 redact 覆盖生产缺省策略（调用方自行评估过脱敏口径）', () => {
+  it('生产构建下 redact 不再接管输出：返回值仍要过一道摘要', () => {
     const out: unknown[] = []
     const { withLog: prodWithLog } = loadInProduction()
     const sink = { log: (_message: string, data: unknown) => out.push(data), error: jest.fn() }
 
+    // 宽松（等价于「不脱敏」）的 redact 不能静默关掉生产防线
     const decorated = apply((n: number) => n, prodWithLog('raw', { sink, redact: (value) => value }))
+    decorated(7)
+
+    expect(out).toEqual(['Array(1)', 'number'])
+  })
+
+  it('summarizeInProduction: false 才恢复「redact 单独决定内容形态」', () => {
+    const out: unknown[] = []
+    const { withLog: prodWithLog } = loadInProduction()
+    const sink = { log: (_message: string, data: unknown) => out.push(data), error: jest.fn() }
+
+    const decorated = apply((n: number) => n, prodWithLog('raw', { sink, redact: (value) => value, summarizeInProduction: false }))
     decorated(7)
 
     expect(out).toEqual([[7], 7])

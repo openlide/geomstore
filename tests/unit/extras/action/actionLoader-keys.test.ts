@@ -9,9 +9,13 @@ describe('ActionLoader 的键名形态', () => {
   async function collectKeys(options: Record<string, unknown>): Promise<string[]> {
     const keys: string[] = []
     const loader = new ActionLoader(options as any)
-    const wrapped = loader.wrap(async () => 'ok', 'doIt', (key: string) => {
-      keys.push(key)
-    })
+    const wrapped = loader.wrap(
+      async () => 'ok',
+      'doIt',
+      (key: string) => {
+        keys.push(key)
+      },
+    )
 
     await wrapped()
 
@@ -31,7 +35,7 @@ describe('ActionLoader 的键名形态', () => {
     expect(keys.every((key) => !key.includes('doIt'))).toBe(true)
   })
 
-  it('共享引用计数被外部清空时按兜底值 1 递减（不出现负计数）', async () => {
+  it('共享引用计数被外部清空时本次调用不再写 loading（既不补 false 也不留 0 记账）', async () => {
     const shared = new Map<string, number>()
     const patches: Array<[string, unknown]> = []
     const loader = new ActionLoader({ sharedLoadingCounts: shared } as any)
@@ -51,13 +55,18 @@ describe('ActionLoader 的键名形态', () => {
     )
 
     const running = wrapped()
-    // 模拟计数在 action 执行期间被外部清空
+    // 模拟计数在 action 执行期间被外部（另一个共用同一 Map 的 loader）清空
     shared.clear()
     release()
     await running
 
-    // 递减以 1 为兜底 → 计数归零 → 置 loading=false
-    expect(patches.some(([, value]) => value === false)).toBe(true)
-    expect(shared.get('loading')).toBe(0)
+    // 修复前：`?? 1` 兜底把「键不存在」当成自己加过的那一份，于是往一个本调用没写过的
+    // 键上补写 false，并把 0 记账塞回共享 Map（R5-160）
+    expect(patches).toEqual([
+      ['loading', true],
+      ['error', null],
+      ['errorData', null],
+    ])
+    expect(shared.size).toBe(0)
   })
 })

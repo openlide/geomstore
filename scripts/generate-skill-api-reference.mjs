@@ -17,15 +17,20 @@
  * 用法（先构建，确保 dist 与当前源码一致）：
  *   pnpm build && pnpm skill:api
  *
- * 产出目录由脚本独占：每次生成会先清空其中的 .md，并删除历史单文件版本 references/api.md。
+ * 产出目录由脚本独占：每次生成会先清空其中的 .md 文件（同名**目录**只报不删），
+ * 并删除历史单文件版本 references/api.md。`index.md` 是脚本保留名，入口映射到它会被
+ * validateEntries 直接拒绝。
  *
- * 失败即中止、不动输出：入口 .d.ts 解析不通、某个入口一个符号都没解析出来、或
- * 清单与 exports 不一致（NAME_ONLY 引用了已不存在的入口、两个入口映射到同一个输出
- * 文件名）时，以退出码 1 结束并在清空输出目录**之前**返回——宁可留着上一版正确的参考，
- * 也不产出一份「看起来成功、实则缺项」的 API 文档（跨项目唯一 API 依据就是它）。
+ * 失败即中止、不动输出：入口 .d.ts 解析不通或诊断报错（程序按 skipLibCheck:false 建，
+ * 否则 .d.ts 的语义诊断恒为空）、某个入口一个符号都没解析出来、或清单与 exports 不一致
+ * （NAME_ONLY 引用了已不存在的入口、types 不是字符串路径、两个入口映射到同一个输出文件名、
+ * 有入口撞上脚本保留名）时，以退出码 1 结束并在清空输出目录**之前**返回——宁可留着上一版
+ * 正确的参考，也不产出一份「看起来成功、实则缺项」的 API 文档（跨项目唯一 API 依据就是它）。
+ * 全部文件内容都在清空之前备齐，清空之后只剩「把内存里的字符串写出去」这一步；
+ * 那一步再失败（磁盘满一类）就只能重跑一次，脚本不做临时目录换名。
  */
 
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import ts from 'typescript'
@@ -43,23 +48,48 @@ const LEGACY_FILE = path.join(root, '.codebuddy/skills/geomstore/references/api.
  */
 const NAME_ONLY = new Set(['./core', './extras'])
 
+/**
+ * 脚本自己占用的输出文件名。入口一旦被映射到这些名字上，就会把索引（以及索引里
+ * 每一条指向各入口文件的链接）整份覆盖掉，而且不报错，所以 validateEntries 必须拒绝。
+ */
+const RESERVED_FILES = new Set(['index.md'])
+
 /** 子路径 → 文件名：'.' 为 main，其余去掉 './' 并把 '/' 换成 '-' */
 function toFileName(sub) {
   if (sub === '.') return 'main.md'
   return `${sub.replace(/^\.\//, '').replace(/\//g, '-')}.md`
 }
 
-/** 收集 exports 中声明了 types 的子路径（跳过 ./package.json） */
+/**
+ * 收集 exports 中声明了 types 的子路径（跳过 ./package.json）。
+ *
+ * types 必须是**一条字符串路径**。条件式 exports（`"types": {"import": …, "require": …}`）
+ * 同样过得了 `!value.types` 这道真值判断，然后一个对象被交给 path.join 只会得到
+ * 「Path must be a string」这条内部错误，或者一条拼出来的假路径；而整个缺 types 的入口
+ * 会被静默跳过，等于对外少一份 API 依据还不吭声。两种都在产出前点名失败。
+ */
 function collectEntries() {
   const entries = []
+  const problems = []
   for (const [sub, value] of Object.entries(pkg.exports ?? {})) {
     if (sub === './package.json') continue
-    if (!value || typeof value !== 'object' || !value.types) continue
+    if (!value || typeof value !== 'object') {
+      problems.push(`入口 \`${sub}\` 不是导出对象，读不到 types 字段`)
+      continue
+    }
+    if (typeof value.types !== 'string' || value.types === '') {
+      const actual = value.types && typeof value.types === 'object' ? '条件式 types 对象' : String(value.types)
+      problems.push(
+        `入口 \`${sub}\` 没有字符串形式的 types（实际是 ${actual}）：本脚本按「一个入口一份 .d.ts」建模，` +
+          '不支持条件式 types，请先在 exports 里给出唯一的 types 路径',
+      )
+      continue
+    }
     entries.push({ sub, types: value.types, file: toFileName(sub) })
   }
   // '.' 置顶，其余按子路径（与区域设置无关的比较，保证跨机器产出可复现）
   entries.sort((a, b) => (a.sub === '.' ? -1 : b.sub === '.' ? 1 : a.sub < b.sub ? -1 : a.sub > b.sub ? 1 : 0))
-  return entries
+  return { entries, problems }
 }
 
 /** 清单一致性校验：NAME_ONLY 与文件名映射都依赖 exports 的当前形状，漂移必须在产出前失败 */
@@ -70,6 +100,14 @@ function validateEntries(entries) {
   for (const sub of NAME_ONLY) {
     if (!subs.has(sub)) {
       problems.push(`NAME_ONLY 中的入口 \`${sub}\` 已不在 package.json 的 exports 里（入口改名/删除后此清单会静默失效）`)
+    }
+  }
+
+  // 索引由脚本独占写入，且写在各入口文件**之前**：入口映射到 index.md 就会把索引
+  // 连同所有指向它的链接一起静默销毁，正是这条校验要拦的那类失败
+  for (const entry of entries) {
+    if (RESERVED_FILES.has(entry.file)) {
+      problems.push(`入口 \`${entry.sub}\` 的输出文件名 \`${entry.file}\` 是脚本保留名（会被索引/其它脚本产物覆盖）`)
     }
   }
 
@@ -102,12 +140,12 @@ function kb(bytes) {
 }
 
 function main() {
-  const entries = collectEntries()
-  if (entries.length === 0) {
+  const { entries, problems: shapeProblems } = collectEntries()
+  const listProblems = [...shapeProblems, ...validateEntries(entries)]
+  if (entries.length === 0 && listProblems.length === 0) {
     console.error('[skill-api] package.json 的 exports 中没有带 types 的子路径')
     process.exit(1)
   }
-  const listProblems = validateEntries(entries)
   if (listProblems.length > 0) {
     console.error(`[skill-api] 中止（清单与 exports 不一致，未改动已有产出）：\n  ${listProblems.join('\n  ')}`)
     process.exit(1)
@@ -124,10 +162,12 @@ function main() {
     target: ts.ScriptTarget.ESNext,
     module: ts.ModuleKind.NodeNext,
     moduleResolution: ts.ModuleResolutionKind.NodeNext,
-    // 必须保持 true：dist/types/global.d.ts 里有 `declare global`，关掉会连带检查
-    // 全部被引用的 .d.ts（含 @types/node 缺席导致的噪音）而误报。
-    // 代价是 .d.ts 内部的类型错误不会被诊断出来——那一层由「零导出即中止」兜住。
-    skipLibCheck: true,
+    // 必须关掉：skipLibCheck:true 会让 getSemanticDiagnostics 对**任何** .d.ts 直接返回空表，
+    // 而这里每个入口都是 .d.ts，那条 [语义] 收集就永远是死代码（一份「还能导出点东西、
+    // 但类型已经对不上」的声明文件会顺利生成参考）。代价是被引用的第三方 .d.ts 也一并受检，
+    // 但诊断只按入口文件取（见 collectProblems），别人家的噪音不会算到这里头上。
+    // 实测：真 dist 的 11 个入口在 skipLibCheck:false 下诊断为空，产出与改前逐字节一致。
+    skipLibCheck: false,
     noEmit: true,
     types: [],
   })
@@ -197,13 +237,6 @@ function main() {
   }
   for (const warning of warnings) console.warn(`[skill-api] WARN: ${warning}`)
 
-  // 目录由脚本独占：清掉历史 .md 与单文件版本，避免改名/删除入口后留下孤儿文件
-  mkdirSync(OUT_DIR, { recursive: true })
-  for (const name of readdirSync(OUT_DIR)) {
-    if (name.endsWith('.md')) rmSync(path.join(OUT_DIR, name))
-  }
-  if (existsSync(LEGACY_FILE)) rmSync(LEGACY_FILE)
-
   const totalSymbols = resolvedEntries.reduce((sum, entry) => sum + entry.items.length, 0)
   const header = (title, extra) =>
     [
@@ -248,9 +281,12 @@ function main() {
     '`./core` 与 `./extras` 是 `.` 及其子入口的聚合/别名，为避免重复只列符号名；完整声明请看对应入口文件。',
     '',
   ].join('\n')
-  writeFileSync(path.join(OUT_DIR, 'index.md'), index, 'utf8')
 
-  // 每个入口一个文件
+  // 先把**全部**内容备在内存里，才允许动输出目录：清空是破坏性动作，而它后面还跟着
+  // 一长串 writeFileSync，任何一次抛错（ENOSPC / 权限变化）都会留下「上一版已删、
+  // 这一版没写出来」的输出目录。声明文本的取用（getFullText）与体积（直接量内存里
+  // 那份字符串的字节数，不再 writeFileSync + statSync）同样前置，不开第二扇窗口。
+  const documents = [{ name: 'index.md', text: index }]
   const summary = [`${resolvedEntries.length} 个入口 / ${totalSymbols} 个符号 → ${path.relative(root, OUT_DIR).split(path.sep).join('/')}/`]
   for (const entry of resolvedEntries) {
     const lines = [
@@ -274,11 +310,33 @@ function main() {
       }
     }
 
-    const target = path.join(OUT_DIR, entry.file)
-    writeFileSync(target, lines.join('\n'), 'utf8')
-    summary.push(`  ${entry.file.padEnd(24)} ${String(entry.items.length).padStart(3)} 符号  ${kb(statSync(target).size)}`)
+    const text = lines.join('\n')
+    documents.push({ name: entry.file, text })
+    summary.push(`  ${entry.file.padEnd(24)} ${String(entry.items.length).padStart(3)} 符号  ${kb(Buffer.byteLength(text))}`)
   }
 
+  // 目录由脚本独占：清掉历史 .md 与单文件版本，避免改名/删除入口后留下孤儿文件。
+  // withFileTypes + force:true 都是必要的：默认的 rmSync 会在「条目刚被外部删掉」时抛错，
+  // 也会把名字撞 .md 的目录当文件 unlink 而抛错，两种都会把清空动作打断在半路，
+  // 留下一个既不是上一版也不是这一版的输出目录。目录只报不删（本脚本只写文件，
+  // 撞名目录里装的一定是别人的东西）。
+  mkdirSync(OUT_DIR, { recursive: true })
+  const strayDirs = []
+  for (const dirent of readdirSync(OUT_DIR, { withFileTypes: true })) {
+    if (!dirent.name.endsWith('.md')) continue
+    if (!dirent.isFile()) {
+      strayDirs.push(dirent.name)
+      continue
+    }
+    rmSync(path.join(OUT_DIR, dirent.name), { force: true })
+  }
+  if (existsSync(LEGACY_FILE)) rmSync(LEGACY_FILE, { force: true })
+
+  for (const { name, text } of documents) writeFileSync(path.join(OUT_DIR, name), text, 'utf8')
+
+  for (const name of strayDirs) {
+    console.warn(`[skill-api] WARN: 输出目录下有个叫 \`${name}\` 的**目录**，本脚本只写文件、不会递归删它，请人工确认`)
+  }
   console.log(`[skill-api] ${pkg.name}@${pkg.version}`)
   for (const line of summary) console.log(`[skill-api] ${line}`)
 }

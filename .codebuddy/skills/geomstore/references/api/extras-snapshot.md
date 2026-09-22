@@ -18,9 +18,16 @@
 export interface AsyncSnapshotOptions extends SnapshotOptions {
     /** 异步模式 */
     async: true;
-    /** 每批次间隔（毫秒） */
+    /**
+     * 每批次间隔（毫秒）：0 / 负数 / 非有限值都按 0 处理，即批间用 `setTimeout(fn, 0)`
+     * 让出控制权（本库不提供「暂停超过一宿」的语义）
+     */
     batchInterval?: number;
-    /** 超时时间（毫秒） */
+    /**
+     * 超时时间（毫秒）：只有有限正数会武装定时器；0 / 负数 / Infinity / NaN 一律表示
+     * **不设超时**。注意 0 不是「立即超时」——`setTimeout(fn, 0)` 会在第一个宏任务就判超时，
+     * 那不是本选项的含义
+     */
     timeout?: number;
 }
 ```
@@ -98,6 +105,10 @@ export interface SnapshotError {
 ```ts
 /**
  * 快照错误上下文
+ *
+ * 刻意不带「是否可恢复」这类标记：本库只有两处咨询点（`cloneError` / `circular`），
+ * 两处的降级路径都存在，故该标记恒为真，既不参与走向判定也没有分流价值；
+ * 回调要按错误种类分流请读 {@link SnapshotError#type}
  */
 export interface SnapshotErrorContext {
     /** 当前路径 */
@@ -106,13 +117,6 @@ export interface SnapshotErrorContext {
     depth: number;
     /** 当前值 */
     value: unknown;
-    /**
-     * 该错误存在降级路径（而非只能整体失败）。
-     * 库内当前两处咨询点（cloneError / circular）恒传 true，它**不参与**克隆的走向判定——
-     * 走向只由 {@link SnapshotOptions#onError} 的返回值决定；本字段是给回调的描述性提示，
-     * 供回调按错误种类分流（例如只对 cloneError 中止）时作为「继续是安全选项」的前提
-     */
-    recoverable: boolean;
 }
 ```
 
@@ -187,6 +191,18 @@ export declare class SnapshotManager {
      */
     compareSnapshots<T1, T2>(snapshot1: SnapshotResult<T1>, snapshot2: SnapshotResult<T2>): SnapshotDiff;
     /**
+     * 失败结果的统一构造（同步 / 异步两条 catch 共用）
+     *
+     * 两条失败分支此前各写一份 metadata 与 stats：异步那份还把 stats 换成全零新对象，
+     * 而引擎在抛出前已经往共享 stats 里累加过 cloneOperations / circularReferences /
+     * maxDepthHits，于是同一份输入在两条路径上的失败统计对不上。现在两条都交出共享 stats
+     * （数值与实际工作量一致），metadata 的规模项仍归零——失败结果的 data 不可信，
+     * 按它统计出的 size / nodeCount / maxDepth 同样不可信
+     *
+     * @param source 调用方传入的原始数据：只用于 dataType，**不会**进 data
+     */
+    private buildFailureResult;
+    /**
      * 生成快照ID
      *
      * @private
@@ -195,9 +211,13 @@ export declare class SnapshotManager {
     /**
      * 获取数据类型
      *
-     * 原型不可探测的值（Proxy 的 getPrototypeOf 陷阱抛错）按 `typeof` 归类：
-     * 本方法在结果组装阶段被调用（成功路径与失败路径各一次），抛出会把 cloneDeep
-     * 已按 onError 契约降级好的结果整个变成异常，等于在出口处重新制造 #288 那个洞
+     * 原型不可探测的值（Proxy 的 getPrototypeOf 陷阱抛错、已 revoke 的 Proxy）按 `typeof`
+     * 归类：本方法在结果组装阶段被调用（成功路径与失败路径各一次），抛出会把 cloneDeep
+     * 已按 onError 契约降级好的结果整个变成异常，等于在出口处重新制造 #288 那个洞；
+     * 失败路径上它还在 catch 里，抛出会让 createSnapshot 连失败结果都不交付、直接向调用方抛
+     *
+     * `Array.isArray` 也在兜范围内：它与 `instanceof` 同走 [[Get]] / [[Class]] 内部方法，
+     * 对 revoked Proxy 一样抛 TypeError。`value === null` 与兜底的 `typeof` 永不抛，留在外面
      *
      * @private
      */
@@ -244,7 +264,13 @@ export interface SnapshotMetadata {
  * 快照配置选项
  */
 export interface SnapshotOptions {
-    /** 最大递归深度 */
+    /**
+     * 最大递归深度（包含式边界：深度大于该值的节点降级为占位值）
+     *
+     * 同步路径另受一个与选项无关的栈安全硬上限约束（见 clone.ts 的 `HARD_MAX_CLONE_DEPTH`）：
+     * 递归克隆的栈深度等于数据深度，只按本选项设限时会以 `RangeError` 的形态伪装成某条
+     * 属性上的 `cloneError`。超出硬上限的部分按 `maxDepth` 降级报告，需要更深的结构走异步路径
+     */
     maxDepth?: number;
     /** 是否检测循环引用 */
     detectCircular?: boolean;
@@ -336,13 +362,16 @@ export interface SnapshotProgress {
  * - `data` 只在 `success: true` 时是完整克隆：失败路径下它可能是 `undefined`（中止 / 顶层异常 /
  *   根节点被丢弃）或部分构建的半成品（异步超时），**消费前必须先判 `success`**。
  *
- * 之所以不做成以 `success` 判别的联合类型（`{ success: false; data?: T }`）：`data` 在失败时
- * 是「可能有用的半成品」而非恒空，把它标成可选会让所有 `result.data.x` 调用点（含库内文档与示例）
- * 无收益地转红，收窄责任由 `success` 分支判定承担
+ * `data` 之所以声明为 `T | undefined` 而不是 `T`：三条失败来源交付的就是 `undefined`，
+ * 写成 `T` 得靠 `undefined as T` 断言圆场，而 strict 下 `result.data.x` 在 `success: false`
+ * 时也照样编译通过——上面那条「必须先判 success」在类型侧就无人把关了。
+ * 刻意不做成 `data?: T`（可选）也不做成以 `success` 判别的联合类型：失败分支的 `data` 未必为空
+ * （异步超时交的是半成品），把它收窄成「false 时必空」是另一种失真；接口一旦改成联合，
+ * 任何以 `success: boolean` 自行组装结果的调用方都会无收益转红
  */
 export interface SnapshotResult<T = unknown> {
-    /** 快照数据 */
-    data: T;
+    /** 快照数据：`success: false` 时可能是 `undefined` 或部分构建的半成品，用前先判 success */
+    data: T | undefined;
     /** 快照元数据 */
     metadata: SnapshotMetadata;
     /** 是否成功 */
@@ -363,7 +392,11 @@ export interface SnapshotResult<T = unknown> {
 export interface SnapshotStats {
     /** 总耗时（毫秒） */
     duration: number;
-    /** 克隆操作次数 */
+    /**
+     * 克隆操作次数：产出了独立克隆值的节点数——容器（对象/数组/Map/Set）、Date/RegExp
+     * 这类需重建的内建对象，以及按 onError 意愿丢弃节点的失败降级。
+     * 原语与函数按引用直返、不构成一次克隆操作，故不计
+     */
     cloneOperations: number;
     /** 遇到的循环引用数 */
     circularReferences: number;
@@ -461,6 +494,18 @@ export declare class SnapshotManager {
      */
     compareSnapshots<T1, T2>(snapshot1: SnapshotResult<T1>, snapshot2: SnapshotResult<T2>): SnapshotDiff;
     /**
+     * 失败结果的统一构造（同步 / 异步两条 catch 共用）
+     *
+     * 两条失败分支此前各写一份 metadata 与 stats：异步那份还把 stats 换成全零新对象，
+     * 而引擎在抛出前已经往共享 stats 里累加过 cloneOperations / circularReferences /
+     * maxDepthHits，于是同一份输入在两条路径上的失败统计对不上。现在两条都交出共享 stats
+     * （数值与实际工作量一致），metadata 的规模项仍归零——失败结果的 data 不可信，
+     * 按它统计出的 size / nodeCount / maxDepth 同样不可信
+     *
+     * @param source 调用方传入的原始数据：只用于 dataType，**不会**进 data
+     */
+    private buildFailureResult;
+    /**
      * 生成快照ID
      *
      * @private
@@ -469,9 +514,13 @@ export declare class SnapshotManager {
     /**
      * 获取数据类型
      *
-     * 原型不可探测的值（Proxy 的 getPrototypeOf 陷阱抛错）按 `typeof` 归类：
-     * 本方法在结果组装阶段被调用（成功路径与失败路径各一次），抛出会把 cloneDeep
-     * 已按 onError 契约降级好的结果整个变成异常，等于在出口处重新制造 #288 那个洞
+     * 原型不可探测的值（Proxy 的 getPrototypeOf 陷阱抛错、已 revoke 的 Proxy）按 `typeof`
+     * 归类：本方法在结果组装阶段被调用（成功路径与失败路径各一次），抛出会把 cloneDeep
+     * 已按 onError 契约降级好的结果整个变成异常，等于在出口处重新制造 #288 那个洞；
+     * 失败路径上它还在 catch 里，抛出会让 createSnapshot 连失败结果都不交付、直接向调用方抛
+     *
+     * `Array.isArray` 也在兜范围内：它与 `instanceof` 同走 [[Get]] / [[Class]] 内部方法，
+     * 对 revoked Proxy 一样抛 TypeError。`value === null` 与兜底的 `typeof` 永不抛，留在外面
      *
      * @private
      */

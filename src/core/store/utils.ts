@@ -19,6 +19,15 @@ let cachedProductionState: boolean | undefined
  * 不能直接 `!__DEV__`（在未声明全局时会 ReferenceError，且语义会被误判为生产）。
  * 因此使用 `typeof __DEV__ !== 'undefined'` 做存在性检查。
  *
+ * 反向要求：读 `process.env.NODE_ENV` 时**不得**再加 `typeof process !== 'undefined'`
+ * 门控（tests/unit/store/modules/utils.test.ts 锁定了函数体不含该门控）。
+ * 打包器（webpack DefinePlugin / esbuild --define）只把这个成员表达式内联成字符串字面量，
+ * 不会内联 `process` 全局本身；浏览器/小程序产物通常没有 process 垫片，届时 && 左侧恒为
+ * false，已内联好的 "production" 被短路丢弃，判定退回 __DEV__ → 开发兜底，生产构建被识别
+ * 成开发模式——StateProxy._handleIllegalMutation 在 isProduction() === false 时无条件 throw，
+ * 直写状态由 warn/silent 变成崩溃点。真没有 process 时属性访问抛 ReferenceError，
+ * 由下方 try/catch 吞掉并回退 __DEV__ 分支，不会外溢。
+ *
  * @returns {boolean} 如果当前处于生产环境则返回 true，否则返回 false
  */
 export function isProduction(): boolean {
@@ -33,8 +42,10 @@ export function isProduction(): boolean {
 
   // 1. 优先检查标准 Node.js 环境变量
   try {
-    if (typeof process !== 'undefined' && process?.env?.NODE_ENV) {
-      cachedProductionState = process.env.NODE_ENV === 'production'
+    // 这里刻意不做 process 全局存在性门控，理由见函数文档末段
+    const nodeEnv = process.env.NODE_ENV
+    if (nodeEnv) {
+      cachedProductionState = nodeEnv === 'production'
       return cachedProductionState
     }
   } catch {
@@ -64,6 +75,13 @@ export function isProduction(): boolean {
  * 经 Date/RegExp/Map/Set 或非纯对象（class 实例/Promise/WeakMap…）触达的节点
  * 一律保持可变，`Readonly<S>` 因此只是类型层面的承诺，调用方不得据此认为
  * $snapshot() 的返回值整体深度不可变——要真不可变需自行再处理这些节点。
+ *
+ * 键的范围同样有界：只遍历自有**可枚举字符串键**（数组按下标），因此
+ * symbol 键（如 `Symbol.for('geomstore.stateVersion')`）、非可枚举自有属性、
+ * 数组上的非下标自有属性指向的子对象都不在冻结范围内（它们自身随父对象
+ * 的 Object.freeze 变为不可写，但其值仍是活对象）。这不是遗漏而是与下一条
+ * 不变量配套：这类键 deepCloneState 根本不会复制进快照，冻结它们等于
+ * 经快照去改活状态。要按 `Reflect.ownKeys` 的口径全量冻结，请自行实现。
  *
  * 不变量：冻结范围必须 ⊆ deepCloneState 的隔离范围。
  * 非纯对象（class 实例/Promise/WeakMap 等）在 deepCloneState 中走「保留原引用」
@@ -133,7 +151,12 @@ export function createMutationErrorMessage(path: string, value: unknown, operati
   // 生产 warn/silent 处理器依赖此函数不抛错（放行写入），必须兜底
   let serialized: string
   try {
-    serialized = JSON.stringify(value)
+    // JSON.stringify 对 undefined / 函数 / Symbol 不抛错而是返回 undefined，
+    // 直接赋值会让消息渲染成 "Attempted value: undefined"，排查时无法区分
+    // 「写入的就是 undefined」与「写入了函数/Symbol」。声明类型 string 是 @types 的
+    // 简化，运行期确有空值，故先按真实返回类型收口再回退 String()
+    const json = JSON.stringify(value) as string | undefined
+    serialized = json ?? String(value)
   } catch {
     // String() 不是全函数：它会走 Symbol.toPrimitive / toString / valueOf，
     // 这些钩子自身可以抛（实测 `String(new Proxy(fn, {get(t){ if (t===Symbol.toPrimitive) throw new TypeError() }}))`

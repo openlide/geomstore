@@ -191,8 +191,7 @@ describe('createDecorator 返回值类型契约', () => {
 
     class SyncTail {
       @createDecorator({
-        after: () =>
-          Promise.reject(new Error('after rejected')),
+        after: () => Promise.reject(new Error('after rejected')),
       })
       run(): string {
         return 'sync'

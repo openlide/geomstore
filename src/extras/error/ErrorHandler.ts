@@ -19,6 +19,27 @@ import { createErrorContext, defaultErrorHandler, type ErrorContext, type ErrorH
 export const DEFAULT_MAX_LOG_SIZE = 100
 
 /**
+ * thenable 判定：只看**语法**（自带 callable `then`），不比对 `instanceof Promise`
+ *
+ * 跨 realm（iframe / worker / node:vm）的 Promise 与手写 thenable 的 `instanceof` 均为 false，
+ * 只认 Promise 实例会让它们的 rejection 无人接收（unhandledRejection）。
+ *
+ * 导出仅供同目录复用（`ErrorBoundary` 的装饰器需要同一判据）；未经 barrel 再导出，不是公开 API。
+ */
+export function isThenable(value: unknown): value is PromiseLike<unknown> {
+  return value !== null && (typeof value === 'object' || typeof value === 'function') && typeof (value as { then?: unknown }).then === 'function'
+}
+
+/**
+ * handler 失败的唯一出口：只落一条日志，绝不再抛
+ *
+ * 同步抛错与异步 rejection 共用它，两条路径的可见输出才会一致。
+ */
+function reportHandlerFailure(error: unknown): void {
+  console.error('[ErrorHandler] Error in error handler:', error)
+}
+
+/**
  * 错误处理器类
  *
  * 用于管理GeomStore运行过程中的错误处理、记录和统计
@@ -72,6 +93,11 @@ export class ErrorHandlerImpl {
    * @param {ErrorHandler} handler - 错误处理函数
    * @throws {Error} 如果handler不是函数
    *
+   * @remarks 允许传 async 函数（TS 的 void 返回签名并不排除它）：**被返回的那条 Promise**
+   * 的 rejection 由 {@link ErrorHandlerImpl.handleError} 接住并折成一条 `console.error`，
+   * 调用方拿不到「handler 失败」的信号；handler 内部另起而未返回的 Promise 不在保护范围内，
+   * 需自行兜底。
+   *
    * @example
    * ```typescript
    * errorHandler.setHandler((context) => {
@@ -114,20 +140,31 @@ export class ErrorHandlerImpl {
    *
    * @remarks 处理器抛错被隔离成一条 `[ErrorHandler] Error in error handler:` 的
    * `console.error`，不外溢给调用方：本方法是错误链路的最后一环，让坏掉的上报 handler
-   * 把原始错误顶替成二次异常，会让现场只剩 handler 的堆栈。context 在调用 handler 之前
-   * 已写入 errorLog，因此 handler 长期失效时仍可由 `getErrorLog()`/`getErrorStats()`
-   * 观察到错误在累积——这是该取舍的兜底通道，也是不额外加 `onHandlerError` 钩子的理由
-   * （钩子本身同样可能抛错，且要新增公开 API）。
+   * 把原始错误顶替成二次异常，会让现场只剩 handler 的堆栈。异步 handler（返回 Promise 的
+   * 函数可赋给 `(context) => void` 的签名）的 rejection 同样被接住并折成同一条日志——
+   * 否则「上报错误」这条链路自己就能把进程搞崩（Node 下 unhandledRejection 可终止进程）。
+   * context 在调用 handler 之前已写入 errorLog，因此 handler 长期失效时仍可由
+   * `getErrorLog()`/`getErrorStats()` 观察到错误在累积——这是该取舍的兜底通道，也是不额外加
+   * `onHandlerError` 钩子的理由（钩子本身同样可能抛错，且要新增公开 API）。
    */
   handleError(context: ErrorContext): void {
     // 记录错误
     this.logError(context)
 
-    // 调用处理器
+    // 交给 handler 的是副本：传同一个对象时，handler 里一句 `ctx.level = 'critical'`
+    // 或 `ctx.error = ...` 就静默改写了已入库的记录（见 copyContext 的不变量）
+    let handlerResult: unknown
     try {
-      this.handler(context)
+      handlerResult = this.handler(this.copyContext(context))
     } catch (error) {
-      console.error('[ErrorHandler] Error in error handler:', error)
+      reportHandlerFailure(error)
+      return
+    }
+
+    // 只在 handler 真的返回 thenable 时建 Promise 链：同步 handler（默认路径）不为此
+    // 多付一次微任务，async handler 的 rejection 才有人接
+    if (isThenable(handlerResult)) {
+      Promise.resolve(handlerResult).catch(reportHandlerFailure)
     }
   }
 
@@ -169,7 +206,9 @@ export class ErrorHandlerImpl {
    * @param {ErrorContext} context - 错误上下文
    */
   private logError(context: ErrorContext): void {
-    this.errorLog.push(context)
+    // 入库即取副本：留着调用方手里的同一个对象，则 `handleError(ctx)` 之后
+    // 任何一句 `ctx.level = ...` 都会改写历史记录——副本不变量只在读取路径生效等于没做
+    this.errorLog.push(this.copyContext(context))
 
     // 限制日志大小
     if (this.errorLog.length > this.maxLogSize) {
@@ -181,7 +220,8 @@ export class ErrorHandlerImpl {
    * 拷贝一条错误上下文
    *
    * 内部 errorLog 存的若是交给调用方的同一个对象，一句 `ctx.level = 'critical'`
-   * 或 `ctx.error = ...` 就会污染此后所有查询与统计，故对外一律给副本。
+   * 或 `ctx.error = ...` 就会污染此后所有查询与统计，故对外一律给副本——
+   * 交给 handler 的那一份同样如此（handler 是长期驻留的用户代码，最容易出现「顺手改一下」）。
    * 浅拷贝已足够：`error`/`payload` 按约定是外部持有的不可变引用。
    *
    * @private
@@ -350,7 +390,10 @@ export class ErrorHandlerImpl {
 }
 
 /**
- * 默认导出
+ * 命名再导出（本模块无 default export）
+ *
+ * `defaultErrorHandler` / `createErrorContext` 的**定义在 `src/types/error.ts`**，此处转发是为
+ * 保持既有深导入路径（`extras/error/ErrorHandler.js`）可用；barrel 直接从定义模块导出。
  */
 export { defaultErrorHandler, createErrorContext }
 export type { ErrorContext, ErrorHandler, ErrorLevel, OperationType } from '../../types/error.js'

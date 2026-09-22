@@ -2,7 +2,7 @@
  * GeomStore v1.0 - LRU缓存单元测试
  */
 
-import { LRUCache, LRUCacheStats } from '../../../src/core/cache/LRUCache.js'
+import { LRUCache } from '../../../src/core/cache/LRUCache.js'
 
 describe('LRUCache', () => {
   describe('基本操作', () => {
@@ -488,7 +488,8 @@ describe('LRUCache', () => {
 
       // 调用 addToHead，此时 nextNode 为 null
       expect(() => {
-        (cache as any).addToHead(node)
+        const internals = cache as any
+        internals.addToHead(node)
       }).not.toThrow()
 
       // 恢复
@@ -508,7 +509,8 @@ describe('LRUCache', () => {
 
       // 调用 removeFromList，此时 prev 和 next 都为 null，应跳过
       expect(() => {
-        (cache as any).removeFromList(node)
+        const internals = cache as any
+        internals.removeFromList(node)
       }).not.toThrow()
 
       // 恢复
@@ -522,7 +524,8 @@ describe('LRUCache', () => {
       // 缓存为空时直接调用 evictLRU
       // tail.prev === head，应该提前返回
       expect(() => {
-        (cache as any).evictLRU()
+        const internals = cache as any
+        internals.evictLRU()
       }).not.toThrow()
 
       // 缓存应该仍为空

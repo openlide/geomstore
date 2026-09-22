@@ -12,14 +12,19 @@
  *   - 组合层桥接（钩子名为 `HookName` 联合变量）仍可用擦除形状 `HookHandler`
  *   - 契约面是 `IHookSystem`（`Store` 接口的 `hooks` 成员，插件 install 拿到的即此类型）；
  *     `createStore()` 返回的**实现类** `Store.hooks` 目前仍是类自身签名（`hooks: HookSystem`），
- *     需 core 侧把该字段声明收窄回 `IHookSystem`（见本轮回报待办），故本文件只用契约面断言
+ *     需 core 侧把该字段声明收窄回 `IHookSystem`（本轮记为 NEEDS-MAIN，见 src/core/store/Store.ts），
+ *     故本文件的断言面是契约面。**该 gap 本身另有编译期断言兜底**（见 `_createStoreHooksFaceGap`），
+ *     不再只靠本段注释声明
  * - #402 `HookHandler` 不再带 `TResult` 结果泛型（emit 丢弃返回值，留着只会误导）
  *
  * @file tests/types/plugin-hook-args.typecheck.ts
  */
 
 import { createStore } from '@/index.js'
-import type { HookArgsMap, HookHandler, HookHandlerFor, HookName, IHookSystem, Plugin } from '@/types/plugin.js'
+import type { HookArgsMap, HookHandler, HookHandlerFor, HookName, IHookSystem, Plugin, PluginHook } from '@/types/plugin.js'
+
+/** 双向精确类型相等断言（与 tests/types/integration-types.typecheck.ts 同口径） */
+type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false
 
 interface CounterState {
   count: number
@@ -39,6 +44,20 @@ const store = createStore({
 /** 契约面视图（与 `Plugin` 的 `install(store)` 拿到的 `store.hooks` 同一类型） */
 const hooks: IHookSystem = store.hooks
 
+// ==================== 断言面落在真实返回值上（#R5-348） ====================
+
+// 插件作者视角（`PluginHook` 的形参即 `Store` **接口**）拿到的 `hooks` 确为契约面：
+// 本行是「契约已随接口落地」的正向断言，接口一旦把成员改宽（例如退回 `HookSystem`）即报错。
+const _pluginFaceIsContract: Equal<Parameters<PluginHook<CounterState>>[0]['hooks'], IHookSystem> = true
+
+// 而 `createStore()` 返回的是**实现类**，其 `hooks` 字段仍声明为 `HookSystem`（src/core/store/Store.ts），
+// 于是本文件下面的 @ts-expect-error 断言全部只作用于契约面。这里把差异钉成断言而不是注释：
+// core 侧把该字段收窄回 `IHookSystem` 后，本行的 `false` 会不再成立而报错，
+// 提醒把整份文件的断言面切到 `store.hooks` 并删除文件头描述的 gap。
+const _createStoreHooksFaceGap: Equal<typeof store.hooks, IHookSystem> = false
+
+void [_pluginFaceIsContract, _createStoreHooksFaceGap]
+
 // ==================== #401 正例：无标注处理器的上下文推断 ====================
 
 hooks.on('beforeDispatch', (actionName, args) => {
@@ -46,6 +65,8 @@ hooks.on('beforeDispatch', (actionName, args) => {
   const argsIsTuple: true = null as unknown as typeof args extends readonly unknown[] ? true : false
   void nameIsString
   void argsIsTuple
+  // 形参本体仅出现在 `typeof` 类型位，补一行值读用，避免被当成未用形参
+  void args
 })
 
 hooks.on('beforeSetState', (key, value) => {
@@ -66,7 +87,12 @@ hooks.on('onError', (error, source) => {
   // error 刻意保持 unknown（catch 可抛任意值），处理器自行收窄
   if (error instanceof Error) void error.message
   const sourceIsString: true = null as unknown as typeof source extends string | undefined ? true : false
-  void sourceIsString
+  // 上一条探针对「可选性丢失」无感：`source` 退化成必填 `string` 时 `string extends string | undefined`
+  // 仍为 true，故再补一条可选性探针（`undefined extends typeof source`）拦住这一半退化。
+  const sourceIsOptional: true = null as unknown as undefined extends typeof source ? true : false
+  void [sourceIsString, sourceIsOptional]
+  // 形参本体仅出现在 `typeof` 类型位，补一行值读用，避免被当成未用形参
+  void source
 })
 
 // 显式写出精确形参的处理器（修复前因参数逆变被拒，插件层只能通篇写 unknown）
@@ -149,8 +175,11 @@ hooks.on('beforePatch', erased)
 // @ts-expect-error TResult 已删除：HookHandler 只有 1 个类型参数
 const withResult: HookHandler<[], boolean> = () => true
 void withResult
-// 处理器返回值被忽略（void 返回位可赋任意返回值的函数），语义由 HookHandlerFor 固定为 void
-const returnsValue: HookHandlerFor<'beforePatch'> = ((partial: Record<string, unknown>) => partial.count) as HookHandlerFor<'beforePatch'>
+// 处理器返回值被忽略（void 返回位可赋任意返回值的函数），语义由 HookHandlerFor 固定为 void。
+// 这里刻意不用 `as` 断言：`x as T` 只要「任一方向可赋」即通过，`T` 本身怎么写都不会失败，
+// 于是「返回位固定为 void」这件事过去没有任何检查覆盖（#R5-347）。直接赋值后，
+// 若 `HookHandlerFor<'beforePatch'>` 改回带结果泛型（返回值不再是 void 特例），本行立即报错。
+const returnsValue: HookHandlerFor<'beforePatch'> = (partial: Record<string, unknown>) => partial.count
 void returnsValue
 
 export {}

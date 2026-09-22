@@ -162,25 +162,32 @@ describe('storage 工具兜底', () => {
 })
 
 describe('user-store 同步与校验', () => {
-  it('#336 默认请求 /api/user/sync，syncUrl 配置可注入覆盖', async () => {
+  it('#336 同步地址由 syncUrl 注入；未配置时直接 reject 且不发起请求', async () => {
     request.mockImplementation((options: { success: (res: unknown) => void }) => {
       options.success({ statusCode: 200, data: { userInfo: { name: 'S' } } })
     })
 
-    const defStore = createUserStore({ userId: 'u336-def' })
-    await defStore.dispatch('syncWithServer')
-    expect((request.mock.calls[0][0] as { url: string }).url).toBe('/api/user/sync')
+    // R5-273：库内不再内置 `/api/user/sync` 这类业务端点默认值——wx.request 只接受
+    // 绝对 URL（且域名要在小程序后台白名单内），相对路径默认值注定失败且无从归因
+    const noUrlStore = createUserStore({ userId: 'u336-none' })
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      await expect(noUrlStore.dispatch('syncWithServer')).rejects.toThrow(/未配置 syncUrl/)
+      expect(request).not.toHaveBeenCalled()
+    } finally {
+      errorSpy.mockRestore()
+    }
 
     const customStore = createUserStore({ userId: 'u336-cus', syncUrl: 'https://api.example.com/user/sync' })
     await customStore.dispatch('syncWithServer')
-    expect((request.mock.calls[1][0] as { url: string }).url).toBe('https://api.example.com/user/sync')
+    expect((request.mock.calls[0][0] as { url: string }).url).toBe('https://api.example.com/user/sync')
   })
 
   it('#335 同步失败记日志后原样 rethrow，且不污染状态', async () => {
     request.mockImplementation((options: { fail?: (err: unknown) => void }) => {
       options.fail?.(new Error('net down'))
     })
-    const store = createUserStore({ userId: 'u335' })
+    const store = createUserStore({ userId: 'u335', syncUrl: 'https://api.example.com/user/sync' })
     const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {})
 
     try {

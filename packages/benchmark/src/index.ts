@@ -7,7 +7,7 @@
 // 类型定义
 export type * from './types/index.js'
 
-import type { State, BenchmarkStore } from './types/index.js'
+import type { CacheStats, BenchmarkStore } from './types/index.js'
 
 // 核心类
 export { BenchmarkRunner } from './runner.js'
@@ -56,9 +56,13 @@ export type { TimeStats, MemoryStats, ResultBuilderOptions } from './helpers.js'
  * 一个已经满足 `BenchmarkStore` 的 store 反而可能被这份参数拒掉。
  * 报告建议的 `Pick<BenchmarkStore<S>, ...>` 列的是该接口全部成员，与接口本身等价，
  * 故直接取接口名。
+ *
+ * 约束取 `object` 而非 `State`（= `Record<string, unknown>`）：与 R5-069 同口径——
+ * `Record<string, unknown>` 只接受带索引签名的类型，业务侧以 `interface MyState { … }`
+ * 声明的状态会被本函数拒收（TS2345），而 `BenchmarkStore` 自身早已放开为 `object`，
+ * 适配器这一层再收紧等于把刚放开的门又关上。
  */
-export function createBenchmarkAdapter<S extends State>(store: BenchmarkStore<S>): BenchmarkStore<S> {
-  const { getCacheStats } = store
+export function createBenchmarkAdapter<S extends object>(store: BenchmarkStore<S>): BenchmarkStore<S> {
   return {
     getState: () => store.getState(),
     setState: (key, value) => store.setState(key, value),
@@ -72,10 +76,17 @@ export function createBenchmarkAdapter<S extends State>(store: BenchmarkStore<S>
     // getCached 每次调用现取：被适配的库常在 enableCache()/懒初始化之后才挂上它，
     // 构造期做特性探测会把「当时没有」固化成永久 undefined，缓存读分支于是静默空转
     getCached: (key) => store.getCached?.(key),
-    // getCacheStats 相反地保持构造期判定：它的「有没有」本身就是 runner 用来上报
-    // 「缓存未启用」的契约信号（见 BenchmarkStore.getCacheStats 注释），改成恒有值会让
-    // 没有缓存的库被当成有缓存统计
-    getCacheStats: getCacheStats ? () => getCacheStats.call(store) : undefined,
+    // getCacheStats 同理不能在设计期定死引用：库常在 enableCache()/懒初始化之后才挂上
+    // 缓存统计，构造期解构出来的 undefined 会让 runner 永远按「缓存未启用」上报，
+    // 产出一份错的缓存报告而不是报错。
+    // 与 getCached 的差别要保住：runner 拿「这个成员在不在」当「有没有缓存统计」的
+    // 三态契约信号（见 BenchmarkStore.getCacheStats 注释），所以不能像 getCached 那样
+    // 包一层恒存在的箭头函数；用 getter 每次访问时现解析，缺席时返回 undefined，
+    // 「有没有」与「实现是谁」都保持动态。
+    get getCacheStats(): (() => CacheStats) | undefined {
+      const fn = store.getCacheStats
+      return fn ? () => fn.call(store) : undefined
+    },
     destroy: () => store.destroy(),
   }
 }

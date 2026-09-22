@@ -19,7 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`persistencePlugin({ storage })` 在 `store.use()` 安装期校验后端完整性**：缺少 `getItem` / `setItem` / `removeItem` 任一项即抛 `TypeError` 并点名缺失方法（此前只检查 `getItem`，缺写入方法的「只读后端」会推迟到首次落盘才炸、且被 `saveState` 吞成一条日志；悄悄回落到 `wx` / 内存则把数据写到另一个后端）。`Store.use` 原样上抛安装异常，`usePlugin` 仍按既有口径吞掉并 `console.error`。
 - **`OfflineManager.execute` 失败不再抛错**：在线执行失败时返回 `null`（语义＝本次未执行、已交队列重放），原错误记 `logger.error`。此前「入队 + reject」双通道会让非幂等操作（下单 / 提交表单）被执行两次；原先 `catch` 它做重试的调用方请改读返回值或队列长度。
 - **`createUserStore({ userId })` 拒绝空标识**：`userId` 非字符串、空串或纯空白即抛错。此前会派生出 `user-store-` 这类畸形键，不同账号在存储与 `StoreManager` 上撞同一键＝跨账号数据泄漏。`createEnterpriseApp` 冷启动读到历史脏标识时按未登录处理（清键并记日志，不再中断 `App` 构造）。
-- **`syncWithServer()` 校验响应体**：`statusCode` 为 2xx 但响应体没有 `userInfo` 对象时改为 reject（此前把 `undefined` 直接写进 `userInfo: UserInfo | null` 的契约，UI 侧看到「同步成功但无用户」）。配置项新增 `syncUrl`（缺省沿用内置默认端点）。
+- **`syncWithServer()` 校验响应体**：`statusCode` 为 2xx 但响应体没有 `userInfo` 对象时改为 reject（此前把 `undefined` 直接写进 `userInfo: UserInfo | null` 的契约，UI 侧看到「同步成功但无用户」）。同步地址由 `syncUrl` 配置——**0.5.2 第五轮复审已把内置默认端点整个删除**，未配置即不发请求直接 reject，详见下方「第五轮复审」的 Breaking 条。
 - **`setStateProtection()` 在销毁后抛错**：与 `setState` / `$patch` / `subscribe` / `use` / `cache` / `batch` 同口径（消息 `[GeomStore] Cannot call setStateProtection on a destroyed Store`）；只读的 `isStateProtectionEnabled` / `getStateProtectionConfig` 仍豁免。
 - **Store 品牌 Symbol 键更名**：`Symbol.for('__geomstore_brand__')` → `Symbol.for('@openlide/geomstore:brand')`，带包名命名空间以降低与第三方符号偶然碰撞，且刻意不加版本号（加版本会重新制造「分包副本 A 认不出副本 B 的 Store」）。`isGeomStore()` 用法不变；直接按旧键名读该 symbol 的代码需同步。该键不是安全边界，写入保护始终来自状态代理与内部访问令牌。
 
@@ -102,13 +102,123 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **脏标记的上报时机保留「调用前」**（`dirtyTracking`）：改成「先调用后上报」会把「多报」换成「漏报」——方法内改完状态再抛错时脏标记丢失，视图永久漏更新。现状是注释明示的「宁可多报」保守契约；同步方法调用后抛错会多标一次键，属预期。
 - **`pnpm-workspace.yaml` 的 `allowBuilds` 不是拼写错误**：pnpm 12.3.4 实际识别并回写该键（见 `node_modules/.modules.yaml`）与 `nodeLinker: hoisted`（Windows junction / 重解析点的安全策略权衡已在该文件注释中记录）。按报告改回 `onlyBuiltDependencies` 会让白名单失效、`pnpm -r exec` 的行为反而需要重建布局复验。
-- **`no-extra-semi` 仍是 ESLint 9 的内置规则**：报告称「v9 已移除」不成立（该规则 v8.53 弃用、v10 才移除），`eslint --print-config` 输出 `[2]`、`pnpm lint` 退出 0。测试文件里行首 `;(` 的既有写法属 prettier 与 ESLint 的历史分歧，本轮未动。
+- **`no-extra-semi` 仍是 ESLint 9 的内置规则**：报告称「v9 已移除」不成立（该规则 v8.53 弃用、v10 才移除），`eslint --print-config` 输出 `[2]`、`pnpm lint` 退出 0。**第五轮已消掉它依赖的历史分歧**：`tests/**` 的两条豁免（`no-unused-vars`、`no-empty`）被取消、`lint:ci` 收到 `--max-warnings 0`，而行首 `;(` 这类「prettier 要加、no-extra-semi 要删」的写法已统一改写为不以 `(` 开头的等价形式（引入局部常量承接断言），两个工具不再互相顶回（见下方第五轮 Tooling）。
 - **Wave E 未收口的四项（另立议题）**：
   - `withRetry` 的退避等待没有取消口——`retryWithBackoff` 的 `delay * 2^(n-1)` 定时器一旦排程，宿主卸载后在途重试仍会跑到次数用尽。本轮只给防抖 / 节流开了入口：重试的挂起态在 Promise 链里、且「取消后原调用返回什么」要先定义（`undefined` 还是 rejection），不是照抄 `cancel` 就行。`withCache` 同样没有 `dispose` 口（缓存表随装饰器实例存活），与本源同一议题。
   - `isTrackableHost`（「宿主是否可作为状态键」）在 `debounce.ts` 与 `throttle.ts` 各写一份、`cache.ts` 是同型内联判断，三处未合并：合并要新起内部模块并让 `cache` 依赖它，收益只是整洁度，不动行为。
   - `src/integrations/enterprise/env.ts` 的 storage 工具仍自己写一份缺失键判定（`value === '' || undefined || null → null`，此外还把非字符串载荷原样返回），**未接** `WxStorageBackend.ts` 的 `normalizeWxStoredValue`。两处语义不同源，接齐会让 `enterprise` 子入口依赖 `plugins`；本轮只把 wx 后端路径收口。
   - #386 `ErrorContext.timestamp` 双写（`createErrorContext` 生成、`ErrorAggregator` 又以 `context.timestamp || Date.now()` 兜一层，且 `||` 会把合法的 `0` 当缺省）保留现状：彻底收口要把时钟做成可注入项（新公开配置），不在本轮范围。
 - **CI 第三方 action 尚未钉 SHA**：`pnpm/action-setup@v4` 仍按可变 tag 引用，需在有外网的机器上核验 `refs/tags/v4` 指向后换成 commit SHA（`packageManager` 字段已用 sha512 锁住 pnpm 本体）。
+
+### 第五轮复审（`ocrreview.md`，376 条 = critical 2 / high 12 / medium 167 / low 195）
+
+同一份 `[Unreleased]` 之内、独立成块：本轮审查对象就是上面这些第四轮 + Wave E 改动之后的代码。逐条判定与证据在 `.ocr-fix/verdicts5/*.md`（19 个分片，其中 core-store-p1 因两度中断拆成 A/B 两份，另有主会话的 `hot-p0.md`），跨分片交接与裁决集中在 `.ocr-fix/verdicts5/main-followups.md`。计数：**376 条全部逐条判定 —— FIXED 365 / 判误报 7 / 明确不修 3（R5-296、R5-317、R5-346）/ 待人工 1（R5-365：第三方 GitHub Action 钉 SHA，需外网核验 tag→commit，盲填会直接挂 CI）**。判误报与不修都带命令级证据；分片台账原先记作「交主会话」的 5 条已按最终去向改判（R5-175 / R5-355 落地为 FIXED，R5-317 / R5-346 改判 REJECT 并在各自台账写明改判理由），`.ocr-fix/decisions5.md` 由脚本按改判后的台账重算。下面只列用户可感知的语义变化。
+
+#### Breaking（对外契约与类型面）
+
+- **`SnapshotResult<T>.data` 由 `T` 改为 `T | undefined`**（R5-238）：三条失败来源（中止 / 顶层异常 / 根节点被丢弃）交付的就是 `undefined`，旧声明靠 `undefined as T` 圆场。**用前必须先判 `success`**——异步超时交付的是半成品，所以没做成「`success: false` 时必空」的判别联合。
+- **删除公开类型 `SnapshotErrorContext.recoverable`**（R5-239）：两处咨询点都能降级，该标记恒真、无分流价值；回调要按错误种类分流请读 `SnapshotError.type`。读取该字段的 `onError` 回调会编译失败。
+- **`result.errors` 现在包含 `circular` 条目**（R5-254）：此前循环引用只进 `stats` / `metadata`，三处账目「两有一无」。`success` 仍为 `true`（只有 `cloneError` 参与 success 判定）。
+- **同步快照的深度上限变为 `min(maxDepth, 1000)`**（R5-257）：`maxDepth: NaN` 不再等于取消一切上限；超出部分按 `maxDepth` 降级记账，此前表现为一次 `RangeError` 伪装成某属性的 `cloneError` 且整次 `success: false`。
+- **未配置 `syncUrl` 时 `syncWithServer()` 不再发请求**（R5-273）：内置业务端点 `DEFAULT_SYNC_URL = '/api/user/sync'` 整条删除，改为 reject 并记日志——配置缺失不再伪装成网络错误。
+- **`StoreManager.clearAll()` 现在会删除持久化的当前身份键**（R5-268）：依赖「clearAll 后冷启动仍恢复旧身份」的宿主需显式写回。
+- **`onBeforeUpdate` 抛错或备份写入失败时仍执行 `applyUpdate()`**（R5-270）：此前整段更新被跳过；备份失败的损失范围收敛为「本次更新无状态恢复」。
+- **`WxStorageBackend` 在 `wx` 或对应 `*StorageSync` 缺失时抛错**（R5-279）：不再用 `?.` 短路成「写入 / 删除成功」与「键无数据」——后者会让随后一次落盘覆盖真实数据。环境整体不具备可用 wx 时应走 `persistencePlugin` 的降级分支。
+- **`ErrorRecovery` 达到 `maxRetries` 后在同一故障周期内持续拦截**（R5-201）：此前会清掉计数与周期键，于是调用方在同一失败循环里每轮都能领到全新额度，上限保护只对触发超限的那一次生效。
+- **`ErrorRecovery` 策略内部失败改抛 `GeomStoreError`**（R5-203，`code: INTERNAL_ERROR`，带 `cause` / `context`）；以 `Object.prototype` 成员名作错误码时不再命中原型链成员（R5-204）；未归因的重试键由 `CODE:unknown:unknown` 变为 `CODE:unattributed`（R5-205）。
+- **`@withErrorBoundary` 的回退值不再被 await**（R5-206）：带 `then` 的回退值此前会把 `Promise<fallback>` 原样返回给调用方。
+- **同一轮通知里两个可写订阅者的载荷不再是同一引用**（R5-122）：`cloneOnNotify=true` 档每轮深拷贝次数变为「可写注册数（+1，若有只读注册）」，代价换回监听器之间的隔离；`false` 档零变化。
+- **达到 `maxSubscribers` 时触发驱逐会向 `onError` 钩子发一次事件**（HANDOVER-1，生产从完全静默变为可观测）；重复注册同样受上限约束（挤掉自己最早的一笔，`throw` 策略下抛错），`size` 变为硬上界（R5-123）。
+- **`StoreCacheManager.clearOldState` 从类面上移除**（R5-113）：可达性核实为仅内部件。
+- **`withLog` 生产构建的默认摘要里 `Error` 只留 `name`**（R5-178）：依赖摘要含 message 的调用方需显式 `summarizeInProduction: false` 并自带 `redact`。新增可选字段 `summarizeInProduction`（R5-177）——此前「自带宽松 redact」会在生产构建里绕过脱敏策略。
+- **`createSelector` 的缓存失效凭证改为显式选项 `snapshotState`**（R5-224）：默认 `true` = 写缓存时深拷贝状态内容。**只传 `equalityFn: (a, b) => a === b` 而不传 `snapshotState: false` 的调用方，缓存会从「命中」变成「永不命中」**（不返回错值，但 memo 失效）；旧判据「`equalityFn` 是否恰好等于内置 `deepEqual`」在自定义深比较器（lodash `isEqual`、`(a,b)=>deepEqual(a,b)` 包装、ESM/CJS 双副本）下会把活引用当快照存，就地变异看不见、TTL 内持续返回陈旧值。
+- **`cacheTTL` 现在有取值守卫**（R5-225）：`NaN` / `<= 0` / 非数值一律回落 5000（此前 `NaN` 使条目永不过期、`0` 静默关缓存却仍付克隆成本）；`Infinity` 明确允许（= 不按时间过期）。
+- **`SelectorComposer.combine` 的入参类型改为 `SelectorComposerInput<S, T, R>`**（R5-232）：未显式给 `R` 时由 `combiner` 返回类型反推；显式给 `R` 而 combiner 返回别的东西现在编译失败。运行期行为不变。
+- **`shouldRetry` 的入参在抛出值不是 Error 时改为规范化后的 `Error`**（R5-221）：与 `withRetry` 家族同口径；抛给调用方的 rejection 原因仍是原值。
+- **`HookSystem.on()` 的退订句柄改为一次性**（R5-087）：此前重复调用会按当前 Map 内容再次删除，可能删掉之后重新注册的同一 handler。
+- **在已销毁 Store 上调用 `usePlugin` 从「只 `console.error` + 静默空卸载」改为抛出原始异常**（R5-088）。
+- **命名空间 + `strict` 的批量写入变为原子**（R5-080）：要么全校验通过后全部写入，要么一个都不写，不再留下「前一半已写入」的中间态。
+- **组合层同名注册的告警与顶替行为收紧**（R5-072 / R5-073 / R5-107）：`destroy` 回调里的重入注册不再被静默顶掉（该实例被摘链并销毁）；一个实例被多个名字持有时 `unregister` 一并摘除全部名字且只销毁一次；同名**不同实例**的静默覆盖不再被抑制告警。
+- **已销毁子 store 上抛出的非销毁类异常改为向调用方冒泡**（R5-082），不再被吞掉。
+- **`PerformanceMonitor.record()` 不再持有入参引用**（R5-090）：此前同一入参对象的后续改动会改写已记录的历史指标。
+- **`getRecentMetrics(limit)` 传负数或 `Infinity` 现在返回空数组**（R5-096）：此前分别是「返回其余条目」和「返回全部」。
+- **`Store.isStateKeyDirty` 形参放宽为 `string | symbol`**（R5-135），并与 `Store` 接口、`composeStore` 三侧口径统一。
+- **`stateProtection.productionHandler` 非法取值改为构造期抛 `TypeError`**（R5-115）：此前要等首次非法写入才表现为生产抛错；三个合法取值行为不变。
+- **保护代理上非普通实例的方法多次读取返回同一函数引用**（R5-117）：此前每读一次就 `bind` 一个新函数；方法被整体替换后返回新实现的绑定。
+- **`deepEqual` 的快速路径（SameValueZero）先于深度检查**（R5-143）：`deepEqual(x, x, n)` 与同一原始值在任意 `n` 下都为 `true`——此前恰好落在 `maxDepth` 那一层的同一引用被判不等，且该分支的 `return` 还会取消栈上其余兄弟分支的比较。
+- **克隆语义两处对齐**：数组副本与源在**空洞与附加属性**上等价（R5-136，此前 `length` 相同但槽位性质不同、附加属性丢失）；状态里的**内建类型子类实例**（`class MyMap extends Map`）在快照/克隆后与活状态共享同一实例（R5-137，此前是丢方法的基类副本）；`shallow` 模式对非纯对象返回原引用、null 原型对象保留 null 原型（R5-166）。
+- **`StoreConfig` 的 `S` 默认值由 `unknown` 改为 `Record<string, unknown>`**（R5-326）：裸写 `StoreConfig` 作形参类型时 `state` 不再接受无索引签名的 interface 值，换来 `cacheKeys` 在退化输入下可用（此前恒 `never[]`）。走 `createStore` 的调用不经过该默认值。新增导出别名 `ConfigState<S>`。
+- **公开别名 `ComposedStore` 形状改变**（R5-312）：成员从 `{name,state,stores}` 扩为整个 `Store<S>` 面，类型实参新增 `extends State` 约束。
+- **`ExtractPageData` 在键相交时的结果由 `never` 改为 getter 返回类型**（R5-328，共用它的 `PageThis` / `PageConfig` / `ComponentThis` / `ComponentConfig` / `AppThis.globalData` 同步）；`HostStoreApi` 新增必填成员 `__store__`、`subscribe` 多一个可选形参（R5-327）；`PageReservedKeys` 补 `onRouteDone`（R5-329）；`AppThis` 上 `globalData` 不再可调用（R5-330）。
+- **`AsyncActions` 与 `SelectorOptions.equalityFn` 的形参由 `unknown` 放宽为 `any`**（R5-316 + 主会话交接）：`strictFunctionTypes` 下 `unknown` 形参会因逆变拒掉调用方按具体状态标注的写法（`(a: MyState, b: MyState) => boolean`）。放宽只在逆变的形参位，返回位仍受检查，两侧各有一条编译期锁。**同一处方本轮补到 `createMemoizedSelector` 的第二位置形参**（它此前独立写成 `unknown`，于是 options 位能写的比较器在这个位点仍报 `TS2345`）——两条入口的口径现在由 `tests/types/selector-equalityfn-variance.typecheck.ts` 一起锁；同时改掉它的示例：示例原先教「传 `(a, b) => a === b`」，而本工厂没有 `snapshotState` 出口，默认档下那是**永不命中**的缓存，现改为指向 `createSelector(fn, { cache: true, equalityFn, snapshotState: false })`。
+- **`timeTravelAPI.importHistory` 对非法 JSON 由抛错改为静默跳过**（R5-297，与既有「结构非法即跳过」并轨）；`timeTravelPlugin({ maxSize })` 非法取值按默认 50 生效（R5-298）。
+- **`analyzerPlugin` 卸载后的实例形状**：`getter` 由「可枚举自有绑定函数」恢复为原型方法（R5-320，只影响做 `Object.keys(store)` / 展开 / 身份比较的消费方）。被中止的 dispatch 因 `ActionManager` 显式点名 `'dispatch'` 来源而恢复弹栈，**该次中止会产出一条「到抛错为止」的短耗时指标**（R5-319 + HANDOVER-5）——看指标时要知道这条代表中止而非成功。
+- **打包脚本三处口径**：`prepack` 新增「同名真实目录不得覆写」前置校验，命中即以退出码 1 提前失败（R5-024，改前会覆写该目录的 `package.json` 后正常出包）；`postpack` 清理面从「mapping 里的 14 个名字」扩到「仓库根一级目录里形状匹配的本脚本产物」（R5-025）；`build:release` 在 terser 装坏时改为失败退出，不再退回幽灵依赖 esbuild 压一遍并发布（R5-031）；dist 里「只有注释」的 `.js` 压缩后内容变为空（R5-027，`dist 下全部 js 已压缩` 这条承诺不再靠跳过实现）。
+
+#### Added（纯增量）
+
+- `@openlide/geomstore/extras/action` 子入口新增导出 `TIMEOUT_ERROR_CODE` 与类型 `TimeoutError` / `RetryOptions` / `ActionErrorData` / `LogSink` / `LogPhase`（该入口导出符号 29 → 35，实测自 `dist/extras/action/index.d.ts`：值导出 18 个、类型 17 个，改名/删除为零，用 TS 编译器 API 前后比对锁过）。超时错误的**跨入口判据是 `code`，不再是消息文本**（两个入口的消息文案本就不同）。
+- `@openlide/geomstore/extras/selector` 子入口新增值导出 `createRetrySelector` / `createRetrySelectorAsync`（此前要深链叶子模块；`SelectorComposer` 静态方法两条路径都保留）。
+- `@openlide/geomstore/core/store` barrel 补类型再导出 `SubscriberEvictionInfo`；`stateVersion.ts` 新增导出 `STATE_VERSION`（仅子路径内可见，不进包 `exports` 映射）。
+- `ErrorReport.summary` 新增 `droppedErrors`（R5-210 的交接）：上报队列溢出丢弃量此前只能靠 `getDroppedErrors()` 现取，拿到报告快照的下游（写日志 / 上传 / 看板）看到的是一份「总数对得上」的报表，丢包完全不可见。
+- 几何多处新增可观测性：LRUCache 超容量残留告警（R5-086）、`[StoreRegistry]` 冲突告警文案扩充（R5-074 / R5-106）、`[withAppStore] globalData 已有成员将被覆盖` 告警（R5-287）、绑定阶段抛错时三类接入层告警并回滚订阅（R5-291）。
+- 工程链：`ci.yml` 新增 `Typecheck (examples)`、把 lint/typecheck 抽成单腿 `verify-static`，并**新增 benchmark 子包的冒烟步骤**（此前该包只被编译、从不被执行）；`packages/benchmark` 新增 `src/smoke.ts` 与 `bench` 脚本（42 条断言）；`tools/fix-errors.sh` 改用 pnpm 并前置自查依赖与 pnpm 本体。
+
+#### Changed（行为变更，非破坏）
+
+- `composeStore` 构造期订阅失败现在会 `console.warn` 留痕（R5-102）：降级为「每次读取重新合并」此前完全静默，且该状态终身不可恢复。
+- `withLog` 的 `sink` / `redact` 抛错与业务调用隔离（R5-176）：此前 sink 在 `before` 抛错会让 action 本体根本不执行、在 `after` 抛错会把一次成功的调用改判为失败。
+- `withThrottle` 判定异步性改用共享的 `isThenable`（R5-193，连同 `withCache` 的 `instanceof Promise`）：手写 thenable 与跨 realm Promise 不再被漏判，被抑制调用的返回类型不再随调用顺序翻转。
+- `createRetrySelector` 保留 falsy 抛出值（R5-220，critical）：`throw null` / `throw 0` / `throw ''` 此前会被真值判定丢弃，调用方拿到的是合成的 "failed without error"，既丢原始值也丢 `attempts` 标注。
+- `PerformanceMonitor` 时钟基准降级时作废在途计时（R5-089，high）：不再产出 `Date.now() - wxNow` 这种 ~1.7e12 的脏 duration 污染 `getStats()` / `exportJSON()`。
+- `ErrorAggregator` 对非 Error 抛出值改为保护式取值并「先建组再计数」（R5-192）：此前一条 `throw null` 会留下永不清理的孤儿计数，使 `sum(byStore)` 永久大于 `totalErrors`。
+- `LRUCache` 的 `ttl` 非法值（`Infinity` / `NaN` / 负数）显式归一为 0（R5-111）：对外结果同为不过期，差别只在 dev 多一条告警。
+- `HttpReporter` 对非 Error 的 `context.error` 不再抛 `TypeError`（R5-213）；含 BigInt / 循环引用的 `payload` 由「整批 reject 并被监控层无限重入队」改为「该条降级为字符串标记、批次照常发送」（R5-214）；自定义 `HttpReporterOptions` 时默认请求实现补上 `Content-Type: application/json`（R5-215）。
+- `ConsoleReporter` 两处输出：falsy 的 `payload` 不再被静默丢弃（R5-198）、缺失 storeName 时输出 `in UNKNOWN:` 而非 `in undefined:`（R5-200）。
+- `MonitoringConfig.maxQueueSize < 1` 按 1 生效、`maxFlushRetries < 0` 按 0 生效（R5-212）。
+- `errorLog` 与聚合视图对外交副本（R5-187 / R5-211）：改用户 handler 收到的上下文不再回写内部记录，改 `getGroups()` / `generateReport()` 的结果不再污染账目。
+- 返回 Promise 的 error handler，其 rejection 由「未处理拒绝（Node 下可终止进程）」变为一条 `[ErrorHandler] Error in error handler:` 日志（R5-188）。
+- `App` 的非对象实参（`App(null)` / `App('x')`）原样透传给宿主，不再在包装器里抛 `TypeError` 让 `App` 启动失败（R5-247，high）；`autoUpdateOnShow` 现在对 `withAppStore` 生效（R5-285）；`bindActions` / `exposeStoreAPI` 遇到不可重写的宿主成员改为跳过并告警，不再中途抛错中断整批注入（R5-277）；本地键名为 `'__proto__'` 的映射不再被静默丢弃（R5-276）。
+- `dist` 产物链：`clean-dist` 对 `dist` **内部**的符号链接 / junction 用 lstat + realpath 双判据分类，只删链接本身（R5-018，critical）；子路径 stub 的清理判据由子串匹配改为与生成值全等（R5-022，high，此前 `main` 含 `dist` 字样的真实目录会被递归删除）。
+- 其余为注释 / JSDoc 与代码事实不符的批量纠正（本轮单独立项的「注释说假话」类修复约四十处）：包括 `composeStore.isStateKeyDirty` 的「始终返回 true」、`analyzerPlugin` 的「onError 一律不弹栈」、`SubscriptionManager.notify` 的拷贝归属、`src/extras/snapshot/index.ts` 的「迭代式深度克隆」等。
+
+#### Tooling（工程与门禁）
+
+- `tests/**` 不再整条关掉 `@typescript-eslint/no-unused-vars` 与 `no-empty`（R5-001），`lint:ci` 阈值由 `--max-warnings 70` 收到 `0`（R5-012）。代价是本轮清扫了豁免撤掉后立刻暴露的 62 处历史告警（4 error / 58 warning）：未用形参改 `^_` 前缀（保留 arity，因装饰器与内核按 `Function.length` 判行为）、死绑定删除或改为显式 `void`、3 处空 `catch` 改为收集 rejection 并断言（断言只增不减）。
+- 解决 prettier 与 `no-extra-semi` 的顶牛：`printWidth: 160` 下 prettier 会在以 `(` 开头的语句前补 `;`，而 ESLint 9 判它多余，`eslint --fix` 与 `prettier --write` 互相回退。21 个文件共 98 处统一改写为不以 `(` 开头的等价形式（`const slot = target as Record<string, unknown>` 这类「用 `const` 绑定断言结果」，断言本身不放宽），**不加 `eslint-disable`、不关规则、不改 `printWidth`**。
+- `jest.config.js` 删掉死掉的 `@tests/*` 别名单边映射（R5-003）；`tsconfig.typecheck.json` 不再整组重写 `exclude`（R5-010）；`@eslint/js` 补为显式 devDependency（R5-011）；`.npmignore` / `.prettierignore` / `.gitignore` 收口（审查素材与本地台账整目录忽略、判定台账白名单放开；`coverage-*.json` 锚定到根）。
+- **`examples/` 不再是「本地试验目录」**：取消整目录忽略并把 9 个源文件纳管（R5-373）——CI 的 `typecheck:examples` 依赖 `examples/global.d.ts` 声明 `App` / `Page` / `Component`，干净检出必报 4 条 `TS2304`。
+- `packages/benchmark` 定性为仓库内部工具（`private: true` 且无发布通道）：删除全部发布元数据与硬 `peerDependencies`、devDeps 与根包对齐（R5-006 / R5-008 / R5-009）；根 `package.json` 删除 npm 风格的 `workspaces`（pnpm 下是死配置，只会让 npm/yarn 与 pnpm 得出两套拓扑），并在 `pnpm-workspace.yaml` 注释里写清子包如何编译。阈值口径同步改为从配置推导（`DISPATCH_AVG 0.2→0.5`、`REPLACE_STATE_AVG 0.3→1.0`、`DISPATCH_MIN 2500→1000`）。
+
+#### 文档与 skill 同步
+
+- `README.md`、`docs/{API,GUIDE,CONCEPTS,BEST_PRACTICES,FAQ,ARCHITECTURE,MIGRATION}.md`、`CONTRIBUTING.md`
+  全部按本轮改完后的源码重写口径：本轮新增的选项（`SelectorOptions.snapshotState`、
+  `withLog` 的 `summarizeInProduction`）、
+  破坏性变更（`syncUrl` 默认端点删除、`WxStorageBackend` 抛错、`ExtractPageData` 撞名形状）、
+  以及两处此前只在源码注释里的有意豁免（保护代理方法绑定不过陷阱、`cacheTTL` 有意放行 `Infinity`）。
+- **改掉「覆盖率四项 100%」的假话**（`README` 两处、`BEST_PRACTICES` 一处、`ARCHITECTURE` 两处）：
+  门禁一直是 `jest.config.js` 的 `coverageThreshold`（global 语句/分支/函数/行 98/95/98/98 +
+  `core`/`snapshot`/`selector`/`action` 单文件分支 85），本轮实测 99.86 / 99.08 / 99.82 / 99.91。
+  **调文档措辞，不调阈值、不删数字**；`[0.5.0]` 条目里的历史陈述不改写。
+  同处 `ARCHITECTURE` 的「62+ 套件、2300+ 用例」按实测改为 144 套件 / 3408 用例。
+- `examples/extras/snapshot.ts` 改为「先判 `success` 再取 `data`」：`SnapshotResult.data` 收成
+  `T | undefined` 后该示例在 `typecheck:examples` 上报 TS18048——`examples/` 此前整目录被忽略，
+  所以这条一直没人跑到。示例按新契约写，而不是加 `!` 断言把示例写成反面教材。
+- `.codebuddy/skills/geomstore/references/api/*` 由 `pnpm run skill:api` 重新生成（11 个入口 / 373 个符号），
+  `SKILL.md` 的订阅上限、持久化后端、选择器缓存三段契约同步。
+
+#### 明确不修（第五轮新增，避免后人重复踩）
+
+- **`StoreOptionsBase<S>.state` 不做「拒绝非对象工厂」收紧**（R5-346）：实现这条要往 `state` 里塞条件类型，
+  会把 `S` 推进不可推断位置——同一接口上已有实测教训（R5-326 里报告建议的 `Array<keyof ConfigState<S>>`
+  打断 `core/store/factory.ts` 的 `new Store(options)` 反向推断，TS2322 + TS2345，显式类型实参与
+  `NoInfer` 都救不回）。收益只是多拦一种写法，代价换掉最常用入口的推断；`create-test-store-config.typecheck.ts`
+  末尾已把探针证据与「收紧后该补哪条反例」写清，下一轮不必重新试探。
+- **`deepEqual` 的两处相邻语义债**（`core-misc-p2` 报告、无对应 R5 条目）：内建分支在原型检查前 `continue`，于是空的 `MyMap` 与空的 `Map` 判等、装箱的 `new Number(1)` 与 `new Number(2)` 判等；`shallowEqual({}, Object.create(null))` 为 `true` 而 `deepEqual` 判不等（且 `shallowEqual` 在 src 内零调用方）。修它要把原型判定提到内建分支之前，属比较器语义变更，与本轮「逐条落实报告」不同范围。
+- **`sharedLoadingCounts` 不搬进内部通道**：它已是 `docs/API.md` 列出的公开选项、6 处测试按公开方式使用，搬到二次构造参数等于制造真破坏性变更。改为删掉说谎的 `@internal` 标签、把「只在构造期读一次 / `setOptions()` 忽略它的原因 / 不变量归注入方」写成消费者能读的契约，并在 `ActionLoader` 构造器补一次 `instanceof Map` 准入判定。
+- **`deepEqual` 与 `StateProxy` 的跨 realm 判定统一**（`core-store-p1-B` R5-119 的另一半）：要真做对得把标签判据下沉到 `core/utils` 供两处共用（反向 import 会形成 utils → store 的分层倒置），且与上一条是同一段代码，两笔一起改才自洽。
+- **`combine` 的 `S` 仍无推断来源**：`R` 已透传（R5-232），但 `S` 未标注时落到约束 `object`——A/B 实测同一个调用形状在改前后同样报错，不是本轮引入的回归。
 
 ## [0.5.1] - 2026-09-17
 

@@ -6,7 +6,7 @@
  */
 
 import type { ErrorBoundaryOptions, ErrorFallback } from '../../types/error.js'
-import { DEFAULT_MAX_LOG_SIZE } from './ErrorHandler.js'
+import { DEFAULT_MAX_LOG_SIZE, isThenable } from './ErrorHandler.js'
 
 /**
  * 错误边界类
@@ -14,7 +14,8 @@ import { DEFAULT_MAX_LOG_SIZE } from './ErrorHandler.js'
  * 用于捕获和处理函数执行过程中的错误，支持错误恢复和回退状态
  *
  * @class ErrorBoundary
- * @template S - 状态类型
+ * @template S - 状态类型（作为回退计算函数的上下文）
+ * @template F - 回退值类型（与 S 解耦：回退值不必是状态对象）
  *
  * @example
  * ```typescript
@@ -99,7 +100,8 @@ export class ErrorBoundary<S = unknown, F = undefined> {
    * @template T - 返回值类型
    * @param {() => T} fn - 要执行的函数
    * @param {S} [currentState] - 当前状态（用于回退）
-   * @returns {T | undefined} 函数执行结果，如果错误且可恢复则返回undefined
+   * @returns {T | F | undefined} 函数执行结果；错误且可恢复时返回回退值 `F`，
+   *   可恢复但未配 fallback 时返回 undefined
    * @throws {Error} 错误且不可恢复时重抛原始错误；可恢复但 `fallback` 函数自身抛错时
    *   同样重抛**原始**错误（回退路径已失效，不返回 undefined），见 {@link ErrorBoundary.handleError}
    *
@@ -134,7 +136,7 @@ export class ErrorBoundary<S = unknown, F = undefined> {
    * @template T - 返回值类型
    * @param {() => Promise<T>} fn - 要执行的异步函数
    * @param {S} [currentState] - 当前状态（用于回退）
-   * @returns {Promise<T | undefined>} 函数执行结果，如果错误且可恢复则返回undefined
+   * @returns {Promise<T | F | undefined>} 函数执行结果，如果错误且可恢复则返回回退值（未配 fallback 时为 undefined）
    * @throws {Error} 与 {@link ErrorBoundary.execute} 同：不可恢复、或可恢复但 fallback
    *   函数自身抛错时重抛原始错误
    *
@@ -165,7 +167,7 @@ export class ErrorBoundary<S = unknown, F = undefined> {
    * @private
    * @param {unknown} rawError - 被捕获的原始抛出值（非 Error 会归一化为 Error 记录）
    * @param {S} [currentState] - 当前状态
-   * @returns {S | undefined} 回退状态（若配置）；未配置回退时返回 undefined
+   * @returns {F | undefined} 回退值（若配置）；未配置回退时返回 undefined
    * @throws {Error} 如果错误且不可恢复
    */
   private handleError(rawError: unknown, currentState?: S): F | undefined {
@@ -225,7 +227,7 @@ export class ErrorBoundary<S = unknown, F = undefined> {
   /**
    * 获取回退状态
    *
-   * @returns {S | undefined} 回退状态；若配置为计算函数则需结合错误上下文调用，此处返回undefined
+   * @returns {F | undefined} 回退值；若配置为计算函数则需结合错误上下文调用，此处返回undefined
    *
    * @example
    * ```typescript
@@ -242,7 +244,7 @@ export class ErrorBoundary<S = unknown, F = undefined> {
   /**
    * 设置回退状态
    *
-   * @param {S} state - 新的回退状态
+   * @param {F} state - 新的回退值
    *
    * @example
    * ```typescript
@@ -379,15 +381,22 @@ export function withErrorBoundary(options?: ErrorBoundaryOptions) {
     descriptor.value = function (this: ThisParameterType<typeof originalMethod>, ...args: unknown[]) {
       const boundary = getBoundary(this)
       // 同步阶段（含 async 方法的同步抛出）由 execute 包裹
-      const result = boundary.execute(() => originalMethod.apply(this, args))
+      // 被包裹方法的**原始返回值**单独留一份：execute 的返回值可能是它、也可能是
+      // fallback 值，只对原始返回值做 thenable 判定（见下），否则「恰好带 callable
+      // `then` 的回退值/普通返回值」会被误判成 Promise 再走一遍 executeAsync，
+      // 方法的返回形状从 X 变成 Promise<X>。回退值本身一律原样返回：它是边界自己
+      // 产出的值，不是「被包裹方法的异步结果」，await 它等于把同步方法的返回值换成 Promise
+      let rawResult: unknown
+      const result = boundary.execute(() => {
+        rawResult = originalMethod.apply(this, args)
+        return rawResult
+      })
       // Promise rejection（含 async 方法的 rejection）会绕过同步 try/catch，
       // 需改用 executeAsync 包裹，避免成为 unhandled rejection。
       // 用 then 鸭子类型而非 instanceof Promise：跨 realm Promise（iframe/worker）
       // 与自定义 thenable 的 instanceof 为 false，其 rejection 会被漏掉
-      const isThenable =
-        result !== null && (typeof result === 'object' || typeof result === 'function') && typeof (result as { then?: unknown }).then === 'function'
-      if (isThenable) {
-        return boundary.executeAsync(() => result as Promise<unknown>)
+      if (isThenable(rawResult)) {
+        return boundary.executeAsync(() => rawResult as Promise<unknown>)
       }
       return result
     }
@@ -397,6 +406,9 @@ export function withErrorBoundary(options?: ErrorBoundaryOptions) {
 }
 
 /**
- * 默认导出
+ * 命名类型再导出（本模块无 default export）
+ *
+ * 定义在 `src/types/error.ts`，此处转发只为保持深导入路径 `extras/error/ErrorBoundary.js`
+ * 的类型可用；公开出口是 `extras/error/index.ts`（它直接从定义模块导出同一个类型）。
  */
 export type { ErrorBoundaryOptions } from '../../types/error.js'

@@ -1,10 +1,8 @@
 # ⚠ 发布面的唯一来源是 package.json 的 "files" 白名单：npm/pnpm 在 files 存在时完全不读本文件。
-# 实测（npm pack --dry-run --ignore-scripts）当前发布面 = 213 文件：
-#   dist/**（纯 ESM 产物 + .d.ts，sourcemap 已由 postbuild 剔除）
-#   + CHANGELOG.md、README.md、package.json（后两者 npm 无条件附带）
-#   + store/ hooks/ plugins/ integrations/ compose/ selectors/ snapshot/ performance/
-#     actions/ cache/ error/ 等子路径 stub 目录（由 prepack 生成、postpack 清理，故 dry-run 时缺席）
-# 所以「仅 dist」并不准确，本文件也不是发布清单。
+# 因此本文件不复制文件数/清单（那个数字会漂移：`npm pack --dry-run --ignore-scripts` 里
+# --ignore-scripts 让 prepack 钩子根本不执行，store/ hooks/ 等 stub 目录一个都量不到）；
+# 要看发布面就读 package.json > files。能确定的是「仅 dist」并不准确：
+# 白名单里另有 CHANGELOG.md 与 11 个子路径 stub 目录，npm 自己再无条件补 README/LICENSE。
 # 下列规则只有一种情形下生效：files 字段被删除或放宽时的兜底排除（含类型解析说明：
 # 类型完全由 dist 内 .d.ts 经 exports 映射提供，src 不随包发布）。
 src/
@@ -38,6 +36,9 @@ eslint.config.js
 # 兜底：凭据 / 本地数据 / 生成物（防 files 白名单被误删后整仓外泄）
 .npmrc
 .env*
+*.pem
+*.key
+*.p12
 coverage/
 coverage-report.json
 coverage-*.json
@@ -47,3 +48,15 @@ coverage-*.json
 .ocr-fix/
 *.log
 .DS_Store
+
+# 兜底：仓库级开发目录与打包中间物（npm-packlist 只硬排除 .git/node_modules/各类锁文件/.npmrc，
+# 其余一律要靠本文件；补这批规则前的兜底探针实测有 packages/benchmark/package.json、
+# tmp/scratch.txt、secret.pem 三项进了包）
+packages/
+tools/
+tmp/
+.changeset/
+.husky/
+.turbo/
+*.tgz
+*.zip

@@ -48,18 +48,19 @@ export class ActionHistoryTracker {
    * @param {string} actionName - Action名称
    */
   record(result: ActionResult, actionName: string): void {
-    if (!this.actionResults.has(actionName)) {
-      this.actionResults.set(actionName, [])
+    // get-or-create 后局部持有数组：此前先 `has`/`set` 再 `get` + `if (history)`，
+    // 两次查表之间没有任何能让条目消失的代码路径，那层守卫的 false 分支不可达
+    let history = this.actionResults.get(actionName)
+    if (history === undefined) {
+      history = []
+      this.actionResults.set(actionName, history)
     }
 
-    const history = this.actionResults.get(actionName)
-    if (history) {
-      history.push(result)
+    history.push(result)
 
-      // 限制历史大小
-      if (history.length > this.maxHistory) {
-        history.shift()
-      }
+    // 限制历史大小
+    if (history.length > this.maxHistory) {
+      history.shift()
     }
   }
 
@@ -218,7 +219,10 @@ export class ActionHistoryTracker {
    * ```
    */
   getAllStats(): Record<string, ActionStats> {
-    const stats: Record<string, ActionStats> = {}
+    // 空原型容器：键是业务任意取的 action 名，`'__proto__'` 在普通字面量上赋值会命中
+    // Object.prototype 的 setter —— 那条统计会静默消失（读 `stats['__proto__']` 拿到的是
+    // 原型对象本身），与 ActionManager 的 boundActions 同一失效模式（R5-110 同源）
+    const stats: Record<string, ActionStats> = Object.create(null) as Record<string, ActionStats>
 
     for (const actionName of this.actionResults.keys()) {
       stats[actionName] = this.getStats(actionName)

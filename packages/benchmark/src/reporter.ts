@@ -25,6 +25,29 @@ function escapeHtml(value: unknown): string {
     .replace(/'/g, '&#39;')
 }
 
+/**
+ * Markdown 文本转义
+ *
+ * 与 `escapeHtml` 同一立场：场景名、warnings / errors 文本与建议都可能来自运行时环境
+ * （错误消息里常带路径、环境变量、配置值），未转义拼进 markdown 就是注入点。三类风险：
+ * - 内联 HTML：`<script>`、`<img onerror>` 在允许内联 HTML 的渲染器里直接执行 → 转 `& < >`；
+ * - 结构破坏：换行会让一条 warning 变成多条列表项、或把 `### 场景` 后的内容顶到下一行去
+ *   起新标题/新表格 → 折叠成空格；`|` 会撑破概览表与任意表格行 → 反斜杠转义；
+ * - 反斜杠本身先转义，否则 `\|` 这类原样文本会被二次解释。
+ *
+ * 不在行首的 `#` / `- ` 不会另起标题或列表（markdown 块级语法要求行首），故换线折叠
+ * 之后无需再逐字符转义它们；`* _ \`` 一类行内强调只影响观感，转义反而让建议文案难读。
+ */
+function escapeMarkdown(value: unknown): string {
+  return String(value)
+    .replace(/\\/g, '\\\\')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/\|/g, '\\|')
+    .replace(/[\r\n]+/g, ' ')
+}
+
 /** 报告渲染行：取值与格式化在此完成，两种格式只负责各自的标记语法 */
 interface ReportRow {
   label: string
@@ -95,16 +118,16 @@ export class BenchmarkReporter {
     const lines: string[] = []
 
     lines.push('# GeomStore 基准测试报告\n')
-    lines.push(`**生成时间**: ${report.metadata.timestamp}`)
-    lines.push(`**版本**: ${report.metadata.version}`)
-    lines.push(`**Node.js**: ${report.metadata.nodeVersion}`)
-    lines.push(`**平台**: ${report.metadata.platform}\n`)
+    lines.push(`**生成时间**: ${escapeMarkdown(report.metadata.timestamp)}`)
+    lines.push(`**版本**: ${escapeMarkdown(report.metadata.version)}`)
+    lines.push(`**Node.js**: ${escapeMarkdown(report.metadata.nodeVersion)}`)
+    lines.push(`**平台**: ${escapeMarkdown(report.metadata.platform)}\n`)
 
     lines.push('## 概览\n')
     lines.push(`| 指标 | 值 |`)
     lines.push(`|------|-----|`)
     for (const row of toSummaryRows(report)) {
-      lines.push(`| ${row.label} | ${row.value} |`)
+      lines.push(`| ${escapeMarkdown(row.label)} | ${escapeMarkdown(row.value)} |`)
     }
     lines.push('')
 
@@ -115,7 +138,7 @@ export class BenchmarkReporter {
 
     lines.push('## 建议\n')
     for (const rec of report.recommendations) {
-      lines.push(`- ${rec}`)
+      lines.push(`- ${escapeMarkdown(rec)}`)
     }
 
     return lines.join('\n')
@@ -125,22 +148,22 @@ export class BenchmarkReporter {
     const lines: string[] = []
     const status = result.passed ? '✅' : '❌'
 
-    lines.push(`### ${status} ${result.scenario}\n`)
+    lines.push(`### ${status} ${escapeMarkdown(result.scenario)}\n`)
     for (const row of toMetricRows(result)) {
-      lines.push(`- **${row.label}**: ${row.value}`)
+      lines.push(`- **${escapeMarkdown(row.label)}**: ${escapeMarkdown(row.value)}`)
     }
 
     if (result.warnings?.length) {
       lines.push(`\n**警告**:`)
       for (const w of result.warnings) {
-        lines.push(`  - ${w}`)
+        lines.push(`  - ${escapeMarkdown(w)}`)
       }
     }
 
     if (result.errors?.length) {
       lines.push(`\n**错误**:`)
       for (const e of result.errors) {
-        lines.push(`  - ${e}`)
+        lines.push(`  - ${escapeMarkdown(e)}`)
       }
     }
 
@@ -165,7 +188,7 @@ export class BenchmarkReporter {
         const statusIcon = r.passed ? '✅' : '❌'
         const metricsHtml = toMetricRows(r)
           .map((row) => `            <div class="metric">
-              <span class="label">${row.label}</span>
+              <span class="label">${escapeHtml(row.label)}</span>
               <span class="value">${escapeHtml(row.value)}</span>
             </div>`)
           .join('\n')
@@ -181,7 +204,7 @@ ${metricsHtml}
       .join('\n')
 
     const summaryHtml = toSummaryRows(report)
-      .map((row) => `      <tr><td>${row.label}</td><td>${escapeHtml(row.value)}</td></tr>`)
+      .map((row) => `      <tr><td>${escapeHtml(row.label)}</td><td>${escapeHtml(row.value)}</td></tr>`)
       .join('\n')
 
     return `<!DOCTYPE html>
@@ -209,7 +232,7 @@ ${metricsHtml}
 </head>
 <body>
   <h1>GeomStore 基准测试报告</h1>
-  <p>生成时间: ${escapeHtml(report.metadata.timestamp)} | Node.js: ${escapeHtml(report.metadata.nodeVersion)} | 平台: ${escapeHtml(report.metadata.platform)}</p>
+  <p>生成时间: ${escapeHtml(report.metadata.timestamp)} | 版本: ${escapeHtml(report.metadata.version)} | Node.js: ${escapeHtml(report.metadata.nodeVersion)} | 平台: ${escapeHtml(report.metadata.platform)}</p>
   
   <div class="summary">
     <h2>概览</h2>

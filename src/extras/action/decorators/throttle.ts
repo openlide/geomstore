@@ -14,7 +14,7 @@
  *
  */
 
-import { isAsyncFunction } from './common.js'
+import { isAsyncFunction, isThenable } from './common.js'
 
 /**
  * 节流选项
@@ -44,7 +44,7 @@ interface ThrottleState {
    * 该 (宿主, 方法) 上是否观测到过 Promise 返回值
    *
    * 必须随状态按 (宿主, 方法) 存放：若放在装饰器作用域，任一实例的首次调用
-   * 就会把标记锁给所有宿主，之后别的主机被抑制的调用会突然从 `undefined`
+   * 就会把标记锁给所有宿主，之后别的宿主被抑制的调用会突然从 `undefined`
    * 变成 `Promise` —— 返回类型随调用顺序/实例而变，调用方无从依赖。
    */
   sawPromise: boolean
@@ -159,9 +159,12 @@ function firePendingTrailing(slot: ThrottleState): void {
   slot.lastCallTime = Date.now()
   try {
     const result = slot.originalMethod.apply(slot.host, trailingArgs) as unknown
-    if (result instanceof Promise) {
+    if (isThenable(result)) {
       slot.sawPromise = true
-      result.catch((error) => {
+      // Promise.resolve 而非 result.catch：thenable 没有 .catch，跨 realm 的 Promise
+      // 也不是本 realm 实例，两者都会被 `instanceof Promise` 漏掉，其 rejection
+      // 就成了 unhandledRejection，违背本函数上方声明的兜错口径
+      Promise.resolve(result).catch((error) => {
         reportTrailingFailure(error)
       })
     }
@@ -200,17 +203,19 @@ function firePendingTrailing(slot: ThrottleState): void {
  * ```
  */
 export function withThrottle(interval: number = DEFAULT_INTERVAL, options: ThrottleDecoratorOptions = {}): MethodDecorator {
-  // 双 false 永不执行无意义，退化为纯 leading（与 lodash 处理一致）
   const trailing = options.trailing ?? true
   const assumeAsync = options.assumeAsync ?? false
-  // 双 false 永不执行无意义：退化为纯 leading（与 lodash 处理一致）
   let leading = options.leading ?? true
+  // 双 false 永不执行无意义：退化为纯 leading（与 lodash 处理一致）
   if (!leading && !trailing) {
     leading = true
   }
   // 与 PerformanceMonitor.normalizeMaxSize 同一口径：非法配置回退默认值而非抛错，
-  // 装饰器在类定义期求值，抛错会把一个参数笔误升级成模块加载失败
-  const window = Number.isFinite(interval) && interval > 0 ? interval : DEFAULT_INTERVAL
+  // 装饰器在类定义期求值，抛错会把一个参数笔误升级成模块加载失败。
+  // 变量名取 intervalMs 而不叫 window：后者会遮蔽同名全局对象，闭包内后续写
+  // `window.setTimeout` 就变成「在数值上调不存在的方法」这条 TypeError；
+  // 且这个量的语义是间隔时长，不是时间窗口
+  const intervalMs = Number.isFinite(interval) && interval > 0 ? interval : DEFAULT_INTERVAL
 
   return function (_target: unknown, propertyKey: string | symbol, descriptor: PropertyDescriptor): PropertyDescriptor {
     const originalMethod = descriptor.value as (this: unknown, ...args: unknown[]) => unknown
@@ -230,20 +235,23 @@ export function withThrottle(interval: number = DEFAULT_INTERVAL, options: Throt
       // 宿主生命周期短于窗口（组件在窗口内被销毁）时，请在卸载点调用
       // `cancelThrottledCalls(this)`（丢弃）或 `flushThrottledCalls(this)`（补发一次）
       // 收尾，别让它在销毁之后仍调用被装饰方法
-      const timer = setTimeout(() => {
-        // 只清自己这次句柄：无条件置 null 会让「已被 scheduleTrailingAt 替换掉、
-        // 但回调已入队」的旧定时器抹掉新定时器的引用，此后既 clearTimeout 不到
-        // 真正的待发定时器，它还会在错误的时刻再补发一次。
-        // 该 if 的 false 分支只在「同一批到期回调里，前一个回调把后一个定时器 clear 掉、
-        // 但后者已从本批快照中出队」的场景成立（真实 Node 定时器相位下才可能出现，
-        // jest fake timers 会跳过已 disposed 的定时器），因此测试里无法稳定复现，
-        // HEAD 亦未覆盖；保留为对未来改动的防御，不写 istanbul ignore
-        // （本文件分支门槛 85%，实测 98.4%，无需为一条防御分支做豁免）
-        if (hostState.timer === timer) {
-          hostState.timer = null
-        }
-        firePendingTrailing(hostState)
-      }, Math.max(0, delay))
+      const timer = setTimeout(
+        () => {
+          // 只清自己这次句柄：无条件置 null 会让「已被 scheduleTrailingAt 替换掉、
+          // 但回调已入队」的旧定时器抹掉新定时器的引用，此后既 clearTimeout 不到
+          // 真正的待发定时器，它还会在错误的时刻再补发一次。
+          // 该 if 的 false 分支只在「同一批到期回调里，前一个回调把后一个定时器 clear 掉、
+          // 但后者已从本批快照中出队」的场景成立（真实 Node 定时器相位下才可能出现，
+          // jest fake timers 会跳过已 disposed 的定时器），因此测试里无法稳定复现，
+          // HEAD 亦未覆盖；保留为对未来改动的防御，不写 istanbul ignore
+          // （本文件分支门槛 85%，实测 98.4%，无需为一条防御分支做豁免）
+          if (hostState.timer === timer) {
+            hostState.timer = null
+          }
+          firePendingTrailing(hostState)
+        },
+        Math.max(0, delay),
+      )
       hostState.timer = timer
     }
 
@@ -264,7 +272,7 @@ export function withThrottle(interval: number = DEFAULT_INTERVAL, options: Throt
       }
       const hostState = state
 
-      if (now - hostState.lastCallTime >= window) {
+      if (now - hostState.lastCallTime >= intervalMs) {
         // 新窗口
         if (leading) {
           // 上一窗口残留的尾调用必须作废：新窗口以本次参数为准（下方 pendingArgs = null
@@ -272,8 +280,11 @@ export function withThrottle(interval: number = DEFAULT_INTERVAL, options: Throt
           clearTrailingTimer(hostState)
           hostState.lastCallTime = now
           hostState.pendingArgs = null
-          const result = originalMethod.apply(this, args)
-          if (result instanceof Promise) {
+          const result = originalMethod.apply(this, args) as unknown
+          if (isThenable(result)) {
+            // 只认 Promise 实例会漏掉手写 thenable 与跨 realm（iframe/worker）的 Promise：
+            // 那样 sawPromise 永不为 true，后续被抑制的调用返回 undefined，
+            // 同一方法的返回类型随调用顺序翻转
             hostState.sawPromise = true
           }
           return result
@@ -281,7 +292,7 @@ export function withThrottle(interval: number = DEFAULT_INTERVAL, options: Throt
         // leading=false：首次调用延后到窗口结束执行
         hostState.lastCallTime = now
         hostState.pendingArgs = args
-        scheduleTrailingAt(hostState, window)
+        scheduleTrailingAt(hostState, intervalMs)
         return isAsyncMethod || hostState.sawPromise || assumeAsync ? Promise.resolve(undefined) : undefined
       }
 
@@ -289,7 +300,7 @@ export function withThrottle(interval: number = DEFAULT_INTERVAL, options: Throt
       if (trailing) {
         // 始终保存最新参数并保证窗口结束时有且仅有一次补发
         hostState.pendingArgs = args
-        scheduleTrailingAt(hostState, hostState.lastCallTime + window - now)
+        scheduleTrailingAt(hostState, hostState.lastCallTime + intervalMs - now)
       }
       return isAsyncMethod || hostState.sawPromise || assumeAsync ? Promise.resolve(undefined) : undefined
     }

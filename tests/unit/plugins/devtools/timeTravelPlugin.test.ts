@@ -926,7 +926,8 @@ describe('timeTravelPlugin - global API and uninstall', () => {
       threw = true
     }
 
-    (global as any).globalThis = originalGlobalThis
+    const g = global as any
+    g.globalThis = originalGlobalThis
     expect(threw).toBe(false)
   })
 
@@ -948,7 +949,8 @@ describe('timeTravelPlugin - global API and uninstall', () => {
       threw = true
     }
 
-    (global as any).globalThis = originalGlobalThis
+    const g = global as any
+    g.globalThis = originalGlobalThis
     expect(threw).toBe(false)
   })
 })
@@ -1040,7 +1042,8 @@ describe('BUG 回归：importHistory 对 null JSON 的防御', () => {
     store.use(timeTravelPlugin())
 
     expect(() => {
-      (store as unknown as { __timeTravel__: { importHistory: (json: string) => void } }).__timeTravel__.importHistory('null')
+      const travel = (store as unknown as { __timeTravel__: { importHistory: (json: string) => void } }).__timeTravel__
+      travel.importHistory('null')
     }).not.toThrow()
   })
 })

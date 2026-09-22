@@ -159,7 +159,9 @@ describe('#296 execute 与 withCacheResult 共用一套缓存协议（重构等�
       calls.push(state.value)
       return state.value * 10
     }
-    const options = { cache: true, cacheSize: 3, cacheTTL: 10000, equalityFn: (a: unknown, b: unknown) => a === b }
+    // 比较器是引用相等，故须显式声明缓存活引用（snapshotState: false）：
+    // 默认的内容快照会让克隆体与活引用永不相等，缓存永远命不中
+    const options = { cache: true, cacheSize: 3, cacheTTL: 10000, equalityFn: (a: unknown, b: unknown) => a === b, snapshotState: false }
 
     const plain = new SelectorFactory(fn, options)
     const wrapped = new SelectorFactory(fn, options)
@@ -195,7 +197,7 @@ describe('#296 execute 与 withCacheResult 共用一套缓存协议（重构等�
     expect(withResult({ value: 1 })).toEqual({ value: 1, fromCache: false })
     expect(calls).toEqual([1, 1])
 
-    const cached = createSelector((state: NumState) => state.value * 2, { cache: true, equalityFn: (a: unknown, b: unknown) => a === b })
+    const cached = createSelector((state: NumState) => state.value * 2, { cache: true, equalityFn: (a: unknown, b: unknown) => a === b, snapshotState: false })
     const state = { value: 5 }
     expect(cached(state)).toBe(10)
     expect(cached(state)).toBe(10)

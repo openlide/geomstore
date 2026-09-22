@@ -85,6 +85,11 @@ export class BatchManager implements BatchManagerInterface {
    * 需要「结束并通知」请调 `end()` 配平 `start()`，不要用 `reset()`
    */
   reset(): void {
+    // 与 end() 的未配对告警同一口径：本类对外导出，职责边界只写在注释里等于没写。
+    // 批进行中调用 reset() 是误用（正解是配平地 end()），此处把「通知被丢弃」就地说明白
+    if (!isProduction() && this._depth > 0) {
+      console.warn('[GeomStore] BatchManager.reset() called during an active batch; suppressed notifications of this batch are dropped')
+    }
     this._depth = 0
   }
 }

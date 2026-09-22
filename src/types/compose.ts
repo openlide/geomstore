@@ -41,14 +41,18 @@ export interface NamespaceConfig {
 }
 
 /**
- * Store组合类型
+ * Store 组合类型
  *
- * `stores` 是「按 name 索引的子 Store」，元素即本库 Store 实例（原 `any` 无任何放宽必要）。
- * 注意：运行时暴露给消费者的是 `core/compose` 的 `ComposedStore` 类，此别名只描述其形状。
+ * 描述运行时 `core/compose` 的 `ComposedStore` 类的形状：该类 `implements Store<S>`，
+ * 除 `stores` 外没有别的公开成员，所以这里直接交叉出同一份契约，而不是另抄一遍
+ * name/state/stores 三件套——手抄的副本与类之间没有任何编译期关联，类增删成员、
+ * 改 `state` 只读性时这里不会报错，按本别名书写类型的消费者会静默拿不到那些 API。
+ *
+ * 默认泛型取 `State`（即 `object`）而非 `Record<string, unknown>`：后者只接受带索引签名的
+ * 类型，会把未声明索引签名的业务 interface 拒之门外，与本文件 `StoreLike` 的口径矛盾。
  */
-export type ComposedStore<S = Record<string, unknown>> = {
-  name: string
-  state: S
+export type ComposedStore<S extends State = State> = Store<S> & {
+  /** 按 name 索引的子 Store */
   stores: Record<string, Store>
 }
 
@@ -83,22 +87,27 @@ export interface StoreLike {
 type IsAny<T> = 0 extends 1 & T ? true : false
 
 /**
+ * 可选/未声明成员（`undefined`）归一为空对象
+ *
+ * `undefined` 与 `ExtractField` 的基例求交会塌成 `never`，而 `never & X = never`
+ * ⇒ 整个结果退化为 `never`（`keyof G` 变成 `string | number | symbol`，任意 getter 名
+ * 都编译通过，类型安全静默失效）。非可选成员不会命中该分支（#393）。
+ *
+ * 单独命名是为了让 `ExtractMember` 只留一层条件：两道守卫的**先后顺序**直接决定正确性
+ * （`IsAny` 必须先判），嵌成两层条件 ternary 后这个约束既难察觉也难维护。
+ */
+type MemberOrEmpty<T> = undefined extends T ? Record<never, never> : T
+
+/**
  * 取出元组首成员的 `K` 字段，并把它规整为「可安全参与交叉」的形状
  *
- * 两道守卫缺一不可：
+ * 两道守卫缺一不可，且顺序固定：
  * - `IsAny`：`undefined extends any` 为 **true**，若让 `any` 成员（如测试里的 `let store: any`）
- *   直接走下面的分支，会把整个交叉塌成 `Record<never, never>`，state / actions 的精度全丢。
+ *   直接走 `MemberOrEmpty`，会把整个交叉塌成 `Record<never, never>`，state / actions 的精度全丢。
  *   `any` 只能原样穿过（`any & X = any`）。
- * - `undefined extends First[K]`：可选成员（`getters`）在未声明时取到 `undefined`，
- *   `undefined` 与基例（即 `{}`）求交会塌成 `never`，而 `never & X = never` ⇒ 整个结果退化为
- *   `never`（`keyof G` 变成 `string | number | symbol`，任意 getter 名都编译通过，类型安全静默失效）。
- *   非可选成员不会命中该分支（#393）。
+ * - `MemberOrEmpty`：见其定义（#393）。
  */
-type ExtractMember<First extends StoreLike, K extends 'state' | 'actions' | 'getters'> = IsAny<First[K]> extends true
-  ? First[K]
-  : undefined extends First[K]
-    ? Record<never, never>
-    : First[K]
+type ExtractMember<First extends StoreLike, K extends 'state' | 'actions' | 'getters'> = IsAny<First[K]> extends true ? First[K] : MemberOrEmpty<First[K]>
 
 /**
  * 元组字段提取的公共实现（#395）

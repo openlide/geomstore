@@ -147,8 +147,21 @@ function defineOwnProperty(target: Record<string, unknown>, key: string, value: 
 /**
  * 深度合并对象
  *
- * 注意：此函数会修改 target 对象。对于非纯对象值（如数组），
- * 会进行深拷贝以防止 source 和 target 之间共享引用。
+ * 注意：此函数会**修改 target** 对象（原地合并，返回值就是 target）。
+ *
+ * 逐类源的合并规则：
+ * - 纯对象 → 纯对象：递归合并进 target 的既有纯对象（target 该位置不是纯对象时整体替换为克隆副本）；
+ * - 数组 / Map / Set / Date / RegExp / 类实例等非纯对象：整体替换为 `clone()` 的副本，不做递归合并；
+ * - 原始值：直接赋值。
+ *
+ * @remarks **合并后的 target 与 source 之间不保证不共享引用**——「深拷贝以防共享引用」只对
+ *   可安全克隆的值成立。`clone()` 默认走 deepCloneState，其窄口径是「不可安全克隆的值保留原引用」，
+ *   命中该路径的有：class 实例、Error/URL/装箱原始值等原型非 Object.prototype/null 的对象、
+ *   ArrayBuffer/TypedArray/DataView，以及 Date/RegExp/Map/Set/Array 的**子类实例**
+ *   （详见 core/utils/clone.ts 的文档）。因此
+ *   `deepMerge(target, { p: new Point(1, 2) })` 之后 `target.p === source.p`，
+ *   后续任一侧的改动都会串到另一侧。Store.$patch 走的就是本函数，
+ *   需要隔离的载荷请自行构造副本再打补丁（或把它放进纯对象/普通数组里由克隆接管）。
  */
 export function deepMerge<T extends Record<string, unknown>>(target: T, ...sources: Partial<T>[]): T {
   // 循环引用防护：同一对 (source, target) 只递归合并一次。source 自引用
@@ -185,15 +198,12 @@ export function deepMerge<T extends Record<string, unknown>>(target: T, ...sourc
           // 避免递归合并被静默跳过导致 source 数据丢失
           defineOwnProperty(dst, key, clone(sourceVal))
         }
-      } else if (Array.isArray(sourceVal) || sourceVal instanceof Map || sourceVal instanceof Set) {
-        // 数组：深拷贝防止共享引用
-        // Map/Set：深拷贝为独立实例，避免误合并成空普通对象或共享引用
-        defineOwnProperty(dst, key, clone(sourceVal))
       } else if (typeof sourceVal === 'object' && sourceVal !== null) {
-        // 其余非纯对象源值（Date/RegExp/类实例等）不可递归合并：
-        // Date/RegExp 的自有可枚举键恒为空，mergeInto 零次循环会把补丁静默丢弃；
-        // 类实例与纯对象合并语义不同，会把数据散落成旧实例上的杂散属性。
-        // 整体替换为深拷贝（Date/RegExp 由 clone 正确克隆，不可克隆类型保留原引用）
+        // 非纯对象源值（数组/Map/Set/Date/RegExp/类实例等）一律整体替换为克隆副本，不递归合并：
+        // - 数组/Map/Set：把补丁合并进既有容器会得到混合值（下标错位、键集叠加），谁都没承诺过这种语义；
+        // - Date/RegExp：自有可枚举键恒为空，mergeInto 的零次循环会把补丁静默丢弃；
+        // - 类实例：与纯对象合并语义不同，会把数据散落成旧实例上的杂散属性。
+        // 克隆的覆盖面按 core/utils/clone.ts 的口径，见 deepMerge 的 @remarks
         defineOwnProperty(dst, key, clone(sourceVal))
       } else {
         defineOwnProperty(dst, key, sourceVal)
@@ -323,7 +333,9 @@ export type CloneMode = 'deep' | 'shallow' | 'safe' | 'json'
  * @param obj 要克隆的对象
  * @param options.mode 克隆模式（默认 'deep'）：
  * - `deep`：递归深拷贝，支持 Date/RegExp/Map/Set 与循环引用（复用 deepCloneState）
- * - `shallow`：仅复制一层（数组/Map/Set 展开复制，对象浅拷贝）
+ * - `shallow`：仅复制一层，且只覆盖纯对象/Array/Map/Set（Date/RegExp 按类型新建）；
+ *   其余非纯对象（类实例、Error、WeakMap、装箱原始值……）没有保类型的一层展开办法，
+ *   按 deep/safe 的降级口径返回原引用，不返回被抽空的对象
  * - `safe`：尽力深拷贝且绝不抛错——结构保真与 deep 相同（Date/Map/Set 正确克隆），
  *   仅在克隆器真正失败时降级返回原引用并告警。旧版 safe 的 JSON 序列化语义
  *   （Date 变字符串、Map/Set 变 `{}`、丢 undefined/函数）已移至显式命名的 `json` 模式
@@ -358,7 +370,8 @@ export function clone<T>(obj: T, options?: { mode?: CloneMode }): T {
   }
 
   if (mode === 'shallow') {
-    // 浅克隆
+    // 浅克隆：只复制一层，且只对有「保类型的一层展开」办法的容器做展开
+    // （Date/RegExp 已在上方按类型新建）
     if (Array.isArray(obj)) {
       return [...obj] as T
     }
@@ -368,7 +381,18 @@ export function clone<T>(obj: T, options?: { mode?: CloneMode }): T {
     if (obj instanceof Set) {
       return new Set(obj) as T
     }
-    return { ...obj }
+    // 其余对象只有纯对象可以展开：类实例/Error/WeakMap/Promise 的自有可枚举键一般为空，
+    // { ...obj } 会得到一个连原型（连带全部方法）都丢掉的空壳，值整个消失。
+    // 按 deep/safe 的降级口径返回原引用——宁可共享，也不交出一份被抽空的数据
+    if (!isPlainObject(obj)) {
+      return obj
+    }
+    // 展开运算按键 DefineDataProperty 写入（自有 '__proto__' 键不会被 [[Set]] 吞掉），
+    // 再把原型复位：Object.create(null) 的状态映射展开成 {} 会白得一份 Object.prototype，
+    // 与 deep 路径（deepCloneState）的原型保真口径分叉
+    const copy = { ...obj }
+    Object.setPrototypeOf(copy, Object.getPrototypeOf(obj))
+    return copy as T
   }
 
   // deep 与 safe 共用递归克隆器（支持 Map/Set 与循环引用）：

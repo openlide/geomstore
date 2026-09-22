@@ -24,7 +24,14 @@ type AnyObj = Record<string | symbol, unknown>
 /** 被索引的边：数据属性值 / 数组元素 / Map 键值 / Set 成员；访问器不求值，内建对象不进内部槽位 */
 const isPlainNode = (value: unknown): value is AnyObj => {
   if (value === null || typeof value !== 'object') return false
-  return !(value instanceof Map || value instanceof Set || value instanceof Date || value instanceof RegExp || value instanceof WeakMap || value instanceof WeakSet)
+  return !(
+    value instanceof Map ||
+    value instanceof Set ||
+    value instanceof Date ||
+    value instanceof RegExp ||
+    value instanceof WeakMap ||
+    value instanceof WeakSet
+  )
 }
 
 /** 暴力口径：能沿被索引的边走到 target 的顶层键 */
@@ -93,7 +100,22 @@ function applyOp(proxyRoot: AnyObj, rawRoot: AnyObj, rnd: () => number, step: nu
   const target = paths[Math.floor(rnd() * paths.length)]
   const proxyTarget = target.path.reduce<AnyObj>((node, key) => (node as AnyObj)[key] as AnyObj, proxyRoot)
   const slot = SLOTS[Math.floor(rnd() * SLOTS.length)]
-  const kinds = ['add', 'overwrite', 'scalar', 'delete', 'alias', 'rootAssign', 'rootDelete', 'push', 'truncate', 'pop', 'mapSet', 'mapDelete', 'setAdd', 'setDelete'] as const
+  const kinds = [
+    'add',
+    'overwrite',
+    'scalar',
+    'delete',
+    'alias',
+    'rootAssign',
+    'rootDelete',
+    'push',
+    'truncate',
+    'pop',
+    'mapSet',
+    'mapDelete',
+    'setAdd',
+    'setDelete',
+  ] as const
   const kind = kinds[Math.floor(rnd() * kinds.length)]
 
   switch (kind) {
@@ -154,7 +176,7 @@ function applyOp(proxyRoot: AnyObj, rawRoot: AnyObj, rnd: () => number, step: nu
     }
     case 'setAdd': {
       const set = proxyTarget.set as Set<unknown> | undefined
-      if (set instanceof Set) set.add(rnd() > 0.5 ? rawRoot.c ?? 'x' : { v: step })
+      if (set instanceof Set) set.add(rnd() > 0.5 ? (rawRoot.c ?? 'x') : { v: step })
       break
     }
     case 'setDelete': {

@@ -2,7 +2,7 @@
  * compose 的 state 合并策略单元测试
  *
  * 覆盖 mergeNamespaced（freeze 缺省值 / 冻结）与 mergeStateMaps
- * （同名键冲突去重告警、同 store 内重复键不告警）。
+ * （同名键冲突去重告警、按 store 实例身份判归属、读写分裂提示）。
  */
 import { mergeNamespaced, mergeStateMaps } from '@/core/compose/merge.js'
 import type { Store } from '@/types/store.js'
@@ -83,15 +83,26 @@ describe('compose/merge', () => {
       expect(warned.size).toBe(1)
     })
 
-    it('单个 store 内的重复键（同 owner）不告警', () => {
-      // 同一 store 的键集合不会有重复，这里用「同名 store」构造 previousOwner === store.name 的路径
+    it('同名不同实例仍属冲突：按实例身份判定，覆盖不被漏报', () => {
+      // 同一 store 的键集合不会有重复，「同一所有者」只能是同一个实例；
+      // 两个叫 a 的实例合并 { k } 时后者确实悄悄覆盖了前者，必须告警
       const a1 = fakeStore('a', { k: 1 })
       const a2 = fakeStore('a', { k: 2 })
 
       const result = mergeStateMaps(asStores([a1, a2]), pick, new Set())
 
       expect(result).toEqual({ k: 2 })
-      expect(warnSpy).not.toHaveBeenCalled()
+      expect(warnSpy).toHaveBeenCalledTimes(1)
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('"a" wins'))
+    })
+
+    it('冲突告警同时说明读写归属可能不同（写入路由到第一个 store）', () => {
+      const a = fakeStore('a', { k: 1 })
+      const b = fakeStore('b', { k: 2 })
+
+      mergeStateMaps(asStores([a, b]), pick, new Set())
+
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('写入'))
     })
 
     it('无键的 store 不产生任何影响', () => {

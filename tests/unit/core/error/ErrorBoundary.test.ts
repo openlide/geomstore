@@ -444,14 +444,20 @@ describe('ErrorBoundary 边界条件', () => {
 describe('设计变更：恢复意图由 fallback 推导', () => {
   it('无 fallback 时默认重抛（fail-loud），不再吞错返回 undefined', () => {
     const boundary = new ErrorBoundary()
-    expect(() => boundary.execute(() => { throw new Error('boom') })).toThrow('boom')
+    expect(() =>
+      boundary.execute(() => {
+        throw new Error('boom')
+      }),
+    ).toThrow('boom')
   })
 
   it('提供 fallback 即声明恢复意图：吞错并返回 fallback', () => {
     const boundary = new ErrorBoundary<unknown, { count: number }>({ fallback: { count: 0 } })
     const warnSpy = jest.spyOn(console, 'warn').mockImplementation()
 
-    const result = boundary.execute(() => { throw new Error('boom') })
+    const result = boundary.execute(() => {
+      throw new Error('boom')
+    })
     expect(result).toEqual({ count: 0 })
 
     warnSpy.mockRestore()
@@ -460,11 +466,19 @@ describe('设计变更：恢复意图由 fallback 推导', () => {
   it('显式 recoverable 仍然优先于推导', () => {
     // 有 fallback 但显式要求不可恢复 → 重抛
     const boundary = new ErrorBoundary({ fallback: { count: 0 }, recoverable: false })
-    expect(() => boundary.execute(() => { throw new Error('boom') })).toThrow('boom')
+    expect(() =>
+      boundary.execute(() => {
+        throw new Error('boom')
+      }),
+    ).toThrow('boom')
 
     // 无 fallback 但显式可恢复 → 吞错返回 undefined
     const swallow = new ErrorBoundary({ recoverable: true })
-    expect(swallow.execute(() => { throw new Error('boom') })).toBeUndefined()
+    expect(
+      swallow.execute(() => {
+        throw new Error('boom')
+      }),
+    ).toBeUndefined()
   })
 
   it('吞错路径的 warn 应包含完整错误对象（含堆栈）', () => {
@@ -472,7 +486,9 @@ describe('设计变更：恢复意图由 fallback 推导', () => {
     const warnSpy = jest.spyOn(console, 'warn').mockImplementation()
     const error = new Error('with stack')
 
-    boundary.execute(() => { throw error })
+    boundary.execute(() => {
+      throw error
+    })
 
     expect(warnSpy).toHaveBeenCalledWith('[ErrorBoundary] Returning fallback state due to error:', error)
     warnSpy.mockRestore()
@@ -494,13 +510,21 @@ describe('BUG 回归：事后 setFallbackState 应生效', () => {
   it('构造时无 fallback、事后设置 fallback 应切换为恢复模式', () => {
     const boundary = new ErrorBoundary<unknown, number>()
     // 构造时无 fallback：默认 fail-loud
-    expect(() => boundary.execute(() => { throw new Error('first') })).toThrow('first')
+    expect(() =>
+      boundary.execute(() => {
+        throw new Error('first')
+      }),
+    ).toThrow('first')
 
     boundary.setFallbackState(42)
     const warnSpy = jest.spyOn(console, 'warn').mockImplementation()
 
     // 事后提供 fallback 即声明恢复意图
-    expect(boundary.execute(() => { throw new Error('second') })).toBe(42)
+    expect(
+      boundary.execute(() => {
+        throw new Error('second')
+      }),
+    ).toBe(42)
 
     warnSpy.mockRestore()
   })
@@ -509,7 +533,11 @@ describe('BUG 回归：事后 setFallbackState 应生效', () => {
     const boundary = new ErrorBoundary<unknown, number>({ recoverable: false })
     boundary.setFallbackState(42)
 
-    expect(() => boundary.execute(() => { throw new Error('boom') })).toThrow('boom')
+    expect(() =>
+      boundary.execute(() => {
+        throw new Error('boom')
+      }),
+    ).toThrow('boom')
   })
 })
 

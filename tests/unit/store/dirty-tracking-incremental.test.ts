@@ -40,7 +40,7 @@ describe('#178 增量登记新增的边', () => {
     const { proxy, last } = track(root)
 
     ;(proxy.a as Nested).slot = { inner: { v: 0 } }
-    const inner = (((proxy.a as Nested).slot) as Nested).inner as Nested
+    const inner = ((proxy.a as Nested).slot as Nested).inner as Nested
     inner.v = 1
 
     expect(last()).toEqual(['a'])
@@ -122,7 +122,6 @@ describe('#178 删边退化全量重建', () => {
     ;(proxy.scalars as unknown as unknown[]).length = 1
     ;(proxy.other as Nested).v = 1
     expect(last()).toEqual(['other'])
-
     ;(proxy.objects as unknown as unknown[]).length = 0
     ;(held as Nested).v = 2
     expect(last()).toEqual(['objects', 'other', 'scalars'])
@@ -187,7 +186,6 @@ describe('#178 共享引用与集合', () => {
     const keyed = [...(proxy.map as unknown as Map<unknown, number>).keys()][0] as Nested
     keyed.k = 1
     expect(last()).toEqual(['map'])
-
     ;(proxy.other as Nested).v = 2
     expect(last()).toEqual(['other', 'set'])
     expect(reports.flat()).not.toContain('untouched')
@@ -259,7 +257,6 @@ describe('#178 与 Store 的集成点', () => {
       store.destroy()
     }
   })
-
 })
 
 describe('#178 索引覆盖不到的位置与不递归的遍历', () => {

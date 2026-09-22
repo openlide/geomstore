@@ -55,10 +55,9 @@ describe('选择器全族支持无索引签名的 interface 状态', () => {
   })
 
   it('createParametricSelector / SelectorFactory', () => {
-    const amountById = createParametricSelector(
-      (s: OrderState, id: number) => s.orders.find((o) => o.id === id)?.amount ?? 0,
-      { ttl: 100, maxEntries: 4 },
-    )(state)
+    const amountById = createParametricSelector((s: OrderState, id: number) => s.orders.find((o) => o.id === id)?.amount ?? 0, { ttl: 100, maxEntries: 4 })(
+      state,
+    )
     expect(amountById(1)).toBe(100)
 
     const factory = new SelectorFactory((s: OrderState) => s.rate)

@@ -40,7 +40,9 @@ const _notShared: SharedKeys = 'actions'
 void _notShared
 
 // 共享选项在两个接口上都只需书写一次（编译期即证明不存在第二份声明）
-const sharedOnly = {
+// 显式标注以启用「多余属性检查」：spread 进来的属性不参与 EPC，键名拼错
+// （如 cacheConifg）会静默穿过下面两条赋值，「共享选项只写一次」的锁即失效
+const sharedOnly: StoreOptionsBase<CounterState> = {
   name: 'base-shared',
   enableCache: true,
   cacheConfig: { capacity: 10, ttl: 1000, trackAccessTime: false, enableStats: true },
@@ -67,7 +69,12 @@ void [_fromLiteral, _fromFactory, _same1, _same2]
 // 归一失败（S = unknown 的裸配置）时退回 State，仍可按键索引的是 getter 侧的兜底形状
 type Unresolved = ResolvedState<unknown>
 const _unresolved: Unresolved = {}
-void _unresolved
+// 负向锁定：`{}` 对 object / Record<string, unknown> / unknown / any 都成立，正向赋值锁不住任何东西；
+// 兜底一旦被漂成可键索引形状（如 Record<string, unknown>），下面这条 @ts-expect-error 会因
+// 「未命中诊断」而编译失败，真正钉死「退回的是 State（= object）」
+// @ts-expect-error object 没有隐式字符串索引签名，不可赋给 Record<string, unknown>
+const _unresolvedNotIndexable: Record<string, unknown> = null as unknown as Unresolved
+void [_unresolved, _unresolvedNotIndexable]
 
 // cacheKeys 仍精确到归一后状态的键
 const _cacheOk: StoreConfig<CounterState>['cacheKeys'] = ['count']
@@ -78,5 +85,26 @@ void _cacheBad
 // 工厂写法下 cacheKeys 同样按归一后的状态取键
 const _cacheFromFactory: StoreConfig<() => CounterState>['cacheKeys'] = ['count']
 void _cacheFromFactory
+
+// ==================== 免泛型裸写法（S 取默认 unknown）====================
+// 头部宣称锁定的是 StoreConfig 的「免泛型推断」，上面各条都显式写了类型参数，
+// 裸写法（零类型参数）此前无人覆盖。顺带钉死注释里的另一侧兜底：S 归一失败时
+// getter 的 state 形参取 Record<string, unknown>（可按键读），与 ResolvedState 的 object 兜底刻意不同
+const bareForm = {
+  ...sharedOnly,
+  state: { count: 1 },
+  getters: {
+    double: (state: Record<string, unknown>) => Number(state.count) * 2,
+  },
+} satisfies StoreConfig
+void bareForm
+
+// 裸写法的 `S` 默认值已取 `Record<string, unknown>`（配套 R5-326 的归一化），
+// 因此 `cacheKeys` 接受任意字符串键——这条正向断言锁住该口径：
+// 谁把默认值改回 `unknown`，`ResolvedState<unknown>` 就退化成 `object`、`keyof` 为空、
+// `cacheKeys` 变 `never[]`，本行随即报 TS2322（此前这里挂的是 `@ts-expect-error`，
+// 记录的是「退化输入拒绝一切键」的旧行为，已被更可用的归一化取代）。
+const _bareAllowsCacheKeys: StoreConfig = { state: { count: 1 }, cacheKeys: ['count'] }
+void _bareAllowsCacheKeys
 
 export {}

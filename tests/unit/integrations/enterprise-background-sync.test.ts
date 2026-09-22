@@ -19,7 +19,8 @@ describe('后台同步的失败兜底', () => {
   })
 
   function installAppStub(): void {
-    (globalThis as any).App = function App(options: unknown) {
+    const g = globalThis as any
+    g.App = function App(options: unknown) {
       return options
     }
   }

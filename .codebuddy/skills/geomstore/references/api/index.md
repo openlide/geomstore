@@ -16,13 +16,13 @@
 | --- | --- | --- | --- |
 | `.` | 完整声明 | 60 | [`main.md`](./main.md) |
 | `./core` | 仅符号名 | 60 | [`core.md`](./core.md) |
-| `./extras` | 仅符号名 | 76 | [`extras.md`](./extras.md) |
-| `./extras/action` | 完整声明 | 27 | [`extras-action.md`](./extras-action.md) |
+| `./extras` | 仅符号名 | 80 | [`extras.md`](./extras.md) |
+| `./extras/action` | 完整声明 | 35 | [`extras-action.md`](./extras-action.md) |
 | `./extras/enterprise` | 完整声明 | 18 | [`extras-enterprise.md`](./extras-enterprise.md) |
 | `./extras/error` | 完整声明 | 44 | [`extras-error.md`](./extras-error.md) |
 | `./extras/performance` | 完整声明 | 9 | [`extras-performance.md`](./extras-performance.md) |
 | `./extras/plugins` | 完整声明 | 9 | [`extras-plugins.md`](./extras-plugins.md) |
-| `./extras/selector` | 完整声明 | 14 | [`extras-selector.md`](./extras-selector.md) |
+| `./extras/selector` | 完整声明 | 16 | [`extras-selector.md`](./extras-selector.md) |
 | `./extras/snapshot` | 完整声明 | 14 | [`extras-snapshot.md`](./extras-snapshot.md) |
 | `./integrations` | 完整声明 | 28 | [`integrations.md`](./integrations.md) |
 

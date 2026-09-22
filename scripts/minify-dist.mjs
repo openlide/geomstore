@@ -28,9 +28,15 @@
  * - 探测不到压缩器 → 由 `--strict` 决定：默认（宽松，供本地 `build:min`）告警并跳过，
  *   不阻塞开发链路；`--strict`（供发布 `build:release`）报错并以退出码 1 中止，
  *   避免发布链路静默产出未压缩包（策略①的核心承诺是「发布即压缩」）。
- * - dist 无可压缩内容、dist 是符号链接/junction、压缩器存在但加载失败
- *   → 一律退出码 1 中止，不走宽松降级：前两者意味着「构建没产出真实产物」，
- *   第三者是真实故障而非「没装」，静默跳过会发布出体积与内容都不符的包。
+ * - dist 无可压缩内容（没有 .js，或 .js 全是空文件）→ 同样走上面这条分级：
+ *   它属「上游没产出」而非真实故障，宽松模式只告警并以退出码 0 结束，
+ *   只有 `--strict` 才中止。
+ * - dist 是符号链接/junction、压缩器存在但加载失败 → 一律退出码 1 中止，不走宽松降级：
+ *   前两者意味着「构建没产出真实产物」，第三者是真实故障而非「没装」，静默跳过会发布出
+ *   体积与内容都不符的包。
+ * - dist 内有链接藏着未压缩的 js（指向 js 的链接、藏着 js 的目录链接）→ `--strict` 中止，
+ *   因为「全部 js 已压缩」不再成立；与 js 无关的链接（断链、指向非 js 文件）只告警，
+ *   没有东西可压就不该拦下发布。
  */
 
 import fs from 'node:fs'
@@ -41,6 +47,21 @@ import { createRequire } from 'node:module'
 const require = createRequire(import.meta.url)
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const distDir = path.join(projectRoot, 'dist')
+
+const reasonOf = (error) => (error instanceof Error ? error.message : String(error))
+
+/** Windows 路径大小写不敏感（盘符 D:/d: 都可能出现），其余平台逐字符比较 */
+function samePath(a, b) {
+  return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b
+}
+
+/**
+ * 压缩器并发上限。两个后端共用它：一次性把整棵 dist 交给后端会让峰值内存随
+ * 产物规模线性增长（esbuild 还会为这一批拉起 worker 池），而 terser 分支原本是
+ * 严格串行的——换后端不该顺带换内存压力。备齐再落盘那条不变式（见 writeAll）
+ * 决定了结果总量必然留在内存里，这里限的只是「同时在转换中的文件数」。
+ */
+const CONVERT_LIMIT = 8
 
 /** 压缩目标的语法基准：必须与 tsconfig.json 的 `target`（ES2020）一致。
  *  两个后端共用它，才不会因换了压缩器而顺带改变产物的语法下限 */
@@ -76,21 +97,55 @@ const ESBUILD_OPTIONS = {
  * 收 .mjs/.cjs 属于匹配永不存在的文件，留着只会误导后来的维护者。
  *
  * 符号链接**有意不跟随**（本脚本原地写回，跟随等于把压缩结果写到 dist 之外的真实目标，
- * 与 clean-dist 面对的同一类不可回滚风险），但必须收集出来上报：
- * 否则「已压缩 dist 下全部 js」这句承诺会静默失真。
+ * 与 clean-dist 面对的同一类不可回滚风险），但必须按「它是否藏着一个没被压缩的 js」分类上报：
+ * 否则「已压缩 dist 下全部 js」这句承诺会静默失真；反过来，一个指向 json 的链接、
+ * 一个断链并没有漏掉任何东西，拿它去中止发布会是假阳性。
  */
-function collectJs(dir, acc = { files: [], links: [] }) {
+function collectJs(dir, acc = { files: [], jsLinks: [], dirLinks: [], otherLinks: [] }) {
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
     const full = path.join(dir, entry.name)
-    if (entry.isDirectory()) {
-      collectJs(full, acc)
-    } else if (entry.isSymbolicLink()) {
-      acc.links.push(full)
-    } else if (entry.name.endsWith('.js')) {
-      acc.files.push(full)
+    const kind = classifyEntry(full)
+    if (kind === 'file') {
+      if (entry.name.endsWith('.js')) acc.files.push(full)
+      continue
     }
+    if (kind === 'dir') {
+      collectJs(full, acc)
+      continue
+    }
+    // 'link'：指向目录时内部可能藏着 js，指向 js 文件本身就是个没压缩的模块，
+    // 两者都破坏「全部 js 已压缩」；statSync 失败即断链，跟着走也没有可压内容。
+    let targetIsDir = false
+    try {
+      targetIsDir = fs.statSync(full).isDirectory()
+    } catch {
+      targetIsDir = false
+    }
+    if (targetIsDir) acc.dirLinks.push(full)
+    else if (entry.name.endsWith('.js')) acc.jsLinks.push(full)
+    else acc.otherLinks.push(full)
   }
   return acc
+}
+
+/**
+ * 条目分类：'link'（重解析点，绝不进入）| 'dir'（可递归的真实目录）| 'file'。
+ *
+ * lstat + realpath 双判据，理由同 clean-dist 的 classifyEntry：readdir 的 Dirent 与
+ * lstat 在部分 Windows/Node 组合下会把 junction 报成普通目录，此时递归进去就会把
+ * 压缩结果原地写到 dist 之外的真实落点。
+ */
+function classifyEntry(full) {
+  const stat = fs.lstatSync(full)
+  if (stat.isSymbolicLink()) return 'link'
+  if (!stat.isDirectory()) return 'file'
+  let real
+  try {
+    real = fs.realpathSync(full)
+  } catch {
+    return 'link'
+  }
+  return samePath(real, path.resolve(full)) ? 'dir' : 'link'
 }
 
 /**
@@ -103,10 +158,7 @@ function collectJs(dir, acc = { files: [], links: [] }) {
 function assertRealDistDir() {
   const realDist = fs.realpathSync(distDir)
   const expected = path.join(fs.realpathSync(projectRoot), 'dist')
-  // Windows 下路径大小写不敏感（盘符 D:/d: 都可能），直接 === 会误判
-  const same =
-    process.platform === 'win32' ? realDist.toLowerCase() === expected.toLowerCase() : realDist === expected
-  if (!same || !fs.statSync(realDist).isDirectory()) {
+  if (!samePath(realDist, expected) || !fs.statSync(realDist).isDirectory()) {
     throw new Error(
       `dist 不是仓库内的真实目录（realpath=${realDist}，期望=${expected}）：` +
         '符号链接/junction 会让原地压缩写穿链接目标，已中止',
@@ -115,50 +167,133 @@ function assertRealDistDir() {
 }
 
 /**
- * 只把「确实没装」当作探测失败（MODULE_NOT_FOUND）。
- * 包存在但加载失败（缺本机 binding、包体损坏）是真实故障，
- * 静默降级成「未找到压缩器」会让发布链路产出不符预期的包，故记录后抛出，
- * 由 main 的 catch 以退出码 1 中止。
+ * 只把「确实没装这个包」当作探测失败。
+ *
+ * 光看 `code === 'MODULE_NOT_FOUND'` 太宽：包装着、但它自己的传递依赖解析不出来
+ * （装坏了 / 半路删过 node_modules）也是同一个 code，而这条注释下面那句
+ * 「真实故障必须中止」针对的正是它。Node 的 MODULE_NOT_FOUND 消息里点名了
+ * 找不到的那个模块，所以按名字核对：不是它自己，就记录后抛出，
+ * 由 main 的 catch 以退出码 1 中止，避免静默降级成「未找到压缩器」。
  */
+function isMissingItself(error, name) {
+  return (
+    error?.code === 'MODULE_NOT_FOUND' &&
+    typeof error.message === 'string' &&
+    error.message.includes(`Cannot find module '${name}'`)
+  )
+}
+
 function tryRequire(name) {
   try {
     return require(name)
   } catch (error) {
-    if (error?.code === 'MODULE_NOT_FOUND') return null
-    console.error(`[minify-dist] ${name} 存在但加载失败（非「未安装」）：`, error)
+    if (isMissingItself(error, name)) return null
+    console.error(`[minify-dist] ${name} 的加载失败不是「未安装 ${name}」（缺的是别的模块，或另有原因）：`, error)
     throw error
   }
 }
 
 const kb = (n) => `${(n / 1024).toFixed(1)} KB`
 
-/** 统一写盘：所有压缩结果先在内存中备齐，再一次性落盘 */
+/**
+ * 统一写盘：所有压缩结果先在内存中备齐，再一次性落盘。
+ *
+ * 「一次性」不等于原子：这仍是一串逐个执行的 writeFileSync，ENOSPC / EACCES /
+ * 磁盘半路故障可能发生在中间某个文件上。所以每写成功一个就记下它的原文，
+ * 一旦抛错就把**已经动过的**文件逐个还原回去，绝不让 dist 停在「一半已压缩」
+ * 的状态（那正是文件头承诺不会出现的半成品）。只还原写成功的那些：写失败的那个
+ * 内容根本没变，把它算进「必须手工恢复」会把一条干净的错误说成数据已损坏。
+ * 还原本身再失败时必须点名到文件：那时 dist 确实是混合状态，只能由人重跑构建。
+ */
 function writeAll(outputs) {
-  for (const { file, code } of outputs) {
-    fs.writeFileSync(file, code)
+  const written = []
+  try {
+    for (const { file, code, original } of outputs) {
+      fs.writeFileSync(file, code)
+      written.push({ file, original })
+    }
+  } catch (error) {
+    const unrestored = []
+    for (const { file, original } of written) {
+      try {
+        fs.writeFileSync(file, original)
+      } catch (rollbackError) {
+        unrestored.push(`${path.relative(projectRoot, file)}: ${reasonOf(rollbackError)}`)
+      }
+    }
+    if (unrestored.length > 0) {
+      console.error(
+        `[minify-dist] 写盘失败后的还原同样失败，dist 已处于「一半压缩」的混合状态，` +
+          `以下文件必须手工恢复（或直接重跑构建）：\n  ${unrestored.join('\n  ')}`,
+      )
+    }
+    throw new Error(
+      `压缩结果写盘失败（${reasonOf(error)}）；` +
+        (unrestored.length > 0
+          ? `${unrestored.length} 个文件未能还原`
+          : `${written.length} 个已写入的文件已还原为压缩前内容`),
+    )
   }
+}
+
+/**
+ * 后端返回值的形状校验。
+ *
+ * 静默丢掉一个 code 为假值的文件，等于对外面那句「dist 下全部 js 已压缩」撒谎：
+ * 非字符串（后端返回形状变了）一律抛错；压成空串只在「源文件本来就没有语句」
+ * （空文件 / 只有注释与空白）时算合法结果，否则同样是异常。
+ */
+function requireCode(code, file, source, backend) {
+  const where = path.relative(projectRoot, file)
+  if (typeof code !== 'string') {
+    throw new TypeError(`${backend} 对 ${where} 未返回字符串结果（实际为 ${String(code)}），已中止`)
+  }
+  if (code === '' && !isBlankOrComments(source)) {
+    throw new Error(`${backend} 把非空文件 ${where} 压成了空内容，已中止`)
+  }
+  return code
+}
+
+/** 去掉块注释、行注释与空白后是否什么都不剩：只有这种文件压成空才算正常 */
+function isBlankOrComments(source) {
+  const stripped = source
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/(^|[^:"'`\\])\/\/[^\n]*/g, '$1')
+  return stripped.trim() === ''
+}
+
+/** 有界并发：最多 limit 个条目同时在转换中，结果按入参顺序返回 */
+async function mapLimit(items, limit, convert) {
+  const results = new Array(items.length)
+  let cursor = 0
+  const lanes = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (cursor < items.length) {
+      const index = cursor++
+      results[index] = await convert(items[index])
+    }
+  })
+  await Promise.all(lanes)
+  return results
 }
 
 async function minifyWithEsbuild(esbuild, files) {
   // 先全部转换、后统一写盘：中途抛错（语法异常、ENOSPC、EACCES）时 dist 保持原样，
-  // 不会留下「一半已压缩、一半未压缩」且仍被报告为成功的半成品
-  const outputs = await Promise.all(
-    files.map(async (file) => {
-      const source = fs.readFileSync(file, 'utf8')
-      const result = await esbuild.transform(source, ESBUILD_OPTIONS)
-      return { file, code: result.code }
-    }),
-  )
+  // 不会留下「一半已压缩、一半未压缩」的半成品（writeAll 还会把已落盘的还原回去）
+  const outputs = await mapLimit(files, CONVERT_LIMIT, async (file) => {
+    const source = fs.readFileSync(file, 'utf8')
+    const result = await esbuild.transform(source, ESBUILD_OPTIONS)
+    return { file, original: source, code: requireCode(result?.code, file, source, 'esbuild') }
+  })
   writeAll(outputs)
 }
 
 async function minifyWithTerser(terser, files) {
   // 同 esbuild 分支：备齐再落盘，避免中途失败留下半成品
-  const outputs = []
-  for (const file of files) {
-    const result = await terser.minify(fs.readFileSync(file, 'utf8'), TERSER_OPTIONS)
-    if (result.code) outputs.push({ file, code: result.code })
-  }
+  const outputs = await mapLimit(files, CONVERT_LIMIT, async (file) => {
+    const source = fs.readFileSync(file, 'utf8')
+    const result = await terser.minify(source, TERSER_OPTIONS)
+    return { file, original: source, code: requireCode(result?.code, file, source, 'terser') }
+  })
   writeAll(outputs)
 }
 
@@ -185,11 +320,17 @@ async function main() {
   }
   assertRealDistDir()
 
-  const { files, links } = collectJs(distDir)
+  const { files, jsLinks, dirLinks, otherLinks } = collectJs(distDir)
 
-  if (links.length > 0) {
-    const detail = links.map((f) => `  ${path.relative(projectRoot, f)}`).join('\n')
-    const reason = `[minify-dist] dist 内有 ${links.length} 个符号链接未被压缩：\n${detail}`
+  // 「藏着没压缩的 js」与「跟 js 无关」必须分开判：一个指向 json 的链接、一个断链，
+  // 没有任何可压缩内容被漏掉，用它们去中止发布是假阳性；而 js 链接与目录链接
+  // 确实让「全部 js 已压缩」这句话不成立。
+  const hidingUnminifiedJs = [...jsLinks, ...dirLinks]
+  if (hidingUnminifiedJs.length > 0) {
+    const detail = hidingUnminifiedJs.map((f) => `  ${path.relative(projectRoot, f)}`).join('\n')
+    const reason =
+      `[minify-dist] dist 内有 ${hidingUnminifiedJs.length} 个链接藏着未被压缩的 js` +
+      `（指向 js 的 ${jsLinks.length} 个、指向目录的 ${dirLinks.length} 个）：\n${detail}`
     // 本地：如实上报后继续压缩其余真实文件（链接不跟随是有意策略，不算故障）
     // 发布：只要有 js 没被压缩，「全部 js 已压缩」就不成立，直接中止
     if (strict) {
@@ -198,6 +339,12 @@ async function main() {
       return
     }
     console.warn(`${reason}\n              WARN: 这些文件（及其内容）不在压缩范围内，请确认 dist 布局。`)
+  }
+  if (otherLinks.length > 0) {
+    console.warn(
+      `[minify-dist] dist 内有 ${otherLinks.length} 个链接与 js 无关（断链或指向非 js 文件），` +
+        `按既定策略不跟随，不计入未压缩产物：\n  ${otherLinks.map((f) => path.relative(projectRoot, f)).join('\n  ')}`,
+    )
   }
 
   // 先于压缩器探测判定：否则下面的 before/after 汇总会算出 0/0 → NaN%

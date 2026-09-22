@@ -135,8 +135,9 @@ export class PerformanceMonitor implements PerformanceMonitorInterface {
   /**
    * 规范化采样率
    *
-   * `Math.random() > NaN` 恒为 false，未校验的 NaN 会让「采样」变成 100% 记录；
-   * 负值则让所有操作都被跳过。文档口径是 0-1，故统一夹到该区间，非有限值回退默认。
+   * 留存判据是 `Math.random() < sampleRate`（见 record()）：未校验的 NaN 与负值都会让
+   * 条件恒假，「采样」静默退化成一条都不留，而调用方以为自己在监控。文档口径是 0-1，
+   * 故统一夹到该区间，非有限值回退默认。
    *
    * @private
    */
@@ -224,8 +225,17 @@ export class PerformanceMonitor implements PerformanceMonitorInterface {
         return value
       }
       // 读数非有限数（NaN/Infinity）说明该实例不可信：撤下缓存降级到 Date.now，
-      // 否则 NaN 会让 duration 恒为 NaN、exceedThreshold 恒 false、预警整体失效
+      // 否则 NaN 会让 duration 恒为 NaN、exceedThreshold 恒 false、预警整体失效。
       this.cachedWxPerformance = null
+      // 降级同时切换了时钟基准：currentOperations 里在途的 startTime 来自 wx 时钟
+      // （进程相对的小值），与 Date.now()（epoch ms）混算会得到 ~1.7e12 的 duration，
+      // 每条都会被记成「超阈值」并永久污染 getStats()/exportJSON()，pruneStaleOperations
+      // 也会把所有在途条目判为过期。基准变了就是在途测量作废，宁可留下监控缺口
+      // （disposer 走「计时条目缺失」分支告警），也不写入跨基准的脏数据。
+      if (this.currentOperations.size > 0) {
+        console.debug(`[GeomStore][Performance] 时钟基准降级，${this.currentOperations.size} 条在途计时已作废（不可跨基准比较）`)
+        this.currentOperations.clear()
+      }
     }
 
     // 旧基础库（无 wx.getPerformance）与降级路径统一用 Date.now（同为毫秒）
@@ -267,6 +277,12 @@ export class PerformanceMonitor implements PerformanceMonitorInterface {
     const key = `${type}:${operation}#${++this.operationSeq}`
     const startTime = this._getTimestamp()
 
+    // 清扫必须落在 start()：只靠 record() 路径的兜底，在「反复 start、从不 end、
+    // 也不再 record」的调用方（计时被中途丢弃的场景）下永不触发，条目随调用无限累积。
+    // 放在 set 之前，本轮新建的条目不会被自己扫掉；复用刚取到的 startTime 作为「现在」，
+    // 省去一次时钟读取，也保证与条目同一基准
+    this.pruneStaleOperations(startTime)
+
     this.currentOperations.set(key, startTime)
 
     return () => {
@@ -295,7 +311,8 @@ export class PerformanceMonitor implements PerformanceMonitorInterface {
   /**
    * 记录指标
    *
-   * 直接记录一个性能指标
+   * 直接记录一个性能指标。入参对象**不会被留存**：缓冲区与 logger 拿到的都是它的副本，
+   * 调用方复用/改写该对象不会篡改已记录的历史指标。
    *
    * @param {PerformanceMetrics} metrics - 性能指标
    *
@@ -315,25 +332,32 @@ export class PerformanceMonitor implements PerformanceMonitorInterface {
     // currentOperations 会随错误次数无限增长。
     // 必须置于采样判断之前——清理是监控器自身的内存维护，与「本条指标是否被采样」
     // 无关；放在采样之后会让 sampleRate 很低（尤其为 0）时清理永不执行，泄漏照旧
-    this.pruneStaleOperations()
+    this.pruneStaleOperations(this._getTimestamp())
 
     // 采样只决定是否**留存**这条指标；阈值预警不受采样影响（见下方 logger 调用）
-    const sampled = Math.random() <= this.options.sampleRate
+    // 严格小于：Math.random() ∈ [0,1)，sampleRate=0 时 `<= 0` 仍会在随机数恰好为 0
+    // 的那一次留存指标，而 0 的契约是「一条都不留」；sampleRate=1 时 `< 1` 恒真，
+    // 100% 采样的口径不变
+    const sampled = Math.random() < this.options.sampleRate
 
-    // 添加内存使用信息：写入副本而非调用方传入的对象，
-    // 避免副作用泄漏到调用方（复用/比较该对象的代码受影响）
+    // 内存信息写在副本上：写入副本而非调用方传入的对象，避免副作用泄漏到调用方
+    // （复用/比较该对象的代码受影响）。副本是**无条件**的——若只在 trackMemory 生效时
+    // 才复制，缓冲区与 logger 在其余场合仍持有调用方对象引用，调用方后续改动会改写
+    // 历史指标，getMetrics()/getMetricsByType() 的元素复制就白做了
     // 局部变量刻意不叫 record：与方法名 record() 同名会遮住方法、读起来像自递归
-    let metricRecord = metrics
+    const metricRecord: PerformanceMetrics = { ...metrics }
     if (this.options.trackMemory) {
       try {
-        // memory 为 Chrome 系环境扩展属性，不依赖 DOM lib 的 Performance 类型
-        const perf = performance as { memory?: { usedJSHeapSize?: number } }
-        const memory = perf.memory
+        // 经 globalThis 读取：与 _getTimestamp 读 wx 同一口径。裸 `performance` 标识符在
+        // 没有该全局的基础库里抛 ReferenceError，被下面的 catch 吞掉后 trackMemory
+        // 静默失效且无从分辨；globalThis 取值只会得到 undefined
+        const perf = (globalThis as { performance?: { memory?: { usedJSHeapSize?: number } } }).performance
+        const memory = perf?.memory
         if (memory && memory.usedJSHeapSize !== undefined) {
-          metricRecord = { ...metrics, memoryUsage: memory.usedJSHeapSize }
+          metricRecord.memoryUsage = memory.usedJSHeapSize
         }
       } catch {
-        // 内存监控可能不可用
+        // memory 取值本身可能抛错（宿主对象的 getter）：内存监控是可选项，不影响计时
       }
     }
 
@@ -349,8 +373,8 @@ export class PerformanceMonitor implements PerformanceMonitorInterface {
     // 日志记录：threshold 的契约是「超过此值会触发警告」，若与采样同生灭，
     // sampleRate<1 时超阈值操作只有被抽到的才预警、sampleRate=0 时预警整体失效——
     // 而预警正是低采样场景下唯一还该保留的信号。
-    // 传副本 metricRecord 而非入参 metrics：与缓冲区留存的是同一份内容，
-    // 否则 logger 永远看不到 memoryUsage，且调用方复用入参对象会让日志语义漂移
+    // 传副本 metricRecord 而非入参 metrics：logger 看到的与缓冲区留存的是同一份内容，
+    // 否则启用内存监控时 logger 永远看不到 memoryUsage
     if (metricRecord.exceedThreshold) {
       this.options.logger(metricRecord)
     }
@@ -392,11 +416,10 @@ export class PerformanceMonitor implements PerformanceMonitorInterface {
   }
 
   /** 清理超时未结束的计时条目（调用方遗漏 end() 时的兜底，防止 Map 无限增长） */
-  private pruneStaleOperations(): void {
+  private pruneStaleOperations(now: number): void {
     if (this.currentOperations.size === 0) return
-    // 必须与 start() 写入条目时使用同一时钟基准（_getTimestamp 可能是
-    // performance.now 的进程相对时间，与 Date.now 混用会把新条目误判为超时）
-    const now = this._getTimestamp()
+    // now 必须由调用方传入本轮 _getTimestamp() 的读数：条目按该时钟基准写入，
+    // 与 Date.now 混用会把新条目误判为超时（performance.now 是进程相对的小值）
     for (const [key, startTime] of this.currentOperations) {
       if (now - startTime > PerformanceMonitor.MAX_OPERATION_AGE_MS) {
         this.currentOperations.delete(key)
@@ -588,9 +611,13 @@ export class PerformanceMonitor implements PerformanceMonitorInterface {
   /**
    * 导出为JSON
    *
-   * 将所有指标和统计信息导出为JSON字符串
+   * 将所有指标和统计信息导出为JSON字符串。
    *
-   * @returns {string} JSON字符串
+   * @remarks `options` 段刻意不含 `logger`：它是函数，JSON.stringify 会静默丢键，
+   * 与其让报告形状「恰好」少一个字段，不如显式给出可序列化的那部分——
+   * 消费方据此知道报告里的 options 是配置的投影，而非构造入参的完整回放。
+   *
+   * @returns {string} JSON字符串，含 `metrics`（指标快照）、`stats`、`options`（不含 logger）
    *
    * @example
    * ```typescript
@@ -609,11 +636,15 @@ export class PerformanceMonitor implements PerformanceMonitorInterface {
    * ```
    */
   exportJSON(): string {
+    const { logger: _logger, ...reportOptions } = this.options
+
     return JSON.stringify(
       {
-        metrics: this.metrics,
+        // 与 getMetrics()/getStats() 同源：直接序列化内部数组虽然不被 JSON.stringify 改写，
+        // 但会让导出口径依赖「序列化不写回」这一实现细节
+        metrics: this.getMetrics(),
         stats: this.getStats(),
-        options: this.options,
+        options: reportOptions,
       },
       null,
       2,

@@ -30,10 +30,26 @@ export type ResolveState<T> = T extends (...args: any[]) => infer R ? R : T
  * 解析后的状态类型（`ResolveState` + 归一化）
  *
  * `state: () => ({...})` 工厂写法下 `S` 会被推断成函数类型，`ResolveState` 取其返回值；
- * 归一不到 `State`（如 `S = unknown` 的裸配置）时退回 `State`。
+ * 归一不到 `State`（显式写了 `StoreConfig<unknown>` 这类退化输入）时退回 `State`。
  * 该表达式此前在 actions / getters / cacheKeys 三处逐字复制（#421），任一处调整都要改三遍。
+ * `StoreConfig.getters` 用的是同一条表达式的另一兜底口径 {@link ConfigState}。
  */
 export type ResolvedState<S> = ResolveState<S> extends State ? ResolveState<S> : State
+
+/**
+ * `StoreConfig.getters` 的 state 形参形状（#R5-326 把它从内联表达式提成命名口径）
+ *
+ * 与 {@link ResolvedState} 只差归一失败的兜底：这里退回 `Record<string, unknown>` 而不是
+ * `State`（= `object`）——getter 拿到的即使是没有键信息的退化状态，也仍要能按
+ * `state.count` 读值，`object` 会让每个 getter 的第一行都编译不过。
+ *
+ * 刻意**不**把它接到 `cacheKeys`（即报告建议的「两处共用」写法）：`Array<keyof ConfigState<S>>`
+ * 会让 `keyof <未展开的条件类型>` 参与 `factory.ts` 里 `new Store(options)` 的反向推断，
+ * S 的候选被污染成 `ConfigState<S | (() => S)>`，报 TS2322（实测；显式类型实参同样救不回，
+ * 因为 `Array<keyof ConfigState<…>>` 也无法赋给 `StoreOptions<S, …>` 的 `Array<keyof S>`）。
+ * 退化输入的 `cacheKeys` 改由 `StoreConfig` 的 S 默认值解决，见该接口文档。
+ */
+export type ConfigState<S> = ResolveState<S> extends State ? ResolveState<S> : Record<string, unknown>
 
 /**
  * Action 上下文运行时基础结构 - 包含 Store 核心方法
@@ -258,11 +274,17 @@ export interface StoreOptionsBase<S> {
 /**
  * Store 自动推导配置类型（免泛型推导专用）
  *
- * 类型参数默认 `unknown`，使 TS 能从对象字面量**精确反推** S/A/G，
+ * `A` / `G` 的类型参数默认 `unknown`，使 TS 能从对象字面量**精确反推**，
  * 不被泛型约束吸收为 `any`。`actions` 通过 `ThisType` 注入 `this` 上下文
  * （基于推断出的 S/A）。共享选项见 `StoreOptionsBase`。
+ *
+ * `S` 的默认值是「没有状态类型可言」时的形状 `Record<string, unknown>`，与 {@link ConfigState}
+ * 的退化兜底同一口径（#R5-326）：默认值为 `unknown` 时 `state?: unknown` 什么都能装，
+ * 但 `cacheKeys?: Array<keyof ResolvedState<S>>` 退化成 `never[]`——裸写 `StoreConfig`
+ * 的人连 `cacheKeys: ['count']` 都写不出来，而同一份配置里的 `getters` 却能正常按键读状态。
+ * 走 `createStore` 的调用不受影响：它的 S 由重载签名显式传入本接口，默认值不参与推断。
  */
-export interface StoreConfig<S = unknown, A = unknown, G = unknown> extends StoreOptionsBase<S> {
+export interface StoreConfig<S = Record<string, unknown>, A = unknown, G = unknown> extends StoreOptionsBase<S> {
   /** Actions（注入 this 上下文，字面量直接推断；action 内 this.dispatch 走类型安全泛型重载） */
   actions?: A & ThisType<ActionContext<ResolvedState<S>, A extends Actions ? A : Actions>>
   /**
@@ -270,11 +292,17 @@ export interface StoreConfig<S = unknown, A = unknown, G = unknown> extends Stor
    * 每个 getter 接收 `state` 作为首个参数，其类型由推断出的 State 提供上下文，
    * 支持对象或工厂函数形式的 `state`（`ResolveState` 归一化），避免隐式 any。
    *
-   * 归一失败时的兜底与 `ResolvedState` 不同：这里退化成 `Record<string, unknown>` 而不是
-   * `State`（= `object`），使 `S = unknown` 的裸配置下 getter 仍能按键读状态。
+   * 归一失败时的兜底与 {@link ResolvedState} 不同：这里退化成 `Record<string, unknown>`
+   * 而不是 `State`（= `object`），使退化输入下 getter 仍能按键读状态
+   * （同一口径也是 `StoreConfig` 的 `S` 默认值，见该接口文档）。
    */
-  getters?: G & Record<string, (state: ResolveState<S> extends State ? ResolveState<S> : Record<string, unknown>, ...args: unknown[]) => unknown>
-  /** 需要缓存的state键（为空时缓存所有） */
+  getters?: G & Record<string, (state: ConfigState<S>, ...args: unknown[]) => unknown>
+  /**
+   * 需要缓存的state键（为空时缓存所有）
+   *
+   * 退化输入（裸写 `StoreConfig`、不传类型参数）下 S 即 `Record<string, unknown>`，
+   * 键集随之是 `string | number`，任何字符串键都接受（#R5-326）。
+   */
   cacheKeys?: Array<keyof ResolvedState<S>>
 }
 
@@ -356,7 +384,7 @@ export interface Store<S extends State = State, A extends Actions = Actions, G e
   subscribe(listener: StateListener<S>, options?: { readOnly?: boolean }): () => void
 
   /** 判断指定状态键自上次通知以来是否发生变更（供集成层精确跳过未变化的映射） */
-  isStateKeyDirty(key: string): boolean
+  isStateKeyDirty(key: string | symbol): boolean
 
   /** 开始批量更新 */
   startBatch(): void

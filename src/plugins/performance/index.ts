@@ -19,10 +19,11 @@
  *   trackMemory: true
  * }))
  *
- * // 访问性能分析API
- * const api = globalThis.__GEOMSTORE_ANALYZER__['store-name']
- * const stats = api.getStats()
- * const bottlenecks = api.analyzeBottlenecks()
+ * // 访问性能分析API：全局表只在非生产环境挂载（且要插件已安装、store 名对得上），
+ * // 其余情况读到 undefined，直接调用会抛 TypeError
+ * const api = globalThis.__GEOMSTORE_ANALYZER__?.['store-name']
+ * const stats = api?.getStats()
+ * const bottlenecks = api?.analyzeBottlenecks() ?? []
  * ```
  */
 

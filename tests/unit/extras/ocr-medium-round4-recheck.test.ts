@@ -27,11 +27,7 @@ import type {
   LogDecoratorOptions,
 } from '@/extras/action/decorators/index.js'
 // 同一批类型也必须能经 action 总入口取到（#225 消除深链）
-import type {
-  ActionStats,
-  CacheDecoratorOptions as BarrelCacheOptions,
-  LogDecoratorOptions as BarrelLogOptions,
-} from '@/extras/action/index.js'
+import type { ActionStats, CacheDecoratorOptions as BarrelCacheOptions, LogDecoratorOptions as BarrelLogOptions } from '@/extras/action/index.js'
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -40,11 +36,7 @@ function okResult(): ActionResult {
 }
 
 /** 把装饰器手工应用到宿主对象的方法上，返回类型化的包装函数 */
-function decorate(
-  host: Record<string, (...args: never[]) => unknown>,
-  key: string,
-  decorator: MethodDecorator,
-): void {
+function decorate(host: Record<string, (...args: never[]) => unknown>, key: string, decorator: MethodDecorator): void {
   const descriptor = Object.getOwnPropertyDescriptor(host, key)
   if (!descriptor) {
     throw new Error(`宿主缺少方法 ${key}`)
@@ -82,7 +74,11 @@ describe('#194 ActionUtils 构造参数不再是死参数', () => {
 describe('#196 非 Error 抛出值在记录/回调侧被规范化', () => {
   it('历史里 error 是 Error 且保留文本，对外抛出的仍是原始值', async () => {
     const executor = new ActionExecutor()
-    const actions = { boom: async () => { throw 'boom-string' } }
+    const actions = {
+      boom: async () => {
+        throw 'boom-string'
+      },
+    }
 
     await expect(executor.execute(actions, 'boom')).rejects.toBe('boom-string')
     const [entry] = executor.getHistory('boom')
@@ -168,7 +164,11 @@ describe('#200 onError 抛错不顶替原始错误，回调收到规范化 Error
           throw new Error('callback-boom')
         },
       })
-      const host = { m: () => { throw new Error('original-failure') } }
+      const host = {
+        m: () => {
+          throw new Error('original-failure')
+        },
+      }
       decorate(host, 'm', dec)
 
       expect(() => host.m()).toThrow('original-failure')
@@ -180,8 +180,16 @@ describe('#200 onError 抛错不顶替原始错误，回调收到规范化 Error
 
   it('抛出字符串时 onError 收到 Error 实例，外抛保持原始值', () => {
     const received: unknown[] = []
-    const dec = createDecorator({ onError: (e) => { received.push(e) } })
-    const host = { m: () => { throw 'string-error' } }
+    const dec = createDecorator({
+      onError: (e) => {
+        received.push(e)
+      },
+    })
+    const host = {
+      m: () => {
+        throw 'string-error'
+      },
+    }
     decorate(host, 'm', dec)
 
     expect(() => host.m()).toThrow('string-error')
@@ -216,7 +224,9 @@ describe('#201 async before/after 被接续而非并发', () => {
       before: async () => {
         throw new Error('before-fail')
       },
-      onError: (e) => { seen.push(e) },
+      onError: (e) => {
+        seen.push(e)
+      },
     })
     const host2 = { m: async () => 'never' }
     decorate(host2, 'm', failing)
@@ -270,7 +280,9 @@ describe('#205 clear() 复位宿主 store 状态', () => {
   it('在途调用未落定时 clear 给 loading 键补写 false', async () => {
     const loader = new ActionLoader()
     const writes: Array<[string, unknown]> = []
-    const setState = (key: string, value: unknown): void => { writes.push([key, value]) }
+    const setState = (key: string, value: unknown): void => {
+      writes.push([key, value])
+    }
     let release: (v: string) => void = () => undefined
     const wrapped = loader.wrap(
       async () =>
@@ -306,8 +318,16 @@ describe('#206 共享计数下 isLoading 以计数为准', () => {
     }
     const [releaseA, promiseA] = gate()
     const [releaseB, promiseB] = gate()
-    const wrappedA = loaderA.wrap(async () => await promiseA, 'a', () => undefined)
-    const wrappedB = loaderB.wrap(async () => await promiseB, 'b', () => undefined)
+    const wrappedA = loaderA.wrap(
+      async () => await promiseA,
+      'a',
+      () => undefined,
+    )
+    const wrappedB = loaderB.wrap(
+      async () => await promiseB,
+      'b',
+      () => undefined,
+    )
 
     const pa = wrappedA()
     const pb = wrappedB()
@@ -337,7 +357,9 @@ describe('#207 setOptions 换键名时给旧键补写复位值', () => {
           release = resolve
         }),
       'a',
-      (key, value) => { writes.push([key, value]) },
+      (key, value) => {
+        writes.push([key, value])
+      },
     )
 
     const p = wrapped()
@@ -346,7 +368,10 @@ describe('#207 setOptions 换键名时给旧键补写复位值', () => {
 
     release('done')
     await p
-    expect(writes).toContainEqual(['isLoading', false])
+    // R5-160/R5-161：换键后这次调用的记账凭证失效，收尾不再写任何状态键——
+    // 修复前它会按**新**键减一次（本调用从未加过），把新键的 loading 提前翻成 false。
+    // 「不卡住」的保证者是上面那笔旧键复位
+    expect(writes).not.toContainEqual(['isLoading', false])
     expect(loader.isLoading('a')).toBe(false)
   })
 })
@@ -389,8 +414,7 @@ describe('#214 debounce 触发时用最后一次调用的参数', () => {
     }
     decorate(host, 'm', withDebounce(20) as MethodDecorator)
     // 必须以宿主方法调用形态进入包装器：裸函数调用会丢 this，state 落空
-    const invoke = (...args: unknown[]): Promise<unknown> =>
-      (host.m as (...a: unknown[]) => Promise<unknown>).call(host, ...args)
+    const invoke = (...args: unknown[]): Promise<unknown> => (host.m as (...a: unknown[]) => Promise<unknown>).call(host, ...args)
 
     void invoke('first')
     void invoke('second')
@@ -411,8 +435,7 @@ describe('#217 在途占位条目有有限期限', () => {
           })) as (...args: never[]) => unknown,
       }
       decorate(host, 'm', withCache({ ttl: 70_000 }) as MethodDecorator)
-      const invoke = (tag: string): Promise<string> =>
-        (host.m as (t: string) => Promise<string>).call(host, tag)
+      const invoke = (tag: string): Promise<string> => (host.m as (t: string) => Promise<string>).call(host, tag)
 
       void invoke('x')
       expect(calls).toEqual(['x'])
@@ -506,7 +529,9 @@ describe('#222/#224 withLog 支持 sink 注入与 redact', () => {
     try {
       const sink = {
         log: jest.fn(),
-        error: (message: string, ...data: unknown[]): void => { errors.push([message, ...data]) },
+        error: (message: string, ...data: unknown[]): void => {
+          errors.push([message, ...data])
+        },
       }
       const dec = withLog('login', {
         sink,

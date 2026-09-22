@@ -4,8 +4,6 @@
 
 import os from 'node:os'
 
-declare const process: { version: string; platform: string; arch: string }
-
 import type { BenchmarkResult, BenchmarkReport, BenchmarkScenario, BenchmarkConfig, BenchmarkConfigOverride, DatasetSize, MemorySnapshot, State, BenchmarkStore } from './types/index.js'
 import { benchmarkUtils } from './utils.js'
 import { defaultBenchmarkConfig, mergeConfig } from './config.js'
@@ -20,7 +18,12 @@ const SIZE_MULTIPLIERS: Record<DatasetSize, number> = { small: 1, medium: 3, lar
 
 /**
  * `quick-` 前缀场景（CI 冒烟用）的额外放宽：迭代数极少、采样抖动占比高，
- * 耗时与内存门限按此倍数再放宽（吞吐门限不套用，它只按档位倍数下调）
+ * 耗时 / 内存 / 吞吐三项门限都按此倍数再放宽。
+ *
+ * 吞吐原先不套用，理由是「它只按档位倍数下调」——但三项判定要同时通过
+ * （`Math.ceil(3 * MIN_PASS_RATIO) === 3`），耗时档放着 `× modeMultiplier × TIME_HEADROOM`
+ * 的余量、吞吐档一点不给，`quick-` 场景就会只栽在吞吐上而失败，
+ * 与「快速冒烟、门限从宽」的意图相反。
  */
 const QUICK_MODE_HEADROOM = 5
 
@@ -63,6 +66,18 @@ const MIN_PASS_RATIO = 0.67
 function pickKey<T>(items: readonly T[], index: number): T | undefined {
   if (items.length === 0) return undefined
   return items[index % items.length]
+}
+
+/**
+ * 执行一次「读」
+ *
+ * 原先两处读都写成 `store.getCached?.(key)`：没有缓存的实现省略了这个成员（`BenchmarkStore`
+ * 里它是可选的），于是这 1/4 的迭代只付了外层 `getState()` 的钱——平均耗时被人为压低、
+ * 吞吐虚高，测出的不是「一次读」而是「什么都不做」。缺 `getCached` 时退化成读同一个键的
+ * 状态值，保证被计时的始终是一次真实读取；返回值让这次读取处在被消费的位置。
+ */
+function readKey(store: BenchmarkStore, state: Readonly<State>, key: string): unknown {
+  return store.getCached ? store.getCached(key) : state[key]
 }
 
 /**
@@ -157,9 +172,14 @@ export class BenchmarkRunner {
   private async runScenario(scenario: BenchmarkScenario): Promise<BenchmarkResult> {
     const datasetConfig = this.config.datasets[scenario.datasetSize]
     // 空数据集时 keys.length === 0，取键会得到 undefined，整轮测量都是噪声；
-    // 与其产出一份看似正常的假结果，不如让场景失败并计入 errors
-    if (!datasetConfig || datasetConfig.stateKeys <= 0) {
-      throw new Error(`场景 "${scenario.name}" 的数据集配置无效: ${scenario.datasetSize}`)
+    // 与其产出一份看似正常的假结果，不如让场景失败并计入 errors。
+    // stateKeys 必须是正整数：非整数 / NaN 溜进来时 `generateTestState(NaN)` 一次都不循环、
+    // 得到空状态，于是每轮 pickKey 都返回 undefined、整轮测量变成 no-op，
+    // 最终报出「约 0 耗时 + 0 内存」甚至判通过（下面的 iterations 校验同一口径）
+    if (!datasetConfig || !Number.isInteger(datasetConfig.stateKeys) || datasetConfig.stateKeys <= 0) {
+      throw new Error(
+        `场景 "${scenario.name}" 的数据集配置无效: ${scenario.datasetSize}（stateKeys 须为正整数，得到 ${String(datasetConfig?.stateKeys)}）`
+      )
     }
     // 迭代数同样要在测量前校验：0 轮时 durations / memSnapshots 都是空数组，
     // `0 / (0/1000)` 与 `0 / 0` 让 opsPerSecond、memory.avg 双双变 NaN（实测），
@@ -173,7 +193,7 @@ export class BenchmarkRunner {
     const timestamps: number[] = []
     const memSnapshots: MemorySnapshot[] = []
 
-    const store = this.createTestStore(datasetConfig.stateKeys, scenario)
+    const { store, cacheCapacity } = this.createTestStore(datasetConfig.stateKeys, scenario)
 
     // 场景主体整体置于 try：迭代、getCacheStats() 或阈值检查任一抛错时
     // 也必须销毁 store，否则其订阅与定时器会泄漏并污染后续场景的内存测量
@@ -187,7 +207,7 @@ export class BenchmarkRunner {
 
       for (let i = 0; i < scenario.iterations; i++) {
         const iterationStart = performance.now()
-        const { duration, memoryAfter } = this.runBenchmarkIteration(store, i, scenario)
+        const { duration, memoryAfter } = this.runBenchmarkIteration(store, i, scenario, cacheCapacity)
 
         durations.push(duration)
         timestamps.push(iterationStart)
@@ -263,13 +283,25 @@ export class BenchmarkRunner {
     return maxOps * 1000
   }
 
-  private createTestStore(stateKeys: number, scenario?: BenchmarkScenario): BenchmarkStore<Record<string, unknown>> {
+  /**
+   * 建场景用的 store，并回传它**实际拿到的**缓存容量
+   *
+   * `cacheCapacity` 必须随 store 一起返回：测量轮要按容量决定随机键空间
+   * （见 `runBenchmarkIteration`），原先那里自己再写一份默认值 50，与这里的
+   * `Math.max(1, Math.floor(stateKeys / 2))` 是同一个参数的两套默认值。
+   * 小/中档 dataset 下两者立刻背离（stateKeys=10 → 真实容量 5、键空间 50），
+   * 测出来的命中率与淘汰行为对应的根本不是被配置的那个缓存。
+   */
+  private createTestStore(
+    stateKeys: number,
+    scenario?: BenchmarkScenario
+  ): { store: BenchmarkStore<Record<string, unknown>>; cacheCapacity: number } {
     const storeConfig = benchmarkUtils.createTestStoreConfig(stateKeys)
     const cacheTestConfig = scenario?.cacheConfig
     const explicitCapacity = cacheTestConfig?.capacity
     // 容量为 0（或 NaN/负数）的缓存永远不可能命中，测出来的命中率与淘汰数都是假的；
     // 显式配置给非法值就报错，推导值（stateKeys 过小会让 floor(N/2) === 0）兜到 1
-    if (explicitCapacity !== undefined && (!Number.isFinite(explicitCapacity) || explicitCapacity < 1)) {
+    if (explicitCapacity !== undefined && (!Number.isInteger(explicitCapacity) || explicitCapacity < 1)) {
       throw new Error(`场景 "${scenario?.name}" 的 cacheConfig.capacity 无效: ${explicitCapacity}`)
     }
     const cacheCapacity = explicitCapacity ?? Math.max(1, Math.floor(stateKeys / 2))
@@ -280,10 +312,10 @@ export class BenchmarkRunner {
       actions: storeConfig.actions,
       enableCache: true,
       cacheConfig: { capacity: cacheCapacity, ttl: cacheTTL },
-      cacheKeys: cacheTestConfig ? undefined : Object.keys(storeConfig.state).slice(0, Math.floor(stateKeys / 2)),
+      cacheKeys: cacheTestConfig ? undefined : Object.keys(storeConfig.state).slice(0, cacheCapacity),
     })
 
-    return store
+    return { store, cacheCapacity }
   }
 
   /** 场景正式计数前的额外预热轮（同步：体内没有 await） */
@@ -307,7 +339,8 @@ export class BenchmarkRunner {
   private runBenchmarkIteration(
     store: BenchmarkStore,
     index: number,
-    scenario: BenchmarkScenario
+    scenario: BenchmarkScenario,
+    cacheCapacity: number
   ): { duration: number; memoryAfter: number } {
     const { duration } = benchmarkUtils.measureTime(() => {
       const state = store.getState()
@@ -315,8 +348,10 @@ export class BenchmarkRunner {
       const allKeysCount = keys.length
 
       if (scenario.cacheConfig) {
-        const { capacity = 50, keySpaceMultiplier = 1, readWriteRatio = 0.7 } = scenario.cacheConfig
-        const keySpaceSize = Math.min(Math.floor(capacity * keySpaceMultiplier), allKeysCount)
+        // 容量用 createTestStore 实际下发给 store 的那一个（含未显式配置时的推导值），
+        // 原先这里另写一份 `capacity = 50` 的默认值，与 store 真正的容量是两个数
+        const { keySpaceMultiplier = 1, readWriteRatio = 0.7 } = scenario.cacheConfig
+        const keySpaceSize = Math.min(Math.floor(cacheCapacity * keySpaceMultiplier), allKeysCount)
         // 键空间为 0（capacity 或 keySpaceMultiplier 配成 0）时 `Math.random() * 0` 恒等于 0，
         // 空状态还会取到 undefined 键并喂给 setState；这一轮什么都不测，直接收尾
         if (keySpaceSize < 1) return store.getState()
@@ -324,7 +359,7 @@ export class BenchmarkRunner {
         const key = pickKey(keys, Math.floor(Math.random() * keySpaceSize))
         if (key !== undefined) {
           if (isRead) {
-            store.getCached?.(key)
+            readKey(store, state, key)
           } else {
             store.setState(key, Math.random())
           }
@@ -356,7 +391,7 @@ export class BenchmarkRunner {
           case 2: {
             const key = pickKey(keys, index)
             if (key !== undefined) {
-              store.getCached?.(key)
+              readKey(store, state, key)
             }
             break
           }
@@ -424,12 +459,17 @@ export class BenchmarkRunner {
       )
     }
 
-    const throughputThreshold = (thresholds.throughput.setState / sizeMultiplier) * THROUGHPUT_RELAXATION
+    // 吞吐门限同样按 quick 档下调（除以 modeMultiplier 即放宽）：耗时/内存都吃
+    // QUICK_MODE_HEADROOM 而吞吐不吃时，`quick-` 冒烟场景可以只在吞吐这一档失败，
+    // 而它的耗时判定是按 5 倍余量放行的——三项全过（`Math.ceil(3 * 0.67) === 3`）
+    // 于是变成一个与性能无关的假失败
+    const throughputThreshold =
+      (thresholds.throughput.setState / (sizeMultiplier * modeMultiplier)) * THROUGHPUT_RELAXATION
     const throughputPassed = r.throughput.opsPerSecond >= throughputThreshold
     details.push({ passed: throughputPassed })
     if (!throughputPassed) {
       issues.push(
-        `场景 "${scenario.name}" 的吞吐量 ${benchmarkUtils.formatNumber(r.throughput.opsPerSecond)} ops/s 低于门限 ${benchmarkUtils.formatNumber(throughputThreshold)} ops/s，建议优化性能。`
+        `场景 "${scenario.name}" 的吞吐量 ${benchmarkUtils.formatNumber(r.throughput.opsPerSecond)} ops/s 低于门限 ${benchmarkUtils.formatNumber(throughputThreshold)} ops/s（档位 ÷${sizeMultiplier}${modeMultiplier > 1 ? ` ÷ quick 模式 ×${modeMultiplier}` : ''}），建议优化性能。`
       )
     }
 
@@ -467,7 +507,10 @@ export class BenchmarkRunner {
         nodeVersion: process.version,
         platform: process.platform,
         cpu: {
-          model: process.arch,
+          // CPU 型号取自 os.cpus()：原先这里填的是 `process.arch`，字段名叫 model 却
+          // 装着架构（x64/arm64），跨机器对比报告时这一档毫无意义，而下一行的
+          // `os.cpus()[0]?.speed` 已经证明数据源本该是 os。容器/精简环境下 cpus() 可能为空
+          model: os.cpus()[0]?.model || 'unknown',
           cores: os.cpus().length,
           speed: os.cpus()[0]?.speed || 0,
         },

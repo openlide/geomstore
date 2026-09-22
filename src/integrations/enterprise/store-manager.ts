@@ -23,7 +23,15 @@ export class StoreManager {
   private readonly maxStores: number
 
   constructor(maxStores: number = DEFAULT_MAX_STORES) {
-    this.maxStores = maxStores
+    // 容量必须是正整数：0/负数/NaN/非整数都会让 `stores.size < maxStores` 恒为 false，
+    // 于是每次插入都尝试淘汰、又因「唯一候选是当前用户」每次都判定超出上限并告警，
+    // 实际容量退化成 1~2 个而契约文档写的是调用方给的值——静默失真比报错更糟。
+    // 不在构造期抛错：宿主把配置项写错不该让 Store 管理器整体不可用，
+    // 但必须留痕并按最小的合法容量（1）执行
+    this.maxStores = Number.isInteger(maxStores) && maxStores >= 1 ? maxStores : 1
+    if (this.maxStores !== maxStores) {
+      logger.warn('StoreManager', `maxStores 非法（${maxStores}），已按最小合法值 1 执行`)
+    }
   }
 
   /**
@@ -78,12 +86,26 @@ export class StoreManager {
     // 故此处真值判定等价于 `=== null`
     if (!this.currentUserId) return
 
-    const store = this.stores.get(this.currentUserId)
-    store?.destroy()
-    this.stores.delete(this.currentUserId)
+    const userId = this.currentUserId
+    const store = this.stores.get(userId)
+    // destroy 与持久化清理各自兜底：destroy 会 flush 防抖中的待写入，那里抛错
+    // 不该让后续的键清理与身份重置一起被跳过——那会留下「内存已登出、
+    // 存储还留着账号数据与身份」的半登出状态，下次冷启动直接复活该账号
+    try {
+      store?.destroy()
+    } catch (error) {
+      logger.error('StoreManager', `销毁 store 失败，继续清理持久化数据: ${userId}`, error)
+    }
+    this.stores.delete(userId)
 
-    storage.remove(userStoreKey(this.currentUserId))
-    storage.remove(CURRENT_USER_KEY)
+    // 返回值必须核验（env.storage.remove 的布尔结果正是为此而存在）：
+    // 平台拒绝删除时内存已报「已登出」，而 user-store-<id> 与 current_user_id
+    // 仍在磁盘上，冷启动会恢复用户刚刚登出的身份
+    const storeKeyRemoved = storage.remove(userStoreKey(userId))
+    const currentKeyRemoved = storage.remove(CURRENT_USER_KEY)
+    if (!storeKeyRemoved || !currentKeyRemoved) {
+      logger.error('StoreManager', `登出的持久化清理未被平台接受，账号数据与身份键可能残留: ${userId}`)
+    }
 
     this.currentUserId = null
     logger.log('StoreManager', '用户已登出')
@@ -99,7 +121,7 @@ export class StoreManager {
   }
 
   /**
-   * 清理所有 Store —— 仅释放内存实例，不清理持久化数据（#342）
+   * 清理所有 Store 实例与当前身份标记 —— 不删除各账号的持久化数据（#342）
    *
    * 与 logout 的差别是刻意的：本方法面向「测试重置 / 宿主整体换号」这类
    * 需要立刻回收全部实例的场景，而调用方无法指定「哪些账号的数据该被删除」；
@@ -107,13 +129,19 @@ export class StoreManager {
    * 风险远高于收益。需要真正清除某账号持久化数据请显式走 `logout()`（当前用户）
    * 或按 `userStoreKey(userId)` 自行清理。
    *
-   * 已知不一致：本方法把内存身份置空，但 `CURRENT_USER_KEY` 与各账号持久化键仍留在
-   * storage 中——冷启动恢复（createEnterpriseApp）会据此把身份指回最后一个登录账号。
+   * `CURRENT_USER_KEY` 则一并移除：它是身份/会话标记而非账号数据，与
+   * `currentUserId = null` 属于同一次「清理」。留着它会让内存报「无当前用户」
+   * 而下一次冷启动（createEnterpriseApp → switchUser）把身份指回最后一个登录账号，
+   * 调用方以为已经结束的会话被静默复活。需要跨 clearAll 保留身份的场景，
+   * 请在调用后自行 `storage.set(CURRENT_USER_KEY, userId)` 写回
    */
   clearAll(): void {
     this.stores.forEach((store) => store.destroy())
     this.stores.clear()
     this.currentUserId = null
+    if (!storage.remove(CURRENT_USER_KEY)) {
+      logger.error('StoreManager', '清理当前身份标记未被平台接受，冷启动可能恢复上一个账号的身份')
+    }
   }
 
   /**
@@ -136,7 +164,7 @@ export class StoreManager {
     }
 
     if (!oldestKey) {
-      // 候选只剩当前用户（如 maxStores=1 且身份活跃、或 maxStores=0）：
+      // 候选只剩当前用户（maxStores=1 且身份活跃时的每次新插入）：
       // 强行淘汰会破坏身份语义，只能接受 stores 暂时超出上限 1 个——
       // 但这打破了容量契约，必须告警而非静默
       logger.warn('StoreManager', `无可淘汰的旧 store，store 数将超出上限 ${this.maxStores}（当前用户的 store 不可被淘汰）`)

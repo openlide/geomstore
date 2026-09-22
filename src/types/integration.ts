@@ -113,7 +113,17 @@ export type ExtractMappedActions<
  * - `Partial<S>`：全部状态键均可访问，但未映射的键运行时不一定存在，故其类型为
  *   `T | undefined`，强制调用方判空，避免静默拿到 undefined。
  * - 已映射键（`ExtractMappedState` / `ExtractMappedGetters`）经交集收窄仍保持精确类型：
- *   `Partial<T> & T` 等于 `T`，故 Partial 不会削弱映射键。
+ *   `Partial<T> & T` 等于 `T`，故 Partial 不会削弱映射键。**这只在两侧键不相交时成立**，
+ *   见下一条。
+ * - 同一个本地键被 `mapState` 与 `mapGetters` 同时映射时，取值以 **getter 为准**：
+ *   两侧写的是同一个本地键命名空间（页面/组件走 `setData`，App 走 `writeGlobalData`，
+ *   见 `with-store.ts` / `with-app-store.ts` 的 `onLoad` / `onLaunch`），且绑定顺序固定是
+ *   state 先、getters 后，后写的 getter 覆盖前写的 state。
+ *   故 `Partial<S>` 与 `ExtractMappedState` 两侧的撞名键都被 `Omit` 掉——直接求交会得到
+ *   `number & string` 即 `never`，那个键编译期读不出任何值，运行期却好好放着 getter 的结果
+ *   （`Partial<S>` 那一份也要剔：getter 名恰好是状态键时，即使没写进 `mapState`，
+ *   它同样覆盖 `T | undefined` 那份兜底形状）。
+ *   这不是「撞名被禁止」：类型按运行时给，但两份来源本就互斥，需要 state 原值时请换本地别名。
  * - 不提供索引签名：拼错的键会直接编译报错，而非静默返回 `unknown`。
  *   data 上的动态键请在页面/应用的 `data`（或 `globalData`）字面量中显式声明；
  *   运行时的动态写入走 `setData`，它本来就接受 `Record<string, unknown>`。
@@ -122,7 +132,7 @@ export type ExtractPageData<
   S extends State,
   M extends { mapState?: readonly (keyof S)[] | Record<string, keyof S>; mapGetters?: readonly PropertyKey[] | Record<string, PropertyKey> },
   G extends Getters<S> = Getters<S>,
-> = Partial<S> & ExtractMappedState<S, M> & ExtractMappedGetters<M, G>
+> = Omit<Partial<S>, keyof ExtractMappedGetters<M, G>> & Omit<ExtractMappedState<S, M>, keyof ExtractMappedGetters<M, G>> & ExtractMappedGetters<M, G>
 
 /**
  * 页面/组件上「由集成层注入的框架成员」基类型（#429）
@@ -178,7 +188,13 @@ export type WithPageThis<C, T> = {
  * - `onShareTimeline`：分享到朋友圈（基础库 2.11.3+）
  * - `onAddToFavorites`：添加到收藏（基础库 2.8.1+）
  * - `onSaveExitState`：退出时保存状态（基础库 2.11.0+）
+ * - `onRouteDone`：页面路由切换完成（基础库 2.31.0+）
  * - `options`：页面级配置项（非函数，但同样是框架键，不应被当作自定义方法）
+ *
+ * 清单按基础库的 Page 事件表逐项维护，新增/删除键要同步 `tests/types/integration-types.typecheck.ts`
+ * 的 `PageCfgShape` 夹具——那里有「每个保留键都被夹具覆盖一次」的断言兜着（本清单没有运行时代码可校验）。
+ * 漏收一个键的后果目前只在直接使用 `PageOwnMethods` 的调用方身上显形（`withPageStore` 还没把它接进
+ * `PageThis` 的 `ExtraMethods`，见 #428），接线之后就是页面 `this` 上多出一个被剥掉 `this` 的假自定义方法。
  */
 export type PageReservedKeys =
   | 'data'
@@ -197,6 +213,7 @@ export type PageReservedKeys =
   | 'onShareTimeline'
   | 'onAddToFavorites'
   | 'onSaveExitState'
+  | 'onRouteDone'
   | 'options'
   | '__geomUnbinds'
 
@@ -326,18 +343,38 @@ export type WithComponentThis<C, T> = C & {
 }
 
 /**
- * 集成层挂到宿主实例上的 Store 调试 API
+ * `exposeStoreAPI` 注入的调试方法本体（不含 `store` 自身）
  *
- * 由 integrations/utils.ts 的 exposeStoreAPI 注入（App 集成中使用）。
+ * 运行时这五个方法只定义一次（`integrations/utils.ts` 的 `api` 字面量），既逐个展平到宿主实例，
+ * 又整份挂到 `__store__` 别名上（同一对象），故这里声明一次、两侧共用，避免两个入口的形状漂移。
+ *
+ * 刻意不导出：与 `InjectedDataShape` 同理，公开面是 {@link HostStoreApi}；成员名要能被
+ * `keyof HostStoreApi<S>` 数到（`AppThis` 用它把撞名 action 让位给调试 API）。
  */
-export interface HostStoreApi<S extends State = State> {
-  /** Store 实例 */
-  store: Store<S>
+interface HostStoreDebugApi<S extends State = State> {
   getStore(): Store<S>
   getState(): S
   getCached<K extends keyof S>(key: K): S[K]
   dispatch(actionName: string, ...args: unknown[]): unknown
-  subscribe(callback: (state: S) => void): () => void
+  /**
+   * 订阅状态变化（默认按只读订阅登记，与 `exposeStoreAPI` 的实现一致：
+   * 未传 options 时补 `{ readOnly: true }`，避免翻转 Store 的全局 needsClone 判定）。
+   * 确需就地改载荷的调用方显式传 `{ readOnly: false }`。
+   */
+  subscribe(callback: (state: S) => void, options?: { readOnly?: boolean }): () => void
+}
+
+/**
+ * 集成层挂到宿主实例上的 Store 调试 API
+ *
+ * 由 integrations/utils.ts 的 exposeStoreAPI 注入（App 集成中使用）：
+ * `store`、五个调试方法与 `__store__` 别名共七个键全部无条件覆写。
+ */
+export interface HostStoreApi<S extends State = State> extends HostStoreDebugApi<S> {
+  /** Store 实例 */
+  store: Store<S>
+  /** 上面五个调试方法的第二份挂载点（调试入口），运行时与展平成员是同一个对象 */
+  readonly __store__: HostStoreDebugApi<S>
 }
 
 /**
@@ -347,14 +384,23 @@ export interface HostStoreApi<S extends State = State> {
  * 映射的 action（bindActions）与 exposeStoreAPI 的调试方法直接挂在 App 实例上。
  * 交叉 `Extra`（调用处传入用户配置类型 C）以保留 `globalData` 的自定义字段。
  *
- * 名字撞车时谁赢：`onLaunch` 先 `bindActions`（with-app-store.ts:199）后 `exposeStoreAPI`
- * （同文件 210），而 exposeStoreAPI 是无条件 `Object.assign` 覆写（utils.ts:369-371，
- * 只在卸载时还原原值）。所以 action 名恰为 `store` / `getStore` / `getState` / `getCached` /
- * `dispatch` / `subscribe` 之一时，实例上留下来的是调试 API。此前两侧直接求交，同名成员变成
+ * 名字撞车时谁赢：`onLaunch` 先 `bindActions`（with-app-store.ts）后 `exposeStoreAPI`
+ * （同文件，二者都在同一个 try 块内按此顺序），而 exposeStoreAPI 是无条件 `Object.assign` 覆写
+ * （utils.ts 的 `exposedKeys` 循环，只在卸载时还原原值）。所以 action 名恰为 `store` / `getStore` /
+ * `getState` / `getCached` / `dispatch` / `subscribe` / `__store__` 之一时，实例上留下来的是调试 API。
+ * 此前两侧直接求交，同名成员变成
  * 函数交叉（重载集）：`this.getState()` 会解析到先声明的那个签名，调用方拿到的返回类型与运行时
- * 实际值不符。故让映射 action 避让（`Omit` 掉这六个键），`HostStoreApi<S>` 保持完整——
+ * 实际值不符。故让映射 action 避让（`Omit` 掉这些键，即 `keyof HostStoreApi<S>`），`HostStoreApi<S>` 保持完整——
  * 反过来 Omit 调试 API 既与运行时相反，又会把 `getCached<K extends keyof S>` 这种带泛型的
  * 成员经过一次映射类型（精度另有一次损失风险）。
+ *
+ * `globalData` 一并加入避让清单，但方向相反：它是 `bindActions` 的**受害者**而非赢家
+ * （utils.ts 里那句无条件 `Object.defineProperty`，`onLaunch` 刚写进 `this.globalData` 的
+ * 映射 state/getters 会整包被那个函数顶掉，只剩一个可调用的 action）。
+ * 求交写法会把这种踩雷同时声成两种形状：`this.globalData()` 与 `this.globalData.count`
+ * 都能编译，前者才符合运行时——即本文件反复防范的「声明成员与运行时值不符」。
+ * 类型侧只保留数据形状（`this.globalData()` 报错），运行时另有 `bindActions` 的
+ * 「宿主已有成员将被覆盖」告警；本地名请改用别名形式避开：`mapActions: { setGlobalData: 'globalData' }`。
  */
 export type AppThis<
   S extends State,
@@ -364,5 +410,5 @@ export type AppThis<
   Extra extends object = object,
 > = Extra & {
   globalData: ExtractPageData<S, M, G>
-} & Omit<ExtractMappedActions<A, M>, keyof HostStoreApi<S>> &
+} & Omit<ExtractMappedActions<A, M>, keyof HostStoreApi<S> | 'globalData'> &
   HostStoreApi<S>

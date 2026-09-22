@@ -44,8 +44,11 @@ export function mergeNamespaced(stores: readonly Store[], pick: (store: Store) =
 /**
  * 非命名空间模式下平铺合并各 store 的 state 键。
  *
- * 同名键后者覆盖前者，与 action/getter 冲突的处理一致（取第一个/最后一个并提示）：
- * 至少在开发模式下给出冲突告警，避免覆盖关系静默发生、排查困难。
+ * 同名键后者覆盖前者：**读取侧**（本函数）最终归属是最后一个含该键的 store，
+ * 而**写入侧**（`store.setState` / `$patch` / `dispatch` / `getter`，见 helpers.ts 的
+ * `findTargetStoreWithKey`）取第一个匹配的 store。这条读写分裂是平铺模式的既有语义，
+ * 冲突时两边都可能与调用方预期不符，故至少在开发模式下给出冲突告警，
+ * 避免覆盖关系静默发生、排查困难。需要确定性归属请改用命名空间模式。
  *
  * @param warnedConflicts - 已告警的冲突组合集合（实例级去重，避免高频读取刷屏）
  */
@@ -57,7 +60,9 @@ export function mergeStateMaps(
   warnedConflicts: Set<string>,
 ): Record<string, unknown> {
   const result: Record<string, unknown> = {}
-  const keyOwners = isProduction() ? undefined : new Map<string, string>()
+  // 归属按 store **实例**记录：同名但不同的两个实例正是「静默覆盖」的真实场景，
+  // 按名字比较会把它们判成同一所有者而漏报
+  const keyOwners = isProduction() ? undefined : new Map<string, Store>()
   for (const store of stores) {
     // pick 的类型是「必返对象」，但子 store 可能处于未初始化/降级态而实际返回 null/undefined
     // （如被外部改写过 getState 的宿主、组合到一半的桩 store）：
@@ -66,22 +71,27 @@ export function mergeStateMaps(
     for (const key of Object.keys(source)) {
       if (keyOwners) {
         const previousOwner = keyOwners.get(key)
-        if (previousOwner !== undefined && previousOwner !== store.name) {
+        // 身份而非名字比较：同一实例在 stores 里出现两次（composeStore 不对入参去重）
+        // 写入的是同一份值，没有「后者覆盖前者」可报；两个不同实例共用名字才是
+        // 需要报出的静默覆盖，按名字比较恰好把它抑制掉
+        if (previousOwner !== undefined && previousOwner !== store) {
           // 每个冲突组合只告警一次：getState/state 高频读取（渲染/computed）下
           // 重复告警会刷屏并带来每次调用的 Map 构建开销
-          const conflictKey = `${key}(${previousOwner},${store.name})`
+          const conflictKey = `${key}(${previousOwner.name},${store.name})`
           if (!warnedConflicts.has(conflictKey)) {
             warnedConflicts.add(conflictKey)
             console.warn(
-              `[composeStore] State key "${key}" exists in multiple stores (${previousOwner}, ${store.name}); ` +
-                `"${store.name}" wins in merged state/snapshot. Consider using namespaced mode for disambiguation.`,
+              `[composeStore] State key "${key}" exists in multiple stores (${previousOwner.name}, ${store.name}); ` +
+                `"${store.name}" wins in merged state/snapshot（读取侧最终由最后一个含该键的 store 决定），` +
+                `而写入（setState/$patch/dispatch/getter）路由到**第一个**含该键的 store：` +
+                `两者可能不是同一个 store，故这类键上的写入在 getState() 里看不见；请使用命名空间模式消除歧义`,
             )
           }
         }
         // 冲突与否都要推进归属：告警要反映「上一个写入者 → 当前写入者」。
         // 只在非冲突分支记录会让所有者永远停在第一个 store，A/B/C 同名键时
         // 报成 (A,B) 与 (A,C)，真正被 C 覆盖的 B 从不出现在告警里
-        keyOwners.set(key, store.name)
+        keyOwners.set(key, store)
       }
       assignMerged(result, key, source[key])
     }

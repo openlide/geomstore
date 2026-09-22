@@ -19,7 +19,12 @@ import { isProduction } from './utils.js'
 export interface StoreCacheOptions<S extends State = State> {
   /** LRU 缓存实例 */
   cache: LRUCache<keyof S, S[keyof S]>
-  /** TTL（毫秒，0 表示不过期） */
+  /**
+   * TTL（毫秒，0 表示不过期）
+   *
+   * 非有限值（NaN/Infinity）与负数在构造期归一为 0 并留开发期告警：
+   * 类内过期判定统一写作 `ttl > 0`，NaN 会让它恒为 false（配置失效且无信号）
+   */
   ttl?: number
 }
 
@@ -37,7 +42,16 @@ export class StoreCacheManager<S extends State = State> {
 
   constructor(options: StoreCacheOptions<S>) {
     this._cache = options.cache
-    this._ttl = options.ttl ?? 0
+    // 与 LRUCache 的 capacity 守卫同口径（Number.isFinite + 归一到「默认值」）：
+    // 类内所有 TTL 判定都写成 `this._ttl > 0`，NaN 会让它恒为 false，
+    // 配置里明明写了 ttl 却被静默丢弃、缓存永不过期；Infinity/负数同理
+    // （永不过期本就该用 ttl: 0 表达）。归一时留一条开发期告警：
+    // 只改数值不改语义的话，配置里算错的 ttl 依旧不会有任何信号
+    const ttl = options.ttl ?? 0
+    this._ttl = Number.isFinite(ttl) && ttl >= 0 ? ttl : 0
+    if (this._ttl === 0 && ttl !== 0 && !isProduction()) {
+      console.warn(`[GeomStore] cacheConfig.ttl=${ttl} 不是有效的过期时长（需为有限非负数），已按 0（不过期）处理`)
+    }
   }
 
   /**
@@ -116,8 +130,7 @@ export class StoreCacheManager<S extends State = State> {
     // 重新配置即重建：先清掉上一轮键集的残留条目。否则收窄 cacheKeys 后旧条目仍
     // 留在 LRU 里占用容量（导致新键集内的有效键被提前淘汰）并被 getStats() 报告，
     // 而 get() 已因 _cacheKeys 过滤永远读不到它们。清空后条目立即从状态源回填，无数据丢失
-    this._cache.clear()
-    this._timestamps.clear()
+    this._clearEntries()
     const now = Date.now()
 
     if (keys) {
@@ -146,9 +159,32 @@ export class StoreCacheManager<S extends State = State> {
       }
     } else {
       // 值为 undefined：不缓存，并清理残留条目
-      this._cache.delete(key)
-      this._timestamps.delete(key)
+      this._deleteEntry(key)
     }
+  }
+
+  /**
+   * 删除单个键的缓存条目与 TTL 时间戳
+   *
+   * `_cache` 与 `_timestamps` 是两张必须同步收缩的 Map：任何一处只删一边都会让
+   * 时间戳条目滞留（只能等 disable()/invalidate() 才释放），历史上门槛最低的
+   * 写法就是散在各调用点各删各的。删除语义收在这一个方法里，调用点不再各写两行
+   *
+   * @private
+   */
+  private _deleteEntry(key: keyof S): void {
+    this._cache.delete(key)
+    this._timestamps.delete(key)
+  }
+
+  /**
+   * 清空全部缓存条目与 TTL 时间戳（`_deleteEntry` 的整表版本，同一套同步约束）
+   *
+   * @private
+   */
+  private _clearEntries(): void {
+    this._cache.clear()
+    this._timestamps.clear()
   }
 
   /**
@@ -199,34 +235,21 @@ export class StoreCacheManager<S extends State = State> {
   disable(): void {
     this._enabled = false
     this._cacheKeys = undefined
-    this._cache.clear()
-    this._timestamps.clear()
+    this._clearEntries()
   }
 
   /**
    * 清除缓存
+   *
+   * 不传 key 时整表清空：`$replaceState` 走的正是这条路径——整树替换后旧状态的键
+   * （含 action 内已 delete 的键）都不在新状态里，按键清理会漏掉它们
    */
   invalidate<K extends keyof S>(key?: K): void {
     if (key !== undefined) {
-      this._cache.delete(key)
-      this._timestamps.delete(key)
+      this._deleteEntry(key)
     } else {
-      this._cache.clear()
-      this._timestamps.clear()
+      this._clearEntries()
     }
-  }
-
-  /**
-   * 清理旧状态缓存
-   * 用于 $replaceState 时清理旧状态
-   */
-  clearOldState(stateKeys: Array<keyof S>): void {
-    stateKeys.forEach((key) => {
-      this._cache.delete(key)
-      // TTL 时间戳一并清理：残留条目不影响 get 未命中路径，
-      // 但会让内部 Map 滞留到 disable()/invalidate() 才释放
-      this._timestamps.delete(key)
-    })
   }
 
   /**

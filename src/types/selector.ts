@@ -37,9 +37,16 @@ export interface SelectorOptions {
   /**
    * 缓存生存时间，毫秒（默认 5000）。
    *
-   * 只做了 `?? 5000` 的缺省兜底，**不校验取值**：`<= 0` 会让每条缓存立即过期（等价于关缓存，
-   * 但不报错）；`NaN` 使过期判定 `timestamp + ttl <= now` 恒为 false，即永不过期。
-   * 需要这两类输入被拒绝请在选项归一化处补校验（属 `src/extras`，见本轮待办）。
+   * 本类型只是 `number`，取值守卫在实现侧：`src/extras/selector/createSelector.ts` 的
+   * `SelectorFactory` 用 `typeof v === 'number' && v > 0 ? v : 5000` 归一化，
+   * 拦掉三类静默劣化——`NaN`（判据 `timestamp + NaN <= now` 恒假 → 永不过期，
+   * 就地变异后仍返回陈旧值）、`0`/负数（写入即过期 → 等价于关缓存，却仍照旧付快照克隆
+   * 与 push 成本，且不报错）、未类型化调用方传进来的字符串（`timestamp + '60000'` 变成拼接，
+   * 判定同样恒假）。
+   *
+   * 与 `cacheSize` 的差别是**有意的**：`Infinity` 在这里是合法配置（= 不按时间过期，
+   * 版本化状态的失效凭证仍是版本号），而 `cacheSize` 的 `Infinity` 会让历史无界增长，
+   * 所以只有 `cacheSize` 夹上限。别把两者强行统一成同一个函数。
    */
   cacheTTL?: number
   /**
@@ -48,10 +55,35 @@ export interface SelectorOptions {
    * 比较的是**输入状态**（缓存键），不是选择器结果：实现里是
    * `equalityFn(item.state, state)`（`createSelector.ts` 的 `isCacheHit`），
    * 且仅在状态无版本标记（非 Store 状态、直接传普通对象）时才被调用。
-   * 形参保持 `unknown` 是必需的：本类型不带 `S` 泛型、`createSelector(selectorFn, options?)`
-   * 的 options 位点也不随 `S` 实例化，写成 `(a: S, b: S)` 要先在实现层把泛型透传下来。
+   * 形参不能写成 `(a: S, b: S)`：本类型不带 `S` 泛型、`createSelector(selectorFn, options?)`
+   * 的 options 位点也不随 `S` 实例化，要标注具体状态得先在实现层把泛型透传下来。
+   * 于是候选只剩 `unknown` 与 `any` 两档，而 `unknown` 那一档下面这条会把它否掉。
+   *
+   * 但 `unknown` 形参在 `strictFunctionTypes` 下会**拒掉调用方按具体状态标注的比较器**：
+   * `{ equalityFn: (x: OrderState, y: OrderState) => x.id === y.id }` 实测报
+   * `TS2322: Type 'unknown' is not assignable to type 'OrderState'`（属性式函数按逆变比较）。
+   * 与 `AsyncActions`（R5-316）同一处方：形参取 `any` 让这类写法可赋——`any` 在这里只出现在
+   * **逆变的形参位**，返回值仍是 `boolean`，不会把错误结果放过去；实现侧传进来的本来就是
+   * `unknown`（缓存条目存的 state 与调用方给的 state），因此内部调用点不因它失去检查。
    */
-  equalityFn?: (a: unknown, b: unknown) => boolean
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  equalityFn?: (a: any, b: any) => boolean
+  /**
+   * 状态**无版本标记**时用什么作为缓存失效凭证（默认 `true` = 缓存内容快照）。
+   *
+   * - `true`：写缓存时深拷贝一份状态，命中判定用 `equalityFn(快照, 当前状态)` 比内容。
+   *   任何深比较器（`deepEqual`、lodash `isEqual`、`(a,b)=>deepEqual(a,b)` 包装）都只有
+   *   这一种正确形态——若缓存活引用，两个实参会是同一个对象，深比较恒等，
+   *   就地变异看不见，TTL 内会持续返回陈旧值。
+   * - `false`：缓存**活引用**，命中判定退化为 `equalityFn(原引用, 当前引用)`。
+   *   仅当 `equalityFn` 是引用相等（`(a, b) => a === b`）时才该这么用：此时快照会与
+   *   活引用永不相等，缓存变成永远命不中。换来的收益是省下一次整树克隆，
+   *   代价是**前提被违反时（同一对象就地改过）会返回陈旧值**。
+   *
+   * 状态带版本号（Store 的 `_mutationCount`）时本选项不参与判定：版本号已是失效凭证，
+   * 既不克隆也不用 `equalityFn`。
+   */
+  snapshotState?: boolean
 }
 
 /**
@@ -80,12 +112,14 @@ export interface SelectorCacheItem<R> {
 /**
  * 组合选择器参数
  *
- * `R` 是组合结果的类型，与 `SelectorComposer.combine<S, R>` 的 `R` 同一个：
- * 由 `combiner` 的返回类型直接给出，`combine` 侧不再需要 `as R` 断言
- * （该断言此前把「combiner 返回了别的东西」——例如拼错的属性名——静默当成 `R`）。
- * 默认 `unknown` 保持既有两参数写法 `SelectorComposerInput<S, T>` 的行为不变。
+ * `R` 是组合结果的类型：`combiner` 的返回值即它，所以「combiner 返回了别的东西」
+ * （拼错的属性名等）会在调用处显形，而不是被 `combine` 里的 `as R` 静默吞掉。
  *
- * 组合器实现见 `src/extras/selector/selectorComposer.ts`（`SelectorComposer.combine<S, R>`）。
+ * `SelectorComposer.combine` 的入参已写成 `SelectorComposerInput<S, T, R>`，`R` 由 `combiner`
+ * 的返回类型反推，实现里的 `as R` / `as unknown as T` 两处断言都已删除。两个连带后果：
+ * - 显式给 `R`（`combine<S, R>(...)`）而 combiner 返回别的东西 → 现在编译失败（此前被断言吞掉）；
+ * - 两参数写法 `SelectorComposerInput<S, T>` 的 `R` 仍取默认 `unknown`，行为不变
+ *   （该默认由 `tests/types/selector-combiner-result.typecheck.ts` 断言锁着）。
  */
 export interface SelectorComposerInput<
   S extends State = Record<string, unknown>,

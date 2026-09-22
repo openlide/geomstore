@@ -76,7 +76,13 @@ describe('composeStore 合并缓存降级', () => {
 
   it('通知回调内的重入写入把脏子 store 留给下一轮，不被收尾清空', async () => {
     let childCallback: (() => void) | undefined
-    const child = fakeChild({ name: 'user', state: { name: 'Alice' }, onSubscribe: (cb) => { childCallback = cb } })
+    const child = fakeChild({
+      name: 'user',
+      state: { name: 'Alice' },
+      onSubscribe: (cb) => {
+        childCallback = cb
+      },
+    })
     const composed = composeStore([child], { namespace: true })
     const flush = async () => {
       for (let i = 0; i < 4; i++) await Promise.resolve()

@@ -9,10 +9,24 @@
  * - 若集成层 `[key: string]: any` 兜底回归，下述 `@ts-expect-error` 将变为 unused，
  *   导致 typecheck:tests 失败，从而拦截回归
  *
+ * 书写约定（#R5-354）：每条断言绑定（`const _xxx`）随后都有一行 `void _xxx`／`void [...]`，
+ * 本文件不依赖 `noUnusedLocals` 被关闭这一非默认编译选项。
+ * 例外：夹具实现体里 `login` / `setCount` 这类**被断言的签名形参**天然不读用，它们属于被测形状本身，
+ * 一律以 `_` 前缀书写（`_payload` / `_n`）——只保留位置与类型，不占读用，形参不可删。
+ *
  * @file tests/types/integration-types.typecheck.ts
  */
 
-import type { AppThis, ComponentConfig, ComponentThis, ExtractMappedActions, ExtractPageData, PageConfig, PageOwnMethods } from '@/types/integration.js'
+import type {
+  AppThis,
+  ComponentConfig,
+  ComponentThis,
+  ExtractMappedActions,
+  ExtractPageData,
+  PageConfig,
+  PageOwnMethods,
+  PageReservedKeys,
+} from '@/types/integration.js'
 import { withPageStore, withComponentStore, withAppStore, createStore, type State, type Actions, type Getters, type PageThis } from '@/index.js'
 
 // ==================== 示例类型 ====================
@@ -44,9 +58,11 @@ declare const arrayMapped: ArrayMapped
 // 正例：精确参数与返回类型
 const _loginResult: Promise<boolean> = arrayMapped.login({ username: 'u', password: 'p' })
 arrayMapped.setCount(1)
+void _loginResult
 
 // logout 的精确签名（#433：整份 fixture 里此前从未被断言过）：零参、返回 void
 const _logoutResult: void = arrayMapped.logout()
+void _logoutResult
 // @ts-expect-error logout 不接受任何参数
 arrayMapped.logout('x')
 
@@ -70,6 +86,7 @@ declare const aliasMapped: AliasMapped
 // 正例
 const _aliasLogin: Promise<boolean> = aliasMapped.doLogin({ username: 'u', password: 'p' })
 aliasMapped.bump(2)
+void _aliasLogin
 
 // 反例：别名方法参数错误
 // @ts-expect-error bump 期望 number，传入 string 应报错
@@ -80,15 +97,16 @@ aliasMapped.bump('wrong')
 type PageData = ExtractPageData<UserState, { mapState: ['count'] }>
 declare const pageData: PageData
 const _count: number = pageData.count
+void _count
 
 // ==================== withPageStore 编译期键约束（S/A/G 从 store 推断） ====================
 
 const typedStore = createStore({
   state: { userInfo: null as { name: string } | null, count: 0 },
   actions: {
-    login: (payload: { username: string; password: string }) => Promise.resolve(true),
+    login: (_payload: { username: string; password: string }) => Promise.resolve(true),
     logout: () => {},
-    setCount: (n: number) => {},
+    setCount: (_n: number) => {},
   },
   getters: {
     // 形参标注为 fixture 的完整状态类型：写成 `(state: { count: number })` 这种手抄窄形状时，
@@ -160,6 +178,7 @@ const pageOutput = enhancePage(pageInput)
 // 返回值保持传入配置的具体类型（不擦除为 PageOptions）
 const _kept: string = pageOutput.customMethod()
 const _local: string = pageOutput.data.local
+void [_kept, _local]
 // 反例：访问不存在的成员应报错
 // @ts-expect-error 'notExist' 不在原配置上
 pageOutput.notExist
@@ -173,6 +192,7 @@ const componentOutput = enhanceComponent({
   },
 })
 const _tapResult: number = componentOutput.methods.handleTap()
+void _tapResult
 // 反例：访问不存在的方法应报错
 // @ts-expect-error 'missing' 不在原配置上
 componentOutput.methods.missing()
@@ -211,7 +231,9 @@ withComponentStore(typedStore, { mapActions: ['logn'] })
 // @ts-expect-error 'doubl' 不是 getter 名
 withComponentStore(typedStore, { mapGetters: { myDouble: 'doubl' } })
 
-// ==================== withAppStore / createApp 编译期键约束（S/A/G 从 store 推断） ====================
+// ==================== withAppStore 编译期键约束（S/A/G 从 store 推断） ====================
+// 本块只覆盖 `withAppStore`：仓库里没有名为 `createApp` 的入口（`src/index.ts` 未导出、
+// 文档亦无），此前的小节标题与下面的一条反例注释提到它，属于凭空承诺（#R5-352）。
 
 // 正例：三组映射键均合法
 withAppStore(typedStore, {
@@ -233,7 +255,7 @@ withAppStore(typedStore, { mapGetters: ['doubl'] })
 // @ts-expect-error 'logn' 不是 action 名
 withAppStore(typedStore, { mapActions: ['logn'] })
 
-// 反例：createApp 对象形式值拼错应报错
+// 反例：对象形式值拼错应报错
 // @ts-expect-error 'logn' 不是 action 名
 withAppStore(typedStore, { mapActions: { doLogin: 'logn' } })
 
@@ -247,6 +269,7 @@ const appOutput = enhanceApp({
 })
 const _appKept: string = appOutput.customLaunch()
 const _extra: number = appOutput.globalData.extra
+void [_appKept, _extra]
 // 反例：访问不存在的成员应报错
 // @ts-expect-error 'notExist' 不在原配置上
 appOutput.notExist
@@ -258,7 +281,13 @@ type PageCfgShape = {
   setData: (data: Record<string, unknown>) => void
   onLoad: (query: Record<string, string>) => void
   onShow: () => void
+  onHide: () => void
+  onUnload: () => void
+  onReady: () => void
   onPullDownRefresh: () => void
+  onReachBottom: () => void
+  onPageScroll: (e: { scrollTop: number }) => void
+  onRouteDone: () => void
   onShareAppMessage: () => { title: string }
   onShareTimeline: () => { title: string }
   onAddToFavorites: () => { title: string }
@@ -271,6 +300,12 @@ type PageCfgShape = {
 }
 
 type PageCustom = PageOwnMethods<PageCfgShape>
+
+// 夹具覆盖度断言（#R5-353）：`PageReservedKeys` 的每个键都必须在 `PageCfgShape` 里出现一次。
+// 缺一个键，下面那句「少收任何一个框架键都会让它出现在 keyof 里」就只对夹具恰好写出的键成立——
+// 例如 src 侧把 `onHide` 从清单里删掉，夹具没写 `onHide` 时本文件仍会全绿。
+const _reservedKeysAllCovered: [Exclude<PageReservedKeys, keyof PageCfgShape>] extends [never] ? true : false = true
+void _reservedKeysAllCovered
 
 // 正例：只剩用户自定义方法，且签名保持（this 被刻意剥离，与 ComponentOwnMethods 同口径）
 const _custom: string = (null as unknown as PageCustom).customMethod(1)
@@ -321,8 +356,14 @@ void _setDataExact
 // getTabBar 只在页面侧声明（组件侧原本就没有）
 const _getTabBarPageOnly: [PgThis['getTabBar'], PgCfg['getTabBar']] = [undefined, undefined]
 void _getTabBarPageOnly
-// @ts-expect-error 组件两个类型上不声明 getTabBar，避免给出运行时不存在的成员
-type _CpNoTabBar = CpThis['getTabBar']
+// 组件两个类型上不声明 getTabBar，避免给出运行时不存在的成员。
+// 写成「取值的断言」而不是无人引用的类型别名（#R5-354）：别名本身不产生使用点，
+// 一旦 tsconfig.tests.json 的 noUnusedLocals 与 tsconfig.typecheck.json 对齐，无人引用的别名会整片报错。
+// @ts-expect-error CpThis 上没有 getTabBar
+const _cpNoTabBar: CpThis['getTabBar'] = undefined
+// @ts-expect-error CpCfg 上同样没有 getTabBar
+const _cpCfgNoTabBar: CpCfg['getTabBar'] = undefined
+void [_cpNoTabBar, _cpCfgNoTabBar]
 
 // ==================== AppThis：action 与调试 API 撞名的优先级（#430） ====================
 
@@ -333,6 +374,9 @@ declare const clashThis: AppThis<UserState, ClashActions, Getters<UserState>, Cl
 // 运行时是 bindActions 先、exposeStoreAPI 后（后者无条件覆写同名成员），所以留在实例上的是调试 API。
 // 修复前两侧直接求交：`() => string` 这个 action 签名排在重载集首位，下面这行能编译，
 // 而运行时拿到的是 UserState —— 类型谎报。现在它必须报错。
+// 注（#R5-355）：这一段只是**类型侧**的口径，运行时的挂载顺序另由
+// tests/integration/with-app-store.test.ts 断言，那里目前只查 `app.__store__.getState()`，
+// 未查展平成员 `app.getState` 的优先级；补运行时断言的事本轮记为 NEEDS-MAIN（该文件不在本分片）。
 // @ts-expect-error getState 归调试 API（返回 S），不再是 action 的 () => string
 const _clashLooksLikeActionString: string = clashThis.getState()
 void _clashLooksLikeActionString

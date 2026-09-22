@@ -186,8 +186,11 @@ export class OfflineManager<S extends State = State> {
         }
       }
 
-      if (failedActions.length > 0) {
-        wx.showToast({ title: `${failedActions.length}个操作同步失败`, icon: 'none' })
+      // 读 this.syncFailed 而非局部 failedActions（与下方 finally 同口径）：
+      // 同步途中 clearQueue 会把字段重绑为新数组，此时 failedActions 已是脱管副本，
+      // 按它计数会告诉用户「N 个操作同步失败」，而这几条恰恰已被用户清掉、不会被保留
+      if (this.syncFailed.length > 0) {
+        wx.showToast({ title: `${this.syncFailed.length}个操作同步失败`, icon: 'none' })
       }
     } finally {
       // 回填必须覆盖循环未迭代到的剩余项：中途异常（死信落盘配额满、
@@ -229,8 +232,16 @@ export class OfflineManager<S extends State = State> {
    * 已「清空」的操作在同步结束时复活继续同步，故三段一并置空——
    * syncPending 清空后循环条件立即为假、同步停止；清空之后新入队的操作
    * 仍进 actionQueue，不受影响
+   *
+   * 已释放实例（dispose 之后）一律拒绝：该存储键可能已由接管的新实例持有（同 store 名
+   * 即同 queueKey，正是 saveQueue/syncQueue 加守卫的场景），旧实例的一次 clearQueue
+   * 会删掉新实例已持久化的队列，而新实例内存仍持有它们——重启即静默丢失
    */
   clearQueue(): void {
+    if (this.disposed) {
+      logger.warn('OfflineManager', `实例已释放，忽略 clearQueue（存储键已由后续实例接管）: ${this.queueKey}`)
+      return
+    }
     this.actionQueue = []
     this.syncPending = []
     this.syncFailed = []
@@ -290,7 +301,11 @@ export class OfflineManager<S extends State = State> {
       await this.executeAction(action)
       logger.log('OfflineManager', `同步成功: ${action.type}`)
       return true
-    } catch {
+    } catch (error) {
+      // 重放失败原因必须可见：execute() 只记了首次失败，此后每次重试的失败原因
+      // （未知 action、业务拒绝、永久 4xx）若被吞掉，排障就只剩一条计数 toast
+      // 与重试耗尽后的死信日志
+      logger.warn('OfflineManager', `同步执行失败: ${action.type}`, error)
       return false
     }
   }
@@ -367,9 +382,14 @@ export class OfflineManager<S extends State = State> {
   private appendDeadLetter(action: OfflineAction): boolean {
     const deadLetters = this.getDeadLetters()
     deadLetters.push(action)
-    // 超限时淘汰最旧条目，保护 storage 容量
+    // 超限时淘汰最旧条目，保护 storage 容量。
+    // 被淘汰的是「同步失败且业务层尚未处理」的操作——正是本模块要防的静默丢失，
+    // 且不会触发 onDrop（回调语义是「刚进死信」，补发通知会让业务层重复处理），
+    // 所以条数必须落到日志里供告警系统采集
     if (deadLetters.length > OfflineManager.MAX_DEAD_LETTERS) {
-      deadLetters.splice(0, deadLetters.length - OfflineManager.MAX_DEAD_LETTERS)
+      const evicted = deadLetters.length - OfflineManager.MAX_DEAD_LETTERS
+      logger.warn('OfflineManager', `死信队列超过上限 ${OfflineManager.MAX_DEAD_LETTERS}，淘汰最旧 ${evicted} 条未处理操作: ${this.deadLetterKey}`)
+      deadLetters.splice(0, evicted)
     }
     // 返回落盘结果：调用方据此决定能否安全地从队列移除该操作
     return storage.set(this.deadLetterKey, deadLetters)
@@ -394,8 +414,15 @@ export class OfflineManager<S extends State = State> {
 
   /**
    * 清空死信队列（业务层确认已处理丢失操作后调用）
+   *
+   * 与 clearQueue 同口径拒绝已释放实例：死信键由 queueKey 派生，实例释放后
+   * 同 store 名的新实例会继续往里追加，旧实例的一次清空会抹掉新实例记录的死信
    */
   clearDeadLetters(): void {
+    if (this.disposed) {
+      logger.warn('OfflineManager', `实例已释放，忽略 clearDeadLetters（存储键已由后续实例接管）: ${this.deadLetterKey}`)
+      return
+    }
     storage.remove(this.deadLetterKey)
   }
 

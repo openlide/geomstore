@@ -29,6 +29,40 @@ export type {
   SnapshotStats,
 } from './types.js'
 
+// ==================== 异步选项守卫 ====================
+
+/** 异步快照的缺省批大小：取较大值会让单批同步工作量变大、削弱「批间让出控制权」的效果 */
+const DEFAULT_BATCH_SIZE = 100
+
+/** 缺省超时（毫秒） */
+const DEFAULT_TIMEOUT_MS = 30000
+
+/**
+ * `batchSize` 的单点归一化（构造期默认值与逐次调用参数共用）。
+ *
+ * 0 / NaN / 负数会让 processQueue 里的 `batch.length < batchSize` 恒为 false，
+ * 批永远为空 → 立即 break → 无任何克隆且 errors 为空，最终 success 判定为 true
+ * 而 data 是占位空壳（静默交付半成品）。口径与 LRUCache 的容量守卫一致。
+ */
+function normalizeBatchSize(value: number | undefined): number {
+  return Number.isFinite(value) ? Math.max(1, value as number) : DEFAULT_BATCH_SIZE
+}
+
+/**
+ * `batchInterval` / `timeout` 的单点归一化：返回值 0 恒表示「这个定时器不该存在」。
+ *
+ * 非有限值（Infinity / NaN）与非正值一律落 0：
+ * - `timeout` 的 0 是「不设超时」（调用方写 Infinity 表达的正是这个意图）。若把 Infinity
+ *   原样交给 setTimeout，Node 会告 TimeoutOverflowWarning 并夹成约 1ms，
+ *   于是「不超时」变成一次莫名立即超时；
+ * - `batchInterval` 的 0 是「批间用 setTimeout(r, 0) 让出控制权」。
+ * 有限正数原样交给宿主（超出宿主可靠区间的多大数值由宿主裁剪，本库不臆造语义）
+ */
+function normalizeDelay(value: number | undefined, fallback: number): number {
+  const ms = value ?? fallback
+  return Number.isFinite(ms) && ms > 0 ? ms : 0
+}
+
 // ==================== 快照管理器 ====================
 
 /**
@@ -67,13 +101,15 @@ export class SnapshotManager {
       includeNonEnumerable: false,
       customCloner: () => undefined,
       async: false,
-      // 异步模式的批大小：取较大值会让单批同步工作量变大、削弱「批间让出控制权」的效果，
-      // 故与 createSnapshotAsync 的回落值（options.batchSize 非法时）保持同一口径
-      batchSize: 100,
+      // 异步模式的批大小：合法值校验统一走 normalizeBatchSize（构造期与逐次调用同一口径）
+      batchSize: DEFAULT_BATCH_SIZE,
       onProgress: () => {},
       onError: () => true,
       ...options,
     }
+    // 兜底值本身必须先合法：createSnapshotAsync 在调用方传非法 batchSize 时回落到这里，
+    // 构造期传 0/NaN/负数若原样留着，守卫就会把一个非法值当作「安全默认值」发出去
+    this.defaultOptions.batchSize = normalizeBatchSize(this.defaultOptions.batchSize)
   }
 
   /**
@@ -145,7 +181,7 @@ export class SnapshotManager {
       return {
         // 根节点的自定义克隆器失败且 onError 允许继续时，cloneDeep 返回丢弃哨兵：
         // 与异步路径（哨兵被 processQueue 跳过、rootResult 保持 undefined）保持同一语义
-        data: (clonedData === SKIP_CLONE_NODE ? undefined : clonedData) as T,
+        data: clonedData === SKIP_CLONE_NODE ? undefined : (clonedData as T),
         metadata,
         // errors 为空时 some 必然为 false，无需先判 length（去掉冗余短路分支）
         success: !errors.some((e) => e.type === 'cloneError'),
@@ -153,8 +189,6 @@ export class SnapshotManager {
         stats,
       }
     } catch (error) {
-      stats.duration = Date.now() - startTime
-
       errors.push({
         type: 'unknown',
         message: error instanceof Error ? error.message : 'Unknown error',
@@ -162,23 +196,7 @@ export class SnapshotManager {
         originalError: error instanceof Error ? error : undefined,
       })
 
-      return {
-        // 失败快照不得回传调用方的原始引用：那会打破快照隔离契约，让调用方
-        // 经返回值改到宿主持有的活状态（与 SKIP 哨兵降级路径同语义）
-        data: undefined as T,
-        metadata: {
-          id,
-          timestamp: startTime,
-          dataType: this.getDataType(data),
-          size: 0,
-          nodeCount: 0,
-          maxDepth: 0,
-          hasCircular: false,
-        },
-        success: false,
-        errors,
-        stats,
-      }
+      return this.buildFailureResult<T>(id, startTime, data, errors, stats)
     }
   }
 
@@ -206,14 +224,12 @@ export class SnapshotManager {
       ...this.defaultOptions,
       ...options,
       async: true,
-      // batchSize 必须为正数：0 或 NaN 会让 processQueue 里的 `batch.length < batchSize`
-      // 恒为 false，批永远为空 → 立即 break → 无任何克隆且 errors 为空，
-      // 最终 success 判定为 true 而 data 是占位空壳（静默交付半成品）。
-      // 口径与 LRUCache 的容量守卫一致；batchInterval/timeout 的 0 是合法语义
-      // （无延迟 / 立即超时），不可一并抬高下限
-      batchSize: Number.isFinite(options.batchSize) ? Math.max(1, options.batchSize as number) : this.defaultOptions.batchSize,
-      batchInterval: options.batchInterval ?? 0,
-      timeout: options.timeout ?? 30000,
+      // batchSize 守卫对**合并后**的值生效：只校验 options.batchSize 会让构造期传入的
+      // 非法值经由回落分支绕过守卫。batchInterval / timeout 另走 normalizeDelay，
+      // 其 0 是合法语义（无延迟 / 不设超时），不可抬高下限，但要挡掉非有限值
+      batchSize: normalizeBatchSize(options.batchSize ?? this.defaultOptions.batchSize),
+      batchInterval: normalizeDelay(options.batchInterval, 0),
+      timeout: normalizeDelay(options.timeout, DEFAULT_TIMEOUT_MS),
     }
 
     const startTime = Date.now()
@@ -247,7 +263,8 @@ export class SnapshotManager {
       maxDepthHits: 0,
     }
 
-    // 设置超时
+    // 设置超时：opts.timeout 已过 normalizeDelay，非有限值与非正值都归成 0，
+    // 故这里的 `> 0` 只需区分「武装定时器」与「不设超时」两件事
     const timeoutId =
       opts.timeout > 0
         ? setTimeout(() => {
@@ -425,14 +442,18 @@ export class SnapshotManager {
                       configurable: t.descriptor.configurable,
                     })
                   } else {
-                    (t.container as Record<string, unknown>)[t.key as string] = result
+                    const slot = t.container as Record<string, unknown>
+                    slot[t.key as string] = result
                   }
                 } else if (t.kind === 'index') {
-                  (t.container as unknown[])[t.key as number] = result
+                  const slot = t.container as unknown[]
+                  slot[t.key as number] = result
                 } else if (t.kind === 'mapValue') {
-                  (t.container as Map<unknown, unknown>).set(t.key, result)
+                  const map = t.container as Map<unknown, unknown>
+                  map.set(t.key, result)
                 } else {
-                  (t.container as Set<unknown>).add(result)
+                  const set = t.container as Set<unknown>
+                  set.add(result)
                 }
               } catch (error) {
                 // 单个位置填充失败只降级记录错误，不中断队列：
@@ -513,7 +534,9 @@ export class SnapshotManager {
       }
 
       return {
-        data: clonedData as T,
+        // rootResult 只在根任务产出非哨兵值时才不是 undefined：超时/根节点被丢弃时它是
+        // undefined 或半成品，故断言只到 `T | undefined`，不冒充完整的 T
+        data: clonedData as T | undefined,
         metadata,
         // 与同步路径同口径：仅 cloneError 视为失败，circular/maxDepth 属可恢复降级
         success: !hasTimedOut && !errors.some((e) => e.type === 'cloneError'),
@@ -530,27 +553,7 @@ export class SnapshotManager {
         originalError: error instanceof Error ? error : undefined,
       })
 
-      return {
-        // 同 createSnapshot 的失败路径：中止/异常时返回 undefined 而非原始引用
-        data: undefined as T,
-        metadata: {
-          id,
-          timestamp: startTime,
-          dataType: this.getDataType(data),
-          size: 0,
-          nodeCount: 0,
-          maxDepth: 0,
-          hasCircular: false,
-        },
-        success: false,
-        errors,
-        stats: {
-          duration: Date.now() - startTime,
-          cloneOperations: 0,
-          circularReferences: 0,
-          maxDepthHits: 0,
-        },
-      }
+      return this.buildFailureResult<T>(id, startTime, data, errors, stats)
     }
   }
 
@@ -569,6 +572,39 @@ export class SnapshotManager {
   // ==================== 私有方法 ====================
 
   /**
+   * 失败结果的统一构造（同步 / 异步两条 catch 共用）
+   *
+   * 两条失败分支此前各写一份 metadata 与 stats：异步那份还把 stats 换成全零新对象，
+   * 而引擎在抛出前已经往共享 stats 里累加过 cloneOperations / circularReferences /
+   * maxDepthHits，于是同一份输入在两条路径上的失败统计对不上。现在两条都交出共享 stats
+   * （数值与实际工作量一致），metadata 的规模项仍归零——失败结果的 data 不可信，
+   * 按它统计出的 size / nodeCount / maxDepth 同样不可信
+   *
+   * @param source 调用方传入的原始数据：只用于 dataType，**不会**进 data
+   */
+  private buildFailureResult<T>(id: string, timestamp: number, source: unknown, errors: SnapshotError[], stats: SnapshotStats): SnapshotResult<T> {
+    stats.duration = Date.now() - timestamp
+
+    return {
+      // 失败快照不得回传调用方的原始引用：那会打破快照隔离契约，让调用方
+      // 经返回值改到宿主持有的活状态（与 SKIP 哨兵降级路径同语义）
+      data: undefined,
+      metadata: {
+        id,
+        timestamp,
+        dataType: this.getDataType(source),
+        size: 0,
+        nodeCount: 0,
+        maxDepth: 0,
+        hasCircular: false,
+      },
+      success: false,
+      errors,
+      stats,
+    }
+  }
+
+  /**
    * 生成快照ID
    *
    * @private
@@ -580,16 +616,20 @@ export class SnapshotManager {
   /**
    * 获取数据类型
    *
-   * 原型不可探测的值（Proxy 的 getPrototypeOf 陷阱抛错）按 `typeof` 归类：
-   * 本方法在结果组装阶段被调用（成功路径与失败路径各一次），抛出会把 cloneDeep
-   * 已按 onError 契约降级好的结果整个变成异常，等于在出口处重新制造 #288 那个洞
+   * 原型不可探测的值（Proxy 的 getPrototypeOf 陷阱抛错、已 revoke 的 Proxy）按 `typeof`
+   * 归类：本方法在结果组装阶段被调用（成功路径与失败路径各一次），抛出会把 cloneDeep
+   * 已按 onError 契约降级好的结果整个变成异常，等于在出口处重新制造 #288 那个洞；
+   * 失败路径上它还在 catch 里，抛出会让 createSnapshot 连失败结果都不交付、直接向调用方抛
+   *
+   * `Array.isArray` 也在兜范围内：它与 `instanceof` 同走 [[Get]] / [[Class]] 内部方法，
+   * 对 revoked Proxy 一样抛 TypeError。`value === null` 与兜底的 `typeof` 永不抛，留在外面
    *
    * @private
    */
   private getDataType(value: unknown): string {
     if (value === null) return 'null'
-    if (Array.isArray(value)) return 'array'
     try {
+      if (Array.isArray(value)) return 'array'
       if (value instanceof Date) return 'date'
       if (value instanceof RegExp) return 'regexp'
       if (value instanceof Map) return 'map'

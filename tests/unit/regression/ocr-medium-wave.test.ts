@@ -120,11 +120,7 @@ describe('StoreRegistry', () => {
 describe('compose helpers / merge', () => {
   it('#112 三 store 同名键的告警反映真实的上一任写入者', () => {
     const warnSpy = jest.spyOn(console, 'warn').mockImplementation()
-    const stores = [
-      fakeStore('A', { k: 1 }),
-      fakeStore('B', { k: 2 }),
-      fakeStore('C', { k: 3 }),
-    ]
+    const stores = [fakeStore('A', { k: 1 }), fakeStore('B', { k: 2 }), fakeStore('C', { k: 3 })]
 
     mergeStateMaps(stores, (s) => s.getState() as Record<string, unknown>, new Set<string>())
 
@@ -329,9 +325,11 @@ describe('ActionManager', () => {
   }
 
   it('#137 beforeDispatch 钩子抛错不会让 dispatching 永久卡死', () => {
-    const hooks = { emit: jest.fn((name: string) => {
-      if (name === 'beforeDispatch') throw new Error('hook boom')
-    }) }
+    const hooks = {
+      emit: jest.fn((name: string) => {
+        if (name === 'beforeDispatch') throw new Error('hook boom')
+      }),
+    }
     const { manager, setDispatching } = makeManager(hooks, { run: jest.fn() })
 
     expect(() => manager.execute('run')).toThrow(/execution failed/)
@@ -340,9 +338,11 @@ describe('ActionManager', () => {
   })
 
   it('#138 action 已返回后收尾步骤抛错，不再二次复位 dispatch 计数', () => {
-    const hooks = { emit: jest.fn((name: string) => {
-      if (name === 'afterDispatch') throw new Error('after boom')
-    }) }
+    const hooks = {
+      emit: jest.fn((name: string) => {
+        if (name === 'afterDispatch') throw new Error('after boom')
+      }),
+    }
     const { manager, setDispatching } = makeManager(hooks, { run: jest.fn() })
 
     expect(() => manager.execute('run')).toThrow('after boom')
@@ -595,7 +595,8 @@ describe('Store 状态替换与销毁', () => {
 })
 
 describe('缓存统计键列表', () => {
-  it('#82 非字符串键被字符串化，需以 keys() 取回原始键', () => {    const cache = new LRUCache<string | number | symbol, number>({ capacity: 5 })
+  it('#82 非字符串键被字符串化，需以 keys() 取回原始键', () => {
+    const cache = new LRUCache<string | number | symbol, number>({ capacity: 5 })
     cache.set(1, 1)
     cache.set('1', 2)
     cache.set('原始', 3)

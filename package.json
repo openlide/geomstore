@@ -72,9 +72,6 @@
     "access": "public",
     "registry": "https://registry.npmjs.org/"
   },
-  "workspaces": [
-    "packages/*"
-  ],
   "scripts": {
     "test": "jest",
     "test:watch": "jest --watch",
@@ -93,7 +90,7 @@
     "postpack": "node scripts/generate-subpath-stubs.mjs --clean",
     "prepublishOnly": "pnpm test && pnpm run build:release",
     "lint": "eslint src tests --ext .ts",
-    "lint:ci": "eslint src tests --ext .ts --max-warnings 70",
+    "lint:ci": "eslint src tests --ext .ts --max-warnings 0",
     "lint:fix": "eslint src tests --ext .ts --fix",
     "format": "prettier --write \"src/**/*.ts\" \"tests/**/*.ts\"",
     "typecheck": "tsc --noEmit -p tsconfig.typecheck.json",
@@ -123,6 +120,7 @@
   },
   "homepage": "https://github.com/openlide/geomstore#readme",
   "devDependencies": {
+    "@eslint/js": "^9.39.2",
     "@types/jest": "^30.0.0",
     "@types/node": "24.8.1",
     "@typescript-eslint/eslint-plugin": "^8.54.0",

@@ -82,10 +82,15 @@ void [_actionsShape, ctxActions]
 // equalityFn 比较的是**输入状态**（`createSelector.ts` 里是 `equalityFn(item.state, state)`），
 // 不是选择器结果 R：故本类型刻意不带 R 泛型（#412 报告给的 `SelectorOptions<R>` 会把契约标错）
 const options: SelectorOptions = { cache: true, cacheSize: 20, cacheTTL: 1000, equalityFn: (a, b) => a === b }
-const _equalityParams: Equal<NonNullable<SelectorOptions['equalityFn']>, (a: unknown, b: unknown) => boolean> = true
+// 形参位是 `any` 而不是 `unknown`：`unknown` 在 `strictFunctionTypes` 下会因逆变拒掉
+// 调用方按具体状态标注的比较器（`(a: MyState, b: MyState) => boolean`），等于「除内置 deepEqual
+// 之外全都写不出来」。放宽只在逆变位，返回位仍是 `boolean`——同文件
+// `selector-equalityfn-variance.typecheck.ts` 锁住这两侧，别把形参"收紧"回 unknown。
+const _equalityParams: Equal<NonNullable<SelectorOptions['equalityFn']>, (a: any, b: any) => boolean> = true
 void [options, _equalityParams]
 
-// Getters 走一次真实使用，确保本文件对 store 类型族的导入都参与编译
-type _GettersOf<S extends State> = Getters<S>
-const _gettersShape: Equal<_GettersOf<ItemsState>, Getters<ItemsState>> = true
+// 锁定 `Getters` 的真实形状：索引签名的单元格类型必须是 `(state: S) => unknown`。
+// （此前写的是 `Equal<_GettersOf<ItemsState>, Getters<ItemsState>>`，别名展开后两侧同义反复，
+// 永远为 true，锁不住任何东西；S 被漂白或单元格返回值放宽时这条断言现在会失败）
+const _gettersShape: Equal<Getters<ItemsState>['k'], (state: ItemsState) => unknown> = true
 void _gettersShape

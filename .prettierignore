@@ -1,6 +1,9 @@
 # 忽略格式化文件 (根据项目需要自行添加)
+# 注：默认调用（--ignore-path 未指定）时 prettier 会同时读 .gitignore + .prettierignore，
+# dist/ 已由 .gitignore 覆盖；但显式 `--ignore-path .prettierignore` 只读本文件，
+# 此时必须自带 dist，否则会把构建产物当源码格式化。
 .vscode
-# dist
+dist
 miniprogram_npm
 node_modules
 pnpm-lock.yaml

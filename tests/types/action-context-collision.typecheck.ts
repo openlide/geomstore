@@ -48,6 +48,14 @@ const normal = createStore({
       void this.name
       // 跨 action 调用仍走类型安全的 dispatch 重载
       this.dispatch('bump', 1)
+      // 反例：宽松基座签名 `dispatch(actionName: string, ...args: unknown[])` 一旦回流，
+      // 下面两条 @ts-expect-error 会同时变成 unused，typecheck:tests 立刻失败
+      // @ts-expect-error 未声明的 action 名必须被拒绝
+      this.dispatch('missing', 1)
+      // @ts-expect-error 实参类型必须按已声明的 action 签名校验
+      this.dispatch('bump', 'x')
+      // @ts-expect-error 实参个数同样受检（bump 需要一个参数）
+      this.dispatch('bump')
     },
   },
 })
@@ -59,6 +67,11 @@ type ErasedCtx = ActionContext<{ count: number }, Actions>
 declare const erased: ErasedCtx
 const _erasedState: { count: number } = erased.state
 const _erasedName: string = erased.name
+// 注：本行不具锁定力，只记录「基座成员在擦除分支下仍可调用」这一形状。
+// `Actions` 的索引签名 `(...args: any[]) => any` 也参与交叉：即使基座被整体剔掉（本文件要防的回归），
+// `erased.setState('count', 1)` 也会命中索引签名而编译通过，写反例（如 `erased.setState('nope', 1)`）
+// 同样会被索引签名放行。该分支真正的守卫是上面两条赋值断言——函数类型不可赋给
+// `{ count: number }` / `string`，基座一旦被清空它们立即报错。
 erased.setState('count', 1)
 void [_erasedState, _erasedName]
 

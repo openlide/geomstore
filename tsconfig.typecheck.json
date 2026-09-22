@@ -6,6 +6,8 @@
     "noUnusedLocals": true,
     "noUnusedParameters": true
   },
-  "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist", "packages", "src/**/*.example.ts"]
+  "include": ["src/**/*"]
+  // exclude 不在此重写：TS 的 extends 是「整组替换」而非合并，本地列一份就等于悄悄
+  // 改掉基线（曾漏掉 tests、并把 **/*.example.ts 缩成 src/**/*.example.ts，include 一变宽
+  // 就会开始检查示例文件）。这里需要的正是基线那一组，故直接继承 tsconfig.json。
 }

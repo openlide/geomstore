@@ -160,10 +160,12 @@ describe('integrations/utils', () => {
         state: { count: 0 },
         actions: {
           increment(n: number) {
-            (this.state as { count: number }).count += n
+            const state = this.state as { count: number }
+            state.count += n
           },
           decrement(n: number) {
-            (this.state as { count: number }).count -= n
+            const state = this.state as { count: number }
+            state.count -= n
           },
         },
       })
@@ -209,8 +211,10 @@ describe('integrations/utils', () => {
         state: { count: 0, name: 'test' },
         actions: {
           setValues(count: number, name: string) {
-            (this.state as { count: number }).count = count
-            ;(this.state as { count: number; name: string }).name = name
+            const counter = this.state as { count: number }
+            counter.count = count
+            const named = this.state as { count: number; name: string }
+            named.name = name
           },
         },
       })
@@ -351,7 +355,8 @@ describe('integrations/utils', () => {
         state: { count: 0 },
         actions: {
           increment(n: number) {
-            (this.state as { count: number }).count += n
+            const state = this.state as { count: number }
+            state.count += n
           },
         },
       })
@@ -406,7 +411,8 @@ describe('integrations/utils', () => {
         state: { count: 0 },
         actions: {
           setCount(n: number) {
-            (this.state as { count: number }).count = n
+            const state = this.state as { count: number }
+            state.count = n
           },
         },
       })
@@ -573,7 +579,8 @@ describe('integrations/utils', () => {
         state: { count: 0 },
         actions: {
           increment() {
-            (this.state as { count: number }).count++
+            const state = this.state as { count: number }
+            state.count++
           },
         },
       })
@@ -617,8 +624,9 @@ describe('integrations/utils', () => {
 
   describe('performAutoInject 边界覆盖', () => {
     it('UTIL-COVER-001: 所有缓存值都为 undefined 时不应该调用 setter', () => {
-      // 创建一个 store，所有 getCached 返回 undefined
-      const store = createStore({
+      // 先真实创建一个带缓存的 store（构造本身是被测前置），但本用例喂给
+      // performAutoInject 的是下面的 mockStore，故不绑定这个未被读到的实例
+      void createStore({
         state: { count: 0 },
         enableCache: true,
       })
@@ -675,7 +683,8 @@ describe('integrations/utils', () => {
         state: { count: 0 },
         actions: {
           increment(n: number) {
-            (this.state as { count: number }).count += n
+            const state = this.state as { count: number }
+            state.count += n
           },
         },
       })

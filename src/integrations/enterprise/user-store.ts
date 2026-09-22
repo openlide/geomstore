@@ -55,7 +55,12 @@ export interface UserState extends State {
 export interface UserStoreConfig {
   /** 用户唯一标识：参与 Store 名称与持久化键（`user-store-${userId}`），不可为空/纯空白 */
   userId: string
-  /** 用户信息同步接口地址；缺省用模块默认 `DEFAULT_SYNC_URL`，便于按环境/宿主注入 */
+  /**
+   * 用户信息同步接口地址：必须是 `wx.request` 接受的绝对 URL（域名还需在小程序后台白名单内）。
+   * 缺省即「本 Store 不具备服务端同步能力」——`syncWithServer` 会在发起请求前直接 reject
+   * （库内不内置业务端点：相对路径在小程序端注定失败，内置一个「看起来像默认值」的地址
+   * 只会把配置缺失变成一次无法归因的网络错误）
+   */
   syncUrl?: string
   /** 初始状态覆盖项（可选） */
   initialState?: Partial<UserState>
@@ -72,8 +77,16 @@ export function userStoreKey(userId: string): string {
   return `${USER_STORE_PREFIX}${userId}`
 }
 
-/** 用户信息同步接口默认地址（业务 URL 不落码到调用点，可经 UserStoreConfig.syncUrl 注入） */
-const DEFAULT_SYNC_URL = '/api/user/sync'
+/**
+ * userId 合法性判定 —— 与 createUserStore 入口校验同源。
+ *
+ * 冷启动恢复身份（createEnterpriseApp）要靠它区分「持久化的是历史脏标识」与
+ * 「switchUser 因无关原因抛错」：前者该清键按未登录处理，后者必须保留身份键，
+ * 否则一次瞬时故障就把用户登出。判定规则散在两处时任一侧改动都会让这条区分失效
+ */
+export function isValidUserId(userId: unknown): userId is string {
+  return typeof userId === 'string' && userId.trim() !== ''
+}
 
 /**
  * 从服务端拉取用户信息
@@ -111,21 +124,30 @@ function requestUserInfo(url: string): Promise<UserInfo> {
  * 登出时 StoreManager 按同一键清理持久化数据，保证键的写入与删除一致
  */
 export function createUserStore(config: UserStoreConfig): Store<UserState> {
-  const { userId, syncUrl = DEFAULT_SYNC_URL, initialState = {} } = config
+  const { userId, syncUrl, initialState = {} } = config
 
   // 空/纯空白 userId 会生成 `user-store-` 这类畸形键：不同账号在 storage 与
   // StoreManager 的 Map 上碰撞同一键，即跨账号数据泄漏，必须在入口拒绝
-  if (typeof userId !== 'string' || userId.trim() === '') {
+  if (!isValidUserId(userId)) {
     throw new Error('[UserStore] userId 不能为空')
   }
 
+  // 同步请求序号：并发 syncWithServer 时先发的请求可能后返回，无守卫地 $patch
+  // 会让旧响应覆盖新响应（调用方拿 userInfo/lastSyncTime 判定是否需要重新同步，
+  // 被旧响应覆盖后判定即失真）。刻意不做「在途去重」：那会把后一次调用的 promise
+  // 变成空转或直接跳过，改变每次调用都能拿到一次同步结果的既有契约
+  let syncSequence = 0
+
   const store = createStore<UserState>({
     name: userStoreKey(userId),
+    // 三个契约字段逐字段回落默认值，而非 `...initialState` 展开覆盖：
+    // Partial<UserState> 允许显式 `undefined`（exactOptionalPropertyTypes 未开），
+    // 展开会把 preferences 等必填字段变成 undefined，state 从此违反 UserState，
+    // updatePreferences 与持久化 filter 序列化出缺键的载荷
     state: {
-      userInfo: null,
-      preferences: {},
-      lastSyncTime: null,
-      ...initialState,
+      userInfo: initialState.userInfo ?? null,
+      preferences: initialState.preferences ?? {},
+      lastSyncTime: initialState.lastSyncTime ?? null,
     },
     actions: {
       // 推荐写法：通过 $patch 更新状态（而非直接变异 this.state），
@@ -143,7 +165,24 @@ export function createUserStore(config: UserStoreConfig): Store<UserState> {
         // catch 记日志后原样 rethrow：调用方仍需感知失败做业务兜底，
         // 但无日志会让网络失败在监控里完全不可见
         try {
+          if (!syncUrl) {
+            throw new Error('[UserStore] 未配置 syncUrl：syncWithServer 需要显式注入同步接口地址（绝对 URL）')
+          }
+          const seq = ++syncSequence
           const userInfo = await requestUserInfo(syncUrl)
+          // 等待期间 store 被销毁（StoreManager.logout / LRU 淘汰）：此时 $patch
+          // 抛「Cannot call $patch on a destroyed Store」，会被下面的 catch 记成
+          // 「同步用户信息失败」并 rethrow——掩盖真实原因、还诱导调用方重试一次
+          // 注定失败的同步
+          if (store.destroyed) {
+            logger.warn('UserStore', 'Store 已销毁，丢弃本次同步结果')
+            return
+          }
+          // 更晚发出的请求已有（或正在有）更新的结果：旧响应不得覆盖
+          if (seq !== syncSequence) {
+            logger.log('UserStore', '已有更新的同步请求发出，丢弃本次响应')
+            return
+          }
           this.$patch({ userInfo, lastSyncTime: Date.now() })
         } catch (error) {
           logger.error('UserStore', '同步用户信息失败:', error)

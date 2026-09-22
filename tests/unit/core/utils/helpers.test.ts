@@ -3,7 +3,22 @@
  * @file tests/unit/helpers/helpers.test.ts
  */
 
-import { isObject, isPlainObject, isFunction, isArray, isPromise, shallowEqual, deepEqual, deepMerge, get, set, noop, identity, uniqueId, clone } from '@/index.js'
+import {
+  isObject,
+  isPlainObject,
+  isFunction,
+  isArray,
+  isPromise,
+  shallowEqual,
+  deepEqual,
+  deepMerge,
+  get,
+  set,
+  noop,
+  identity,
+  uniqueId,
+  clone,
+} from '@/index.js'
 
 describe('Helpers - 工具函数', () => {
   describe('类型判断函数', () => {

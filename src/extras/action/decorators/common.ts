@@ -51,7 +51,8 @@ export function isAsyncFunction(fn: unknown): boolean {
  * @remarks 三个回调都可以写成 `async`（TS 允许 async 函数满足 `=> void` 签名）：
  * `before` 返回 Promise 时整次调用降级为异步，被装饰方法一定等它 settle 之后才执行，
  * 其 rejection 走 `onError`；`after` 返回 Promise 时只有在被装饰方法本身是异步时才会被
- * 等待（同步方法必须保持同步返回，此时该 Promise 的 rejection 只记录日志不外抛）。
+ * 等待（同步方法必须保持同步返回，此时该 Promise 的 rejection 记日志并按 `onError` 上报，
+ * 不外抛）。任一回调抛错/拒绝都会先经 `onError` 再按原有语义传播。
  */
 export interface DecoratorOptions {
   /** 执行前的回调 */
@@ -62,9 +63,25 @@ export interface DecoratorOptions {
   onError?: (error: Error) => void
 }
 
-/** 带 then 函数的对象：用户自带 thenable 同样要等，不能只认 Promise 实例 */
-function isThenable(value: unknown): value is PromiseLike<unknown> {
-  return (typeof value === 'object' || typeof value === 'function') && value !== null && typeof (value as PromiseLike<unknown>).then === 'function'
+/**
+ * 带 then 函数的对象：用户自带 thenable 同样要等，不能只认 Promise 实例
+ *
+ * 装饰器族（createDecorator / withThrottle / withCache ...）判定「这次调用是不是异步」
+ * 的统一依据。`instanceof Promise` 会漏掉手写 thenable 与跨 realm（iframe / worker /
+ * ESM+CJS 双实例）的 Promise，漏判的直接后果是 rejection 没人接、变成 unhandledRejection。
+ */
+export function isThenable(value: unknown): value is PromiseLike<unknown> {
+  if ((typeof value !== 'object' && typeof value !== 'function') || value === null) {
+    return false
+  }
+  // 读 `.then` 本身就是用户代码可执行的入口：`Proxy` 的 get 陷阱、抛错的访问器都能让
+  // 它炸掉。本函数在每次调用的路径上拿被装饰方法/回调的返回值来判定，为它崩掉业务调用
+  // 不划算，故与 isAsyncFunction 同口径：抛错按「非 thenable」降级
+  try {
+    return typeof (value as PromiseLike<unknown>).then === 'function'
+  } catch {
+    return false
+  }
 }
 
 /**
@@ -78,8 +95,9 @@ function isThenable(value: unknown): value is PromiseLike<unknown> {
  *
  * @remarks 返回值类型跟随被装饰方法：同步方法仍同步返回，异步（或返回 Promise）方法
  * 返回 Promise；`after` 在结果确定后触发，`onError` 在同步抛错或 Promise reject 时触发。
- * `before`/`after` 返回 Promise 时按 {@link DecoratorOptions} 的约定接续，不会并发执行、
- * 也不会留下 unhandled rejection；`onError` 自身抛错不会顶替原始失败。
+ * 三个回调（`before`/`after`/被装饰方法）自身的失败都会先经 `onError` 再按原样传播，
+ * 失败观测口径一致。`before`/`after` 返回 Promise 时按 {@link DecoratorOptions} 的约定
+ * 接续，不会并发执行、也不会留下 unhandled rejection；`onError` 自身抛错不会顶替原始失败。
  *
  * @example
  * ```typescript
@@ -136,16 +154,29 @@ export function createDecorator(options: DecoratorOptions = {}): MethodDecorator
         return result
       }
 
-      const afterResult = options.after(result)
+      let afterResult: unknown
+      try {
+        afterResult = options.after(result)
+      } catch (error) {
+        // after 的同步抛错此前绕过了 onError：与 before 抛错、方法本体抛错的口径不一致
+        // （文档声明「同步抛错走 onError」）。补一次上报，抛出行为本身不变
+        reportError(error)
+        throw error
+      }
       if (!isThenable(afterResult)) {
         return result
       }
       const tail = Promise.resolve(afterResult).then(() => result)
-      if (!awaitTail) {
-        tail.catch((error) => {
+      // after 返回 rejected Promise 也要被 onError 观测到（此前完全静默）。挂在派生
+      // promise 上的这个 catch 只负责上报与消除全局告警：awaitTail 时调用方拿到的
+      // 仍是 tail 本身，拒绝语义原样保留
+      void tail.catch((error) => {
+        reportError(error)
+        if (!awaitTail) {
+          // 同步方法不能改判为 Promise 返回，这条拒绝无处传给调用方，只能就地留痕
           console.error('[Action] async after callback rejected:', error)
-        })
-      }
+        }
+      })
 
       return awaitTail ? tail : result
     }

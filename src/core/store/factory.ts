@@ -28,17 +28,30 @@ import type { StoreConfig, State, Actions, Getters } from '../../types/store.js'
 // 由 state/actions/getters 字面量反推（推荐写法），或显式写全三个类型参数。
 
 /**
+ * 三处签名共用的基座：`StoreConfig` 剥掉 `state` 之后的形状。
+ *
+ * `state` 的形态是重载唯一要改的东西，其余选项必须逐字一致；同一表达式各写一遍
+ * （此前是两个重载配置 + 实现签名共三处）等于给「改一处漏两处」留口子——StoreConfig
+ * 一旦调整 state 的处理方式，漏改的那处会静默漂移（多带/少带一个选项编译器都不报）。
+ *
+ * 不加类型参数约束：`StoreConfig` 自身三个参数都无约束，实现签名要用
+ * `S | (() => S)` 实例化它（`Getters<S>` 装不进 `Getters<S | (() => S)>` 的逆变位），
+ * 在这里补约束会把那条实例化挡掉。约束由各使用处的签名声明负责。
+ */
+type StoreConfigWithoutState<S, A, G> = Omit<StoreConfig<S, A, G>, 'state'>
+
+/**
  * 工厂函数形式配置：state 类型固定为 `() => S`。
  * 必须用 Omit 剥离 `StoreConfig.state?: S`——否则与 `{ state: () => S }` 交集
  * 成 `S & (() => S)`，S 从两个位置产生冲突候选（函数与返回值），
  * 导致 getter 上下文中 `ResolveState<S>` 退化为 `(() => S) | S`。
  */
-type FactoryStoreConfig<S extends State, A extends Actions = Actions, G extends Getters<S> = Getters<S>> = Omit<StoreConfig<S, A, G>, 'state'> & {
+type FactoryStoreConfig<S extends State, A extends Actions = Actions, G extends Getters<S> = Getters<S>> = StoreConfigWithoutState<S, A, G> & {
   state: () => S
 }
 
 /** 对象字面量形式配置：state 类型固定为 `S` */
-type LiteralStoreConfig<S extends State, A extends Actions = Actions, G extends Getters<S> = Getters<S>> = Omit<StoreConfig<S, A, G>, 'state'> & { state: S }
+type LiteralStoreConfig<S extends State, A extends Actions = Actions, G extends Getters<S> = Getters<S>> = StoreConfigWithoutState<S, A, G> & { state: S }
 
 // 重载 1：state 工厂函数形式（state: () => S）
 /**
@@ -81,13 +94,15 @@ export function createStore<S extends State, A extends Actions = Actions, G exte
   options: LiteralStoreConfig<S, A, G>,
 ): Store<S, A, G>
 
-// 实现签名（对外不可见，仅需兼容上述重载）
+// 实现签名（对外不可见，仅需兼容上述重载）。state 取两种形状的并集，
+// 其余选项与两个重载走同一个 StoreConfigWithoutState 基座
 export function createStore<S extends State, A extends Actions = Actions, G extends Getters<S> = Getters<S>>(
-  options: Omit<StoreConfig<S | (() => S), A, G>, 'state'> & { state: S | (() => S) },
+  options: StoreConfigWithoutState<S | (() => S), A, G> & { state: S | (() => S) },
 ): Store<S, A, G> {
-  // Store 构造器的 `options = {}` 默认值只对 undefined 生效：null 会一路走到
-  // `options.name` 抛出与配置无关的 TypeError，故两个假值都在这里以同一口径失败
-  if (options === null || options === undefined || typeof options !== 'object') {
+  // Store 构造器的 `options = {}` 默认值只对 undefined 生效，且 `typeof` 判定会放过数组：
+  // 数组配置一路进入构造器，`options.name`/`options.state` 都取不到值，
+  // 结果是静默建出一个空 store（比抛错更难查），故与 null/非对象同口径就地拒绝
+  if (options === null || typeof options !== 'object' || Array.isArray(options)) {
     throw new TypeError('[GeomStore] createStore: options must be a valid object')
   }
   return new Store(options)

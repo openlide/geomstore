@@ -46,7 +46,8 @@ describe('store/utils', () => {
       } finally {
         // 恢复原始 process（如果还存在）
         if (originalProcess !== undefined) {
-          (global as any).process = originalProcess
+          const g = global as any
+          g.process = originalProcess
         }
       }
     })
@@ -62,7 +63,8 @@ describe('store/utils', () => {
 
     it('应该在 process.env.NODE_ENV 为 undefined 时回退到 __DEV__ 分支', () => {
       // 设置 __DEV__ = false 意味着生产环境
-      (global as any).__DEV__ = false
+      const g = global as any
+      g.__DEV__ = false
       try {
         // 删除 NODE_ENV 以触发 __DEV__ 分支
         const originalNodeEnv = process.env.NODE_ENV
@@ -79,7 +81,8 @@ describe('store/utils', () => {
     })
 
     it('应该在 __DEV__ = true 时返回 false', () => {
-      (global as any).__DEV__ = true
+      const g = global as any
+      g.__DEV__ = true
       try {
         const originalNodeEnv = process.env.NODE_ENV
         delete process.env.NODE_ENV
@@ -106,8 +109,31 @@ describe('store/utils', () => {
         // 不应该抛出，应返回 false（兜底）
         expect(_isProduction()).toBe(false)
       } finally {
-        (global as any).process = originalProcess
+        const g = global as any
+        g.process = originalProcess
       }
+    })
+
+    it('NODE_ENV 必须优先于 __DEV__（打包器内联后的判定方向）', () => {
+      // 小程序/web 产物里 __DEV__ 常被判为 true，而 process.env.NODE_ENV 会被打包器
+      // 内联成 "production" 字面量：内联结果必须赢，否则生产被识别成开发模式
+      const g = global as any
+      g.__DEV__ = true
+      process.env.NODE_ENV = 'production'
+      try {
+        expect(_isProduction()).toBe(true)
+      } finally {
+        delete (global as any).__DEV__
+      }
+    })
+
+    it('不得用 typeof process 门控 NODE_ENV（门控会短路内联结果）', () => {
+      // 打包器只内联 process.env.NODE_ENV 这个成员表达式，不会内联 process 全局本身：
+      // 一旦写成 `typeof process !== 'undefined' && ...`，浏览器产物里 && 左侧恒为 false，
+      // 已内联好的 "production" 被丢弃 → 生产构建退回开发兜底 → 直写状态由 warn 变抛错。
+      // 运行期在 Node 下两种写法等价，故只能锁定编译后的函数体不含该门控
+      expect(isProduction.toString()).not.toContain('typeof process')
+      expect(isProduction.toString()).toContain('process.env.NODE_ENV')
     })
   })
 
@@ -134,6 +160,18 @@ describe('store/utils', () => {
 
       expect(message).toContain('prop')
       expect(message).toContain('delete')
+      expect(message).toContain('Attempted value: undefined')
+    })
+
+    it('JSON.stringify 返回 undefined 的类型要回退到 String()，与真 undefined 区分开', () => {
+      // JSON.stringify(fn / Symbol / undefined) 不抛错而返回 undefined，
+      // 不回退的话三者都渲染成 "Attempted value: undefined"，排查时分不清写入了什么
+      const fn = function attemptedSetter() {
+        return 1
+      }
+      expect(createMutationErrorMessage('cb', fn, 'set')).toContain('Attempted value: function attemptedSetter')
+      expect(createMutationErrorMessage('cb', Symbol('mySymbol'), 'set')).toContain('Attempted value: Symbol(mySymbol)')
+      expect(createMutationErrorMessage('cb', undefined, 'set')).toContain('Attempted value: undefined')
     })
   })
 
@@ -181,7 +219,8 @@ describe('store/utils', () => {
       } finally {
         // 恢复原始 structuredClone
         if (originalStructuredClone !== undefined) {
-          (global as any).structuredClone = originalStructuredClone
+          const g = global as any
+          g.structuredClone = originalStructuredClone
         }
       }
     })

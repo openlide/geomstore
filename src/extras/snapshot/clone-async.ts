@@ -14,7 +14,16 @@
  */
 
 import type { AsyncSnapshotOptions, CloneContext, SnapshotError, SnapshotStats } from './types.js'
-import { SKIP_CLONE_NODE, cloneDeep, clonePrelude, handleCloneError, invokeCustomCloner, normalizeDescriptorFlags, safeReadProperty } from './clone.js'
+import {
+  SKIP_CLONE_NODE,
+  cloneDeep,
+  clonePrelude,
+  dropFailedNode,
+  handleCloneError,
+  invokeCustomCloner,
+  normalizeDescriptorFlags,
+  safeReadProperty,
+} from './clone.js'
 
 /**
  * 异步克隆任务
@@ -58,8 +67,10 @@ export function processNodeAsync(
 ): unknown {
   const { value, context } = task
 
-  // 前置公共判定（maxDepth / 计数器 / 原语 / 循环引用）：与异步克隆路径共用
-  const prelude = clonePrelude(value, context, options, errors, stats, counters)
+  // 前置公共判定（深度 / 计数器 / 原语 / 循环引用）：与同步克隆路径共用。
+  // 深度上限直接取 options.maxDepth：本引擎按队列逐节点处理、栈深度与数据深度无关，
+  // 故不叠加同步路径的栈安全硬上限（超深结构正是该引擎存在的理由）
+  const prelude = clonePrelude(value, context, options.maxDepth, options, errors, stats, counters)
   if (prelude.done) {
     return prelude.value
   }
@@ -85,12 +96,14 @@ export function processNodeAsync(
   // objectShell 由 try 末尾赋值后交给属性循环使用
   let objectShell: Record<string, unknown>
   try {
-    // 处理特殊类型
+    // 处理特殊类型（与同步路径同口径：Date/RegExp 产出了新对象，计一次克隆操作）
     if (value instanceof Date) {
+      stats.cloneOperations++
       return new Date(value.getTime())
     }
 
     if (value instanceof RegExp) {
+      stats.cloneOperations++
       return new RegExp(value.source, value.flags)
     }
 
@@ -109,7 +122,9 @@ export function processNodeAsync(
           k,
           {
             ...context,
-            path: `${context.path}.key`,
+            // 键身份入路径：只写 `.key` 时同一 Map 的多个键失败会在 errors[] 里
+            // 留下完全相同的路径，无法定位到条目（与同步路径 clone.ts 同口径）
+            path: `${context.path}.key[${String(k)}]`,
             depth: context.depth + 1,
           },
           options,
@@ -214,19 +229,22 @@ export function processNodeAsync(
     // instanceof 走 getPrototypeOf 陷阱、Date/RegExp/Map/Set 的内建方法在代理接收者上
     // 抛 TypeError（"incompatible receiver"）、getOwnPropertyDescriptor 陷阱可返回非法值。
     // 让它们直达驱动层只会留下一条路径含糊的 cloneError 并剥夺调用方的降级决定权
-    handleCloneError(error, { path: context.path, depth: context.depth, value }, options, errors, stats)
+    dropFailedNode(value, context, error, options, errors, stats)
     return SKIP_CLONE_NODE
   }
 
   const cloned = objectShell
 
-  // keys 计算纳入 try（与同步路径同语义：共用 handleCloneError，中止信号原样上抛）
+  // keys 计算纳入 try（与同步路径同语义：按本节点落 cloneError 并咨询 onError，中止信号原样上抛）。
+  // 收尾同样是「丢节点」而不是交出空壳：外壳此刻已登记进 visited，交出它等于在交付的 data 里
+  // 留下源数据中不存在的 `{}`，且同一源对象的后续引用会命中登记、静默复用这副没有属性的壳。
+  // 本分支不会有子任务悬在半路——对象子值的 enqueue 发生在下方的属性循环里
   let keys: string[]
   try {
     keys = options.includeNonEnumerable ? Object.getOwnPropertyNames(value) : Object.keys(value)
   } catch (error) {
-    handleCloneError(error, { path: context.path, depth: context.depth, value }, options, errors, stats)
-    return cloned
+    dropFailedNode(value, context, error, options, errors, stats)
+    return SKIP_CLONE_NODE
   }
 
   for (const key of keys) {
@@ -237,9 +255,12 @@ export function processNodeAsync(
         continue
       }
 
-      // 访问器属性：以 getter 求值结果克隆为数据属性（与同步路径同语义）
+      // 访问器属性：以 getter 求值结果克隆为数据属性（与同步路径同语义）。
+      // 调用描述符里捕获的 getter 而非回读 `value[key]`——后者在 Proxy 上会重跑 `get`
+      // 陷阱，取值可与刚拿到的描述符不是同一件事；只有 setter 的访问器无值可读，
+      // 落为 undefined 并还原成可写数据属性（理由见 clone.ts 的属性循环注释）
       const isAccessor = descriptor.get !== undefined || descriptor.set !== undefined
-      const sourceValue = isAccessor ? (descriptor.get ? (value as Record<string, unknown>)[key] : undefined) : descriptor.value
+      const sourceValue = isAccessor ? (descriptor.get ? descriptor.get.call(value) : undefined) : descriptor.value
       // 与同步路径共用同一归一化口径（见 clone.ts 的 normalizeDescriptorFlags）：
       // 此前异步用 `=== true`、同步传原始值，同一份数据在两条路径会产出不同描述符。
       // 三个标志一律从这一个对象取（含下方的原语分支）——直接从 descriptor 读会把

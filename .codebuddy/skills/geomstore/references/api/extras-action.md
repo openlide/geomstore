@@ -25,6 +25,26 @@
 export type ActionDecorator = MethodDecorator;
 ```
 
+### `ActionErrorData`
+
+```ts
+/**
+ * `errorData` 状态键的内容形态（{@link ActionLoader.getErrorData} 的返回类型）
+ *
+ * 由 `setError` 单点构造，因此可以给出具体形状：此前 `getErrorData` 返回 `unknown`，
+ * 而它自己的文档示例就读 `errorData.timestamp` / `errorData.stack`——那在 `unknown` 上
+ * 过不了类型检查，等于强制每个调用方自行 cast（正是 `unknown` 想避免的事）。
+ */
+export interface ActionErrorData {
+    /** 规范化后错误对象的 `message` */
+    message: string;
+    /** 规范化后错误对象的 `stack`：无栈的实现下为 undefined */
+    stack?: string;
+    /** 记录时刻（`Date.now()`） */
+    timestamp: number;
+}
+```
+
 ### `ActionExecutionContext`
 
 ```ts
@@ -233,6 +253,11 @@ export declare class ActionExecutor<A extends Actions = AsyncActions> {
      * @remarks 历史按「一次逻辑调用」记账：逐次重试不单独入历史，`getStats()` 的 total
      * 与 `successRate` 因此反映调用结果而非单次尝试结果。
      *
+     * 同一条记录的 `duration`（以及派生的 `avgDuration`）是**端到端**耗时，包含
+     * `retryWithBackoff` 的全部退避等待（`delay * 2^(i-1)`）：`retries: 3, delay: 100`
+     * 的三次失败重试会给 `duration` 加上约 700ms。它衡量的是「这次调用等了多久」，
+     * 不是 action 自身的执行延迟——把它当性能指标读之前先想想重试次数。
+     *
      * @example
      * ```typescript
      * const result = await executor.executeWithRetry(
@@ -276,6 +301,10 @@ export declare class ActionExecutor<A extends Actions = AsyncActions> {
      * 其迟到结果被丢弃且不写入历史（本方法按「一次调用一条记录」记为超时失败）。
      * 需要真正中断请在 action 内部使用 AbortController 等取消机制。
      *
+     * 超时错误由公共内核 `raceWithTimeout` 统一构造，带 `code === TIMEOUT_ERROR_CODE`
+     * （见 `./async-core.js`）：判定是否超时请按该 code，文案 `Action timeout after <n>ms`
+     * 仅用于展示，不保证跨版本稳定。
+     *
      * @example
      * ```typescript
      * try {
@@ -287,7 +316,7 @@ export declare class ActionExecutor<A extends Actions = AsyncActions> {
      *   )
      *   console.log('Data fetched:', result)
      * } catch (error) {
-     *   if (error.message.includes('timeout')) {
+     *   if ((error as { code?: string }).code === TIMEOUT_ERROR_CODE) {
      *     console.error('Request timed out')
      *     showTimeoutError()
      *   } else {
@@ -402,9 +431,18 @@ export declare class ActionLoader {
     /**
      * 错误数据映射
      * @private
-     * @type {Map<string, unknown>}
+     * @type {Map<string, ActionErrorData>}
      */
     private errorData;
+    /**
+     * 记账代际：`clearInternalRecords()` 每次自增
+     *
+     * in-flight 调用在开始时捕获它的值，结算时比对：不一致就说明自己的 increment 记录
+     * 已被丢弃（`clear()` 或换配置的 `setOptions()` 都已给旧键补写复位值），此时任何
+     * 状态写入都只可能吞掉「重置之后新起的调用」的计数。见 {@link CallScope}
+     * @private
+     */
+    private stateGeneration;
     /**
      * 最近一次 `wrap` 注入的 setState
      *
@@ -455,6 +493,15 @@ export declare class ActionLoader {
      * `unknown[]` 会拒掉类文档示例里 `(userId: string) => Promise<User>` 这类带具体参数类型的
      * action（调用方被迫写 `as any`），`never[]` 则放行且保留 T 的推导。
      *
+     * 包装函数把自己的 receiver 原样转发给被包装的 action：本方法常被用来包一个**未绑定**的
+     * 方法引用（`loader.wrap(store.fetchUser, 'fetchUser', store.setState.bind(store))`），
+     * 那种写法下 `this` 就是宿主，丢掉它会让依赖 receiver 的 action 直接抛错。
+     *
+     * 派生状态（loading/error/errorData）的写入按「一次调用的配置快照 + 代际凭证」结算：
+     * `autoLoading` 与三个状态键都在调用开始时求值一次，结算时只认这份快照，且只在
+     * 代际未变时才写——见 {@link CallScope}。中途 `setOptions()`/`clear()` 之后进行的
+     * 收尾写入既可能对错键、也会吞掉别人调用的计数，故一并跳过。
+     *
      * @example
      * ```typescript
      * const fetchUserAction = async (userId: string) => {
@@ -475,6 +522,25 @@ export declare class ActionLoader {
      * ```
      */
     wrap<T extends (...args: never[]) => Promise<unknown>>(action: T, actionName: string, setState: (key: string, value: unknown) => void): T;
+    /**
+     * 取本次调用的配置快照与记账凭证
+     *
+     * @private
+     */
+    private captureCallScope;
+    /**
+     * 一次调用的收尾：把派生状态写回宿主
+     *
+     * `error === null` 是成功路径（清错误），否则记录错误。错误状态管理独立于
+     * `autoLoading` 开关：即使关闭也应清掉/写上陈旧错误。
+     *
+     * 代际变了就直接返回：本调用的 increment 记录已被 `clear()`/换配置的 `setOptions()`
+     * 丢弃，而那两处都已给旧键补写复位值——再减一次只会把「重置之后新起的调用」的计数
+     * 吞掉、并在它仍在飞行时把共享键翻成 false。
+     *
+     * @private
+     */
+    private settleCall;
     /**
      * 执行辅助状态写入（loading/error/errorData），失败不外泄
      *
@@ -501,22 +567,20 @@ export declare class ActionLoader {
      */
     private decrementLoading;
     /**
-     * 设置error
+     * 回滚一次 increment（`setState` 抛错时），只退计数不写状态
      *
      * @private
-     * @param {string} actionName - Action名称
-     * @param {Error | null} error - 错误对象或null
-     * @param {(key: string, value: unknown) => void} setState - 设置状态的函数
      */
-    private setError;
+    private releaseLoadingSlot;
     /**
-     * 清除error
+     * 写 error / errorData
+     *
+     * 键取自调用开始时的快照（{@link CallScope}），不在这里重算：中途 `setOptions()`
+     * 换过键名的话，重算会让「按旧键写的账」跑到新键上去补一笔，而新键属于切换之后的调用。
      *
      * @private
-     * @param {string} actionName - Action名称
-     * @param {(key: string, value: unknown) => void} setState - 设置状态的函数
      */
-    private clearError;
+    private writeError;
     /**
      * 获取loading key
      *
@@ -574,7 +638,7 @@ export declare class ActionLoader {
      * 获取error data
      *
      * @param {string} actionName - Action名称
-     * @returns {unknown} 错误数据，包含message、stack、timestamp
+     * @returns {ActionErrorData | undefined} 错误数据（message/stack/timestamp），无错误时 undefined
      *
      * @example
      * ```typescript
@@ -585,7 +649,7 @@ export declare class ActionLoader {
      * }
      * ```
      */
-    getErrorData(actionName: string): unknown;
+    getErrorData(actionName: string): ActionErrorData | undefined;
     /**
      * 获取所有loading状态
      *
@@ -643,6 +707,9 @@ export declare class ActionLoader {
     /**
      * 丢弃内部记账（store 侧的复位由 `resetDerivedState` 负责）
      *
+     * 代际同时自增：进行中的调用据此认出自己的 increment 记录已不在，结算时不再改任何
+     * 状态键（见 {@link CallScope}）。
+     *
      * @private
      */
     private clearInternalRecords;
@@ -691,15 +758,16 @@ export interface ActionLoaderOptions {
     /**
      * 共享的 loading 引用计数存储
      *
-     * @internal 供 withLoading 装饰器按宿主 + loading 键注入：
-     * 同一宿主上不同选项签名（如不同 errorKey）的装饰器实例各自持有计数时，
-     * 对同一 loading 键的并发计数互不可见，先完成的调用会提前翻转共享布尔键。
-     * 直接构造 ActionLoader 的调用方无需提供。
+     * 供 `withLoading` 装饰器按宿主 + loading 键注入：同一宿主上不同选项签名（如不同 `errorKey`）
+     * 的装饰器实例各自持有计数时，对同一 loading 键的并发计数互不可见，
+     * 先完成的调用会提前翻转共享布尔键。直接构造 `ActionLoader` 的调用方无需提供。
      *
-     * 注意：本字段只在 `ActionLoader` 构造函数被读取一次（`options.sharedLoadingCounts ?? new Map()`），
-     * `setOptions()` 会忽略它——运行期换 Map 会让新旧两本计数同时存在。
-     * 调用方自造/复用同一 Map 给多个 loader 时，「首个调用置 true、末个完成置 false」的
-     * 不变量由注入方负责，除非确有必要否则不要传本字段。
+     * 这是**公开可传**的选项（`docs/API.md` 的选项表里有它），不是类型层隐藏得了的内部件：
+     * `@internal` 标签既不阻止 tsc 导出它，也不让 `src/extras/index.ts` 的再导出少掉它，
+     * 留着只会让人以为它不该被碰。它的两条真实约束是：
+     * - **只在构造期读一次**（`options.sharedLoadingCounts ?? new Map()`），`setOptions()` 忽略它——
+     *   运行期换 Map 会让新旧两本计数同时存在，那比忽略更糟；
+     * - 自造/复用同一 Map 给多个 loader 时，「首个调用置 true、末个完成置 false」的不变量由注入方负责。
      */
     sharedLoadingCounts?: Map<string, number>;
 }
@@ -753,6 +821,19 @@ export type ActionResult<T = unknown> = {
 };
 ```
 
+### `ActionStats`
+
+```ts
+/** 单个 Action 的执行统计 */
+export interface ActionStats {
+    total: number;
+    success: number;
+    failure: number;
+    avgDuration: number;
+    successRate: number;
+}
+```
+
 ### `ActionUtils`
 
 ```ts
@@ -802,6 +883,8 @@ export declare class ActionUtils<A extends Actions = AsyncActions> {
      * @param {K} actionName - Action名称
      * @param {Parameters<A[K]>} args - Action 参数
      * @returns {Promise<Awaited<ReturnType<A[K]>>>} Action执行结果
+     * @throws {TypeError} 入参形态不对（缺 actionName、actionName 在该 actions 上不存在或不是
+     *   函数）时**就地**抛出：不经过执行器，因此不会在 `getStats`/`getHistory` 里留下记录
      * @throws 被装饰 action 自身抛出的错误会**原样**向上抛出（同 `ActionExecutor.execute`）：
      *   本方法只是门面，不做包装、也不转成「失败结果」。executor 已把该次执行按失败记入历史
      *   （`getStats`/`getHistory` 可见），随后 rethrow 原始值——调用方 `catch (e) => e === thrown`
@@ -835,9 +918,18 @@ export interface ActionUtilsOptions<A extends Actions = AsyncActions> {
 ```ts
 /**
  * 异步Actions类型（继承Actions）
+ *
+ * 索引签名的形参取 `any[]`，与基类型 `Actions`（`Record<string, (...args: any[]) => any>`）
+ * 同口径：属性式函数类型在 `strictFunctionTypes`（本仓库 `strict: true`）下按**逆变**比较，
+ * 写成 `unknown[]` 会让带标注的常见写法被拒——
+ * `{ fetchUser: (id: string) => Promise<User> }` 不满足
+ * `(...args: unknown[]) => Promise<unknown>`（`unknown` 不能赋给 `string`），
+ * 调用方被迫去掉形参标注或整体断言，而同样形状的函数式声明却能通过。
+ * 返回值保持 `Promise<unknown>`：返回类型是协变位置，具体类型可自由收窄，
+ * 不需要（也不应该）放宽到 `any`。
  */
 export interface AsyncActions extends Actions {
-    [key: string]: (...args: unknown[]) => Promise<unknown>;
+    [key: string]: (...args: any[]) => Promise<unknown>;
 }
 ```
 
@@ -873,7 +965,8 @@ export interface CacheDecoratorOptions {
  * @remarks 三个回调都可以写成 `async`（TS 允许 async 函数满足 `=> void` 签名）：
  * `before` 返回 Promise 时整次调用降级为异步，被装饰方法一定等它 settle 之后才执行，
  * 其 rejection 走 `onError`；`after` 返回 Promise 时只有在被装饰方法本身是异步时才会被
- * 等待（同步方法必须保持同步返回，此时该 Promise 的 rejection 只记录日志不外抛）。
+ * 等待（同步方法必须保持同步返回，此时该 Promise 的 rejection 记日志并按 `onError` 上报，
+ * 不外抛）。任一回调抛错/拒绝都会先经 `onError` 再按原有语义传播。
  */
 export interface DecoratorOptions {
     /** 执行前的回调 */
@@ -882,6 +975,65 @@ export interface DecoratorOptions {
     after?: (result: unknown) => void;
     /** 执行失败的回调 */
     onError?: (error: Error) => void;
+}
+```
+
+### `LogDecoratorOptions`
+
+```ts
+/**
+ * 日志装饰器选项
+ */
+export interface LogDecoratorOptions {
+    /**
+     * 日志输出目标，缺省 `console`
+     *
+     * 生产构建里接入统一日志通道（或整体替换为 no-op）比在业务代码里到处删日志更可控，
+     * 与 `PerformanceMonitor` 的 `logger` 选项同一思路。sink 自身抛错只告警，
+     * 不会中断被装饰的 action，也不会把成功的调用改判成失败。
+     */
+    sink?: LogSink;
+    /**
+     * 输出前的脱敏钩子：决定参数 / 返回值 / 错误以什么形态进入日志
+     *
+     * 非生产构建下它的返回值就是最终输出。生产构建下**不**再接管输出：返回值仍要过一道
+     * {@link summarize} 摘要，除非同时显式传 `summarizeInProduction: false`（见该选项）。
+     */
+    redact?: (value: unknown, phase: LogPhase) => unknown;
+    /**
+     * 生产构建下是否强制摘要输出，缺省 `true`
+     *
+     * `true`：进 sink 的一律是不含内容的摘要（{@link summarize}），自带 `redact` 也绕不过去
+     * ——一个过于宽松或有 bug 的脱敏器不该能静默关掉这道防线。
+     * 只有显式传 `false` 才表示「我确认过，sink 侧自行脱敏」，此时 `redact` 单独决定形态。
+     *
+     * 非生产构建默认原样输出（本地调试用）：staging 之类与生产同构的运行期由
+     * `isProduction()` 的判定覆盖，需要收敛内容时同样传 `redact`。
+     */
+    summarizeInProduction?: boolean;
+}
+```
+
+### `LogPhase`
+
+```ts
+/** 日志内容产生的阶段，供 `redact` 按阶段决定脱敏策略 */
+export type LogPhase = 'args' | 'result' | 'error';
+```
+
+### `LogSink`
+
+```ts
+/**
+ * GeomStore - 日志装饰器
+ *
+ * 在Action执行前后记录日志，便于调试
+ *
+ */
+/** 日志输出口：与 console 的 (message, ...data) 形状一致，便于直接接入项目 logger */
+export interface LogSink {
+    log: (message: string, ...data: unknown[]) => void;
+    error: (message: string, ...data: unknown[]) => void;
 }
 ```
 
@@ -914,6 +1066,34 @@ export interface RetryDecoratorOptions {
      */
     shouldRetry?: (error: Error) => boolean;
 }
+```
+
+### `RetryOptions`
+
+```ts
+/**
+ * 指数退避重试选项
+ *
+ * `retryWithBackoff` 的入参契约，也是全库重试语义的唯一定义处：装饰器侧的
+ * `RetryDecoratorOptions`（`decorators/retry.ts`）与 `ActionExecutor.executeWithRetry`
+ * 的 options 都是它的子集/复用者，各写一份字段声明迟早与内核漂移。
+ */
+export interface RetryOptions {
+    /** 最大重试次数（不含首次执行），默认 3 */
+    retries?: number;
+    /** 基础退避延迟（毫秒），第 n 次重试等待 delay * 2^(n-1)，默认 100 */
+    delay?: number;
+    /** 是否对某次错误继续重试（返回 false 立即抛出），默认全部重试 */
+    shouldRetry?: (error: Error) => boolean;
+    /** 每次实际重试前的回调（attempt 从 1 开始） */
+    onRetry?: (error: Error, attempt: number) => void;
+}
+```
+
+### `TIMEOUT_ERROR_CODE`
+
+```ts
+TIMEOUT_ERROR_CODE: "ACTION_TIMEOUT"
 ```
 
 ### `ThrottleDecoratorOptions`
@@ -950,6 +1130,15 @@ export interface ThrottleDecoratorOptions {
      * 置为 true 可强制被抑制的调用也返回 Promise，保证调用方 await/.then 不崩。
      */
     assumeAsync?: boolean;
+}
+```
+
+### `TimeoutError`
+
+```ts
+/** 附带 `code` 的超时错误形状（`Error` + {@link TIMEOUT_ERROR_CODE}） */
+export interface TimeoutError extends Error {
+    code: typeof TIMEOUT_ERROR_CODE;
 }
 ```
 
@@ -1025,8 +1214,9 @@ export declare function cancelThrottledCalls(host: unknown, method?: string | sy
  *
  * @remarks 返回值类型跟随被装饰方法：同步方法仍同步返回，异步（或返回 Promise）方法
  * 返回 Promise；`after` 在结果确定后触发，`onError` 在同步抛错或 Promise reject 时触发。
- * `before`/`after` 返回 Promise 时按 {@link DecoratorOptions} 的约定接续，不会并发执行、
- * 也不会留下 unhandled rejection；`onError` 自身抛错不会顶替原始失败。
+ * 三个回调（`before`/`after`/被装饰方法）自身的失败都会先经 `onError` 再按原样传播，
+ * 失败观测口径一致。`before`/`after` 返回 Promise 时按 {@link DecoratorOptions} 的约定
+ * 接续，不会并发执行、也不会留下 unhandled rejection；`onError` 自身抛错不会顶替原始失败。
  *
  * @example
  * ```typescript
@@ -1100,8 +1290,9 @@ export declare function disposeThrottledState(host: unknown): void;
  * 把最后一次输入提交出去的场合。语义与延迟自然到期一致：
  * - 一次调用只执行原方法一次，其挂起的全部 Promise 都按这次结果结算（合并语义不变）；
  * - 没有挂起调用时不凭空执行原方法（再次 flush 因队列已空而是 no-op）；
- * - 原方法失败仍按既有语义 reject 那些 Promise——调用方拿得到结果，不会漏成
- *   unhandledRejection（未被处理的 rejection 与延迟自然到期时完全同构）。
+ * - 原方法失败仍按既有语义 reject 那些 Promise：`await` 了的调用方拿得到失败，
+ *   fire-and-forget 的调用方也不会漏出 unhandledRejection（`runPendingCalls` 在 reject
+ *   前给每个挂起 promise 补了 catch，与延迟自然到期完全同构）。
  *
  * @param host - 宿主；基本类型 / null 时为 no-op
  * @param method - 只立即执行该名字的被装饰方法；省略时覆盖该宿主上所有防抖方法
@@ -1196,8 +1387,15 @@ export declare function withCache(options?: CacheDecoratorOptions): MethodDecora
  * 延迟执行方法，如果在延迟时间内再次调用，则重置定时器
  * 适用于搜索、输入框等场景
  *
- * @param {number} [delay=300] - 延迟时间（毫秒）
+ * @param {number} [delay=300] - 延迟时间（毫秒）；非有限值或 <=0 视为配置错误，
+ *        回退为 300（`setTimeout(fn, NaN)` 与负延迟都按 ~0ms 触发、`Infinity` 在 Node 下
+ *        溢出告警后按 1ms 处理，静默把防抖退化成一个近无操作；与 `withThrottle` 同口径）
  * @returns {MethodDecorator} 方法装饰器
+ *
+ * @remarks 包装函数的返回值**恒为 Promise**：延迟期内不能同步产出结果，只能先给一个
+ * 等待结算的替身。因此本装饰器适用于 async 方法。TS 的旧式方法装饰器改不了声明签名，
+ * 装饰一个同步方法 `sync(): T` 时类型仍是 `(): T` 而运行时拿到 `Promise<unknown>`
+ * （`const v: T = host.sync()` 编译通过却拿错值），调用方必须按 Promise 消费。
  *
  * @example
  * ```typescript
@@ -1270,8 +1468,9 @@ export declare function withLoading(options?: ActionLoaderOptions): MethodDecora
  * @returns {MethodDecorator} 方法装饰器
  *
  * @remarks 默认把 `args`/`result` 原样写入日志，方便本地调试；生产构建（`isProduction()`）
- * 下改为摘要（类型 / 长度 / 键数），避免 token、密码、PII 随日志外泄。需要自定义脱敏
- * （例如只脱敏某个字段）时传 `redact`，它会覆盖该缺省策略。
+ * 下改为摘要（类型 / 长度 / 键数，`Error` 只留 `name`），避免 token、密码、PII 随日志外泄。
+ * 该摘要在生产构建下是**强制**的：自带 `redact` 只会先于摘要生效，不会取代它，
+ * 除非显式传 `summarizeInProduction: false`（表示 sink 侧自行脱敏）。
  *
  * @example
  * ```typescript
@@ -1282,6 +1481,8 @@ export declare function withLoading(options?: ActionLoaderOptions): MethodDecora
  *   }
  *
  *   // 接入项目 logger，并把参数整体替换为不含内容的占位
+ *   // （非生产构建下日志里就是 '[credentials]'；生产构建下还要再过一道摘要，
+ *   //   要让 redact 单独决定内容形态得同时传 summarizeInProduction: false）
  *   @withLog('login', {
  *     sink: appLogger,
  *     redact: (value, phase) => (phase === 'args' ? '[credentials]' : value),
@@ -1315,8 +1516,14 @@ export declare function withLog(name?: string, options?: LogDecoratorOptions): M
  *
  * @remarks 与 `ActionExecutor.executeWithRetry` 共用 `retryWithBackoff` 内核，退避与
  * 错误规范化语义一致；选项面**不**等价：本装饰器只暴露 retries/delay/shouldRetry，
- * 内核的 `onRetry`（每次重试前回调）目前只由 `executeWithRetry` 入口提供。
+ * 内核的 `onRetry`（每次重试前回调）目前只由 `ActionExecutor.executeWithRetry` 入口提供。
  * 需要逐次重试的通知，请在 `shouldRetry` 里自行计数或改用执行器入口。
+ *
+ * @remarks **返回类型会变**：包装函数是 `async`，原本同步返回 `T` 的方法装饰后返回
+ * `Promise<T>`，原本同步抛出的失败也变成 rejection。这是退避的固有代价——重试之间要
+ * `await setTimeout`，同步路径无法在不阻塞事件循环的前提下等待。因此调用方必须
+ * `await`/`.then` 取结果，原先靠同步返回值或 `try/catch` 接结果的写法都要改写；
+ * 不想改调用方就不要给同步方法加本装饰器。
  *
  * @example
  * ```typescript
@@ -1395,14 +1602,18 @@ export declare function withThrottle(interval?: number, options?: ThrottleDecora
  * 仅是调用方提前得到超时拒绝。如需真正中断，请在被装饰的方法内部实现 AbortController
  * 等取消机制。超时抛出的错误不保证底层任务已清理。
  *
- * 超时错误是普通 `Error`（无专用错误类型、无 code），唯一判据是消息文本
- * `Timeout after <timeout>ms`。该文案是既有契约的一部分（调用方与
- * `tests/unit/extras/action/utils.test.ts` 都按它匹配），改动即破坏性变更。
+ * 超时错误由 `async-core.ts` 的 `createTimeoutError` 统一构造：它是普通 `Error` 加一个
+ * `code === TIMEOUT_ERROR_CODE`（`'ACTION_TIMEOUT'`），**跨入口识别按这个 code，不要按消息文本**。
+ * 消息文本 `Timeout after <n>ms` 仍是既有契约的一部分（调用方与
+ * `tests/unit/extras/action/utils.test.ts` 都按它匹配），改动即破坏性变更；其中 `<n>` 是
+ * **实际生效**的毫秒数（超过 2^31-1 ms 的配置会先被截到该上限再写入消息，
+ * 故消息里的数字一定等于真正等待的时间）。
  * 另注意 `ActionExecutor.executeWithTimeout` 的文案是 `Action timeout after <n>ms`，
- * 两个入口的文本并不相同：跨入口的统一判定请按 `error instanceof Error` +
- * 自行约定，或直接用 `instanceof`/自定义包装，不要只匹配大小写敏感的 `'Timeout'`。
+ * 两个入口的**文本**并不相同，但两者都经由 `raceWithTimeout` 拿到同一个 `code`，
+ * 所以「是不是超时」在跨入口维度上是可判定的。
  *
- * @param {number} [timeout=5000] - 超时时间（毫秒，必须为大于 0 的有限数值）
+ * @param {number} [timeout=5000] - 超时时间（毫秒，必须为大于 0 的有限数值；
+ *        超过 2^31-1 ms 的值按该上限生效，与宿主 `setTimeout` 的可表达区间一致）
  * @returns {MethodDecorator} 方法装饰器
  * @throws {RangeError} timeout 非法（在装饰器工厂调用时就抛出，而不是等到方法执行）
  *

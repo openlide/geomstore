@@ -616,7 +616,8 @@ describe('analyzerPlugin - uninstall cleanup', () => {
     }
 
     // 先恢复 globalThis
-    (global as any).globalThis = originalGlobalThis
+    const g = global as any
+    g.globalThis = originalGlobalThis
     expect(threw).toBe(false)
   })
 })
@@ -691,7 +692,7 @@ describe('analyzerPlugin - BUG-F2 错误路径清理配对栈', () => {
     jest.restoreAllMocks()
   })
 
-  it('dispatch 抛错后同类型后续操作的配对不错位（残留计时被 onError 清理）', () => {
+  it('R5-319 回归: dispatch 抛错后同类型后续操作的配对不错位', () => {
     const store = createStore({
       name: 'f2-error-dispatch-store',
       state: { count: 0 },
@@ -707,19 +708,23 @@ describe('analyzerPlugin - BUG-F2 错误路径清理配对栈', () => {
 
     store.use(analyzerPlugin)
 
-    // 错误路径：beforeDispatch push 后抛错，afterDispatch 不触发，
-    // onError 应立即结束全部未完成计时（记录到错误为止的耗时）并清空栈
+    // 错误路径：beforeDispatch push 后抛错，afterDispatch 不触发。
+    // 这条失败上报显式点名了 `'dispatch'`：同步 dispatch 中止是全库唯一「after* 再也不会来」
+    // 的发射点。同一无源通道的其余 4 条（Promise 拒绝、settled 兜底、收尾、缓存刷新）都不点名，
+    // 因为它们的 afterDispatch 早已弹过自己的栈项——据它们弹栈会掐断外层进行中的计时、配错 span
     expect(() => store.dispatch('fail')).toThrow('execution failed')
 
-    // 后续正常 dispatch 不应受残留影响：指标正常记录且无残留计时条目
+    // 后续正常 dispatch 不受残留影响：配对仍指向它自己 push 的那条计时
     store.dispatch('succeed')
 
     const monitor = (store as any).__performanceMonitor__
     const metrics = monitor.getMetrics() as Array<{ operation: string }>
-    // 错误场景的计时被记录（到错误发生为止的耗时）
+    // 中止帧被弹栈时照常产出一条「到抛错为止」的耗时：`popEnd` 就是调用 `end()`，
+    // 与 setState/patch/replaceState 正常收尾同语义。看指标的人要知道这条短耗时代表一次中止，
+    // 而不是一次成功的 dispatch
     expect(metrics.filter((m) => m.operation === 'dispatch:fail')).toHaveLength(1)
     expect(metrics.filter((m) => m.operation === 'dispatch:succeed')).toHaveLength(1)
-    // 全部计时条目已配对结束，无残留
+    // 两条计时都已收尾：既不跨帧配错，也不留在途条目等 pruneStaleOperations 按 TTL 清扫
     expect(monitor.currentOperations.size).toBe(0)
   })
 
@@ -748,29 +753,34 @@ describe('analyzerPlugin - BUG-F2 错误路径清理配对栈', () => {
     expect(monitor.getMetrics().map((m: { operation: string }) => m.operation)).toEqual(['setState:count', 'patch'])
   })
 
-  it('#425 回归: source 为出错的钩子名时只结束该类型的栈顶，外层计时保留', () => {
+  it('R5-319 回归: 钩子处理器抛错只出声，不得提前掐断仍在进行的嵌套计时', () => {
     const store = createStore({
       name: 'f2-scoped-source-store',
       state: { count: 0 },
+      actions: {
+        bump(this: any) {
+          this.setState('count', 1)
+        },
+      } as any,
     })
 
     store.use(analyzerPlugin)
-
-    // 嵌套场景：$patch 内部的 setState（patch 计时尚未结束）
-    store.hooks.emit('beforePatch', {})
-    store.hooks.emit('beforeSetState', 'count', 1)
     const monitor = (store as any).__performanceMonitor__
 
-    // HookSystem 在处理器抛错时以出错的 hookName 作第二参转发 onError
-    store.hooks.emit('onError', new Error('handler boom'), 'beforeSetState')
+    // 第三方在 beforeSetState 上挂了抛错的处理器：HookSystem 捕获后继续迭代其余处理器，
+    // 并以出错的 hookName 作第二参转发 onError（见 types/plugin.ts 的 emit 语义），
+    // 之后 afterSetState / afterDispatch 照常触发
+    const off = store.hooks.on('beforeSetState', () => {
+      throw new Error('handler boom')
+    })
 
-    // 内层 setState 计时被结束，外层 patch 的计时不受影响
-    expect(monitor.getMetrics().map((m: { operation: string }) => m.operation)).toEqual(['setState:count'])
-    expect(monitor.currentOperations.size).toBe(1)
+    store.dispatch('bump')
+    off()
 
-    store.hooks.emit('afterPatch', {})
+    // 两条计时各自与自己类型的 after* 配对：弹栈版实现里 afterSetState 会弹到
+    // 外层 dispatch 的配对项上，dispatch 的 span 被提前结束、afterDispatch 再弹一次空栈
+    expect(monitor.getMetrics().map((m: { operation: string }) => m.operation)).toEqual(['setState:count', 'dispatch:bump'])
     expect(monitor.currentOperations.size).toBe(0)
-    expect(monitor.getMetrics().map((m: { operation: string }) => m.operation)).toEqual(['setState:count', 'patch'])
   })
 })
 

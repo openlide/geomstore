@@ -27,6 +27,16 @@ function levelLabel(level: unknown): string {
 }
 
 /**
+ * Store 名标签：与 levelLabel 同口径给占位值
+ *
+ * 批量行是把名字插进模板串的，`String(undefined)` 会打出字面量 `undefined`，
+ * 读起来像「有个叫 undefined 的 store」；占位值让「字段缺失」与「取值」可分辨
+ */
+function storeLabel(storeName: unknown): string {
+  return typeof storeName === 'string' && storeName.length > 0 ? storeName : 'UNKNOWN'
+}
+
+/**
  * 时间戳格式化为 ISO 串
  *
  * 缺省取当前时间；非有限值或超出 `Date` 可表示范围（`new Date(1e20)` 是
@@ -93,7 +103,10 @@ export class ConsoleReporter implements ErrorReporter {
    * 以分组方式执行 `grouped`，不具备分组能力（缺失或调用即抛）时执行 `flat`
    *
    * 组必须闭合：组内输出抛错时少一次 `groupEnd` 会让后续所有输出留在已打开的
-   * 分组里，故闭合放在 finally；`grouped` 的异常本身继续向外传播（见类文档）。
+   * 分组里，故闭合放在 grouped 之后无条件执行；`grouped` 的异常本身继续向外传播
+   * （见类文档），且**不被闭合自身的异常掩盖**——否则监控层重试的是 groupEnd 的
+   * 故障，真正的失败原因从现场消失。grouped 成功时，groupEnd 的异常仍是本报告器
+   * 的一次真实失败，继续外抛（吞掉会把「一条都没落地」判成上报成功）
    *
    * @param decorate 标签装饰器，分组路径原样输出（`'Error:'`），
    *        平铺路径由调用方加上头部信息（`'[prefix] ERROR Error:'`）
@@ -110,10 +123,21 @@ export class ConsoleReporter implements ErrorReporter {
         this.groupUnavailable = true
       }
       if (opened) {
+        let primaryFailure: { error: unknown } | undefined
         try {
           grouped((label) => label)
-        } finally {
+        } catch (error) {
+          primaryFailure = { error }
+        }
+        try {
           console.groupEnd()
+        } catch (closeError) {
+          if (!primaryFailure) {
+            throw closeError
+          }
+        }
+        if (primaryFailure) {
+          throw primaryFailure.error
         }
         return
       }
@@ -135,7 +159,9 @@ export class ConsoleReporter implements ErrorReporter {
     console.error(decorate('Error:'), context?.error)
     console.error(decorate('Store:'), context?.storeName)
     console.error(decorate('Operation:'), context?.operation)
-    if (context?.payload) {
+    // 只跳过「没带 payload」（undefined）与显式 null：payload 的类型是 unknown，
+    // 真值判定会把 0 / '' / false 这些恰恰最需要看的诊断值一起吞掉
+    if (context?.payload !== undefined && context?.payload !== null) {
       console.error(decorate('Payload:'), context.payload)
     }
     console.error(decorate('Timestamp:'), formatTimestamp(context?.timestamp))
@@ -147,6 +173,6 @@ export class ConsoleReporter implements ErrorReporter {
    * @private
    */
   private printBatchEntry(context: ErrorContext, index: number): void {
-    console.error(`[${index + 1}] ${levelLabel(context?.level)} in ${String(context?.storeName)}:`, context?.error)
+    console.error(`[${index + 1}] ${levelLabel(context?.level)} in ${storeLabel(context?.storeName)}:`, context?.error)
   }
 }

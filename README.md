@@ -6,7 +6,7 @@
 - **小程序原生友好**：内置 `withPageStore` / `withComponentStore` / `withAppStore` 集成，页面卸载自动退订；环境差异（`wx.request`、同步存储、基础库缺失的 `console.group`）均已适配
 - **类型完备**：全量 `.d.ts` 随包发布，泛型化的 state / actions / getters 推导
 - **行为可观测**：统一的错误账本（`errors` + `onError` 降级策略）、性能指标采集、快照隔离与差异对比
-- **工程可信**：语句 / 分支 / 函数 / 行 **四项覆盖率 100%**；全部 tsconfig（源码 / Jest / 测试 / 构建 / 类型检查 / 示例）零错误
+- **工程可信**：覆盖率门禁由 `jest.config.js` 的 `coverageThreshold` 定义并全绿（global 语句 / 函数 / 行 98%、分支 95%，`core` 与 snapshot / selector / action 另设单文件分支 85% 下限）；全部 tsconfig（源码 / Jest / 测试 / 构建 / 类型检查 / 示例）零错误
 
 ## 安装
 
@@ -77,7 +77,7 @@ Page(
 | 快照与还原 | 核心 | `$snapshot` / `$restore`（深克隆 + 冻结纯对象 / 数组链） |
 | Action | 核心 | `dispatch`、同步/异步、action 上下文、失败传播 |
 | Getter | 核心 | `store.getter(name)`、依赖未变时复用 |
-| 订阅 | 核心 | `subscribe` 返回退订函数；支持上限策略 |
+| 订阅 | 核心 | `subscribe` 返回退订函数；`maxSubscribers` 是**硬上界**（达限按策略驱逐或抛错） |
 | 钩子系统 | 核心 | `store.hooks.on/emit`，供插件与监控接入 |
 | 批量更新 | 核心 | `batch` / `startBatch` / `endBatch`，合并通知 |
 | 内置缓存 | 核心 | `enableCache(keys?)` / `disableCache` / `invalidateCache` / `getCached` / `getCacheStats` |
@@ -114,17 +114,17 @@ import { createEnterpriseApp } from '@openlide/geomstore/extras/enterprise'
 - **定时器**：内部对 `setInterval`/`setTimeout` 做 `unref` 探测，浏览器 / 小程序无该 API 时自动跳过，不会阻止进程退出
 - **网络**：错误上报自动选择 `wx.request`（校验 `statusCode`）或 `fetch`（校验 `ok`），均可注入自定义实现
 - **控制台**：基础库缺少 `console.group` 时错误报告自动降级为平铺输出
-- **存储**：持久化插件要求**同步且三方法齐备**的后端（`getItem` / `setItem` / `removeItem`）；残缺或异步实现会在安装期 / 读写时被明确拒绝，避免写入静默丢失或写到另一个后端
-- **生产模式**：插件安装、订阅驱逐、子 store 竞态等路径在 `NODE_ENV=production` 下静默（仅开发模式打日志）；需要被监控发现的问题（持久化降级、监听器抛错、落盘 / 清理失败）统一走 `onError` 钩子
+- **存储**：持久化插件要求**同步且三方法齐备**的后端（`getItem` / `setItem` / `removeItem`）；残缺或异步实现会在安装期 / 读写时被明确拒绝，避免写入静默丢失或写到另一个后端。内置的 `WxStorageBackend` 同样如此：`wx` 或对应的 `*StorageSync` 方法缺失 / 非函数时**抛错**，不再把 `?.` 短路成静默 no-op（写删「看起来成功」、读被洗成「键无数据」）；只有 `persistencePlugin` 在**检测不到**可用 wx 同步 API 时才降级为内存存储
+- **生产模式**：插件安装、子 store 竞态等路径在 `NODE_ENV=production` 下静默（仅开发模式打日志）；需要被监控发现的问题统一走 `onError` 钩子——持久化降级与**恢复失败**、监听器抛错、落盘 / 清理失败，以及**达到 `maxSubscribers` 触发驱逐**（此前生产完全静默，被挤掉的订阅者无从定位）
 
 ## 工程脚本
 
 | 脚本 | 用途 |
 | --- | --- |
 | `pnpm test` / `test:unit` / `test:integration` | 运行测试 |
-| `pnpm test:coverage` | 覆盖率报告（阈值即当前四项 100%） |
+| `pnpm test:coverage` | 覆盖率报告（阈值见 `jest.config.js` 的 `coverageThreshold`，未达标即非零退出） |
 | `pnpm typecheck` / `typecheck:tests` / `typecheck:examples` | 源码 / 测试 / 示例类型检查 |
-| `pnpm lint` / `lint:fix` | ESLint（`lint:ci` 带警告上限，用于门禁） |
+| `pnpm lint` / `lint:fix` | ESLint（`lint:ci` 为 `--max-warnings 0`，零告警门禁） |
 | `pnpm build` | `clean-dist` → `tsc -p tsconfig.build.json` → 生成 module-type 标记并移除 sourcemap |
 | `pnpm build:release` | 构建并**强制压缩**（无压缩器时以退出码 1 中止，杜绝静默发出未压缩包） |
 | `pnpm stubs` / `stubs:clean` | 生成 / 清理转发子目录（`prepack`/`postpack` 自动执行） |

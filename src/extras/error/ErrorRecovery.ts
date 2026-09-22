@@ -59,10 +59,25 @@ function withCause<T extends Error>(meta: T, original: unknown): T {
  * ```
  */
 export class ErrorRecovery {
-  private strategies: RecoveryStrategyMap = {}
-  private retryCount = new Map<string, number>()
-  // 重试键 → 当前故障周期起始时间：以时间窗识别「新故障周期」并重置计数
-  private retryWindowStart = new Map<string, number>()
+  /**
+   * 错误码 → 恢复配置
+   *
+   * 用 `Map` 而非对象字面量：`error.code` 是开放字符串域（`code: string`），
+   * 落在 `Object.prototype` 上的码名（`constructor` / `toString` / `__proto__`）会让
+   * `strategies[code]` 命中原型链成员并被当作 `RecoveryConfig` 返回——`config.strategy`
+   * 为 undefined，最终抛出误导方向的「Unknown recovery strategy: undefined」，
+   * 而写入侧的 `obj.__proto__ = ...` 更是直接改原型而非建键。
+   */
+  private readonly strategies = new Map<string, RecoveryConfig>()
+  private readonly retryCount = new Map<string, number>()
+  /**
+   * 重试键 → 当前故障周期的**到期时刻**
+   *
+   * 存到期时刻而非起始时间：容量守卫判定「某个键是否还在自己的周期里」时无需知道它
+   * 用的是哪个策略的退避参数（不同 code 的周期窗可差几个数量级），因此也不必拿一个
+   * 硬编码下限去比——那会把仍在自身窗口内的活跃键连计数一起删掉（风控被削弱）。
+   */
+  private readonly retryCycleEnd = new Map<string, number>()
 
   /**
    * 配置错误恢复策略
@@ -85,10 +100,10 @@ export class ErrorRecovery {
    * ```
    */
   configure(strategies: RecoveryStrategyMap): void {
-    // 为每个策略添加默认值
-    const normalizedStrategies: RecoveryStrategyMap = {}
+    // 为每个策略补默认值后写进 Map：不再先组一个 `{}` 中间对象，
+    // 那层中间对象正是 `__proto__` 键会触发原型 setter 的地方
     for (const [errorCode, config] of Object.entries(strategies)) {
-      normalizedStrategies[errorCode] = {
+      this.strategies.set(errorCode, {
         ...config,
         // 为RETRY策略添加默认值
         ...(config.strategy === RecoveryStrategy.RETRY && {
@@ -96,9 +111,8 @@ export class ErrorRecovery {
           retryDelay: config.retryDelay !== undefined ? config.retryDelay : 1000,
           exponentialBackoff: config.exponentialBackoff !== undefined ? config.exponentialBackoff : true,
         }),
-      }
+      })
     }
-    this.strategies = { ...this.strategies, ...normalizedStrategies }
   }
 
   /**
@@ -108,7 +122,7 @@ export class ErrorRecovery {
    * @returns {RecoveryConfig | undefined} 恢复配置
    */
   getConfig(errorCode: string): RecoveryConfig | undefined {
-    return this.strategies[errorCode]
+    return this.strategies.get(errorCode)
   }
 
   /**
@@ -192,7 +206,7 @@ export class ErrorRecovery {
       // 违反 executeRetryStrategy max-retries 分支自述的键级不变量
       const retryKey = this.getRetryKey(error, recoveryContext)
       this.retryCount.delete(retryKey)
-      this.retryWindowStart.delete(retryKey)
+      this.retryCycleEnd.delete(retryKey)
 
       return result
     } catch (recoveryError) {
@@ -236,7 +250,16 @@ export class ErrorRecovery {
         return this.executeRestartStrategy(context)
 
       default:
-        throw new Error(`[ErrorRecovery] Unknown recovery strategy: ${config.strategy}`)
+        // 与 recover() 入口的两处抛出同口径：调用方普遍用 isGeomStoreError/error.code
+        // 分类，裸 Error 会被当作「外来错误」绕过既有处理。strategy 与 originalCode 都进
+        // context（前者让人一眼看出是配错还是被改写），cause 保留触发本次恢复的原始错误
+        throw withCause(
+          createError(ErrorCode.INTERNAL_ERROR, `[ErrorRecovery] Unknown recovery strategy: ${String(config.strategy)}`, {
+            strategy: config.strategy,
+            originalCode: context.error.code,
+          }),
+          context.error,
+        )
     }
   }
 
@@ -268,32 +291,36 @@ export class ErrorRecovery {
     const now = Date.now()
     const cycleSpan = useExponentialBackoff ? baseDelay * (Math.pow(2, maxRetries) - 1) : baseDelay * maxRetries
     const cycleWindow = Math.max(60_000, cycleSpan * 2)
-    const windowStart = this.retryWindowStart.get(retryKey)
-    if (windowStart === undefined || now - windowStart > cycleWindow) {
-      this.retryWindowStart.set(retryKey, now)
+    const cycleEnd = this.retryCycleEnd.get(retryKey)
+    if (cycleEnd === undefined || now > cycleEnd) {
+      // 先 delete 再 set：`Map.set` 对已存在的键**不刷新插入顺序**，而下面的容量守卫正是
+      // 按插入顺序从最旧端淘汰；不重插的话，刚开启新周期的活跃键会一直待在队首、
+      // 在超限扫描里被当成「最旧键」优先删掉（连计数一起删 = 直接送一轮全新额度）
+      this.retryCycleEnd.delete(retryKey)
       this.retryCount.delete(retryKey)
+      this.retryCycleEnd.set(retryKey, now + cycleWindow)
     }
 
     // 容量守卫：动态 operation id（如 fetchUser:${id}）场景下，停止调用的键永不触发周期
-    // 重置与清理，retryWindowStart / retryCount 会无界增长。超过阈值时先清理已过期窗口
-    // （最小窗口 60s）的键，仍超限则淘汰最旧插入的键（Map 保留插入顺序），与超窗口重置
-    // 语义一致，避免内存泄漏
-    if (this.retryWindowStart.size > MAX_RETRY_KEYS) {
-      const expiredCutoff = now - 60_000
-      for (const [k, ws] of this.retryWindowStart) {
-        if (ws < expiredCutoff) {
-          this.retryWindowStart.delete(k)
+    // 重置与清理，retryCycleEnd / retryCount 会无界增长。超过阈值时先清理**自身周期窗已
+    // 到期**的键（每个键的到期时刻是各自策略算出的，故用 `now > end` 而不是一个全局阈值：
+    // 拿硬编码 60s 判过期会把 cycleWindow 更长的活跃键连计数一起删掉，风控被削弱），
+    // 仍超限则淘汰最旧插入的键（配合上面的重插，即「最早进入当前周期」的键）
+    if (this.retryCycleEnd.size > MAX_RETRY_KEYS) {
+      for (const [k, end] of this.retryCycleEnd) {
+        if (now > end) {
+          this.retryCycleEnd.delete(k)
           this.retryCount.delete(k)
         }
       }
       // 一次性清到上限内：每次 delete 都令 size 严格递减，配合循环条件必然终止
       // （此前用 `guard++ < MAX_RETRY_KEYS` 限制单轮淘汰量，键数远超上限时需多轮调用
       // 才收敛，且每轮都要重做一次 O(n) 的过期扫描）
-      while (this.retryWindowStart.size > MAX_RETRY_KEYS) {
-        const oldest = this.retryWindowStart.keys().next().value as string | undefined
+      while (this.retryCycleEnd.size > MAX_RETRY_KEYS) {
+        const oldest = this.retryCycleEnd.keys().next().value as string | undefined
         /* istanbul ignore if -- 循环条件已保证 size > MAX_RETRY_KEYS（非空），keys().next() 必有值 */
         if (oldest === undefined) break
-        this.retryWindowStart.delete(oldest)
+        this.retryCycleEnd.delete(oldest)
         this.retryCount.delete(oldest)
       }
     }
@@ -305,12 +332,22 @@ export class ErrorRecovery {
 
     // 检查是否超过最大重试次数
     if (currentAttempt >= maxRetries) {
-      // 达到上限：仅清除当前键的计数与周期窗（下一故障周期从 0 重新开始）。
-      // 不按 code 级联全清——同码其他 store/operation 的进行中额度会被误重置，
-      // 防重试风暴的上限保护对它们失效
-      this.retryCount.delete(retryKey)
-      this.retryWindowStart.delete(retryKey)
-      throw new Error(`[ErrorRecovery] Max retries (${maxRetries}) exceeded for error: ${error.message}`)
+      // 达到上限时**保留**计数与周期窗：清键会让紧接的下一次 recover 落进上方
+      // `cycleEnd === undefined` 分支、计数归零，于是调用方只要在同一失败循环里
+      // 继续调用就每轮都能领到全新额度——max-retries 防重试风暴的保护实际上只对
+      // 触发超限的那一次调用生效。新故障周期只由上方的时间窗过期判定开启。
+      // 同样不按 code 级联全清——同码其他 store/operation 的进行中额度会被误重置。
+      // 抛 GeomStoreError（同 recover() 入口与 executeRecovery 的 default 分支）：
+      // 「Max retries exceeded」是调用方最需要按 code 分支处理的一种失败，裸 Error
+      // 会让它落到「外来错误」通道里。retryKey 一并带上——两个 store 互相挤占额度时，
+      // 没有键就无从判断被用满的是哪一份额度
+      throw withCause(
+        createError(ErrorCode.INTERNAL_ERROR, `[ErrorRecovery] Max retries (${maxRetries}) exceeded for error: ${error.message}`, {
+          retryKey,
+          attempts: currentAttempt,
+        }),
+        error,
+      )
     }
 
     // 更新重试计数
@@ -356,7 +393,14 @@ export class ErrorRecovery {
       return config.fallback
     }
 
-    throw new Error(`[ErrorRecovery] No fallback value or function configured for error: ${error.message}`)
+    // 配置缺失属策略内部失败：与 recover() 入口同口径抛 GeomStoreError 并挂 cause，
+    // 调用方才能用 error.code 分支处理，而不是把它当外来错误绕过既有处理
+    throw withCause(
+      createError(ErrorCode.INTERNAL_ERROR, `[ErrorRecovery] No fallback value or function configured for error: ${error.message}`, {
+        originalCode: error.code,
+      }),
+      error,
+    )
   }
 
   /**
@@ -370,7 +414,13 @@ export class ErrorRecovery {
     const { error, config } = context
 
     if (!config.recoverFn) {
-      throw new Error(`[ErrorRecovery] No recover function configured for error: ${error.message}`)
+      // 同 executeFallbackStrategy：策略内部失败也要能按 code 分支，不外泄裸 Error
+      throw withCause(
+        createError(ErrorCode.INTERNAL_ERROR, `[ErrorRecovery] No recover function configured for error: ${error.message}`, {
+          originalCode: error.code,
+        }),
+        error,
+      )
     }
 
     return await config.recoverFn(error)
@@ -387,7 +437,7 @@ export class ErrorRecovery {
     // 仅清当前重试键，不按 code 级联（与恢复成功路径同口径，避免误重置同码其他额度）
     const retryKey = this.getRetryKey(context.error, context)
     this.retryCount.delete(retryKey)
-    this.retryWindowStart.delete(retryKey)
+    this.retryCycleEnd.delete(retryKey)
 
     // 返回undefined，表示需要重启
     return undefined
@@ -420,18 +470,33 @@ export class ErrorRecovery {
    *
    * @private
    * @param {GeomStoreError} error - 错误对象
+   * @param {RecoveryContext} [context] - 本次恢复的调用上下文
    * @returns {string} 重试键
+   *
+   * @remarks 隔离粒度是「**被报出来的** Store/操作」，不是调用方身份：两处来源都缺时
+   * 库内已无任何可区分的信息（`error.code` 已在键里，堆栈会把「同一逻辑故障在不同行
+   * 构造」打散成多份额度，反而让防重试风暴失效——`REGR-RECOVERY-003` 锁的正是它们
+   * 必须共用一份额度），此时**所有**未归因的调用共用一份额度，这是有意的粗粒度兜底。
+   * 该桶在键名与抛出物里都写作 `unattributed` 并随 `retryKey` 一起回传，
+   * 便于识别「被用满的是哪一份额度」；需要按 Store 隔离就由调用方传
+   * `recover(error, { storeName, operation })`，或在 createError 的 context 里内嵌二者。
    */
   private getRetryKey(error: GeomStoreError, context?: RecoveryContext): string {
     // recover() 的第二个参数与会话内嵌 context 都是合法来源：单看 error.context 会让
-    // 「错误对象未内嵌 context、由调用方按 Store/操作传入」的场景全部落到 unknown，
+    // 「错误对象未内嵌 context、由调用方按 Store/操作传入」的场景全部落到未归因桶，
     // 不同 Store 的重试额度互相挤占（A 用满后 B 也被判超限）
-    const storeName = context?.storeName || error.context?.storeName || 'unknown'
-    const operation = context?.operation || error.context?.operation || 'unknown'
+    const storeName = context?.storeName || error.context?.storeName
+    const operation = context?.operation || error.context?.operation
+    if (storeName === undefined && operation === undefined) {
+      return `${error.code}:unattributed`
+    }
+    // 只缺一个维度时仍按已报出的维度隔离，缺失侧留 unknown 占位
+    const storeSegment = storeName ?? 'unknown'
+    const operationSegment = operation ?? 'unknown'
     // 键只做**整串精确匹配**（get/set/delete 用同一个 getRetryKey 产物），从不按 ':' 切分
     // 或做前缀匹配：因此 code/storeName/operation 含 ':' 至多让两段边界挪位，不会误命中
     // 别人的计数。若将来要按 code 级联清理，必须改成嵌套 Map 或 JSON 元组，不要回到 split
-    return `${error.code}:${storeName}:${operation}`
+    return `${error.code}:${storeSegment}:${operationSegment}`
   }
 
   /**
@@ -459,7 +524,7 @@ export class ErrorRecovery {
    */
   clearAllRetryCounts(): void {
     this.retryCount.clear()
-    this.retryWindowStart.clear()
+    this.retryCycleEnd.clear()
   }
 }
 

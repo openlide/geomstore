@@ -70,6 +70,10 @@ const _illegal: ActionResult<UserDto> = { success: true, data: { id: '1' }, erro
 const _illegal2: ActionResult<UserDto> = { success: false, data: { id: '1' }, startTime: 0, endTime: 1, duration: 1 }
 // @ts-expect-error 失败分支必须给出已归一化的 error
 const _missingError: ActionResult<UserDto> = { success: false, startTime: 0, endTime: 1, duration: 1 }
+// 只断言「error 必填」不足以锁定归一化契约：把类型退化成 `error: unknown`（或隐式 any）时
+// 上面那行照样报错、下面这行却会编译通过，故再加一条反例钉住「非 Error 值不可表示」。
+// @ts-expect-error error 必须已归一化为 Error，裸字符串不可表示
+const _unnormalizedError: ActionResult<UserDto> = { success: false, error: 'boom', startTime: 0, endTime: 1, duration: 1 }
 
 // 合法的两条分支
 const _ok: ActionResult<UserDto> = { success: true, data: { id: '1' }, startTime: 0, endTime: 1, duration: 1 }
@@ -78,7 +82,10 @@ const _failed: ActionResult<UserDto> = { success: false, error: new Error('x'), 
 // ActionHistory 一类的消费点：Map<string, ActionResult[]> 仍可直接写入与遍历统计
 declare const history: Map<string, ActionResult[]>
 history.set('a', [_ok, _failed])
-const _avgDuration = [...history.values()].flat().reduce((sum, r) => sum + r.duration, 0)
+// 命名与算法一致：这里是**总时长**（reduce 初值 0 求和），不是平均值。
+// 真实消费方（src/extras/action/ActionHistory.ts 的 getStats）算的是 totalDuration / total，
+// 此前把它叫 `_avgDuration` 会让本夹具的读者以为平均值也走同一条路径。
+const _totalDuration = [...history.values()].flat().reduce((sum, r) => sum + r.duration, 0)
 
 // ==================== #399：ActionExecutionContext 默认泛型 ====================
 
@@ -110,5 +117,5 @@ declare const anyActions: Actions
 const _ctxFromActions: ActionExecutionContext = { state: {}, actions: anyActions, actionName: 'a', args: [] }
 
 export { _decoratorIsMethodDecorator, _methodDecoratorIsActionDecorator, _fromRetry, _fromCache, _fromTimeout, _fromLoading }
-export { _demoHostOk, _data, _error, _message, _duration, describe, _illegal, _illegal2, _missingError, _ok, _failed }
-export { _avgDuration, _called, _stateIsObject, _count, _ctxFromActions }
+export { _demoHostOk, _data, _error, _message, _duration, describe, _illegal, _illegal2, _missingError, _unnormalizedError, _ok, _failed }
+export { _totalDuration, _called, _stateIsObject, _count, _ctxFromActions }

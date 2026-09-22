@@ -41,8 +41,11 @@ export class SelectorComposer {
    * 将多个选择器的结果组合成单个值
    *
    * @template S - 状态类型
-   * @template R - 返回值类型
-   * @param {SelectorComposerInput<S>} input - 选择器和组合器配置
+   * @template R - 返回值类型（未显式给出时由 `combiner` 的返回类型反推）
+   * @template T - selectors 的元组类型（未显式给出时取 `Selector<S, unknown>[]`）
+   * @param {SelectorComposerInput<S, T, R>} input - 选择器和组合器配置。R 一路透传到
+   *   `combiner` 的返回位：组合器返回了与 `R` 不符的东西（拼错的属性名、多包一层）在编译期
+   *   就报错，而不是被实现里的一句断言静默成 `R`
    * @returns {Selector<S, R>} 组合后的选择器
    *
    * @example
@@ -61,16 +64,18 @@ export class SelectorComposer {
    * ```
    */
   static combine<S extends State, R = unknown, T extends readonly Selector<S, unknown>[] = readonly Selector<S, unknown>[]>(
-    input: SelectorComposerInput<S, T>,
+    input: SelectorComposerInput<S, T, R>,
   ): Selector<S, R> {
     const { selectors, combiner } = input
 
     return (state: S): R => {
-      // 执行所有选择器
-      const results = selectors.map((selector) => selector(state)) as unknown as T
+      // 执行所有选择器：结果按 unknown[] 交给组合器即可——每个元素的类型由调用方在站点上
+      // 写死的 combiner 形参保证（其形参刻意是 `any[]`，见 SelectorComposerInput 的注释），
+      // 这里再断言成 T 只会把「selectors 与 combiner 对不上」这类真实错误静默掉
+      const results: unknown[] = selectors.map((selector) => selector(state))
 
       // 组合结果
-      return combiner(...results) as R
+      return combiner(...results)
     }
   }
 
@@ -100,10 +105,14 @@ export class SelectorComposer {
    * @template T1 - 第一个选择器的返回类型
    * @template T2 - 第二个选择器的返回类型
    * @template T3 - 第三个选择器的返回类型（可选）
+   * @template T4 - 第四个选择器的返回类型（可选）
    * @param {Selector<S, T1>} selector1 - 第一个选择器
    * @param {(input: T1) => T2} selector2 - 第二个选择器
    * @param {(input: T2) => T3} selector3 - 第三个选择器（可选）
-   * @returns {Selector<S, T4 | T3 | T2 | T1>} 管道选择器
+   * @param {(input: T3) => T4} selector4 - 第四个选择器（可选）
+   * @returns {Selector<S, T4>} 管道选择器。返回类型即**最后一棒**的输出，随传入的个数取
+   *   T2 / T3 / T4（只传一个时是 T1）——重载签名不会给出 `T4 | T3 | T2 | T1` 这种联合类型，
+   *   调用侧按具体重载直接拿到窄类型
    *
    * @example
    * ```typescript
@@ -144,7 +153,8 @@ export class SelectorComposer {
    * @param {Selector<S, R1>} selector1 - 第一个选择器
    * @param {(input: R1) => R2} selector2 - 第二个选择器
    * @param {(input: R2) => R3} selector3 - 第三个选择器（可选）
-   * @returns {Selector<S, R3 | R2 | R1>} 派生选择器
+   * @returns {Selector<S, R3>} 派生选择器。与 pipe 同：返回类型即最后一棒的输出
+   *   （两棒时是 R2），不是 `R3 | R2 | R1` 联合
    *
    * @example
    * ```typescript
@@ -231,16 +241,24 @@ export class SelectorComposer {
       const result = {} as Record<K, R>
 
       for (const key of Object.keys(state) as K[]) {
-        // 以 DefineOwnProperty 语义写入：state 可合法含自有 __proto__ 键
-        // （helpers.ts 的 deepMerge/set 有意如此写入），result[key] = … 走 [[Set]]
-        // 会触发 Object.prototype 的 __proto__ setter——该键的派生结果被静默丢弃
-        // 且 result 原型被换掉
-        Object.defineProperty(result, key, {
-          value: keySelector(key)(state),
-          writable: true,
-          enumerable: true,
-          configurable: true,
-        })
+        const value = keySelector(key)(state)
+
+        if (key === '__proto__') {
+          // 只有 __proto__ 需要 DefineOwnProperty 语义：state 可合法含自有 __proto__ 键
+          // （helpers.ts 的 deepMerge/set 有意如此写入），result[key] = … 走 [[Set]]
+          // 会触发 Object.prototype 的 __proto__ setter——该键的派生结果被静默丢弃
+          // 且 result 原型被换掉
+          Object.defineProperty(result, key, {
+            value,
+            writable: true,
+            enumerable: true,
+            configurable: true,
+          })
+        } else {
+          // 其余键走普通赋值：本循环对状态的**每个**自有键跑一次，完整描述符要付
+          // DefineOwnProperty 的慢路径开销，而 [[Set]] 在这些键上语义完全等价
+          result[key] = value
+        }
       }
 
       return result
@@ -292,6 +310,10 @@ export class SelectorComposer {
    * @param {R} defaultValue - 默认值
    * @returns {Selector<S, R>} 带默认值的选择器
    *
+   * @remarks 只有「选择器抛错」这条兜底会留一条 `console.error`；「合法返回 undefined」不记日志。
+   *   否则两种情形在结果上同形，拼错的属性名会长期伪装成「正常的空值」（`R` 的声明给不出信号：
+   *   undefined 并非 `R` 的合法取值，判定只能靠运行期）。
+   *
    * @example
    * ```typescript
    * const selector = SelectorComposer.createDefaultSelector(
@@ -311,7 +333,11 @@ export class SelectorComposer {
       try {
         const value = selector(state)
         return value === undefined ? defaultValue : value
-      } catch {
+      } catch (error) {
+        // 兜底不等于静默：本家族（retrySelector 的 shouldRetry / delay 异常）都留一条
+        // console.error。不记的话「selector 抛了 TypeError（属性名拼错）」与
+        // 「selector 合法返回 undefined」在结果上完全同形，都只看到 defaultValue
+        console.error('[SelectorComposer] Default selector failed, falling back to defaultValue:', error)
         return defaultValue
       }
     }
@@ -338,6 +364,11 @@ export class SelectorComposer {
    * @param {number} [delay=300] - 防抖延迟（毫秒）
    * @returns {Selector<S, Promise<R>>} 防抖选择器（返回Promise）
    *
+   * @remarks **每次调用的返回 Promise 都必须被处理**（await 或挂 `.catch`）：防抖窗口内的
+   * 前几次调用共享最后那一个 Promise，选择器抛错时它以 rejection 收尾；若那次调用丢弃了
+   * 返回值，Node/小程序运行时就把这次 rejection 报成 unhandledRejection（本库不代为
+   * `.catch(noop)` 吞掉——那会让真实失败彻底不可见）。
+   *
    * @example
    * ```typescript
    * const selector = SelectorComposer.createDebouncedSelector(
@@ -345,11 +376,9 @@ export class SelectorComposer {
    *   300
    * )
    *
-   * // 多次调用在300ms内只有最后一次会执行
-   * selector(state)
-   * selector(state)
-   * selector(state)
-   * // 只执行一次
+   * // 多次调用在300ms内只有最后一次会执行，且所有调用拿到同一个结果
+   * await Promise.all([selector(state), selector(state), selector(state).catch(onError)])
+   * // 选择器抛错时：await selector(state).catch((error) => reportError(error))
    * ```
    */
   static createDebouncedSelector<S extends State, R>(selector: Selector<S, R>, delay: number = 300): Selector<S, Promise<R>> {
@@ -357,11 +386,15 @@ export class SelectorComposer {
     let currentState: S | null = null
     let currentPromise: Promise<R> | null = null
     let currentResolve: ((value: R) => void) | null = null
-    let currentReject: ((error: Error) => void) | null = null
+    // reject 的形参是 unknown 而非 Error：`throw 'boom'` / `throw 42` 都是合法抛出值，
+    // 声明成 Error 只是编译期断言，Promise 实际会带非 Error 原因落地
+    let currentReject: ((error: unknown) => void) | null = null
 
     return (state: S): Promise<R> => {
-      // 清除之前的定时器
-      if (timeoutId) {
+      // 清除之前的定时器。与 null 比，**不能**判真值：宿主/注入式时钟（本模块的用例就跑在
+      // fake timers 下）可以返回 0 作定时器句柄，真值判定会让这条 clearTimeout 永不执行，
+      // 防抖窗口静默失效、同一轮里多次执行选择器
+      if (timeoutId !== null) {
         clearTimeout(timeoutId)
       }
 
@@ -400,7 +433,9 @@ export class SelectorComposer {
           const value = selector(state)
           currentResolve?.(value)
         } catch (error) {
-          currentReject?.(error as Error)
+          // 原样转成 rejection 原因：非 Error 的抛出值（`throw 'boom'`）不做包装、不做断言，
+          // 调用方 catch 到的就是选择器抛出的那个值
+          currentReject?.(error)
         } finally {
           // 清理必须在所有出口执行（含 state 缺失的防御分支）：否则一个 null state
           // 会把已结算的 Promise 与 resolve/reject/timer 留在共享槽位，后续调用永远

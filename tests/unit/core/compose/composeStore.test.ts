@@ -3,7 +3,6 @@
  */
 
 import { createStore, type Store } from '@/index.js'
-import type { State } from '@/types/store.js'
 import { composeStore, createStoreTree } from '@/core/compose/composeStore.js'
 import * as storeUtils from '@/core/store/utils.js'
 
@@ -419,7 +418,8 @@ describe('composeStore', () => {
       const composed = composeStore([store1, store2], { namespace: true })
       // 三段式路径会被解析为 storeName = 'user', actionName = 'setName/extra'
       // 由于 store1 没有 'setName/extra' action，所以会失败
-      const result = composed.dispatch('user/setName', 'Bob')
+      // dispatch 的返回值本用例不关心，副作用（写入 store1.name）才是断言对象
+      void composed.dispatch('user/setName', 'Bob')
       expect(store1.getState().name).toBe('Bob')
     })
 
@@ -699,7 +699,7 @@ describe('composeStore', () => {
       const composed = composeStore([store1, store2, store3])
       let notificationCount = 0
 
-      const unsubscribe = composed.subscribe((state) => {
+      const unsubscribe = composed.subscribe((_state) => {
         notificationCount++
       })
 
@@ -769,7 +769,8 @@ describe('composeStore', () => {
       const earlyUnsubscribe = store1.subscribe(() => {
         // 通知循环中途销毁组合层（不级联销毁子 store）
         // destroy(destroyStores) 为实现层签名，公共类型暴露无参版本，此处断言安全
-        (composed as any).destroy(false)
+        const internals = composed as any
+        internals.destroy(false)
       })
 
       // 再注册组合层订阅：wrapper 在同一通知循环内随后被调用
@@ -814,7 +815,7 @@ describe('composeStore', () => {
 
       const plugin = {
         name: 'test-plugin',
-        install(store: any) {
+        install(_store: any) {
           return () => {}
         },
       }
@@ -831,7 +832,7 @@ describe('composeStore', () => {
 
       const plugin = {
         name: 'test-plugin',
-        install(store: any) {
+        install(_store: any) {
           const uninstall = () => {
             uninstalls.push(uninstall)
           }
@@ -872,7 +873,7 @@ describe('composeStore', () => {
 
       const plugin = {
         name: 'test-plugin-return-non-func',
-        install(store: any) {
+        install(_store: any) {
           return 'not a function' as any
         },
       }
@@ -887,7 +888,7 @@ describe('composeStore', () => {
 
       const plugin = {
         name: 'test-plugin-return-undefined',
-        install(store: any) {
+        install(_store: any) {
           return undefined
         },
       }
@@ -903,7 +904,7 @@ describe('composeStore', () => {
 
       const plugin = {
         name: 'test-plugin-return-null',
-        install(store: any) {
+        install(_store: any) {
           return null as any
         },
       }
@@ -1007,10 +1008,10 @@ describe('composeStore', () => {
       const listenerB = jest.fn()
 
       // 绕过 subscribe 的同步初始通知，直接注册会抛错的监听器
-      // （_composedListeners 为 Map<listener, {total, writable}>，与 SubscriptionManager 同语义）
+      // （_composedListeners 为 Map<listener, 注册次数>，与 SubscriptionManager 同语义）
       ;(composed as any)._composedListeners.set(() => {
         throw new Error('listener boom')
-      }, { total: 1, writable: 0 })
+      }, 1)
       composed.subscribe(listenerB)
       listenerB.mockClear()
 
@@ -1458,11 +1459,10 @@ describe('composeStore', () => {
   describe('batch 更新', () => {
     test('应该支持批量更新', () => {
       const composed = composeStore([store1, store2])
-      let notificationCount = 0
 
-      composed.subscribe(() => {
-        notificationCount++
-      })
+      // 通知是异步合并的（见上方 pendingNotification 用例），本用例只断言批量后的状态，
+      // 这里订阅一次是为了让 batch 路径确实走在「有订阅者」的场景下，结束时显式退订
+      const unsubscribe = composed.subscribe(() => {})
 
       composed.batch(() => {
         composed.dispatch('setName', 'Bob')
@@ -1471,6 +1471,8 @@ describe('composeStore', () => {
 
       expect(composed.getState().name).toBe('Bob')
       expect(composed.getState().theme).toBe('dark')
+
+      unsubscribe()
     })
 
     test('batch 中发生错误应该正确清理', () => {
@@ -2094,7 +2096,8 @@ describe('BUG 回归：组合层订阅与 state 保护', () => {
     const composed = composeStore([sub])
 
     expect(() => {
-(composed.state as Record<string, unknown>).count = 99
+      const state = composed.state as Record<string, unknown>
+      state.count = 99
     }).toThrow()
 
     expect(sub.getState().count).toBe(1)
@@ -2105,7 +2108,8 @@ describe('BUG 回归：组合层订阅与 state 保护', () => {
     const composed = composeStore([sub])
 
     expect(() => {
-((composed.state as Record<string, unknown>).nested as Record<string, unknown>).v = 2
+      const nested = (composed.state as Record<string, unknown>).nested as Record<string, unknown>
+      nested.v = 2
     }).toThrow('Direct mutation of state')
 
     // 修复前：合并的是子 store 裸状态引用，写入静默穿透进内部状态
@@ -2189,7 +2193,8 @@ describe('BUG 回归：订阅回滚与 batch 收尾', () => {
 
     const result = composed.batch(() => {
       // destroy(false) 走 ComposedStore 内部实现签名（不级联销毁子 store），Store 类型上未暴露
-      (composed as any).destroy(false)
+      const internals = composed as any
+      internals.destroy(false)
       return 'fn-value'
     })
 
@@ -2209,7 +2214,8 @@ describe('BUG 回归：订阅回滚与 batch 收尾', () => {
     expect(() =>
       composed.batch(() => {
         // 同上：不级联销毁子 store 的内部实现签名
-        (composed as any).destroy(false)
+        const internals = composed as any
+        internals.destroy(false)
         throw new Error('original')
       }),
     ).toThrow('original')
@@ -2433,7 +2439,6 @@ describe('R5 回归：startBatch 容忍已销毁子 store', () => {
     s1.subscribe(listener)
     s1.setState('v', 6)
     expect(listener).toHaveBeenCalledTimes(1)
-
     ;(composed as unknown as { destroy: (destroyStores?: boolean) => void }).destroy(false)
   })
 

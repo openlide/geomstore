@@ -7,9 +7,23 @@
  */
 
 /**
- * 本次顶层比较是否已就深度超限告过警（去重用，语义见 deepEqual 的 JSDoc）
+ * 一次顶层比较的可变状态
+ *
+ * 随 deepEqual 调用创建、在 compareWithSeenPairs / setsEqual 之间逐层传递，
+ * 不用模块级变量：模块级标记会让 deepEqual 带状态且不可重入——比较过程中被
+ * 状态的 Proxy 陷阱/getter 里的内层 deepEqual 复位后，外层「一次比较只警一条」
+ * 的保证就作废（告警重复或被静默吞掉）。
  */
-let depthWarningEmitted = false
+interface Comparison {
+  /** 深度预算，即 deepEqual 的 maxDepth 入参 */
+  readonly maxDepth: number
+  /**
+   * 已比较过的「对象对」：循环防护与别名图复用，Set 元素候选比较跨多次调用共享同一份
+   */
+  readonly seenPairs: Map<object, Set<object>>
+  /** 本轮比较是否已就深度超限告过警 */
+  warnedAtMaxDepth: boolean
+}
 
 /**
  * 深度比较两个值（使用迭代实现避免栈溢出）
@@ -18,7 +32,9 @@ let depthWarningEmitted = false
  * 这是保守语义——深度未知/超限的结构按「不相等」处理，
  * 以避免误报相等导致缓存误命中。调用方如需比较超深结构，
  * 请显式传入更大的 maxDepth。
- * 超深结构下告警**每次顶层比较只出第一条**（见 `depthWarningEmitted` 的注释），
+ * 该保守语义只对**需要继续下钻**的结构生效：同一引用/同一原始值在任何深度上都判相等
+ * （否则自反性会在恰好落在 maxDepth 的那一层被破坏，见循环里的快速路径）。
+ * 超深结构下告警**每次顶层比较只出第一条**（见 `Comparison.warnedAtMaxDepth`），
  * 后续命中静默按同样的 false 语义处理，别让日志噪音掩盖真正的问题。
  *
  * 深度累加口径：所有跨容器边界（对象键、数组元素、Map 值、Set 元素）都算一层，
@@ -39,12 +55,10 @@ let depthWarningEmitted = false
  *   Set 则相反，元素按深度相等做无序配对，不受引用影响。
  */
 export function deepEqual(a: unknown, b: unknown, maxDepth: number = 1000): boolean {
-  // 顶层入口复位告警标记：内部只调 compareWithSeenPairs / setsEqual，不再回调本函数，
-  // 故模块级标记即可完成一次比较内的去重（极端情况下状态对象的 Proxy 陷阱里再调
-  // deepEqual 会多警一次，只影响日志条数，不影响返回值）
-  depthWarningEmitted = false
+  // 比较状态随本次调用创建：内层再入的 deepEqual 有自己的状态，互不复位对方的告警标记
+  const comparison: Comparison = { maxDepth, seenPairs: new Map<object, Set<object>>(), warnedAtMaxDepth: false }
   // 使用「对象对」集合记录已比较过的组合，正确处理循环引用与别名图
-  return compareWithSeenPairs(a, b, maxDepth, new Map<object, Set<object>>())
+  return compareWithSeenPairs(a, b, comparison)
 }
 
 /** 一次配对记录：回滚时按逆序移除 */
@@ -54,7 +68,7 @@ interface PairRecord {
 }
 
 /**
- * 以给定的配对表执行比较（迭代实现，避免栈溢出）
+ * 以给定的比较状态执行比较（迭代实现，避免栈溢出）
  *
  * 配对表由调用方传入：Set 元素候选配对需要跨多次比较共享同一份循环防护，
  * 否则各自新建配对表会让自引用元素无限递归直到深度上限，等价的循环 Set 被判为不等。
@@ -64,14 +78,8 @@ interface PairRecord {
  * 为基准重开一轮迭代比较（迭代实现的栈总从 0 计），否则 maxDepth 会在跨 Set 边界时
  * 重新计数，深层嵌套 Set 能绕过深度上限，且同一结构在不同嵌套层得到不同判定。
  */
-function compareWithSeenPairs(
-  a: unknown,
-  b: unknown,
-  maxDepth: number,
-  seenPairs: Map<object, Set<object>>,
-  pairLog?: PairRecord[],
-  baseDepth: number = 0,
-): boolean {
+function compareWithSeenPairs(a: unknown, b: unknown, comparison: Comparison, pairLog?: PairRecord[], baseDepth: number = 0): boolean {
+  const { maxDepth, seenPairs } = comparison
   // 使用迭代实现，避免递归栈溢出
   const stack: Array<{ a: unknown; b: unknown; depth: number }> = [{ a, b, depth: baseDepth }]
 
@@ -83,19 +91,21 @@ function compareWithSeenPairs(
     }
     const { a: currentA, b: currentB, depth } = item
 
+    // 快速路径：SameValueZero（引用相等，含 NaN）。必须先于深度检查——
+    // 否则恰好落在 maxDepth 上的同一引用（或同一原始值）也会被判不等，自反性被破坏；
+    // 而该分支是 return 而非 continue，还会连带取消栈上其余兄弟分支的比较
+    if (currentA === currentB || Object.is(currentA, currentB)) continue
+
     // 检查最大深度：返回 false 会中止整轮比较（含外层栈上待处理的兄弟分支），
-    // 这是 deepEqual 文档写明的保守语义。告警按顶层比较去重——本分支可能在
+    // 这是 deepEqual 文档写明的保守语义。告警按本次顶层比较去重——本分支可能在
     // Set 候选匹配循环里被反复命中，逐候选刷日志会把真正的信号淹掉
     if (depth >= maxDepth) {
-      if (!depthWarningEmitted) {
-        depthWarningEmitted = true
+      if (!comparison.warnedAtMaxDepth) {
+        comparison.warnedAtMaxDepth = true
         console.warn(`[deepEqual] Maximum depth ${maxDepth} exceeded (warned once per top-level comparison)`)
       }
       return false
     }
-
-    // 快速路径：SameValueZero（引用相等，含 NaN）
-    if (currentA === currentB || Object.is(currentA, currentB)) continue
 
     // 类型不同
     if (typeof currentA !== typeof currentB) return false
@@ -167,7 +177,7 @@ function compareWithSeenPairs(
       // Set 是集合，比较应与插入顺序无关；配对表共享以支持循环元素。
       // depth 必须透传：Set 元素是外层树的一层，不带上就会让深度预算在每个 Set
       // 边界重新计数，与上面 Map 分支的 depth + 1 语义分叉
-      if (!setsEqual(currentA, currentB, maxDepth, depth, seenPairs, pairLog)) {
+      if (!setsEqual(currentA, currentB, comparison, depth, pairLog)) {
         return false
       }
       continue
@@ -220,16 +230,10 @@ function compareWithSeenPairs(
  * 使 maxDepth 在整棵树上连续消耗（迭代实现每次重开栈都从自己的 0 计，
  * 不带上基准就等于给每个 Set 发一份新的深度预算）。
  */
-function setsEqual(
-  setA: Set<unknown>,
-  setB: Set<unknown>,
-  maxDepth: number,
-  depth: number,
-  seenPairs: Map<object, Set<object>>,
-  pairLog?: PairRecord[],
-): boolean {
+function setsEqual(setA: Set<unknown>, setB: Set<unknown>, comparison: Comparison, depth: number, pairLog?: PairRecord[]): boolean {
   const itemsA = [...setA]
   const remainingB: unknown[] = [...setB]
+  const { seenPairs } = comparison
 
   for (const itemA of itemsA) {
     let matched = false
@@ -249,7 +253,7 @@ function setsEqual(
       // 失败时回滚，避免失败候选的配对污染后续候选的比较结果
       if (typeof itemA === 'object' && typeof itemB === 'object' && itemA !== null && itemB !== null) {
         const candidateLog: PairRecord[] = []
-        const candidatePairs = compareWithSeenPairs(itemA, itemB, maxDepth, seenPairs, candidateLog, depth + 1)
+        const candidatePairs = compareWithSeenPairs(itemA, itemB, comparison, candidateLog, depth + 1)
         if (candidatePairs) {
           if (pairLog) {
             pairLog.push(...candidateLog)

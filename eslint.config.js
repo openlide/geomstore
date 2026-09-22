@@ -66,26 +66,16 @@ export default [
     files: ['tests/**/*.ts'],
     // globals 同样不维护（理由见上方 `**/*.ts` 块）：jest/describe/it 由 @types/jest
     // 经 tsconfig 的 types 提供，供 tsc 使用；no-undef 已关闭，ESLint 侧不需要声明。
+    //
+    // no-unused-vars 与 no-empty 一律沿用上方 `**/*.ts` 块的设置，测试文件不再例外关闭：
+    // 测试里的无用变量/空 catch 同样是死代码与吞异常，`^_` 前缀足以表达「刻意不用」，
+    // 整条规则关闭会让新增的死代码在 100+ 个测试文件里永久静默。
     rules: {
       '@typescript-eslint/no-explicit-any': 'off',
       '@typescript-eslint/no-non-null-assertion': 'off',
       '@typescript-eslint/no-unused-expressions': 'off',
-      '@typescript-eslint/no-unused-vars': 'off',
       '@typescript-eslint/ban-ts-comment': 'warn',
       '@typescript-eslint/no-namespace': 'off',
-      'no-empty': 'off',
-    },
-  },
-
-  // 示例文件配置
-  {
-    files: ['examples/**/*.ts', 'src/**/*.example.ts', 'src/**/*.example/**/*.ts'],
-    rules: {
-      '@typescript-eslint/no-unused-vars': ['warn', { 
-        argsIgnorePattern: '^_',
-        varsIgnorePattern: '^_'
-      }],
-      'no-console': 'off',
     },
   },
 

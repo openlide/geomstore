@@ -9,7 +9,7 @@
  */
 
 import { isProduction } from '../../../core/store/utils.js'
-import { isAsyncFunction } from './common.js'
+import { isAsyncFunction, isThenable } from './common.js'
 
 /**
  * 缓存装饰器选项
@@ -151,7 +151,15 @@ function sortKeysDeep(value: unknown): unknown {
   for (const key of keys.sort()) {
     sorted[key] = sortKeysDeep(record[key])
   }
-  return sorted
+  // 值语义路径也要带类型标签：只按自有可枚举键取值会让 `new Uint8Array([1, 2])`、
+  // `new String('ab')` 与普通对象 `{ 0: 1, 1: 2 }` 生成同一个键，两个互异类型的参数
+  // 于是串用缓存——后果是返回别人的结果，而不只是损失命中率。
+  // 纯对象与 null 原型对象共用空标签（二者本就按值等价），其余原型按身份编号。
+  // 用「首元素为裸 __obj 的数组」承载而非给 sorted 加保留键：对象键不参与类型标记，
+  // 用户参数自带的 `__obj` 键能原样伪造标签（与 __map/__set 的包装同一理由）
+  const typeTag = proto === Object.prototype || proto === null ? '' : `p:${identityId(proto as object)}`
+
+  return ['__obj', typeTag, sorted]
 }
 
 /** 缓存条目：`pending` 非空即在途占位（同参并发复用它，值由结算后回填） */
@@ -161,6 +169,12 @@ interface CacheEntry {
   pending?: Promise<unknown>
 }
 
+/** 单宿主的缓存容器 + 写入计数（过期回收按写入次数摊销，见 {@link SWEEP_EVERY_WRITES}） */
+interface HostCache {
+  entries: Map<string, CacheEntry>
+  writes: number
+}
+
 /** 写入前回收过期条目（含已超时的在途占位），避免长生命周期宿主上 Map 持续累积 */
 function reclaimExpired(cache: Map<string, CacheEntry>, at: number): void {
   for (const [entryKey, entry] of cache) {
@@ -168,6 +182,60 @@ function reclaimExpired(cache: Map<string, CacheEntry>, at: number): void {
       cache.delete(entryKey)
     }
   }
+}
+
+/**
+ * 过期回收的摊销步长：每这么多次写入才扫一遍全表
+ *
+ * 回收只影响内存占用、不影响正确性：读路径自己判 `expiry > now`，写路径覆盖旧值。
+ * 而每次写入都全表扫描会让热方法的单次写入成本是 O(n)（n 上限 1000，突发期近似 O(n²)）。
+ * 逼近容量上限时本轮仍要扫：那时过期条目正占着坑，不扫就会把还有效的条目当成「最旧」淘汰掉
+ */
+const SWEEP_EVERY_WRITES = 32
+
+/**
+ * 按插入序把容量压回 {@link MAX_CACHE_ENTRIES}
+ *
+ * `onlySettled` 为 true 时跳过在途占位：删掉它会让同参并发调用 miss 并重复执行原方法
+ * （重复发请求），正常情况下「淘汰最旧的已完成条目」优先于去重能力。
+ */
+function evictOldest(cache: Map<string, CacheEntry>, onlySettled: boolean): void {
+  for (const [entryKey, entry] of cache) {
+    if (cache.size < MAX_CACHE_ENTRIES) {
+      return
+    }
+    if (onlySettled && entry.pending !== undefined) {
+      continue
+    }
+    cache.delete(entryKey)
+  }
+}
+
+/**
+ * 容量硬上限：已完成条目优先淘汰，占位条目在无路可退时也淘汰
+ *
+ * 只淘汰已完成条目的话，本函数的产出可以是 0——占位条目最短也要活到
+ * {@link MIN_IN_FLIGHT_TTL}（60s），而「大量不同参数键的在途调用」与「键生成每次都退化成
+ * {@link uncacheableKey}」（循环引用/BigInt 参数、抛错的 keyFn）都会持续写入永不复用的新
+ * 占位。那样 `cache.size` 的上界就只剩「调用速率 × inFlightExpiry」，与文档承诺的
+ * MAX_CACHE_ENTRIES 无关。越界时宁可让那批并发调用失去去重，也不让 Map 无界增长
+ */
+function enforceCapacity(cache: Map<string, CacheEntry>): void {
+  evictOldest(cache, true)
+  evictOldest(cache, false)
+}
+
+/**
+ * 写入前的统一闸门（值与在途占位两条写入路径共用）
+ *
+ * 计数自增 + 摊销回收 + 容量淘汰。放在一处，避免只有一条路径受闸门约束
+ */
+function beforeWrite(cache: HostCache, at: number): void {
+  cache.writes += 1
+  if (cache.entries.size >= MAX_CACHE_ENTRIES || cache.writes % SWEEP_EVERY_WRITES === 0) {
+    reclaimExpired(cache.entries, at)
+  }
+  enforceCapacity(cache.entries)
 }
 
 /**
@@ -204,11 +272,25 @@ function defaultKeyFn(...args: unknown[]): string {
  * 不做保护会让「缓存键生成失败」升级为「业务方法抛错」，且调用方无从区分这两类故障。
  * 与 {@link defaultKeyFn} 同口径降级为一次性唯一键（本次调用跳过缓存）。
  *
+ * 返回值也要验：`String()` 会把 `undefined`（箭头函数体漏写 `return`）折成 `"undefined"`、
+ * 把对象折成 `"[object Object]"`，于是**所有**参数共用一个键、第二次调用起拿到的都是第一次
+ * 的结果——正是本模块其余路径全力避免的「返回别人的缓存值」，而 TS 的 `=> string` 只挡得住
+ * TS 调用方（JS/`as any` 调用照样进来）。非 string/number 与抛错同一口径处理。
+ *
  * @private
  */
 function userKeyFn(keyFn: (...args: unknown[]) => string, args: unknown[]): string {
   try {
-    return String(keyFn(...args))
+    const raw: unknown = keyFn(...args)
+    if (typeof raw !== 'string' && typeof raw !== 'number') {
+      if (!isProduction()) {
+        console.debug('[Cache] keyFn returned a non-string key, this invocation is not cached:', raw)
+      }
+
+      return uncacheableKey()
+    }
+
+    return String(raw)
   } catch (error) {
     if (!isProduction()) {
       // 静默降级会让「缓存明明配了却从不命中」难以定位，故开发期点名原因
@@ -264,17 +346,17 @@ export function withCache(options: CacheDecoratorOptions = {}): MethodDecorator 
   // 按宿主对象隔离缓存，避免多实例共享缓存条目。宿主包含函数（类/静态方法场景）。
   // entry.pending：异步方法进行中的 Promise（in-flight 去重标记），
   // 并发的同参调用复用同一 Promise，避免重复执行（如重复发请求）
-  const store = new WeakMap<object, Map<string, CacheEntry>>()
+  const store = new WeakMap<object, HostCache>()
   let nextMethodId = 0
 
-  const getCache = (host: unknown): Map<string, CacheEntry> => {
+  const getCache = (host: unknown): HostCache => {
     if ((typeof host !== 'object' && typeof host !== 'function') || host === null) {
-      // 宿主不是对象或函数时返回一次性 Map（不跨调用串扰）
-      return new Map()
+      // 宿主不是对象或函数时返回一次性容器（不跨调用串扰）
+      return { entries: new Map(), writes: 0 }
     }
     let cache = store.get(host)
     if (!cache) {
-      cache = new Map()
+      cache = { entries: new Map(), writes: 0 }
       store.set(host, cache)
     }
     return cache
@@ -288,22 +370,9 @@ export function withCache(options: CacheDecoratorOptions = {}): MethodDecorator 
     const isAsyncMethod = isAsyncFunction(originalMethod)
     let observesPromise = false
 
-    const writeCache = (cache: Map<string, CacheEntry>, key: string, value: unknown, at: number): unknown => {
-      reclaimExpired(cache, at)
-      // 容量保护：仍超限时淘汰最早写入的已完成条目（Map 保持插入顺序）。
-      // 在途占位条目跳过——删掉它会让同参并发调用 miss 并重复执行原方法（重复发请求），
-      // 去重能力比「淘汰最旧」优先；占位条目自身受 inFlightExpiry 约束，不会无限堆积
-      for (const [entryKey, entry] of cache) {
-        if (cache.size < MAX_CACHE_ENTRIES) {
-          break
-        }
-        if (entry.pending) {
-          continue
-        }
-        cache.delete(entryKey)
-      }
-
-      cache.set(key, { value, expiry: at + ttl })
+    const writeCache = (cache: HostCache, key: string, value: unknown, at: number): unknown => {
+      beforeWrite(cache, at)
+      cache.entries.set(key, { value, expiry: at + ttl })
       return value
     }
 
@@ -313,7 +382,7 @@ export function withCache(options: CacheDecoratorOptions = {}): MethodDecorator 
       const now = Date.now()
 
       // 检查缓存
-      const cached = cache.get(key)
+      const cached = cache.entries.get(key)
       if (cached && cached.expiry > now) {
         // in-flight 命中：直接复用进行中的 Promise（失败时条目已被删除，后续调用重新执行）
         if (cached.pending) {
@@ -332,14 +401,21 @@ export function withCache(options: CacheDecoratorOptions = {}): MethodDecorator 
 
       // 执行方法：同步方法同步返回，异步方法保持 Promise 语义
       const result = originalMethod.apply(this, args)
-      if (result instanceof Promise) {
+      // isThenable 而非 `instanceof Promise`：手写 thenable 与跨 realm（iframe/worker、
+      // ESM+CJS 双副本）的 Promise 都会被判为同步结果，于是
+      // 1) 占位条目不再写入、`pending` 分支失效，同参并发失去去重；
+      // 2) rejection 没人接管，变成 unhandledRejection；
+      // 3) 结果被当成同步值直接缓存，`observesPromise` 也永不置位。
+      // 统一过 Promise.resolve 才拿到真正的 Promise 来当占位（thenable 自身的 then
+      // 返回值可能是任意值，不能直接在它上面调用 .then 的结果）
+      if (isThenable(result)) {
         observesPromise = true
-        const pending = result.then(
+        const pending = Promise.resolve(result).then(
           (value) => {
             // 乱序完成保护：仅在条目仍是本次调用的占位（或已被淘汰）时回填。
             // 若同参的新调用已替换占位或已写入新值，旧请求的结果不得回写——否则
             // 「旧请求慢、新请求快」会让缓存退回更早的数据
-            const entry = cache.get(key)
+            const entry = cache.entries.get(key)
             if (entry === undefined || entry.pending === pending) {
               writeCache(cache, key, value, Date.now())
             }
@@ -350,8 +426,8 @@ export function withCache(options: CacheDecoratorOptions = {}): MethodDecorator 
             // 避免误删期间已被重试调用覆盖的新条目。
             // 条目也可能已消失：占位条目到 inFlightExpiry 会被回收（永不结算的请求），
             // 或被同参的新调用替换 —— 此时更不该删掉别人的条目
-            if (cache.get(key)?.pending === pending) {
-              cache.delete(key)
+            if (cache.entries.get(key)?.pending === pending) {
+              cache.entries.delete(key)
             }
             throw error
           },
@@ -360,8 +436,8 @@ export function withCache(options: CacheDecoratorOptions = {}): MethodDecorator 
         // 占位条目必须有有限期限：MAX_SAFE_INTEGER 会让永不结算的请求（被丢弃的请求、
         // 宿主挂起）把条目永久留在 Map 里，且此后所有同参调用都一直拿到这个永不结算的
         // Promise——等于该方法永久失效
-        reclaimExpired(cache, now)
-        cache.set(key, { value: undefined, expiry: now + inFlightExpiry, pending })
+        beforeWrite(cache, now)
+        cache.entries.set(key, { value: undefined, expiry: now + inFlightExpiry, pending })
         return pending
       }
       return writeCache(cache, key, result, now)

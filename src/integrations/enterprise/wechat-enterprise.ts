@@ -12,7 +12,7 @@
 import type { Store } from '../../types/store.js'
 import { storage, logger, CURRENT_USER_KEY, type WxApi } from './env.js'
 import { OfflineManager } from './offline.js'
-import type { UserState } from './user-store.js'
+import { isValidUserId, type UserState } from './user-store.js'
 import { storeManager } from './store-manager.js'
 import { initHotUpdate, restoreFromHotUpdate } from './hot-update.js'
 import { initBackgroundSync, unregisterBackgroundSync, ensureAppLifecycleHooks } from './background-sync.js'
@@ -72,20 +72,28 @@ export function createEnterpriseApp(config: EnterpriseAppConfig = {}) {
   ensureAppLifecycleHooks()
 
   // 获取当前用户ID
-  const currentUserId = storage.get<string>(CURRENT_USER_KEY)
+  // 身份键可能被外部写成非字符串，故按 unknown 处理再判定（storage.get 对缺失键归一为 null）
+  const persistedUserId: unknown = storage.get<string>(CURRENT_USER_KEY)
   // 用 switchUser 而非 getUserStore：冷启动时 StoreManager.currentUserId 为 null，
   // 必须显式恢复身份，否则 StoreManager.logout() 的 `if (!this.currentUserId) return`
   // 会早退，导致 store.destroy() 与持久化键 user-store-<id> 都不被清理。
   // 冷启动本就是一次「切换到持久化的用户」，switchUser 语义正确
   let store: Store<UserState> | null = null
-  if (currentUserId) {
-    try {
-      store = storeManager.switchUser(currentUserId)
-    } catch (error) {
-      // 历史脏标识（如旧版未校验时写入的空白 userId）会在 createUserStore 的
-      // 入口校验处抛错：冷启动不能因身份损坏而整体崩溃，清键后按未登录处理
-      logger.error('App', '冷启动恢复身份失败，已清除损坏的用户标识:', error)
+  if (persistedUserId !== null) {
+    if (!isValidUserId(persistedUserId)) {
+      // 只有「历史脏标识」（旧版未校验时写入的空/非字符串 userId，createUserStore
+      // 入口按 #337 会为此抛错）才清键：冷启动不能因身份损坏而整体崩溃，清键后按未登录处理
+      logger.error('App', '冷启动：持久化的用户标识无效（空或非字符串），已清除并按未登录处理')
       storage.remove(CURRENT_USER_KEY)
+    } else {
+      try {
+        store = storeManager.switchUser(persistedUserId)
+      } catch (error) {
+        // switchUser 还会因与身份无关的原因抛错（store 创建、插件安装、LRU 淘汰既有
+        // 账号时 destroy/订阅者抛错）。此前这条也清键：一次瞬时故障就把用户强制登出，
+        // 下次冷启动变成未登录、要重走认证。这里只记失败并保留身份，留给下次启动重试
+        logger.error('App', '冷启动恢复身份失败，已保留持久化身份待下次启动重试:', error)
+      }
     }
   }
 
@@ -96,6 +104,13 @@ export function createEnterpriseApp(config: EnterpriseAppConfig = {}) {
   // showLoading/hideLoading，第二次的 finally 会在首次同步仍在跑时提前收起转圈，
   // 两次 showLoading/hideLoading 抢同一个全局 toast
   let syncInFlight = false
+
+  // 热更新注册配置在闭包里只写一份：initHotUpdate 每次调用都会整体覆盖前一次注册，
+  // login（账号切换）路径若只传 { store }，配置过的 onBeforeUpdate 会在本次会话余下
+  // 时间里静默丢失
+  const hotUpdateOptions = {
+    onBeforeUpdate: () => logger.log('App', '准备更新，状态已备份'),
+  }
 
   return {
     globalData: {
@@ -121,10 +136,7 @@ export function createEnterpriseApp(config: EnterpriseAppConfig = {}) {
 
       // 1. 初始化热更新处理
       initStep('热更新', () => {
-        initHotUpdate({
-          store: currentStore,
-          onBeforeUpdate: () => logger.log('App', '准备更新，状态已备份'),
-        })
+        initHotUpdate({ store: currentStore, ...hotUpdateOptions })
       })
 
       // 2. 尝试从热更新备份恢复
@@ -148,15 +160,27 @@ export function createEnterpriseApp(config: EnterpriseAppConfig = {}) {
       if (syncInFlight) return
       if (offlineManager && offlineManager.getQueueLength() > 0) {
         syncInFlight = true
-        wx.showLoading({ title: '同步中...' })
+        // 加载提示与同步本体分开兜底：showLoading 抛错（部分宿主/测试环境的 wx UI API 会抛）
+        // 既不能把互斥标记永久留在 true（此后 onShow 再也不会触发同步，队列里的操作
+        // 只能等网络状态变化），也不能让同步本身被跳过
+        try {
+          wx.showLoading({ title: '同步中...' })
+        } catch (error) {
+          logger.error('App', '离线队列同步的加载提示失败，继续同步:', error)
+        }
         // syncQueue 可 reject（onDrop 回调抛错等），finally 前必须接住，
-        // 避免 unhandled rejection；hideLoading 在成功与失败时都要执行
+        // 避免 unhandled rejection；hideLoading 在成功与失败时都要执行。
+        // hideLoading 同样兜住：它抛错会沿 finally 变成这条链路上没人接的 rejection
         offlineManager
           .syncQueue()
           .catch((error) => logger.error('App', '离线队列同步失败:', error))
           .finally(() => {
             syncInFlight = false
-            wx.hideLoading()
+            try {
+              wx.hideLoading()
+            } catch (error) {
+              logger.error('App', '收起加载提示失败:', error)
+            }
           })
       }
     },
@@ -174,9 +198,10 @@ export function createEnterpriseApp(config: EnterpriseAppConfig = {}) {
       }
       initBackgroundSync({ store: newStore, maxInactiveTime })
       // 热更新保护切换到新 store：监听幂等安装（不累积），保护目标切换。
+      // 除目标外的配置与 onLaunch 同源（hotUpdateOptions），否则换号后回调静默丢失。
       // 首次登录（previousStore 为 null，onLaunch 因无 store 未注册）也必须注册
       if (previousStore !== newStore) {
-        initHotUpdate({ store: newStore })
+        initHotUpdate({ store: newStore, ...hotUpdateOptions })
       }
 
       // 重新初始化离线管理器：先释放旧实例的网络监听，防止泄漏

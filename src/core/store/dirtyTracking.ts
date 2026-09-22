@@ -1,5 +1,5 @@
 /** Writable action proxies: report mutations and every affected top-level key. */
-import { isBuiltinObject } from './StateProxy.js'
+import { isBuiltinObject, isMapLike, isSetLike } from './StateProxy.js'
 import { getStateVersion } from './stateVersion.js'
 
 export interface DirtyTrackingCache {
@@ -41,6 +41,11 @@ type EdgeChange = typeof EDGE_STABLE | typeof EDGE_ADDED | typeof EDGE_REMOVED
  * 追踪契约内（不标脏、不通知，见 core/store/stateVersion.ts 与 StateProxy 的说明）；旧实现靠
  * 「每次结构性写入都重建」偶然把这类图变更一起捞回来，增量实现不再兜它——兜底代价由 report 的
  * 「解析不出归属即标记全部顶层键」承担，方向仍是多报而非漏报。
+ *
+ * onMutate 的契约：一次上报至多为本次写入推一格版本（Store 的接线就是固定一格 `_mutationCount++`）。
+ * 回调里还要改图时，要么走本代理（重入的 report 自己把索引维护好），要么按 Store 侧口径再推一格
+ * 版本号——多出来的那格 report 判得出来，会作废背书、留给下次全量重建；只改图不推版本则属上一段
+ * 已声明的契约外裸写，不在追踪范围内。
  */
 export function createDirtyTrackingProxy(root: object, cache: DirtyTrackingCache, onMutate: (rootKeys: Iterable<string | symbol>) => void): object {
   const unwrap = (value: unknown): unknown => (value !== null && typeof value === 'object' ? (cache.targets.get(value) ?? value) : value)
@@ -63,9 +68,9 @@ export function createDirtyTrackingProxy(root: object, cache: DirtyTrackingCache
     while (pending.length > 0) {
       const value = unwrap(pending.pop())
       if (!isObject(value) || !visit(value)) continue
-      if (value instanceof Map) {
+      if (isMapLike(value)) {
         for (const [entryKey, entryValue] of value) pending.push(entryKey, entryValue)
-      } else if (value instanceof Set) {
+      } else if (isSetLike(value)) {
         for (const member of value) pending.push(member)
       } else if (isBuiltinObject(value)) {
         continue
@@ -124,19 +129,43 @@ export function createDirtyTrackingProxy(root: object, cache: DirtyTrackingCache
   }
 
   /**
+   * 沿原型链找 key 的描述符，只看「自有属性缺席」时才会被用到的那一半。
+   *
+   * 自有查找（getOwnPropertyDescriptor）不足以判定写入对图的影响：`Reflect.set` 会调用
+   * **原型上**的 setter，且以原始对象为接收者（正是 `bindMethods` 支持的类实例场景），
+   * 陷阱完全看不到它改了哪些边。链长是个位数，且仅在自有属性不存在时走一次。
+   */
+  const inheritedDescriptor = (obj: object, key: string | symbol): PropertyDescriptor | undefined => {
+    for (let proto = Object.getPrototypeOf(obj); proto !== null; proto = Object.getPrototypeOf(proto)) {
+      const descriptor = Object.getOwnPropertyDescriptor(proto, key)
+      if (descriptor) return descriptor
+    }
+    return undefined
+  }
+
+  /**
    * 判定一次数据属性写入（set / defineProperty）对图的影响，必须在 Reflect 写入之前求值。
    *
    * 「旧值是对象」等于删掉一条被索引的边 → EDGE_REMOVED（无法廉价判断旧子树是否仍可达，
    * 猜错就是漏报）。旧值不是对象而新值是 → 纯新增边 → EDGE_ADDED。
    * 同对象自赋值、标量改写、数组 length 变长（只造空洞）→ 图不变 → EDGE_STABLE。
-   * 覆盖自有访问器同样按 EDGE_REMOVED 处理：它的 setter 会改哪些边不可知，
-   * 且这类写入在增量之前也是走全量重建的，不借此路径改口径。
+   * 访问器写入一律 EDGE_REMOVED：它的 setter 会改哪些边不可知。自有访问器看 `previous`，
+   * 原型链上的访问器由调用方经 `inherited` 补进来（set 陷阱传，见其注释；
+   * defineProperty 走 [[DefineOwnProperty]]，不调用任何 setter，故不传）。
+   * 这类写入在增量之前也是走全量重建的，不借此路径改口径。
    */
-  const classifyWrite = (obj: object, key: string | symbol, previous: PropertyDescriptor | undefined, value: unknown): EdgeChange => {
+  const classifyWrite = (
+    obj: object,
+    key: string | symbol,
+    previous: PropertyDescriptor | undefined,
+    value: unknown,
+    inherited?: PropertyDescriptor,
+  ): EdgeChange => {
     if (Array.isArray(obj) && key === 'length') {
       return tailDropsIndexedEdge(obj, Number(value)) ? EDGE_REMOVED : EDGE_STABLE
     }
-    if (previous && !('value' in previous)) return EDGE_REMOVED
+    const effective = previous ?? inherited
+    if (effective && !('value' in effective)) return EDGE_REMOVED
     const previousValue = previous && 'value' in previous ? indexedObjectOf(previous.value) : undefined
     if (previousValue && previousValue !== value) return EDGE_REMOVED
     return isObject(value) && value !== previousValue ? EDGE_ADDED : EDGE_STABLE
@@ -165,8 +194,18 @@ export function createDirtyTrackingProxy(root: object, cache: DirtyTrackingCache
     if (keys.size === 0) {
       for (const rootKey of Reflect.ownKeys(root)) keys.add(rootKey)
     }
+    // 此刻索引与图是一致的：记下这一格的版本号，回调返回后再读一次，差值即回调推进的格数
+    const versionAtResolve = getStateVersion(root)
     onMutate(keys)
-    indexedVersion = getStateVersion(root)
+    const versionAfterCallback = getStateVersion(root)
+    const bumpsDuringCallback = versionAtResolve === undefined || versionAfterCallback === undefined ? 0 : versionAfterCallback - versionAtResolve
+    // 版本号必须在 onMutate **之后**取：回调（Store 的接线，见 Store._createDirtyTrackingProxy 的
+    // `this._mutationCount++`）会为本次写入固定推一格，取回调之前的快照则 indexedVersion 恒落后
+    // 一格，下一次上报必然判「版本已变」⇒ 每次写入都全量重建，增量索引永久失效。
+    // 但一格之外的推进只能来自回调里的重入写入（setState / $patch 一类改图不走本代理陷阱、
+    // 只推版本号的路径），索引对它无感知；这种情况不背书，留给下一次上报全量重建
+    // （多一次重建的代价是常数，漏归因的代价是变更对页面永久不可见）
+    indexedVersion = bumpsDuringCallback > 1 ? versionAtResolve : versionAfterCallback
     return keys
   }
 
@@ -174,7 +213,7 @@ export function createDirtyTrackingProxy(root: object, cache: DirtyTrackingCache
     value = unwrap(value)
     if (!isObject(value)) return value
     const target = value
-    const collection = target instanceof Map || target instanceof Set
+    const collection = isMapLike(target) || isSetLike(target)
     // 内部槽位语义在代理下必然失效的内建对象（Date/RegExp/WeakMap/WeakSet）保持原引用，
     // 内部变异不计入（既有契约）。Map/Set 由 collectionMethod 单独处理
     if (!collection && isBuiltinObject(target)) return target
@@ -193,6 +232,12 @@ export function createDirtyTrackingProxy(root: object, cache: DirtyTrackingCache
       get(obj, key) {
         const descriptor = Object.getOwnPropertyDescriptor(obj, key)
         // Proxy invariants require the exact value for locked data properties.
+        //
+        // 有意的追踪空洞（Proxy 不变量逼出来的，不是漏实现）：既不可配置也不可变写的
+        // 自有数据属性上，陷阱必须原样返回那个值，代理不包装 ⇒ 调用方拿到**裸对象**，
+        // 此后对它的写入既不走 set 也不走 defineProperty 陷阱，不标脏键、不推版本、不通知。
+        // 该属性因此只能承载「不再被改的引用」；需要继续被追踪的状态请放在
+        // 可配置或可变写的属性上，或经 setState / $patch 写入
         if (descriptor && !descriptor.configurable && 'value' in descriptor && !descriptor.writable) return descriptor.value
         if (collection) {
           if (methods.has(key)) return methods.get(key)
@@ -210,8 +255,10 @@ export function createDirtyTrackingProxy(root: object, cache: DirtyTrackingCache
         if (bindMethods && typeof raw === 'function' && key !== 'constructor') {
           if (methods.has(key)) return methods.get(key)
           const invoke = (...args: unknown[]): unknown => {
-            // 方法体直接改原始对象，索引看不到它写了哪些边：只能整体重建后再归因
-            report(obj)
+            // 方法体直接改原始对象，索引看不到它写了哪些边，故调用前先按当前索引归因
+            // 所属顶层键（宁多报）。此处不做全量重建：重建发生在 Reflect.apply 之前，
+            // 看不到方法体新增的边，等于把整图原样再推一遍，是纯开销
+            report(obj, undefined, EDGE_STABLE)
             return Reflect.apply(raw as (...a: unknown[]) => unknown, obj, args)
           }
           methods.set(key, invoke)
@@ -222,7 +269,8 @@ export function createDirtyTrackingProxy(root: object, cache: DirtyTrackingCache
       set(obj, key, next) {
         const previous = Object.getOwnPropertyDescriptor(obj, key)
         const value = unwrap(next)
-        const edge = classifyWrite(obj, key, previous, value)
+        // 自有属性存在时它决定写入落点，无需看链；缺席时才可能命中原型上的 setter
+        const edge = classifyWrite(obj, key, previous, value, previous === undefined ? inheritedDescriptor(obj, key) : undefined)
         const success = Reflect.set(obj, key, value)
         if (success) report(obj, key, edge, value)
         return success
@@ -253,7 +301,7 @@ export function createDirtyTrackingProxy(root: object, cache: DirtyTrackingCache
 
   // Collection methods need raw receivers, but their returned values are wrapped.
   const collectionMethod = (obj: Map<unknown, unknown> | Set<unknown>, key: string | symbol, proxy: object): unknown => {
-    if (key === 'set' && obj instanceof Map) {
+    if (key === 'set' && isMapLike(obj)) {
       return (entryKey: unknown, value: unknown) => {
         const rawKey = unwrap(entryKey)
         const rawValue = unwrap(value)
@@ -270,7 +318,7 @@ export function createDirtyTrackingProxy(root: object, cache: DirtyTrackingCache
         return proxy
       }
     }
-    if (key === 'add' && obj instanceof Set) {
+    if (key === 'add' && isSetLike(obj)) {
       return (value: unknown) => {
         const raw = unwrap(value)
         obj.add(raw)
@@ -294,7 +342,7 @@ export function createDirtyTrackingProxy(root: object, cache: DirtyTrackingCache
       }
     }
     if (key === 'has') return (value: unknown) => obj.has(unwrap(value))
-    if (key === 'get' && obj instanceof Map) return (value: unknown) => wrap(obj.get(unwrap(value)))
+    if (key === 'get' && isMapLike(obj)) return (value: unknown) => wrap(obj.get(unwrap(value)))
     if (key === 'forEach') {
       return (callback: (value: unknown, key: unknown, collection: object) => void, thisArg?: unknown) => {
         obj.forEach((value, entryKey) => callback.call(thisArg, wrap(value), wrap(entryKey), proxy))
@@ -302,8 +350,15 @@ export function createDirtyTrackingProxy(root: object, cache: DirtyTrackingCache
     }
     if (key === Symbol.iterator || key === 'entries' || key === 'keys' || key === 'values') {
       return function* () {
-        const entries = key === 'entries' || (key === Symbol.iterator && obj instanceof Map)
-        const iterator = key === 'keys' ? obj.keys() : entries ? obj.entries() : obj.values()
+        const entries = key === 'entries' || (key === Symbol.iterator && isMapLike(obj))
+        let iterator: Iterable<unknown>
+        if (entries) {
+          iterator = obj.entries()
+        } else if (key === 'keys') {
+          iterator = obj.keys()
+        } else {
+          iterator = obj.values()
+        }
         for (const item of iterator) {
           yield entries ? (item as unknown[]).map(wrap) : wrap(item)
         }

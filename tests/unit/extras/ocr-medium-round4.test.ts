@@ -177,7 +177,9 @@ describe('#196 非 Error 抛出值在入口处规范化', () => {
 
     const circular: Record<string, unknown> = {}
     circular.self = circular
-    expect(toError(circular).message).toBe('[object Object]')
+    // R5-149：抛出的对象改为「一层原始字段投影」（不再递归展开、也不执行 toJSON/getter），
+    // 循环引用因此根本不会触发序列化失败，自引用键以占位文本落地
+    expect(toError(circular).message).toBe('{"self":"[details omitted]"}')
   })
 })
 
@@ -386,8 +388,8 @@ describe('#203 退避与超时数值归一', () => {
     expect(delays).toEqual([2 ** 31 - 1, 2 ** 31 - 1])
   })
 
-  it('#203 delay 为 NaN / Infinity / 负数时按 0 处理（不产生 NaN 延时，也不会挂起）', async () => {
-    for (const delay of [Number.NaN, Number.POSITIVE_INFINITY, -50]) {
+  it('#203 delay 为 NaN / 负数时按 0 处理（不产生 NaN 延时，也不会挂起）', async () => {
+    for (const delay of [Number.NaN, -50]) {
       const delays = recordTimeoutDelays()
       const fn = jest.fn().mockRejectedValueOnce(new Error('first')).mockResolvedValue('ok')
 
@@ -395,6 +397,14 @@ describe('#203 退避与超时数值归一', () => {
       expect(delays).toEqual([0])
       jest.restoreAllMocks()
     }
+  })
+
+  it('R5-148 delay 为正的 Infinity 时钳到 2^31-1，而不是塌回 0 变成紧贴重试', async () => {
+    const delays = recordTimeoutDelays()
+    const fn = jest.fn().mockRejectedValueOnce(new Error('first')).mockResolvedValue('ok')
+
+    await expect(retryWithBackoff(fn, { retries: 1, delay: Number.POSITIVE_INFINITY })).resolves.toBe('ok')
+    expect(delays).toEqual([2 ** 31 - 1])
   })
 
   it('#203 raceWithTimeout 拒绝非有限 / 非正数的 timeout', async () => {
@@ -745,10 +755,12 @@ describe('#217 在途占位条目有有限期限', () => {
 
     const first = host.load()
     jest.advanceTimersByTime(60_001)
-    const second = host.load()
+    // 第二次 load 的返回值本用例不断言（它挂在未 settle 的 promise 上），
+    // 但调用本身要保留：executions 计数与缓存条目替换都由它触发
+    void host.load()
     expect(host.executions).toBe(2)
 
-    // 修复前：该分支被 istanbul 断言为「不可达」，实际条目已换成 second 的占位
+    // 修复前：该分支被 istanbul 断言为「不可达」，实际条目已换成第二次 load 的占位
     rejectFirst(new Error('stale request'))
     await expect(first).rejects.toThrow('stale request')
 

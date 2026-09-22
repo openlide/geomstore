@@ -41,6 +41,17 @@ export interface ErrorContext {
 
 /**
  * 错误处理器
+ *
+ * 返回类型写的是 `void`，但 TS 允许把 `async (ctx) => ...`（返回 `Promise<void>`）赋给它——
+ * 同文件已发布的 {@link ErrorReporter} 就是异步的，`(ctx) => reporter.report(ctx)` 这类处理器
+ * 看起来很自然地写得出来。
+ *
+ * 库内调用侧（`extras/error/ErrorHandler.ts` 的 `ErrorHandlerImpl.handleError`）会给返回的
+ * thenable 补 `.catch`，异步失败归口到「处理器自身失败」的告警；但那层兜底**只覆盖库内入口**：
+ * `ErrorHandler` 是公开类型，消费方自己组织的调用（交给聚合器、放进自建的 try/catch 循环）拿到的
+ * 是一个被丢弃的 Promise，rejection 无人接即成 unhandledRejection（Node 下可直接终止进程）。
+ * 所以处理器仍要自行吞掉失败（`.catch(...)` / try-await-catch），或干脆只把数据入队、
+ * 由外部自己的周期任务去 flush——不要把「返回值会被别人接住」当前提
  */
 export type ErrorHandler = (context: ErrorContext) => void
 
@@ -84,11 +95,27 @@ function describeErrorProperty(error: Error, property: 'message' | 'stack'): str
 }
 
 /**
+ * 取可打印的错误级别标签
+ *
+ * 与 {@link describeErrorProperty} 同一动机：`ErrorContext.level` 的契约类型是
+ * {@link ErrorLevel}，但 JS 调用方手搓上下文（`{ storeName, operation, error }`，level 缺省）
+ * 或传进非字符串级别时，裸调 `level.toUpperCase()` 会在处理器内部抛
+ * `TypeError: Cannot read properties of undefined (reading 'toUpperCase')`，
+ * 把原始失败顶掉——正是本文件反复声明要避免的故障模式。
+ * （`createErrorContext` 的 `= 'error'` 默认值只覆盖显式走工厂的路径，管不到手写对象。）
+ *
+ * 非字符串时退回固定标签，后面的 switch 仍按原逻辑把未知级别送进 default 分支出声
+ */
+function describeLevelLabel(level: ErrorLevel): string {
+  return typeof level === 'string' ? level.toUpperCase() : 'UNKNOWN'
+}
+
+/**
  * 默认错误处理器
  */
 export const defaultErrorHandler: ErrorHandler = (context: ErrorContext): void => {
   const { storeName, operation, error, level } = context
-  const prefix = `[GeomStore][${level.toUpperCase()}][${storeName}]`
+  const prefix = `[GeomStore][${describeLevelLabel(level)}][${storeName}]`
   // 非 Error 抛值（字符串 / null / undefined）兜底为字符串化，避免处理器自身抛错掩盖原始失败
   const message = describeErrorProperty(error, 'message') ?? String(error)
 
@@ -244,6 +271,13 @@ export interface ErrorReport {
     totalGroups: number
     totalErrors: number
     queuedErrors: number
+    /**
+     * 上报队列溢出后被丢弃的错误条数（`ErrorMonitoring` 的 `droppedErrors`）。
+     * 报告必须自带这一项：只有 `getDroppedErrors()` 可取时，拿到报告快照的调用方
+     * （写日志、上传、看板）看到的是一个「总数对得上」的报表，而实际上报链已经丢过数据，
+     * 丢包在下游完全不可见。
+     */
+    droppedErrors: number
   }
 
   /** 按错误代码统计 */

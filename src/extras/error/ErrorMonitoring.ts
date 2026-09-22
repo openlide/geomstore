@@ -19,6 +19,31 @@ export type { HttpRequestImpl } from './reporters/HttpReporter.js'
 export { ErrorAggregator } from './ErrorAggregator.js'
 
 /**
+ * 队列容量与「全部报告器连续失败」重试次数的缺省值。
+ *
+ * 仅当 `MonitoringConfig` 的对应字段缺省或非有限值时使用（见 `normalizeCapacity`）。
+ */
+const DEFAULT_MAX_QUEUE_SIZE = 1000
+const DEFAULT_MAX_FLUSH_RETRIES = 3
+
+/**
+ * 容量/次数类配置归一化：非有限值回退缺省，其余向下取整并夹到 `min` 以上
+ *
+ * `??` 只挡得住 `undefined`，`0` / 负数 / NaN 都会原样进到
+ * `errorQueue.length >= this.maxQueueSize` 这类比较里：`maxQueueSize: 0` 时每条新错误
+ * 都先把上一条 shift 掉（队列实际最多 1 条）、负值时重入队的
+ * `slice(requeued.length - maxQueueSize)` 直接算出空数组（整批被清空）；
+ * `maxFlushRetries` 取负则首个失败批次立即被丢弃。这些值没有可用语义，故按下限裁剪，
+ * 而不是让整条上报链近乎静默失效
+ */
+function normalizeCapacity(value: number | undefined, fallback: number, min: number): number {
+  if (value === undefined || !Number.isFinite(value)) {
+    return fallback
+  }
+  return Math.max(min, Math.floor(value))
+}
+
+/**
  * 错误监控系统
  *
  * @class ErrorMonitoring
@@ -62,12 +87,21 @@ export class ErrorMonitoring {
   private inFlightFlush: Promise<void> | null = null
   private isShuttingDown = false
   private nonAggregatedErrorCount = 0 // 禁用聚合时记录的错误数
-  /** 防止队列无限增长的最大大小（可由 MonitoringConfig.maxQueueSize 覆盖） */
+  /** 防止队列无限增长的最大大小（由 MonitoringConfig.maxQueueSize 经下限裁剪得到） */
   private readonly maxQueueSize: number
   /** 连续「全部报告器失败」的 flush 次数：用于给重入队加上限，见 doFlushReports */
   private consecutiveFlushFailures = 0
   /** 重入队重试上限：超过后丢弃该批并告警，避免永久失败批次无限空转 */
   private readonly maxFlushRetries: number
+  /**
+   * 数据代际：`clear()` 递增
+   *
+   * 用于作废 clear() 之前发起的在途 flush——它的批次属于上一代数据，
+   * 全部报告器失败时不得再重新入队（见 doFlushReports 的判定）
+   */
+  private generation = 0
+  /** 因队列溢出被丢弃的错误条数（含入队淘汰与重入队裁剪两条路径） */
+  private droppedErrors = 0
 
   constructor(config: MonitoringConfig) {
     this.reporters = config.reporters
@@ -78,8 +112,9 @@ export class ErrorMonitoring {
     this.enableAggregation = config.enableAggregation ?? true
     this.enableConsoleLog = config.enableConsoleLog ?? true
     this.reportTimeout = config.reportTimeout ?? 10000
-    this.maxQueueSize = config.maxQueueSize ?? 1000
-    this.maxFlushRetries = config.maxFlushRetries ?? 3
+    // 容量类字段走归一化而非 ??：见 normalizeCapacity
+    this.maxQueueSize = normalizeCapacity(config.maxQueueSize, DEFAULT_MAX_QUEUE_SIZE, 1)
+    this.maxFlushRetries = normalizeCapacity(config.maxFlushRetries, DEFAULT_MAX_FLUSH_RETRIES, 0)
 
     this.aggregator = new ErrorAggregator()
 
@@ -107,6 +142,10 @@ export class ErrorMonitoring {
     if (this.errorQueue.length >= this.maxQueueSize) {
       console.warn('[ErrorMonitoring] Error queue full, dropping oldest error')
       this.errorQueue.shift()
+      // 被丢的那条在它自己那次 report() 里已经计入聚合（或 nonAggregatedErrorCount），
+      // 而 totalErrors 的口径是「观测到的错误」——不回退那份计数，而是把「其中有多少
+      // 从未投递给任何 reporter」单独记账，两个口径才能同时成立
+      this.droppedErrors++
     }
 
     // 聚合错误
@@ -171,6 +210,8 @@ export class ErrorMonitoring {
   private async doFlushReports(): Promise<void> {
     const batch = [...this.errorQueue]
     this.errorQueue = []
+    // 进入时所属的数据代际：clear() 之后本批即成为上一代数据，见其重入队处的判定
+    const generation = this.generation
 
     // 注意：不清除周期调度器（batchTimer）。
     // flush 与周期调度是两个独立职责，若在 flush 中清除会导致
@@ -205,18 +246,28 @@ export class ErrorMonitoring {
         } else {
           settled = task
         }
-        return settled
-          .then((outcome) => {
-            if (outcome === 'ok') {
-              anyReporterSucceeded = true
-            } else if (outcome === 'timeout') {
-              console.warn(`[ErrorMonitoring] Reporter "${reporter.getName()}" timed out after ${this.reportTimeout}ms`)
-            }
-          })
-          // 上报先落地（成功/失败）时取消未到期的超时定时器，避免句柄残留
-          .finally(cancelTimeout)
+        return (
+          settled
+            .then((outcome) => {
+              if (outcome === 'ok') {
+                anyReporterSucceeded = true
+              } else if (outcome === 'timeout') {
+                console.warn(`[ErrorMonitoring] Reporter "${reporter.getName()}" timed out after ${this.reportTimeout}ms`)
+              }
+            })
+            // 上报先落地（成功/失败）时取消未到期的超时定时器，避免句柄残留
+            .finally(cancelTimeout)
+        )
       })
       await Promise.allSettled(promises)
+
+      // 代际已切换（flush 在途期间调过 clear()）：本批是上一代数据，整批丢弃——
+      // 重新入队会把 clear() 之前的旧错误交给周期调度器上报（等于 clear() 没生效），
+      // 而 consecutiveFlushFailures++ 又把 clear() 刚归零的进度带回 1
+      // （clear() 的文档承诺正是「不把进度泄漏到新周期」）
+      if (generation !== this.generation) {
+        return
+      }
 
       // 关闭中不重试：shutdown 会用最终 flushReports 排空队列，
       // 若此处重新入队，最终 flush 会再次调用已失败的 reportBatch——
@@ -249,7 +300,16 @@ export class ErrorMonitoring {
       // shift 丢弃最旧错误」同一口径——溢出已是过载降级状态，全类统一按最旧先淘汰，
       // 不为此处开「保旧」特例（那会与入队路径的淘汰方向相反，反而更难推理）
       const requeued = [...batch, ...this.errorQueue]
-      this.errorQueue = requeued.length > this.maxQueueSize ? requeued.slice(requeued.length - this.maxQueueSize) : requeued
+      if (requeued.length > this.maxQueueSize) {
+        const dropped = requeued.length - this.maxQueueSize
+        this.droppedErrors += dropped
+        // 与入队路径同口径：丢弃必须可被统计消费，只留一行 warn 的话「丢了多少」
+        // 在报告里查不到，容量持续吃紧时也就无人发现
+        console.warn(`[ErrorMonitoring] Error queue full, dropped ${dropped} oldest error(s) while re-queueing failed batch`)
+        this.errorQueue = requeued.slice(dropped)
+      } else {
+        this.errorQueue = requeued
+      }
     } finally {
       this.isFlushing = false
       this.inFlightFlush = null
@@ -258,6 +318,14 @@ export class ErrorMonitoring {
 
   /**
    * 生成错误报告
+   *
+   * `summary.totalErrors` 的口径是「**观测到的**错误数」（聚合启用时取各组 count 之和，
+   * 禁用时取 nonAggregatedErrorCount），其中因队列溢出被丢弃的部分从未投递给任何 reporter
+   * 却仍然计入——它们是真实发生过的错误。被丢弃的量直接随报告给出（`summary.droppedErrors`），
+   * 不必再取 {@link ErrorMonitoring.getDroppedErrors}；`summary.queuedErrors` 只表示仍在队列里的。
+   * 三个字段是三个互不重叠的口径，**不能相加核对**：`droppedErrors` 记的是「被从队列里挤出去」
+   * 的次数（被挤掉的那条在它自己那次 `report()` 里已经计入 `totalErrors`），
+   * 而成功投递过的错误既不在 `queuedErrors` 里也不在 `droppedErrors` 里。
    *
    * @returns {ErrorReport} 错误报告
    *
@@ -281,6 +349,9 @@ export class ErrorMonitoring {
         totalGroups: stats.totalGroups,
         totalErrors,
         queuedErrors: this.errorQueue.length,
+        // 丢包数进报告：只看 `getDroppedErrors()` 的话，拿到报告快照的下游（日志/上传/看板）
+        // 读到的是一个「总数对得上」的报表，而上报链其实已经丢过数据
+        droppedErrors: this.droppedErrors,
       },
       byCode: stats.byCode,
       byStore: stats.byStore,
@@ -301,6 +372,10 @@ export class ErrorMonitoring {
   /**
    * 获取错误组
    *
+   * 返回浅拷贝（`affectedStores` 与 `sampleError` 也各拷一层）：内部组长期驻留且仍会随
+   * 新错误继续累计，直接交出引用等于让调用方一句 `group.count = 0` 就改坏
+   * `getAggregationStats()`/`byStore`/`byCode` 的账目
+   *
    * @returns {ErrorGroup[]} 错误组
    */
   getErrorGroups(): ErrorGroup[] {
@@ -308,18 +383,41 @@ export class ErrorMonitoring {
   }
 
   /**
+   * 获取因队列溢出被丢弃的错误条数
+   *
+   * 两条路径都会累加：入队时容量已满（淘汰最旧一条）、失败批次重入队时超出容量
+   * （裁掉队首）。`clear()` 会把它与其余数据一起归零，故该值表示「自上次 clear() 以来」
+   * 的丢失量
+   *
+   * @returns {number} 被丢弃的错误条数
+   *
+   * @example
+   * ```typescript
+   * const dropped = monitoring.getDroppedErrors()
+   * if (dropped > 0) console.warn(`上报链 overloaded, ${dropped} errors dropped`)
+   * ```
+   */
+  getDroppedErrors(): number {
+    return this.droppedErrors
+  }
+
+  /**
    * 清除所有数据
    *
-   * 只清数据（队列、聚合统计、连续失败计数），不停止周期调度器、也不影响在途
-   * flush——调度器仍会到期 flush 清除后新入队的错误；需要「停止」语义请用 shutdown()
+   * 只清数据（队列、聚合统计、连续失败计数、丢弃计数），不停止周期调度器、也不影响在途
+   * flush 的**网络请求本体**——但代际会切换，故在途 flush 不会再把它抓到的旧批次
+   * 重新入队（见 doFlushReports）；调度器仍会到期 flush 清除后新入队的错误；
+   * 需要「停止」语义请用 shutdown()
    */
   clear(): void {
+    this.generation++
     this.errorQueue = []
     this.aggregator.clear()
     this.nonAggregatedErrorCount = 0
     // 连续失败计数属于「数据」而非「调度器状态」：不清零则 clear() 前接近
     // maxFlushRetries 的进度会泄漏到新周期，clear() 后首个新批次提前触发丢弃
     this.consecutiveFlushFailures = 0
+    this.droppedErrors = 0
   }
 
   /**

@@ -54,10 +54,43 @@ export function parseMapping(mapping: ReadonlyArray<PropertyKey> | Record<string
  * 以自有数据属性写入映射项。
  *
  * 映射键来自调用方配置，`'__proto__'` 用普通赋值会命中 Object.prototype 的 setter
- * 改坏结果对象的原型链（而非落下该键），故统一用 defineProperty 写入
+ * 改坏结果对象的原型链（而非落下该键），故统一用 defineProperty 写入。
+ * 累积器（prevValues / updates / initialValues）与映射表共用同一写法：
+ * 它们的键同样是用户配置的映射键
  */
-function setOwnEntry(target: Record<string, string>, key: string, value: string): void {
+function setOwnEntry<T>(target: Record<string, T>, key: string, value: T): void {
   Object.defineProperty(target, key, { value, writable: true, enumerable: true, configurable: true })
+}
+
+/**
+ * 某键能否被写成（或被改写成）target 的自有属性。
+ *
+ * - 无自有属性：取决于 target 是否可扩展（sealed/frozen 宿主上 defineProperty 必抛）
+ * - 已有自有属性：可配置即可覆写；不可配置的数据属性只有 writable 才允许原地改值
+ *
+ * 批量注入（bindActions / exposeStoreAPI）逐键判定后跳过不可重写的键，
+ * 否则第 N 个键抛 TypeError 会让前 N-1 个键失去退订凭证，宿主停在半配置状态
+ */
+function canOwnKey(target: object, key: string): boolean {
+  const descriptor = Object.getOwnPropertyDescriptor(target, key)
+  if (!descriptor) {
+    return Object.isExtensible(target)
+  }
+  return descriptor.configurable || descriptor.writable === true
+}
+
+/**
+ * 以指定值覆写宿主键，并沿用不可配置原成员的 configurable/enumerable
+ * （非 configurable 属性只允许改值，否则 defineProperty 仍抛错）
+ */
+function defineOwnValue(target: Record<string, unknown>, key: string, value: unknown, original: PropertyDescriptor | undefined): void {
+  const locked = original !== undefined && !original.configurable
+  Object.defineProperty(target, key, {
+    value,
+    writable: true,
+    enumerable: locked ? original.enumerable : true,
+    configurable: locked ? false : true,
+  })
 }
 
 /** ConnectOptions 中参与解析的四类映射字段（结构类型，避免耦合具体泛型） */
@@ -84,7 +117,23 @@ export function resolveMappings(options: MappableOptions): {
     stateMapping: options.mapState ? parseMapping(options.mapState) : {},
     gettersMapping: options.mapGetters ? parseMapping(options.mapGetters) : {},
     actionsMapping: options.mapActions ? parseMapping(options.mapActions) : {},
-    injectMapping: options.injectMapping || {},
+    // 与其余三项同口径走 parseMapping（返回新对象、键值经 String 归一）：
+    // 直接引用 options.injectMapping 会让调用方对解析结果的写入回灌用户的配置对象
+    injectMapping: options.injectMapping ? parseMapping(options.injectMapping) : {},
+  }
+}
+
+/**
+ * 把 source 的自有可枚举键逐个写进 target（等价于 Object.assign，但按自有属性写入）。
+ *
+ * `Object.assign(target, source)` 用 `[[Set]]` 落键，遇到 source 里的 `'__proto__'`
+ * 会命中 target 原型链上的 setter 改坏 target 的原型；bindMappings / performAutoInject
+ * 产出的载荷允许带 `'__proto__'` 键（映射键由调用方配置，见 setOwnEntry），
+ * 故 App 集成写入 globalData 时走这里而不是 Object.assign
+ */
+export function copyOwnEntries(target: Record<string, unknown>, source: Record<string, unknown>): void {
+  for (const [key, value] of Object.entries(source)) {
+    setOwnEntry(target, key, value)
   }
 }
 
@@ -106,7 +155,9 @@ export function createStoreSubscriber<S extends State>(store: Store<S>): (callba
  * @param _target - 目标对象（Page/Component/App 实例）
  * @param mappings - 映射关系（本地键 → Store键）
  * @param getValue - 获取 Store 值的函数
- * @param setter - 批量设置本地值的函数（接收全部映射键的更新对象）
+ * @param setter - 批量设置本地值的函数（接收全部映射键的更新对象；
+ *   载荷的键即用户配置的本地键，可能含 `'__proto__'`，宿主侧需按自有属性语义写入，
+ *   见 copyOwnEntries / Page & Component 的 setData）
  * @param subscribeStore - 订阅 Store 变化的函数
  * @returns 取消绑定函数数组
  *
@@ -138,10 +189,12 @@ export function bindMappings(
   }
 
   // 记录上一次各映射键的值，用于跳过无变化的 setData。
-  // 小程序 setData 开销较大，即使 store 变化与本地映射无关也应避免无谓的视图更新
+  // 小程序 setData 开销较大，即使 store 变化与本地映射无关也应避免无谓的视图更新。
+  // 累积器一律经 setOwnEntry 写入：本地键由调用方配置，`'__proto__'` 用普通赋值会命中
+  // Object.prototype 的 setter（对象值改坏原型、原始值被忽略），该键就再也比不出变化、永久漏更新
   const prevValues: Record<string, unknown> = {}
   for (const [localKey, storeKey] of entries) {
-    prevValues[localKey] = getValue(storeKey)
+    setOwnEntry(prevValues, localKey, getValue(storeKey))
   }
 
   // 合并所有映射的更新为一次批量 setter 调用，仅在确有变化时才触发
@@ -164,11 +217,11 @@ export function bindMappings(
         include = !safeEqual(next, prevValues[localKey])
       }
       if (include) {
-        prevValues[localKey] = next
+        setOwnEntry(prevValues, localKey, next)
         // 过滤 undefined：微信 setData 不接受 undefined 值（报错且字段不生效），
         // 清除字段应使用 null
         if (next !== undefined) {
-          updates[localKey] = next
+          setOwnEntry(updates, localKey, next)
           changed = true
         }
       }
@@ -184,7 +237,7 @@ export function bindMappings(
   const initialValues: Record<string, unknown> = {}
   for (const [localKey] of entries) {
     if (prevValues[localKey] !== undefined) {
-      initialValues[localKey] = prevValues[localKey]
+      setOwnEntry(initialValues, localKey, prevValues[localKey])
     }
   }
   if (Object.keys(initialValues).length > 0) {
@@ -240,27 +293,21 @@ export function bindActions<S extends State = State>(target: Record<string, unkn
   Object.entries(mappings).forEach(([localName, actionName]) => {
     // 以自有属性写入而非 `target[localName] = ...`：后者遇到 '__proto__'/'constructor'
     // 这类键会沿原型链写入（污染宿主构造器），也无法在解绑时恢复被覆盖的原成员
-    const hadExisting = Object.prototype.hasOwnProperty.call(target, localName)
-    const original = hadExisting ? target[localName] : undefined
-    if (hadExisting) {
+    const original = Object.getOwnPropertyDescriptor(target, localName)
+    if (!canOwnKey(target, localName)) {
+      console.warn(`[bindActions] 宿主成员 "${localName}" 不可重定义（非 configurable 且非 writable），已跳过 action "${actionName}" 的绑定`)
+      return
+    }
+    if (original) {
       console.warn(`[bindActions] 宿主已有成员 "${localName}"，将被 action "${actionName}" 覆盖，解绑时恢复原值`)
     }
 
-    Object.defineProperty(target, localName, {
-      value: (...args: unknown[]) => store.dispatch(actionName, ...args),
-      writable: true,
-      enumerable: true,
-      configurable: true,
-    })
+    defineOwnValue(target, localName, (...args: unknown[]) => store.dispatch(actionName, ...args), original)
 
+    // 还原按原描述符整体回放：只存值会把宿主的访问器成员（get/set）降级成数据属性
     unbinds.push(() => {
-      if (hadExisting) {
-        Object.defineProperty(target, localName, {
-          value: original,
-          writable: true,
-          enumerable: true,
-          configurable: true,
-        })
+      if (original) {
+        Object.defineProperty(target, localName, original)
       } else {
         delete target[localName]
       }
@@ -282,7 +329,8 @@ export function bindActions<S extends State = State>(target: Record<string, unkn
  * @param target - 目标对象
  * @param injectMapping - 注入映射（源键 → 目标键）
  * @param store - Store 实例
- * @param setter - 设置值的函数
+ * @param setter - 设置值的函数（收到全部注入项的批量载荷；目标键由用户配置，
+ *   可能含 `'__proto__'`，宿主侧写入需保持自有属性语义）
  *
  * @example
  * ```typescript
@@ -313,7 +361,8 @@ export function performAutoInject<S extends State = State>(
       skipped.push(sourceKey)
       continue
     }
-    updates[targetKey] = value
+    // 目标键由用户配置，与 bindMappings 的累积器同样按自有属性写入（`'__proto__'` 不得命中 setter）
+    setOwnEntry(updates, targetKey, value)
   }
 
   if (skipped.length > 0) {
@@ -330,7 +379,9 @@ export function performAutoInject<S extends State = State>(
  * 暴露 Store API 到目标实例
  *
  * 在 App 实例上暴露常用的 Store API 方法，同时挂一份到 `__store__` 调试入口。
- * 返回的清理函数只移除本次新增的成员，宿主同名自有成员按原值还原
+ * 注入按自有属性写入：返回的清理函数只移除本次新增的成员，宿主同名自有成员
+ * 按其**原描述符**还原（访问器不会在还原后变成数据属性）；
+ * 不可重定义的宿主成员（frozen / 非 configurable）跳过并汇总告警，不中断其余键
  *
  * @template S - 状态类型
  * @param target - 目标实例（通常是 App 实例）
@@ -362,27 +413,40 @@ export function exposeStoreAPI<S extends State = State>(target: Record<string, u
     },
   }
 
-  const exposedKeys = ['store', 'getStore', 'getState', 'getCached', 'dispatch', 'subscribe', '__store__'] as const
-  // 记录调用前已存在的自有成员：一律 delete 会把宿主自己定义的 getState 等一并抹掉
-  const originals = new Map<string, unknown>()
-  for (const key of exposedKeys) {
-    if (Object.prototype.hasOwnProperty.call(target, key)) {
-      originals.set(key, target[key])
+  // 单一事实来源：待暴露的键集合与值同源于此表（此前 exposedKeys 常量与赋值语句各列一遍，
+  // 加一个键要改两处，漏改即出现「还原列表里有、实例上没有」的分叉）
+  const members: Record<string, unknown> = { store, ...api, __store__: api }
+
+  // 记录调用前已存在的自有成员**描述符**：一律 delete 会把宿主自己定义的 getState 等抹掉，
+  // 而只记值会把访问器成员（get/set）在还原时降级成数据属性
+  const originals = new Map<string, PropertyDescriptor>()
+  const added: string[] = []
+  const skipped: string[] = []
+  for (const [key, value] of Object.entries(members)) {
+    if (!canOwnKey(target, key)) {
+      // 冻结/不可配置的宿主成员：写不进也删不掉，跳过而不是让整批注入中途抛 TypeError
+      skipped.push(key)
+      continue
     }
+    const original = Object.getOwnPropertyDescriptor(target, key)
+    if (original) {
+      originals.set(key, original)
+    } else {
+      added.push(key)
+    }
+    defineOwnValue(target, key, value, original)
+  }
+  if (skipped.length > 0) {
+    console.warn(`[exposeStoreAPI] 宿主成员 ${skipped.map((key) => `"${key}"`).join(', ')} 不可重定义，已跳过暴露`)
   }
 
-  target.store = store
-  Object.assign(target, api)
-  target.__store__ = api
-
-  // 返回取消暴露函数：本次新增的删除，宿主原有的还原
+  // 返回取消暴露函数：本次新增的删除，宿主原有的按原描述符还原，跳过的不动
   return () => {
-    for (const key of exposedKeys) {
-      if (originals.has(key)) {
-        target[key] = originals.get(key)
-      } else {
-        delete target[key]
-      }
+    for (const [key, original] of originals) {
+      Object.defineProperty(target, key, original)
+    }
+    for (const key of added) {
+      delete target[key]
     }
   }
 }

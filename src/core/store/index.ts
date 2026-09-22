@@ -18,7 +18,9 @@ export { StateProxyManager, createProxyCache } from './StateProxy.js'
 export type { StateProxyOptions } from './StateProxy.js'
 
 export { SubscriptionManager, createSubscribeFunction } from './SubscriptionManager.js'
-export type { SubscriptionManagerOptions } from './SubscriptionManager.js'
+// SubscriberEvictionInfo 与选项类型同出口：Store 已把 onSubscriberEvicted 接到 onError 钩子，
+// 宿主注册该回调时若拿不到载荷类型，只能去深路径取或手抄字段形状
+export type { SubscriptionManagerOptions, SubscriberEvictionInfo } from './SubscriptionManager.js'
 
 export { StoreCacheManager } from './StoreCache.js'
 export type { StoreCacheOptions } from './StoreCache.js'

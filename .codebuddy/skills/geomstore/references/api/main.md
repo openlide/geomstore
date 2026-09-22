@@ -74,7 +74,13 @@ export interface AppOptions {
  * @template V - 值类型
  */
 export interface CacheOptions<K = unknown, V = unknown> {
-    /** 初始容量 */
+    /**
+     * 初始容量（默认 100）
+     *
+     * 规范化规则与 `LRUCacheStats.capacity` 一致：非有限值（NaN/±Infinity）回退默认 100，
+     * 小于 1 的值夹到 1，小数不取整（等效上限为 `floor(capacity)` 条）。
+     * 构造后改动此字段不会生效——实例只保留归一化后的单一份容量（见 `getCapacity()`）。
+     */
     capacity?: number;
     /** 是否启用访问统计 */
     enableStats?: boolean;
@@ -203,10 +209,12 @@ declare class ComposedStore<S extends State = State> implements Store<S> {
     stores: Record<string, Store>;
     /** 防抖相关：实例级统一调度，避免多个订阅者各自维护标志导致非首个订阅者丢通知 */
     private _notificationScheduled;
-    /** 当前活跃的订阅者：监听器 → 注册次数与其中可写份数。
+    /** 当前活跃的订阅者：监听器 → 注册次数。
      *  与 SubscriptionManager 同语义——同一函数注册 N 次通知 N 次，退订只减一，
      *  减到 0 才真正移除。此前用 Set 会使「退订其中一份」直接删除整个监听器，
-     *  用户仍持有的另一份退订句柄静默失效、永不再收到通知。 */
+     *  用户仍持有的另一份退订句柄静默失效、永不再收到通知。
+     *  值只存注册次数：可写份数由 _composedWritableCount 单点记账，
+     *  按监听器再存一份既无读取方又要人工同步（原 writable 字段全库只写不读） */
     private _composedListeners;
     /** 可写（非只读）注册总次数：>0 时通知载荷必须是深拷贝（见 _notifyListeners 的隔离说明） */
     private _composedWritableCount;
@@ -314,16 +322,21 @@ declare class ComposedStore<S extends State = State> implements Store<S> {
     /**
      * 判断指定状态键自上次通知以来是否发生变更
      *
-     * 组合 Store 将多个子 store 的状态按 store 名合并，键空间与子 store 不对应，
-     * 无法精确映射到某个子 store 的脏键。这里保守返回 true（视为已变更），
-     * 使绑定层在对象值上保持「宁多勿漏」行为，确保正确性；
-     * 对象值的整体替换（引用变化）仍由引用比较兜底发送。
+     * 三个分支的口径不同，逐条说明（旧注释写着「始终返回 true」，与实现不符已有几轮）：
+     * - 合并缓存订阅未建立（构造期订阅失败的降级态）：没有任何脏追踪可用，保守返回 true；
+     * - 命名空间模式：组合状态键即子 store 名，`_dirtyStores` 能精确指出哪个子 store 变过，
+     *   据此返回真/假——集成层因此可跳过未变化的映射键，省掉一次冗余 setData（含符号键：
+     *   脏键表只按字符串子 store 名索引，符号键不可能命中，保守返回 true）；
+     * - 非命名空间模式：状态键是各子 store 内部 key 的平铺，无法反查归属，保守返回 true。
      *
-     * @param _key - 组合层状态键（即子 store 名）
-     * @returns 始终返回 true（保守：不跳过任何 setData）
+     * 「保守」的方向性始终是**宁多勿漏**：返回 true 只是多写一次 setData，
+     * 误返回 false 会让变更对所有监听器永久不可见。对象值的整体替换另有引用比较兜底。
+     *
+     * @param key - 组合层状态键（命名空间模式下即子 store 名；集成层也可能传符号键）
+     * @returns 该键自上次通知以来是否可能发生变更
      */
-    isStateKeyDirty(key: string): boolean;
-    /** 释放一份监听器注册：同一监听器减到 0 才真正移除。
+    isStateKeyDirty(key: string | symbol): boolean;
+    /** 创建幂等退订句柄：同一句柄重复调用只释放一次注册。
      *
      *  注意：不再随「最后一个组合层监听器退订」撤销子 store 订阅——该订阅同时承担
      *  合并缓存失效（_invalidateMergedCache）职责，撤销后 getState() 会返回陈旧缓存，
@@ -407,7 +420,17 @@ export interface ConnectOptions<S extends State = State, A extends Actions = Act
  * - `Partial<S>`：全部状态键均可访问，但未映射的键运行时不一定存在，故其类型为
  *   `T | undefined`，强制调用方判空，避免静默拿到 undefined。
  * - 已映射键（`ExtractMappedState` / `ExtractMappedGetters`）经交集收窄仍保持精确类型：
- *   `Partial<T> & T` 等于 `T`，故 Partial 不会削弱映射键。
+ *   `Partial<T> & T` 等于 `T`，故 Partial 不会削弱映射键。**这只在两侧键不相交时成立**，
+ *   见下一条。
+ * - 同一个本地键被 `mapState` 与 `mapGetters` 同时映射时，取值以 **getter 为准**：
+ *   两侧写的是同一个本地键命名空间（页面/组件走 `setData`，App 走 `writeGlobalData`，
+ *   见 `with-store.ts` / `with-app-store.ts` 的 `onLoad` / `onLaunch`），且绑定顺序固定是
+ *   state 先、getters 后，后写的 getter 覆盖前写的 state。
+ *   故 `Partial<S>` 与 `ExtractMappedState` 两侧的撞名键都被 `Omit` 掉——直接求交会得到
+ *   `number & string` 即 `never`，那个键编译期读不出任何值，运行期却好好放着 getter 的结果
+ *   （`Partial<S>` 那一份也要剔：getter 名恰好是状态键时，即使没写进 `mapState`，
+ *   它同样覆盖 `T | undefined` 那份兜底形状）。
+ *   这不是「撞名被禁止」：类型按运行时给，但两份来源本就互斥，需要 state 原值时请换本地别名。
  * - 不提供索引签名：拼错的键会直接编译报错，而非静默返回 `unknown`。
  *   data 上的动态键请在页面/应用的 `data`（或 `globalData`）字面量中显式声明；
  *   运行时的动态写入走 `setData`，它本来就接受 `Record<string, unknown>`。
@@ -415,7 +438,7 @@ export interface ConnectOptions<S extends State = State, A extends Actions = Act
 export type ExtractPageData<S extends State, M extends {
     mapState?: readonly (keyof S)[] | Record<string, keyof S>;
     mapGetters?: readonly PropertyKey[] | Record<string, PropertyKey>;
-}, G extends Getters<S> = Getters<S>> = Partial<S> & ExtractMappedState<S, M> & ExtractMappedGetters<M, G>;
+}, G extends Getters<S> = Getters<S>> = Omit<Partial<S>, keyof ExtractMappedGetters<M, G>> & Omit<ExtractMappedState<S, M>, keyof ExtractMappedGetters<M, G>> & ExtractMappedGetters<M, G>;
 ```
 
 ### `Getters`
@@ -507,11 +530,17 @@ export interface IHookSystem {
     /**
      * 触发钩子：实参元组由 HookArgsMap 按钩子名给出，顺序/个数不符即编译报错
      *
-     * **处理器抛错时的语义**（插件作者据此决定要不要自己兜异常）：
+     * **处理器抛错时**：本签名返回 `void`，类型层无法规定实现怎么处理处理器抛出的异常，
+     * 所以下面四条是**仓库内当前实现**（`core/hooks` 的 HookSystem）的行为约定，
+     * 不是换一份 `IHookSystem` 就仍然成立的保证——`core/store/ActionManager.ts` 就是按
+     * 「接口不保证」这一点把 `emit` 放进了 try（见该文件的 dispatch 事务注释）。
+     * 插件若不能承受异常冒进业务调用栈，请在自己的处理器内部 try/catch，别依赖这里。
+     *
+     * 按当前实现：
      * - 单个处理器抛错既不中断本次触发的其余处理器，也**不会传播给 `emit` 的调用方**
-     *   （返回 `void`，实现按快照逐个 try/catch）。
+     *   （实现按快照逐个 try/catch）。
      * - 错误先 `console.error` 记录，再转投 `onError` 钩子（`emit('onError', error, hookName)`），
-     *   故 `onError` 是钩子系统唯一的上报通道；要接监控系统，注册 `onError` 处理器即可。
+     *   故 `onError` 是该实现唯一的上报通道；要接监控系统，注册 `onError` 处理器即可。
      * - `onError` 自身抛错只落 `console.error`，不再递归转投自己。
      * - 需要「让抛错冒泡到业务调用方」的语义不能靠钩子实现，请走 action 的错误边界。
      */
@@ -570,6 +599,31 @@ export type InferGetterReturn<G extends Record<string, (state: any) => any>, K e
 ### `LRUCache`
 
 ```ts
+/**
+ * 增强型LRU缓存类
+ *
+ * 实现严格的LRU淘汰策略，提供O(1)时间复杂度的get/set操作，
+ * 支持动态容量控制和精确的命中率统计。
+ *
+ * @class LRUCache
+ * @template K - 键类型
+ * @template V - 值类型
+ *
+ * @example
+ * ```typescript
+ * // 基础用法
+ * const cache = new LRUCache<string, number>(100)
+ * cache.set('key1', 100)
+ * console.log(cache.get('key1')) // 100
+ *
+ * // 带配置的用法
+ * const cache2 = new LRUCache<string, User>({
+ *   capacity: 50,
+ *   enableStats: true,
+ *   onEvict: (key, value) => console.log(`Evicted: ${key}`)
+ * })
+ * ```
+ */
 export declare class LRUCache<K, V> {
     /** 当前容量 */
     private capacity;
@@ -587,6 +641,11 @@ export declare class LRUCache<K, V> {
      * 否则「回调内回填刚被逐出的键」会一层套一层递归，直到 RangeError 栈溢出。
      */
     private evicting;
+    /**
+     * 「淘汰无法收敛」是否已报告过：每个实例只输出一次，
+     * 否则持续回填的缓存会把一次容量冲突变成每次写入一条日志的刷屏
+     */
+    private capacityViolationReported;
     /** 命中次数 */
     private hitCount;
     /** 未命中次数 */
@@ -595,7 +654,13 @@ export declare class LRUCache<K, V> {
     private evictionCount;
     /** 总访问时间（毫秒） */
     private totalAccessTime;
-    /** 配置选项 */
+    /**
+     * 配置选项（不含 capacity）
+     *
+     * 容量只保存在 `this.capacity` 一份：此前 options 与 capacity 各存一份，
+     * 构造期的规范化（非有限值回退、小于 1 夹到 1）会让两者取值分叉，
+     * 后续任何按 `options.capacity` 做的淘汰判定都会绕开守卫、重新引入无界缓存
+     */
     private options;
     /**
      * 创建LRU缓存实例
@@ -841,6 +906,20 @@ export declare class LRUCache<K, V> {
      */
     private removeFromList;
     /**
+     * 把尺寸收敛到容量上限（set() 与 resize() 共用同一判据）
+     *
+     * 用循环而非单次 if：onEvict 回调可能重入 set()（回调里回填数据），
+     * 单次淘汰后尺寸可能仍超限，容量不变量会永久失效。
+     * 重入保护：淘汰进行中回调里再 set() 只写入、不开第二层淘汰循环（由本帧统一收敛），
+     * 否则「回填被逐出的键」会一层套一层递归，几百次写入即 RangeError 栈溢出。
+     * 预算取代「净尺寸没减少就 break」：回调回填会抵消淘汰带来的减量，按净尺寸判定会
+     * 提前收手、把容量永久留在超限档位（回填有限时应收敛到新容量）；
+     * 按「本轮至多淘汰 entrySize 个」判定则既收敛又有界。
+     */
+    private _enforceCapacity;
+    /** 淘汰预算耗尽、容量上限本轮无法达成时的单次诊断（见 _enforceCapacity） */
+    private _reportUnconvergedCapacity;
+    /**
      * 淘汰最久未使用的节点（LRU策略核心）
      *
      * @private
@@ -889,7 +968,14 @@ export interface LRUCacheStats {
      * 哨兵语义：`totalAccesses === 0` 时返回 `0`，表示「无访问数据」而非「0% 未命中」。
      */
     missRate: number;
-    /** 淘汰的缓存项数量 */
+    /**
+     * 淘汰次数：契约是 `onEvict` 回调的触发次数（`clear()` 等配置性清空亦逐条计入），
+     * **并非**「因容量上限被挤出的条目数」。
+     *
+     * 因此把 `clear()` 用于配置性重建（如 `StoreCacheManager.enable()`）时，
+     * 该计数会包含这部分非容量淘汰；需区分两类淘汰的调用方，
+     * 可在配置性清空前后各读一次 `evictions` 求差。
+     */
     evictions: number;
     /**
      * 当前缓存键列表（按最近使用顺序）
@@ -982,9 +1068,15 @@ export type PageOwnMethods<C> = {
  * - `onShareTimeline`：分享到朋友圈（基础库 2.11.3+）
  * - `onAddToFavorites`：添加到收藏（基础库 2.8.1+）
  * - `onSaveExitState`：退出时保存状态（基础库 2.11.0+）
+ * - `onRouteDone`：页面路由切换完成（基础库 2.31.0+）
  * - `options`：页面级配置项（非函数，但同样是框架键，不应被当作自定义方法）
+ *
+ * 清单按基础库的 Page 事件表逐项维护，新增/删除键要同步 `tests/types/integration-types.typecheck.ts`
+ * 的 `PageCfgShape` 夹具——那里有「每个保留键都被夹具覆盖一次」的断言兜着（本清单没有运行时代码可校验）。
+ * 漏收一个键的后果目前只在直接使用 `PageOwnMethods` 的调用方身上显形（`withPageStore` 还没把它接进
+ * `PageThis` 的 `ExtraMethods`，见 #428），接线之后就是页面 `this` 上多出一个被剥掉 `this` 的假自定义方法。
  */
-export type PageReservedKeys = 'data' | 'setData' | 'onLoad' | 'onShow' | 'onHide' | 'onUnload' | 'onReady' | 'onPullDownRefresh' | 'onReachBottom' | 'onPageScroll' | 'onShareAppMessage' | 'onResize' | 'onTabItemTap' | 'onShareTimeline' | 'onAddToFavorites' | 'onSaveExitState' | 'options' | '__geomUnbinds';
+export type PageReservedKeys = 'data' | 'setData' | 'onLoad' | 'onShow' | 'onHide' | 'onUnload' | 'onReady' | 'onPullDownRefresh' | 'onReachBottom' | 'onPageScroll' | 'onShareAppMessage' | 'onResize' | 'onTabItemTap' | 'onShareTimeline' | 'onAddToFavorites' | 'onSaveExitState' | 'onRouteDone' | 'options' | '__geomUnbinds';
 ```
 
 ### `PageThis`
@@ -1180,6 +1272,20 @@ export declare class Store<S extends State = State, A extends Actions = Actions,
     getState(): S;
     /**
      * 设置单个状态值
+     *
+     * 值按**引用**保存（与 `_initializeState` / `$replaceState` 的深拷贝不同，与 `$patch`
+     * 的合并结果同口径）：Store 不接管调用方对象的归属。这是别名脏键
+     * （`_markAliasedKeys`）与脏追踪索引成立的前提——它们都按对象身份做可达性判定，
+     * 写入时换一份克隆就等于把「同一对象被多个顶层键引用」这条关系从状态图里抹掉。
+     *
+     * 由此带来的两条边界要清楚：
+     * - 调用方在 setState 之后再改它传进来的那个对象，Store 不会察觉：没有变更计数、
+     *   没有脏键、没有钩子、缓存里就是同一个引用，读到的是被外部改过的值；
+     * - 要交出可安全持有的副本，请读 `$snapshot()`，别把传入引用的所有权当已转移。
+     * 需要「写入即定格」的语义就用 `$patch`：deepMerge 从不把调用方的对象引用落进状态
+     * （补丁里的纯对象只在目标位置也是纯对象时逐层就地合并，其余分支一律换成克隆），
+     * 之后改补丁对象不会影响 Store。
+     *
      * @param key - 状态键名（不能为空）
      * @param value - 状态值
      */
@@ -1200,10 +1306,14 @@ export declare class Store<S extends State = State, A extends Actions = Actions,
      * 供集成层（withPageStore / withComponentStore）在同步通知回调内精确判断某个映射键是否变化，
      * 从而跳过未变化对象值的冗余 setData。脏键在每次通知结束时清空。
      *
+     * 键型是 `string | symbol` 而非 `string`：脏键集合按 `Reflect.ownKeys` 收集
+     * （`_markAliasedKeys` 与 action 侧的脏追踪代理都会给出 symbol 根键），
+     * 只收 string 会让 symbol 键的顶层状态查不到脏位，脏跳过优化对它静默失效。
+     *
      * @param key - 状态键名
      * @returns 该键自上次通知后是否发生过变更
      */
-    isStateKeyDirty(key: string): boolean;
+    isStateKeyDirty(key: string | symbol): boolean;
     /**
      * 创建状态快照
      *
@@ -1279,9 +1389,21 @@ export declare class Store<S extends State = State, A extends Actions = Actions,
      * 4. 钩子清除
      * 5. 批量管理器重置
      * 6. 销毁标记
-     * 7. Proxy 缓存清空
+     * 7. 兜底闸门（finally）：再排空一次插件 + 清空集合引用 + 重建 Proxy 管理器
      */
     destroy(): void;
+    /**
+     * 排空全部在册插件的卸载函数（后装先卸），并接住清理过程中的重入注册
+     *
+     * 逐轮从「插件 → 卸载函数」映射消费而不是按 `_plugins` 的实时下标迭代：
+     * 下标迭代既会因 splice 移位重复执行同一个清理，也会打乱反向顺序。
+     * 代际令牌先删，被删插件自己的卸载句柄随即失效（清理里再调它不会二次执行）。
+     *
+     * 轮数上限只是防「清理函数一被调用就再装一个插件」这种不自收敛的病态实现：
+     * 正常重入一轮就排空（新条目由下一轮接住），超出上限说明剩下的永远排不完，
+     * 告警后丢弃，destroy 不得因此挂住。
+     */
+    private _drainPluginUninstalls;
     /**
      * 检查 Store 是否已被销毁
      */
@@ -1376,12 +1498,31 @@ export declare class Store<S extends State = State, A extends Actions = Actions,
     /** 调度一次状态通知（同步或异步合并，取决于 notify.async 配置） */
     private _scheduleNotify;
     /**
-     * 标记与补丁键共享对象引用的其他顶层键
+     * 收集一次 `$patch` 里会被 deepMerge **就地改写**的状态对象
      *
-     * `$patch` 的 deepMerge 会就地改写被补丁对象；若该对象同时被别的顶层键引用
-     * （如 `state.current = state.list[0]`），那些键的内容同样变了却没有被标记，
-     * 只映射它们的页面将永远看不到更新。仅在补丁值为对象时做可达性扫描，
-     * 与 `$replaceState` 的「整树所有键视为已变更」相比只覆盖确实受影响的部分。
+     * 判据与 deepMerge 的递归分支同一条（core/utils/helpers.ts：仅当「补丁值与目标位置
+     * 同为纯对象」时才 mergeInto 就地改写；其余分支一律 defineOwnProperty 换成新克隆，
+     * 新对象不可能被别的顶层键提前引用）：
+     * - 只被替换的键（数组 / Map / Set / Date / 类实例、以及类型冲突位）不进目标集 ⇒
+     *   常见「整体替换」补丁路径直接跳过 O(顶层键数 × 全图) 的可达性扫描；
+     * - 漏收才是真问题（别名键永久不标脏、视图停在旧值），所以宁可多收：
+     *   deepMerge 对 `__proto__` / `constructor` / `prototype` 一律换成克隆，
+     *   这些位置可能被多收一个，后果只是别名键多标一次脏、多一次 setData。
+     *
+     * 本方法是那条判据在 Store 侧的镜像，改 deepMerge 的合并条件时必须同步改这里。
+     */
+    private _collectInPlaceMergedObjects;
+    /**
+     * 标记与本次补丁共享对象引用的其他顶层键
+     *
+     * `$patch` 的 deepMerge 会就地改写 `mergedInPlace` 里的对象；若其中一个同时被别的
+     * 顶层键引用（`state.current = state.a.nested` 这种嵌套别名也算），那些键的内容
+     * 同样变了却没有被补丁键覆盖，只映射它们的页面将永远看不到更新。
+     * 因此对每个非补丁键做一次可达性扫描。与 `$replaceState` 的
+     * 「整树所有键视为已变更」相比，这里只覆盖确实受影响的部分。
+     *
+     * @param mergedInPlace - 见 {@link _collectInPlaceMergedObjects}，空集直接跳过扫描
+     * @param patched - 已按补丁键标过脏的顶层键，跳过
      */
     private _markAliasedKeys;
     /**
@@ -1466,11 +1607,14 @@ export declare class StoreRegistry {
     /**
      * 注册Store
      *
-     * 将Store实例注册到注册表中，如果同名Store已存在会覆盖
+     * 将Store实例注册到注册表中。返回后 `get(name)` 必等于本次传入的实例：
+     * 同名（含 `destroy()` 期间重入注册的同名）旧实例一律走覆盖流程退场。
+     * 被覆盖的旧实例会被销毁，且它在其它名字下的别名一并摘除（同 `unregister`）。
+     * 同一实例重复注册同名是幂等操作，不触发销毁
      *
      * @param {string} name - Store名称
      * @param {Store} store - Store实例
-     * @throws {Error} 如果名称无效或store无效
+     * @throws {Error} 如果名称无效或store无效（校验先于任何写入，注册表不会被改一半）
      *
      * @example
      * ```typescript
@@ -1486,6 +1630,24 @@ export declare class StoreRegistry {
      * ```
      */
     register(name: string, store: Store): void;
+    /**
+     * 校验注册表条目的形状
+     *
+     * `register()` 与 `registerAll()` 的预校验共用此判据：两处各写一遍迟早会漂移成
+     * 「一条路径接受、另一条拒绝」的 store 形状
+     */
+    private _assertValidEntry;
+    /**
+     * 摘除某实例在注册表里的全部名字并销毁它
+     *
+     * 别名一并摘除：同一实例可以注册在多个名字下（`register('a', s)` + `register('b', s)`），
+     * 而实例只有一个生命周期；只摘一个名字会让其余名字继续返回已销毁的 store。
+     * 先摘链再销毁，销毁期间重入的 register/unregister 看到的都是已摘除的状态
+     * （与 `clear()` 同序）
+     */
+    private _detachInstance;
+    /** 带形状守卫与异常兜底的销毁：register / unregister / clear 三条清理路径共用 */
+    private _destroyInstance;
     /**
      * 批量注册Store
      *
@@ -1513,7 +1675,9 @@ export declare class StoreRegistry {
     /**
      * 注销Store
      *
-     * 从注册表中移除Store并调用其destroy方法
+     * 从注册表中移除该实例并调用其 destroy 方法。
+     * 同一实例若还注册在其它名字下（别名），那些条目一并移除：实例只有一个生命周期，
+     * 销毁后继续按别名返回它会交出已销毁的 store
      *
      * @param {string} name - Store名称
      *
@@ -1612,10 +1776,15 @@ export declare class StoreRegistry {
      *
      * 注销所有Store并清空注册表
      *
+     * @remarks 契约是「进入本方法时在册的条目全部注销」，不是「调用后注册表为空」：
+     * 某个 `destroy()` 回调里重入 `register()`/`registerAll()` 的条目**会保留下来**
+     * （它们是在清空之后写入的，把它们连带销毁会白白牺牲仍被调用方持有的 store）。
+     * 因此那种场景下 `size()` 不为 0；需要绝对为空的调用方应在无重入注册时清空，
+     * 或清空后自行再清一次
      *
      * @example
      * ```typescript
-     * // 清空所有Store
+     * // 清空所有Store（无 destroy 重入注册时）
      * registry.clear()
      * console.log(registry.size()) // 0
      * ```
@@ -1760,7 +1929,9 @@ export type WithPageThis<C, T> = {
  * @param obj 要克隆的对象
  * @param options.mode 克隆模式（默认 'deep'）：
  * - `deep`：递归深拷贝，支持 Date/RegExp/Map/Set 与循环引用（复用 deepCloneState）
- * - `shallow`：仅复制一层（数组/Map/Set 展开复制，对象浅拷贝）
+ * - `shallow`：仅复制一层，且只覆盖纯对象/Array/Map/Set（Date/RegExp 按类型新建）；
+ *   其余非纯对象（类实例、Error、WeakMap、装箱原始值……）没有保类型的一层展开办法，
+ *   按 deep/safe 的降级口径返回原引用，不返回被抽空的对象
  * - `safe`：尽力深拷贝且绝不抛错——结构保真与 deep 相同（Date/Map/Set 正确克隆），
  *   仅在克隆器真正失败时降级返回原引用并告警。旧版 safe 的 JSON 序列化语义
  *   （Date 变字符串、Map/Set 变 `{}`、丢 undefined/函数）已移至显式命名的 `json` 模式
@@ -1848,7 +2019,9 @@ export declare function createStoreTree(stores: Store[], options?: ComposeOption
  * 这是保守语义——深度未知/超限的结构按「不相等」处理，
  * 以避免误报相等导致缓存误命中。调用方如需比较超深结构，
  * 请显式传入更大的 maxDepth。
- * 超深结构下告警**每次顶层比较只出第一条**（见 `depthWarningEmitted` 的注释），
+ * 该保守语义只对**需要继续下钻**的结构生效：同一引用/同一原始值在任何深度上都判相等
+ * （否则自反性会在恰好落在 maxDepth 的那一层被破坏，见循环里的快速路径）。
+ * 超深结构下告警**每次顶层比较只出第一条**（见 `Comparison.warnedAtMaxDepth`），
  * 后续命中静默按同样的 false 语义处理，别让日志噪音掩盖真正的问题。
  *
  * 深度累加口径：所有跨容器边界（对象键、数组元素、Map 值、Set 元素）都算一层，
@@ -1877,8 +2050,21 @@ export declare function deepEqual(a: unknown, b: unknown, maxDepth?: number): bo
 /**
  * 深度合并对象
  *
- * 注意：此函数会修改 target 对象。对于非纯对象值（如数组），
- * 会进行深拷贝以防止 source 和 target 之间共享引用。
+ * 注意：此函数会**修改 target** 对象（原地合并，返回值就是 target）。
+ *
+ * 逐类源的合并规则：
+ * - 纯对象 → 纯对象：递归合并进 target 的既有纯对象（target 该位置不是纯对象时整体替换为克隆副本）；
+ * - 数组 / Map / Set / Date / RegExp / 类实例等非纯对象：整体替换为 `clone()` 的副本，不做递归合并；
+ * - 原始值：直接赋值。
+ *
+ * @remarks **合并后的 target 与 source 之间不保证不共享引用**——「深拷贝以防共享引用」只对
+ *   可安全克隆的值成立。`clone()` 默认走 deepCloneState，其窄口径是「不可安全克隆的值保留原引用」，
+ *   命中该路径的有：class 实例、Error/URL/装箱原始值等原型非 Object.prototype/null 的对象、
+ *   ArrayBuffer/TypedArray/DataView，以及 Date/RegExp/Map/Set/Array 的**子类实例**
+ *   （详见 core/utils/clone.ts 的文档）。因此
+ *   `deepMerge(target, { p: new Point(1, 2) })` 之后 `target.p === source.p`，
+ *   后续任一侧的改动都会串到另一侧。Store.$patch 走的就是本函数，
+ *   需要隔离的载荷请自行构造副本再打补丁（或把它放进纯对象/普通数组里由克隆接管）。
  */
 export declare function deepMerge<T extends Record<string, unknown>>(target: T, ...sources: Partial<T>[]): T;
 ```
@@ -2029,6 +2215,11 @@ export declare function uniqueId(prefix?: string): string;
  *
  * `plugin` 需与 store 的状态类型匹配；状态无关的插件写作 `Plugin<State>`（如 `loggerPlugin`），
  * 对任意 Store 都适用。
+ *
+ * 失败语义分两类：插件安装自身失败（含 plugin 形状非法）按 PLUGIN-002 降级——
+ * `console.error` 上报并返回空卸载函数，不拖垮 Store 初始化；
+ * 而在**已销毁的 Store** 上安装属调用方误用，`store.use` 抛出的原始异常原样冒泡
+ * （该异常不是「可选插件失败」，静默降级会让调用方拿到一个从未安装的插件还误以为成功）。
  */
 export declare function usePlugin<S extends State, A extends Actions, G extends Getters<S>>(plugin: Plugin<NoInfer<S>> | Plugin<State>, store: Store<S, A, G>): () => void;
 ```
@@ -2047,6 +2238,13 @@ export declare function usePlugin<S extends State, A extends Actions, G extends 
  *
  * 生命周期内的 `this` 自动获得注入后的实例类型（`AppThis`）：映射的 state/getters
  * 出现在 `globalData` 上、映射的 action 与调试 API 直接挂在实例上，**无需手写 this 标注**。
+ *
+ * 运行期行为（与 withPageStore / withComponentStore 同口径）：
+ * - `autoInject` + `injectMapping` 在 onLaunch 注入一次；再开 `autoUpdateOnShow` 时
+ *   每次 App `onShow` 重新注入，异步 action 之后才进缓存的键因此有补偿路径
+ * - 映射键与宿主 `globalData` 已有成员同名时告警后覆盖（store 是唯一事实来源）
+ * - 绑定阶段抛错：回滚本次已登记的订阅、告警并把错误原样抛给框架，
+ *   不在映射未就绪的实例上转发用户 `onLaunch`
  *
  * @template S - 状态类型
  * @template A - Actions 类型
@@ -2132,6 +2330,9 @@ export declare function withAppStore<S extends State, A extends Actions, G exten
  * mapState / mapGetters / mapActions 的键与值拼错时编译期报错；
  * 装饰器返回类型重写所有方法的 this 为 ComponentThis，使方法内 this.data / this.xxx 自动获得精确类型
  *
+ * 订阅生命周期与绑定失败的回滚口径同 withPageStore：按组件实例登记 `__geomUnbinds`、
+ * detached 统一清理，attached 重入时先清理旧订阅
+ *
  * @template S - 状态类型
  * @template A - Actions 类型
  * @template G - Getters 类型
@@ -2183,6 +2384,10 @@ export declare function withComponentStore<S extends State, A extends Actions, G
  * - `O` 保留 options 字面量类型，用于精确推导方法内 this.data 与 actions
  * - mapState / mapGetters / mapActions 的键与值拼错时会在编译期报错
  * - 装饰器返回类型重写所有方法的 this 为 PageThis，使方法内 this.data / this.xxx 自动获得精确类型
+ *
+ * 订阅生命周期：绑定按页面实例登记在 `this.__geomUnbinds`，onUnload 统一清理；
+ * onLoad 被重复调用时先清理旧订阅再重绑，绑定阶段抛错则回滚本次订阅并把错误抛回框架
+ * （不转发用户 onLoad：映射未就绪的实例上跑用户逻辑只会产出第二个更难归因的错误）
  *
  * @template S - 状态类型
  * @template A - Actions 类型

@@ -11,6 +11,28 @@ import { assertSyncStorageResult, isWxStorageSyncAvailable, WxStorageBackend } f
 import { registerGlobalEntry } from './globalRegistry.js'
 
 /**
+ * devtools 插件在 globalThis 上的两处键位。
+ *
+ * 抽成常量的理由与 timeTravel 一致：同一个键串在「注册」与「日志提示」里各写一遍，
+ * 改一处就会让日志指向一个不存在的路径
+ */
+const STORES_GLOBAL_KEY = '__GEOMSTORE_STORES__'
+const DEVTOOLS_GLOBAL_KEY = '__GEOMSTORE_DEVTOOLS__'
+
+/**
+ * 恢复入口的载荷准入判定。
+ *
+ * `isPlainObject` 只检查顶层原型，而 `JSON.parse('{"__proto__":{…}}')` 产出的是**自有的
+ * `__proto__` 数据属性**（不触发 `Object.prototype` 的 setter），因此照样通过：恢复出来的
+ * 状态上 `__proto__` 读起来不是原型，是个带怪键的对象。深层同名键由克隆/合并层
+ * （core/utils/clone.ts 以 defineProperty 复刻）兜底，这里收的是**入口**这一道，
+ * 与 devtools 插件 `isImportableObject` 对同一个「不可信 JSON」入口的口径对齐
+ */
+function isRestorablePayload(value: unknown): boolean {
+  return isPlainObject(value) && !Object.prototype.hasOwnProperty.call(value, '__proto__')
+}
+
+/**
  * 日志插件：将 Action 调用（名称、参数、耗时、异常）输出到控制台
  */
 export const loggerPlugin: Plugin = {
@@ -147,7 +169,10 @@ function installPersistence<S extends State>(store: Store<S>, options: Persisten
       )
     }
     // 形状校验通过后按 StorageBackend 契约调用；再包一层用于拦截异步返回值，
-    // 避免恢复/保存被静默丢弃
+    // 避免恢复/保存被静默丢弃。
+    // 异步检测只在实际调用点进行、不在安装期预判 Promise 返回值：后端可以合法地
+    // 「同步 getItem + 异步 setItem」（Promise 包装的 localStorage），安装期只探 getItem
+    // 会把这种混合后端误判为同步；且后端可在运行期被换实现
     const backend = userStorage
     storageAdapter = {
       getItem: (k: string) => {
@@ -200,17 +225,31 @@ function installPersistence<S extends State>(store: Store<S>, options: Persisten
   // （lastSaved 去重被绕过）。仅在首次通知且内容与恢复结果一致时吸收一次
   let absorbedSerialized: string | null = null
 
+  /**
+   * 「恢复被主动跳过」的出口：控制台留痕 + 转投 `onError`。
+   *
+   * 与本函数其余持久化失败（saveState 的 catch、clearOnUninstall 的 removeItem catch）
+   * 同口径。只写 console 的话，生产环境（docs/ARCHITECTURE.md 的监控口径只认 onError）
+   * 对「存量数据读不出来」完全无感：状态从默认值起步，而下一次变更就会把磁盘上仍然
+   * 有效的旧载荷整份覆盖掉——严重度不低于一次写入失败
+   */
+  function skipRestore(reason: string): void {
+    console.error(reason)
+    store.hooks.emit('onError', new Error(reason), 'persistence')
+  }
+
   if (shouldRestore) {
     try {
       const savedState = storageAdapter.getItem(storageKey)
       if (savedState) {
         const parsedState = JSON.parse(savedState)
-        // 安全检查：确保解析结果是纯对象，防止原型链污染
-        if (!isPlainObject(parsedState)) {
-          console.error('[GeomStore] Restored state is not a plain object, skipping restore')
+        // 入口准入：确保解析结果是「可信的纯对象」，挡掉非纯对象与自带 `__proto__`
+        // 自有数据属性的载荷（判据见 isRestorablePayload）
+        if (!isRestorablePayload(parsedState)) {
+          skipRestore('[GeomStore] Restored state is not a plain object, skipping restore')
         } else if (validate && !validate(parsedState)) {
           // 数据验证：如果提供了 validate 函数，校验通过后才恢复
-          console.error('[GeomStore] Restored state failed validation, skipping restore')
+          skipRestore('[GeomStore] Restored state failed validation, skipping restore')
         } else {
           const filteredState = filter ? filter(parsedState) : parsedState
           // 恢复时使用 $patch 合并语义：filter 可能只持久化了部分键，
@@ -231,6 +270,9 @@ function installPersistence<S extends State>(store: Store<S>, options: Persisten
       }
     } catch (error) {
       console.error('[GeomStore] Failed to restore state:', error)
+      // 抛出的失败（后端读取出错、JSON 语法错误、$patch 被核心拒绝）同样要转投 onError：
+      // 这条路径连「跳过」的日志都没有，静默后果与 skipRestore 描述一致
+      store.hooks.emit('onError', error as Error, 'persistence')
     }
   }
 
@@ -269,6 +311,9 @@ function installPersistence<S extends State>(store: Store<S>, options: Persisten
         }
         pendingState = stateToSave
         debounceTimer = setTimeout(() => {
+          // 先复位句柄再判卸载：定时器已经触发，`debounceTimer` 就必须回到 null，
+          // 否则后面的 `if (debounceTimer)` 不再表示「确有落盘待触发」
+          debounceTimer = null
           // 卸载后不再执行保存操作
           if (isUninstalled) return
           pendingState = null
@@ -298,14 +343,18 @@ function installPersistence<S extends State>(store: Store<S>, options: Persisten
   }
 
   return () => {
+    // 待触发的定时器与 clearOnUninstall 无关，一律摘掉：它会拽住安装闭包和
+    // stateToSave/pendingState 快照直到 debounceMs 之后（小程序运行时里一个活定时器
+    // 足以让逻辑层无法释放）。只有「补写」才依赖 clearOnUninstall——开启清理时这份
+    // 数据本来就要连磁盘条目一起删掉
+    if (debounceTimer) {
+      clearTimeout(debounceTimer)
+      debounceTimer = null
+    }
     if (!clearOnUninstall) {
       // 防抖窗口内卸载：pendingState 尚未落盘，先同步补写最后一次变更
-      if (debounceTimer) {
-        clearTimeout(debounceTimer)
-        debounceTimer = null
-        if (pendingState !== null) {
-          saveState(pendingState)
-        }
+      if (pendingState !== null) {
+        saveState(pendingState)
       }
       // 最终补写：notify.async 下最后一次写入可能尚未触发订阅回调（pendingState 为空），
       // 而 destroy 会取消待发通知，窗口期内的变更会既不通知也不落盘。
@@ -346,8 +395,8 @@ export const devtoolsPlugin: Plugin = {
 
     // 全局调试入口：STORES 注册 store 实例、DEVTOOLS 注册 API；
     // 卸载按身份守卫清理（registerGlobalEntry 内实现，与 timeTravel/analyzer 共用）
-    const unregisterStores = registerGlobalEntry('__GEOMSTORE_STORES__', store.name, store)
-    console.log(`[GeomStore] DevTools enabled. Access store at:`, `globalThis.__GEOMSTORE_STORES__["${store.name}"]`)
+    const unregisterStores = registerGlobalEntry(STORES_GLOBAL_KEY, store.name, store)
+    console.log(`[GeomStore] DevTools enabled. Access store at:`, `globalThis.${STORES_GLOBAL_KEY}["${store.name}"]`)
 
     const devtoolsAPI = {
       getStoreInfo: () => ({
@@ -400,8 +449,8 @@ export const devtoolsPlugin: Plugin = {
       destroy: () => store.destroy(),
     }
 
-    const unregisterDevtools = registerGlobalEntry('__GEOMSTORE_DEVTOOLS__', store.name, devtoolsAPI)
-    console.log(`[GeomStore][devtools] Access API at: globalThis.__GEOMSTORE_DEVTOOLS__["${store.name}"]`)
+    const unregisterDevtools = registerGlobalEntry(DEVTOOLS_GLOBAL_KEY, store.name, devtoolsAPI)
+    console.log(`[GeomStore][devtools] Access API at: globalThis.${DEVTOOLS_GLOBAL_KEY}["${store.name}"]`)
 
     return () => {
       unregisterStores()

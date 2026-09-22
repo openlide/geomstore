@@ -44,19 +44,31 @@ export class AsyncBatchNotifier<S> {
   /**
    * 订阅状态变化
    *
+   * 同一函数重复订阅只登记一份（Set 按身份去重），任一退订句柄生效即不再收到通知；
+   * 句柄本身幂等，重复调用只释放自己那一次订阅，不会误删之后重新建立的订阅。
+   *
    * @param {(state: S) => void} listener - 监听函数
    * @returns {() => void} 取消订阅的函数
    */
   subscribe(listener: (state: S) => void): () => void {
     this.listeners.add(listener)
 
+    // 句柄一次性：按身份 delete 会让旧句柄在「同一函数重新订阅」之后把新订阅一并删掉
+    // （Set 只按身份去重，第二次订阅复用同一个成员，旧句柄的重复调用无从区分）
+    let unsubscribed = false
     return () => {
+      if (unsubscribed) return
+      unsubscribed = true
       this.listeners.delete(listener)
     }
   }
 
   /**
    * 通知状态变化
+   *
+   * @remarks 投递集合的口径：批次在微任务里 flush 时按当时的在册名单逐个复核——
+   * flush 之后（含某个监听器回调内）新增的订阅者不参与本批次，
+   * 已在 flush 过程中退订或被 `clear()` 摘除的监听器同样不再收这一次回调。
    *
    * @param {S} state - 新状态
    *
@@ -99,8 +111,14 @@ export class AsyncBatchNotifier<S> {
     // hasPendingState 为 true 时，latestState 必为 notify 写入的有效状态（即使 S 允许为 null）
     // 遍历快照：Set.forEach 会访问迭代期间新增的元素（删除后再加还可能重复访问），
     // 而本类是公开导出、监听器内重入 notify/subscribe/clear 是预期用法——
-    // 直接在活集合上迭代会让新订阅者被同一批次以陈旧状态回调
+    // 直接在活集合上迭代会让新订阅者被同一批次以陈旧状态回调。
+    // 快照的另一半也必须处理：迭代中已退订（或被 clear() 摘除）的监听器不再投递。
+    // 本类的消费者是「状态变化 → 渲染/清理」一类的下游，在组件卸载等场景下
+    // 退订即表示处理方已失效，多投一次会拿最后一次状态去跑已销毁的逻辑
     for (const listener of Array.from(this.listeners)) {
+      if (!this.listeners.has(listener)) {
+        continue
+      }
       try {
         listener(state as S)
       } catch (error) {

@@ -8,13 +8,25 @@
 /**
  * 状态版本号标记键。
  *
- * 使用 Symbol.for 全局注册：core/store 与 extras/selector 分处不同模块，
- * 需保证取到同一个键。
+ * 用 `Symbol.for` 而非模块级 `Symbol()`：小程序构建产物里同一包常有重复副本
+ * （分包各自打包、宿主库把本库一起打进去）。模块级键会让副本 A 装的版本号在副本 B 的
+ * `getStateVersion` 下读不到——读不到的后果是退化成 deepEqual（只慢不错），
+ * 但「同一份状态、两套键」的分裂比慢更难排查。与 GEOMSTORE_BRAND 同一取舍
+ * （见 core/store/pluginSupport.ts）。跨模块共用的是 `getStateVersion` 这个函数，
+ * 不是这个键本身：键之所以仍是全局的，只为副本之间也能读到同一个值。
+ *
+ * 可伪造性：全局符号表公开，任何代码都能取到同一个键并给对象塞一个版本号，
+ * 让消费者判为「未变化」而返回陈旧值。本键**不是安全边界**——缓存/索引的正确性
+ * 不依赖它不可伪造：读不到版本号时的兜底路径（deepEqual、归属解析不出即标全部顶层键）
+ * 就是按「不可信」设计的，且 getStateVersion 只认自有属性，往原型上挂版本号无效。
+ *
+ * 从本模块导出：测试与消费者要反查这个键时统一引用它，别再各写一份
+ * `Symbol.for('geomstore.stateVersion')` 字面量——键名一改，散落的字面量静默发散。
  *
  * 该属性定义为不可枚举，因此 Object.keys / JSON.stringify / deepCloneState
  * 都不会感知它——不会污染状态快照、序列化结果与 setData 下发数据。
  */
-const STATE_VERSION = Symbol.for('geomstore.stateVersion')
+export const STATE_VERSION: unique symbol = Symbol.for('geomstore.stateVersion')
 
 /**
  * 在状态对象上定义版本号 getter。
@@ -60,14 +72,22 @@ export function defineStateVersion(state: object, getVersion: () => number): voi
  * 同样能拿到版本号。
  *
  * @param state - 状态对象（或状态保护 Proxy）
- * @returns 版本号；状态无版本标记（非 Store 状态，如测试中直接传入的普通对象）时返回 undefined
+ * @returns 版本号；状态无**自有**版本标记（非 Store 状态，如测试中直接传入的普通对象）时返回 undefined
  */
 export function getStateVersion(state: unknown): number | undefined {
   if (state === null || typeof state !== 'object') {
     return undefined
   }
   try {
-    const version = (state as Record<symbol, unknown>)[STATE_VERSION]
+    // 只认自有属性：版本号是 defineStateVersion 挂在具体对象上的 getter，计数的是
+    // **那个对象**的变更。走 [[Get]] 会顺原型链读到一个外来版本号——
+    // 由有版本的对象派生（`Object.create(旧状态)`，deepCloneState 就是按同原型克隆，
+    // 见 core/utils/clone.ts）或原型上恰好有同名 symbol 属性时，两个不同对象会报出
+    // 同一个版本，`getStateVersion(root) !== indexedVersion` 恒为 false：
+    // 脏追踪索引不再重算、选择器缓存在 TTL 内持续命中，静默返回陈旧结果。
+    // hasOwnProperty 走 [[GetOwnProperty]]，保护 Proxy 未拦该陷阱、照常转发到原始状态，
+    // 因此不会误伤 `store.state` 这条主读取路径
+    const version = Object.prototype.hasOwnProperty.call(state, STATE_VERSION) ? (state as Record<symbol, unknown>)[STATE_VERSION] : undefined
     // 只接受有限数值：NaN/Infinity 也满足 typeof === 'number'，
     // 而 NaN !== NaN 会让每次比较都判为「版本已变」，等于把快捷路径变成强制回退
     return typeof version === 'number' && Number.isFinite(version) ? version : undefined

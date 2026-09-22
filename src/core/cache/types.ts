@@ -64,7 +64,14 @@ export interface LRUCacheStats {
    * 哨兵语义：`totalAccesses === 0` 时返回 `0`，表示「无访问数据」而非「0% 未命中」。
    */
   missRate: number
-  /** 淘汰的缓存项数量 */
+  /**
+   * 淘汰次数：契约是 `onEvict` 回调的触发次数（`clear()` 等配置性清空亦逐条计入），
+   * **并非**「因容量上限被挤出的条目数」。
+   *
+   * 因此把 `clear()` 用于配置性重建（如 `StoreCacheManager.enable()`）时，
+   * 该计数会包含这部分非容量淘汰；需区分两类淘汰的调用方，
+   * 可在配置性清空前后各读一次 `evictions` 求差。
+   */
   evictions: number
   /**
    * 当前缓存键列表（按最近使用顺序）
@@ -98,7 +105,13 @@ export interface LRUCacheStats {
  * @template V - 值类型
  */
 export interface CacheOptions<K = unknown, V = unknown> {
-  /** 初始容量 */
+  /**
+   * 初始容量（默认 100）
+   *
+   * 规范化规则与 `LRUCacheStats.capacity` 一致：非有限值（NaN/±Infinity）回退默认 100，
+   * 小于 1 的值夹到 1，小数不取整（等效上限为 `floor(capacity)` 条）。
+   * 构造后改动此字段不会生效——实例只保留归一化后的单一份容量（见 `getCapacity()`）。
+   */
   capacity?: number
   /** 是否启用访问统计 */
   enableStats?: boolean

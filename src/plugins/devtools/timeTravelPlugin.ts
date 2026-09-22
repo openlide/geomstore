@@ -59,7 +59,7 @@ function jsonStringifySafe(value: unknown, space?: number): string {
  *
  * @interface TimeTravelOptions
  * @template S - 状态类型
- * @property {number} [maxSize=50] - 最大快照数量
+ * @property {number} [maxSize=50] - 最大快照数量（非正整数/非有限值回退到默认值，见 normalizeMaxSize）
  * @property {(state: S) => boolean} [filter] - 过滤函数，决定是否记录快照
  * @property {boolean} [autoRecord=true] - 是否自动记录快照
  *
@@ -75,12 +75,44 @@ function jsonStringifySafe(value: unknown, space?: number): string {
  * ```
  */
 export interface TimeTravelOptions<S extends State = State> {
-  /** 最大快照数量 */
+  /**
+   * 最大快照数量（默认 50）
+   *
+   * 只接受 ≥ 1 的数值，小数向下取整；`NaN`/`Infinity`/`0`/负数等无法作为上限的取值
+   * 一律回退到默认值（判据与理由见 `normalizeMaxSize`）
+   */
   maxSize?: number
   /** 过滤函数 */
   filter?: (state: S) => boolean
   /** 是否自动记录 */
   autoRecord?: boolean
+}
+
+/** 全局调试表的键名：注册与日志提示必须同源，否则日志会指向一个不存在的路径 */
+const TIME_TRAVEL_GLOBAL_KEY = '__GEOMSTORE_TIME_TRAVEL__'
+
+/** `maxSize` 缺省值，同时是非法取值（非有限数 / 小于 1）的回退值 */
+const DEFAULT_MAX_SIZE = 50
+
+/**
+ * 归一 `maxSize` 为正整数。
+ *
+ * 未归一的取值会让上限在两处朝相反方向失效：
+ * - `NaN`（如 `Number(用户输入)`）：`snapshots.length > NaN` 恒为 false，上限静默消失，
+ *   快照无限增长——一个常装的 devtools 插件就是实打实的内存泄漏
+ * - `0` / 负数：`recordSnapshot` 每次 push 完立刻 shift，历史恒空；更糟的是
+ *   `importHistory` 里 `overflow = snapshots.length - maxSize` 会把快照清空而
+ *   `currentIndex` 停在 0——这是 `clear()` 从不产生的非法态（-1），
+ *   `getCurrentIndex()` 与 `goTo(0)` 就此互相矛盾
+ *
+ * 小数按向下取整（`3.7 → 3`），小于 1 与不可解析的值退回默认值。
+ */
+function normalizeMaxSize(raw: number | undefined): number {
+  if (raw === undefined || !Number.isFinite(raw) || raw < 1) {
+    return DEFAULT_MAX_SIZE
+  }
+
+  return Math.floor(raw)
 }
 
 /**
@@ -150,9 +182,9 @@ function isImportableObject(value: unknown): boolean {
  * }))
  *
  * // 访问时间旅行API
- * const api = store.__timeTravel__
- * // 或
- * const api = globalThis.__GEOMSTORE_TIME_TRAVEL__['todo']
+ * // 全局表只在非生产环境挂载，读到 undefined 时需判空；
+ * // store.__timeTravel__ 是内部字段（不参与类型检查），不要按它写业务代码
+ * const api = globalThis.__GEOMSTORE_TIME_TRAVEL__?.['todo']
  *
  * // 获取所有快照
  * const snapshots = api.getSnapshots()
@@ -186,7 +218,8 @@ function isImportableObject(value: unknown): boolean {
  * ```
  */
 export const timeTravelPlugin = <S extends State = State>(options: TimeTravelOptions<S> = {}): Plugin => {
-  const { maxSize = 50, filter, autoRecord = true } = options
+  const { filter, autoRecord = true } = options
+  const maxSize = normalizeMaxSize(options.maxSize)
 
   return {
     name: 'timeTravel',
@@ -372,7 +405,15 @@ export const timeTravelPlugin = <S extends State = State>(options: TimeTravelOpt
 
         // 导入历史
         importHistory: (json: string): void => {
-          const data = JSON.parse(json)
+          // JSON 语法错误同样属于「畸形数据」：文本框里残留的半个导出串、HTML 错误页
+          // 正文、undefined 被字符串化后的值都会从这里进来，把 SyntaxError 抛给调用方
+          // 会打断整个 devtools 导入流程，与本方法「畸形数据静默跳过」的契约矛盾
+          let data: { snapshots?: unknown; currentIndex?: unknown }
+          try {
+            data = JSON.parse(json) as { snapshots?: unknown; currentIndex?: unknown }
+          } catch {
+            return
+          }
           // JSON.parse('null') 合法但 data.snapshots 会抛 TypeError，与函数内
           // 其余畸形数据静默跳过的防御风格保持一致
           if (!data || typeof data !== 'object' || !Array.isArray(data.snapshots)) {
@@ -418,9 +459,9 @@ export const timeTravelPlugin = <S extends State = State>(options: TimeTravelOpt
       // 设置全局访问（生产环境不暴露，防止内部结构泄露）
       let unregisterGlobal: () => void = () => {}
       if (!isProduction()) {
-        unregisterGlobal = registerGlobalEntry('__GEOMSTORE_TIME_TRAVEL__', store.name, api)
+        unregisterGlobal = registerGlobalEntry(TIME_TRAVEL_GLOBAL_KEY, store.name, api)
         console.log(`[GeomStore][timeTravel] Time travel enabled for store "${store.name}"`)
-        console.log(`[GeomStore][timeTravel] Access at: globalThis.__GEOMSTORE_TIME_TRAVEL__["${store.name}"]`)
+        console.log(`[GeomStore][timeTravel] Access at: globalThis.${TIME_TRAVEL_GLOBAL_KEY}["${store.name}"]`)
       }
 
       return () => {

@@ -7,6 +7,82 @@
  * - 错误上下文信息
  */
 
+/** 上下文序列化的递归深度上限：超限的分支以标记收尾，避免深树把日志通道自身拖垮 */
+const MAX_CONTEXT_DEPTH = 6
+const CIRCULAR_MARKER = '[Circular]'
+const DEPTH_MARKER = '[Truncated]'
+const UNREADABLE_MARKER = '[Unreadable]'
+
+/**
+ * 把 context 里的任意值归一成「JSON.stringify 不会抛」的结构
+ *
+ * 错误上报是故障发生后才走的通道，`JSON.stringify(error)` 一旦二次抛错，
+ * 原始故障连同这条错误一起丢失。context 收的是状态快照/实参/store 对象等
+ * `unknown`，其中会让 stringify 抛错的三类来源在此收敛：
+ * - 循环引用（state 里互相指向的对象）→ `'[Circular]'`
+ * - BigInt（JSON 无此类型）→ `'123n'` 形式
+ * - 取值即抛的访问器（包装了已销毁 Store 的 getter）→ `'[Unreadable]'`
+ *
+ * 带 `toJSON` 的对象（Date 等）原样交给 JSON 引擎按其自身的序列化器处理；
+ * 其余对象/数组按自有可枚举键展开成普通结构（与 stringify 的取值口径一致）。
+ */
+function toSerializableValue(value: unknown, ancestors: WeakSet<object>, depth: number): unknown {
+  if (value === null || typeof value !== 'object') {
+    return typeof value === 'bigint' ? `${value}n` : value
+  }
+  if (typeof (value as { toJSON?: unknown }).toJSON === 'function') {
+    return value
+  }
+  if (depth >= MAX_CONTEXT_DEPTH) {
+    return DEPTH_MARKER
+  }
+  // 只把「当前分支上的祖先」当作环：兄弟节点共享同一对象不是循环，
+  // 用全局 seen 会把正常的复用引用误报成 [Circular]
+  if (ancestors.has(value)) {
+    return CIRCULAR_MARKER
+  }
+  ancestors.add(value)
+  try {
+    if (Array.isArray(value)) {
+      return value.map((item) => toSerializableValue(item, ancestors, depth + 1))
+    }
+    const out: Record<string, unknown> = {}
+    for (const key of Object.keys(value)) {
+      let child: unknown
+      try {
+        child = (value as Record<string, unknown>)[key]
+      } catch {
+        child = UNREADABLE_MARKER
+      }
+      const serialized = toSerializableValue(child, ancestors, depth + 1)
+      if (key === '__proto__') {
+        // 自有 '__proto__' 键走 [[Set]] 会触发 Object.prototype 的 setter：
+        // 该键被丢弃且 out 的原型被换掉（与 clone/merge 处的 defineProperty 守卫同口径）
+        Object.defineProperty(out, key, { value: serialized, writable: true, enumerable: true, configurable: true })
+      } else {
+        out[key] = serialized
+      }
+    }
+    return out
+  } finally {
+    ancestors.delete(value)
+  }
+}
+
+/**
+ * `cause` 的日志形状
+ *
+ * 通用归一会把 Error 摊成 `{}`（`message`/`stack` 都是不可枚举自有属性），
+ * 而 cause 的全部价值就是「被包装掉的原始故障是什么」，故 Error 显式取 name/message；
+ * 其余值（字符串、状态片段、自定义抛出值）走与 context 同一套环路/BigInt 安全通道
+ */
+function toSerializableCause(value: unknown): unknown {
+  if (value instanceof Error) {
+    return { name: value.name, message: value.message }
+  }
+  return toSerializableValue(value, new WeakSet<object>(), 0)
+}
+
 /**
  * GeomStore基础错误类
  *
@@ -14,6 +90,13 @@
  * @description
  * 所有GeomStore错误的基础类，提供统一的错误格式和上下文信息。
  * 包含错误代码、上下文数据和完整的堆栈跟踪。
+ *
+ * `context` 在构造期做浅拷贝、在 `toJSON()` 里做环路/BigInt 归一，
+ * 二者共同保证：错误对象既不会被调用方事后改写的入参污染，也不会把
+ * 「打印错误」变成第二次抛错。
+ *
+ * 包装底层异常时把原始抛出值作为第 5 个实参（派生类第 4 个）传入，它会保存在
+ * `error.cause` 上并随 `toJSON()` 输出，不再像此前那样被丢弃。
  *
  * @example
  * ```typescript
@@ -47,6 +130,15 @@ export class GeomStoreError extends Error {
   readonly context?: Record<string, unknown>
 
   /**
+   * 被本错误包装掉的原始抛出值（如果调用方提供了）
+   *
+   * target/lib 为 ES2020，`Error` 构造器没有 `cause` 选项签名，故按属性赋值补齐
+   * （与 extras 的 attachCause 同口径）。缺省时不写入该属性。
+   * @type {unknown}
+   */
+  readonly cause?: unknown
+
+  /**
    * 创建GeomStore错误实例
    *
    * `name` 由派生类显式传入而非取 `this.constructor.name`：产物经 esbuild/terser 压缩，
@@ -56,6 +148,7 @@ export class GeomStoreError extends Error {
    * @param {string} code - 错误代码
    * @param {Record<string, unknown>} [context] - 错误上下文
    * @param {string} [name] - 错误名称（派生类传入自身类名字面量，默认 'GeomStoreError'）
+   * @param {unknown} [cause] - 触发本错误的原始抛出值；不传则不挂 cause
    *
    * @example
    * ```typescript
@@ -65,20 +158,39 @@ export class GeomStoreError extends Error {
    *   { actionName: 'missingAction', storeName: 'test-store' }
    * )
    * ```
+   *
+   * @example
+   * ```typescript
+   * // 包装底层异常：原始错误与其堆栈随 cause 一并保留
+   * try {
+   *   fs.writeFileSync(file, data)
+   * } catch (original) {
+   *   throw new StateError('Persist state failed', 'STATE_UPDATE_ERROR', { file }, original)
+   * }
+   * ```
    */
-  constructor(message: string, code: string, context?: Record<string, unknown>, name: string = 'GeomStoreError') {
+  constructor(message: string, code: string, context?: Record<string, unknown>, name: string = 'GeomStoreError', cause?: unknown) {
     super(message)
     this.name = name
     this.code = code
-    this.context = context
-
-    // 仅「直接构造本类」时才需要复位原型：target ES2020 下原生 class extends Error
-    // 已把 this 挂到派生原型上，而 new.target 只在派生类经 super() 调用时才是 undefined。
-    // 无条件按 GeomStoreError.prototype 复位会把派生原型降级（instanceof ActionError 变 false），
-    // 过去靠 6 个子类各补一句 setPrototypeOf 兜回——同一件事写七处，漏一处即静默失效
-    if (new.target) {
-      Object.setPrototypeOf(this, new.target.prototype)
+    // 浅拷贝调用方传入的 context：`readonly` 只是编译期约束，按引用存下来会让
+    // 调用方之后对同一对象的写入追溯性地改掉已捕获的错误现场
+    // （toJSON()/getFriendlyMessage() 的输出随之变化）。嵌套值仍共享——
+    // 深拷贝会把状态快照整树复制进错误对象，代价与诊断价值不成比例
+    this.context = context ? { ...context } : undefined
+    // ES2020 的 Error 无 cause 选项签名，按属性赋值；未提供时保持「无该自有属性」，
+    // 与原生 Error 的形态一致（`'cause' in error` 可用来区分「未包装」与「包装了 undefined」）
+    if (cause !== undefined) {
+      const withCause = this as { cause?: unknown }
+      withCause.cause = cause
     }
+
+    // 把实例原型对齐到 new.target.prototype：直接构造本类时是 GeomStoreError.prototype，
+    // 派生类经 super() 走到这里时 new.target 就是那个派生构造器，对齐结果是派生原型。
+    // （new.target 只在「不经 new 调用类」时才是 undefined，而 class 语法做不到这一点，
+    // 故此处不需要任何分支：ES2020 下原生 class extends Error 本已挂对原型，
+    // 这句只为兜住把构造器当函数转译/手工 call 的构建产物，无条件执行才是正确写法）
+    Object.setPrototypeOf(this, new.target.prototype)
   }
 
   /**
@@ -88,6 +200,15 @@ export class GeomStoreError extends Error {
    * 亦锁定了该形状），堆栈是排障必需信息，故不裁剪、也不按 NODE_ENV 分支（生产构建
    * 里堆栈同样重要）。**不要把结果直接回传客户端或写入持久化存储**——小程序包路径与
    * 内部实现细节会随之外泄；对外上报请只取 `name`/`message`/`code`/`context`。
+   *
+   * @remarks `context` 在此处过一遍 `toSerializableValue`：环路/BigInt/取值即抛的访问器
+   * 会被换成字符串标记，因此 `JSON.stringify(error)`（它会调用本方法）不会因这些值抛错，
+   * 错误上报通道不会变成第二次故障。带 `toJSON` 的对象按其自身序列化器处理，
+   * 该序列化器抛错不在本方法的兜底范围内。
+   *
+   * @remarks `cause` 仅在构造期提供时才带上（未包装底层错误时输出形状不变，ERROR-008
+   * 锁定的仍是 name/message/code/context/stack 五个键），并过同一套归一，
+   * 使「是谁被包装掉了」在日志里可见。
    *
    * @returns {Record<string, unknown>} 序列化的错误信息
    *
@@ -109,8 +230,9 @@ export class GeomStoreError extends Error {
       name: this.name,
       message: this.message,
       code: this.code,
-      context: this.context,
+      context: this.context === undefined ? undefined : toSerializableValue(this.context, new WeakSet<object>(), 0),
       stack: this.stack,
+      cause: this.cause === undefined ? undefined : toSerializableCause(this.cause),
     }
   }
 
@@ -178,9 +300,9 @@ export class GeomStoreError extends Error {
  * ```
  */
 export class ActionError extends GeomStoreError {
-  constructor(message: string, code: string, context?: Record<string, unknown>) {
+  constructor(message: string, code: string, context?: Record<string, unknown>, cause?: unknown) {
     // 名称按字面量交给基类：字段赋值与原型复位统一在 GeomStoreError 构造器内完成
-    super(message, code, context, 'ActionError')
+    super(message, code, context, 'ActionError', cause)
   }
 }
 
@@ -209,9 +331,9 @@ export class ActionError extends GeomStoreError {
  * ```
  */
 export class StateError extends GeomStoreError {
-  constructor(message: string, code: string, context?: Record<string, unknown>) {
+  constructor(message: string, code: string, context?: Record<string, unknown>, cause?: unknown) {
     // 名称按字面量交给基类：字段赋值与原型复位统一在 GeomStoreError 构造器内完成
-    super(message, code, context, 'StateError')
+    super(message, code, context, 'StateError', cause)
   }
 }
 
@@ -239,9 +361,9 @@ export class StateError extends GeomStoreError {
  * ```
  */
 export class SelectorError extends GeomStoreError {
-  constructor(message: string, code: string, context?: Record<string, unknown>) {
+  constructor(message: string, code: string, context?: Record<string, unknown>, cause?: unknown) {
     // 名称按字面量交给基类：字段赋值与原型复位统一在 GeomStoreError 构造器内完成
-    super(message, code, context, 'SelectorError')
+    super(message, code, context, 'SelectorError', cause)
   }
 }
 
@@ -269,9 +391,9 @@ export class SelectorError extends GeomStoreError {
  * ```
  */
 export class PluginError extends GeomStoreError {
-  constructor(message: string, code: string, context?: Record<string, unknown>) {
+  constructor(message: string, code: string, context?: Record<string, unknown>, cause?: unknown) {
     // 名称按字面量交给基类：字段赋值与原型复位统一在 GeomStoreError 构造器内完成
-    super(message, code, context, 'PluginError')
+    super(message, code, context, 'PluginError', cause)
   }
 }
 
@@ -300,9 +422,9 @@ export class PluginError extends GeomStoreError {
  * ```
  */
 export class ComposeError extends GeomStoreError {
-  constructor(message: string, code: string, context?: Record<string, unknown>) {
+  constructor(message: string, code: string, context?: Record<string, unknown>, cause?: unknown) {
     // 名称按字面量交给基类：字段赋值与原型复位统一在 GeomStoreError 构造器内完成
-    super(message, code, context, 'ComposeError')
+    super(message, code, context, 'ComposeError', cause)
   }
 }
 
@@ -333,9 +455,9 @@ export class ComposeError extends GeomStoreError {
  * ```
  */
 export class ValidationError extends GeomStoreError {
-  constructor(message: string, code: string, context?: Record<string, unknown>) {
+  constructor(message: string, code: string, context?: Record<string, unknown>, cause?: unknown) {
     // 名称按字面量交给基类：字段赋值与原型复位统一在 GeomStoreError 构造器内完成
-    super(message, code, context, 'ValidationError')
+    super(message, code, context, 'ValidationError', cause)
   }
 }
 
@@ -478,6 +600,7 @@ export function isValidationError(error: unknown): error is ValidationError {
  * @param {ErrorCode} code - 错误代码
  * @param {string} message - 错误消息
  * @param {Record<string, unknown>} [context] - 错误上下文
+ * @param {unknown} [cause] - 触发本次失败的原始抛出值，随实例的 cause 保留
  * @returns {GeomStoreError} 对应的错误实例
  *
  * @example
@@ -490,40 +613,41 @@ export function isValidationError(error: unknown): error is ValidationError {
  * // 返回 ActionError 实例
  * ```
  */
-export function createError(code: ErrorCode, message: string, context?: Record<string, unknown>): GeomStoreError {
+export function createError(code: ErrorCode, message: string, context?: Record<string, unknown>, cause?: unknown): GeomStoreError {
   switch (code) {
     case ErrorCode.ACTION_NOT_FOUND:
     case ErrorCode.ACTION_EXECUTION_ERROR:
     case ErrorCode.ACTION_TIMEOUT:
     case ErrorCode.ACTION_CANCELLED:
-      return new ActionError(message, code, context)
+      return new ActionError(message, code, context, cause)
 
     case ErrorCode.STATE_KEY_NOT_FOUND:
     case ErrorCode.STATE_UPDATE_ERROR:
     case ErrorCode.STATE_TYPE_ERROR:
-      return new StateError(message, code, context)
+      return new StateError(message, code, context, cause)
 
     case ErrorCode.SELECTOR_NOT_FOUND:
     case ErrorCode.SELECTOR_EXECUTION_ERROR:
     case ErrorCode.SELECTOR_CACHE_ERROR:
-      return new SelectorError(message, code, context)
+      return new SelectorError(message, code, context, cause)
 
     case ErrorCode.PLUGIN_NOT_FOUND:
     case ErrorCode.PLUGIN_INSTALLATION_ERROR:
     case ErrorCode.PLUGIN_EXECUTION_ERROR:
-      return new PluginError(message, code, context)
+      return new PluginError(message, code, context, cause)
 
     case ErrorCode.STORE_NAME_CONFLICT:
     case ErrorCode.STORE_DEPENDENCY_ERROR:
     case ErrorCode.STORE_COMPOSE_ERROR:
-      return new ComposeError(message, code, context)
+      return new ComposeError(message, code, context, cause)
 
     case ErrorCode.VALIDATION_ERROR:
     case ErrorCode.TYPE_ERROR:
     case ErrorCode.PARAMETER_ERROR:
-      return new ValidationError(message, code, context)
+      return new ValidationError(message, code, context, cause)
 
     default:
-      return new GeomStoreError(message, code, context)
+      // name 留空取基类默认；cause 是第 5 位形参，故显式占位
+      return new GeomStoreError(message, code, context, undefined, cause)
   }
 }

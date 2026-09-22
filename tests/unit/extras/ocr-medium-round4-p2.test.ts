@@ -6,15 +6,7 @@
  * #271 wx 分支 timeout 透传、#273 wx 分支 data 直传 JSON 字符串。
  */
 
-import {
-  ErrorBoundary,
-  ErrorMonitoring,
-  ErrorRecovery,
-  HttpReporter,
-  RecoveryStrategy,
-  isGeomStoreError,
-  ErrorCode,
-} from '@/extras/error/index.js'
+import { ErrorBoundary, ErrorMonitoring, ErrorRecovery, HttpReporter, RecoveryStrategy, isGeomStoreError, ErrorCode } from '@/extras/error/index.js'
 import { GeomStoreError } from '@/core/errors/GeomStoreError.js'
 import { withErrorBoundary } from '@/extras/error/ErrorBoundary.js'
 

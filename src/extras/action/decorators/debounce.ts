@@ -14,7 +14,13 @@
  *
  */
 
-/** 被装饰的原方法（防抖只在调用时刻改延迟，不改返回值语义） */
+/**
+ * 被装饰的原方法
+ *
+ * 防抖改的是**执行时刻**，不是返回值语义：原方法返回什么，最终那次执行就产出什么。
+ * 但等待期必须有个可结算的替身，所以包装函数的返回值**恒为 Promise**（见 `withDebounce`
+ * 的 remarks）——装饰同步方法时这一点无法在类型上表达，旧式方法装饰器改不了声明签名。
+ */
 type DecoratedMethod = (this: unknown, ...args: unknown[]) => unknown
 
 /** 单个 (宿主, 方法) 的防抖状态 */
@@ -175,6 +181,13 @@ async function runPendingCalls(slot: DebounceState): Promise<void> {
     const result = await slot.originalMethod.apply(slot.host, taken.pendingArgs)
     taken.pendingResolves.forEach((r) => r(result))
   } catch (error) {
+    // 与 `cancelPendingCalls` 同口径：reject 之前先给每个挂起 promise 补一个 catch。
+    // 防抖的常态就是 fire-and-forget（`host.search(kw)` 不接返回值），到期/flush 时
+    // 原方法失败会让那些无人接管的 promise 变成 unhandledRejection——卸载点上尤其如此。
+    // 只消除全局未处理告警，不吞结果：真正 await/.then 了的调用方仍看得到这次失败
+    for (const promise of taken.pendingPromises) {
+      void promise.catch(() => undefined)
+    }
     taken.pendingRejects.forEach((r) => r(error))
   }
 }
@@ -206,8 +219,15 @@ function cancelPendingCalls(slot: DebounceState): void {
  * 延迟执行方法，如果在延迟时间内再次调用，则重置定时器
  * 适用于搜索、输入框等场景
  *
- * @param {number} [delay=300] - 延迟时间（毫秒）
+ * @param {number} [delay=300] - 延迟时间（毫秒）；非有限值或 <=0 视为配置错误，
+ *        回退为 300（`setTimeout(fn, NaN)` 与负延迟都按 ~0ms 触发、`Infinity` 在 Node 下
+ *        溢出告警后按 1ms 处理，静默把防抖退化成一个近无操作；与 `withThrottle` 同口径）
  * @returns {MethodDecorator} 方法装饰器
+ *
+ * @remarks 包装函数的返回值**恒为 Promise**：延迟期内不能同步产出结果，只能先给一个
+ * 等待结算的替身。因此本装饰器适用于 async 方法。TS 的旧式方法装饰器改不了声明签名，
+ * 装饰一个同步方法 `sync(): T` 时类型仍是 `(): T` 而运行时拿到 `Promise<unknown>`
+ * （`const v: T = host.sync()` 编译通过却拿错值），调用方必须按 Promise 消费。
  *
  * @example
  * ```typescript
@@ -230,6 +250,10 @@ function cancelPendingCalls(slot: DebounceState): void {
  * ```
  */
 export function withDebounce(delay: number = DEFAULT_DELAY): MethodDecorator {
+  // 与 withThrottle 的 interval 同一口径：非法配置回退默认值而不是抛错——装饰器在类
+  // 定义期求值，抛错会把一个参数笔误升级成模块加载失败
+  const wait = Number.isFinite(delay) && delay > 0 ? delay : DEFAULT_DELAY
+
   return function (_target: unknown, propertyKey: string | symbol, descriptor: PropertyDescriptor): PropertyDescriptor {
     const originalMethod = descriptor.value as DecoratedMethod | undefined
     const methodKey = propertyKey
@@ -266,7 +290,7 @@ export function withDebounce(delay: number = DEFAULT_DELAY): MethodDecorator {
       // `cancelDebouncedCalls(this)`（丢弃）或 `flushDebouncedCalls(this)`（立即执行一次）
       state.timeoutId = setTimeout(() => {
         void runPendingCalls(state)
-      }, delay)
+      }, wait)
 
       return promise
     }
@@ -311,8 +335,9 @@ export function cancelDebouncedCalls(host: unknown, method?: string | symbol): v
  * 把最后一次输入提交出去的场合。语义与延迟自然到期一致：
  * - 一次调用只执行原方法一次，其挂起的全部 Promise 都按这次结果结算（合并语义不变）；
  * - 没有挂起调用时不凭空执行原方法（再次 flush 因队列已空而是 no-op）；
- * - 原方法失败仍按既有语义 reject 那些 Promise——调用方拿得到结果，不会漏成
- *   unhandledRejection（未被处理的 rejection 与延迟自然到期时完全同构）。
+ * - 原方法失败仍按既有语义 reject 那些 Promise：`await` 了的调用方拿得到失败，
+ *   fire-and-forget 的调用方也不会漏出 unhandledRejection（`runPendingCalls` 在 reject
+ *   前给每个挂起 promise 补了 catch，与延迟自然到期完全同构）。
  *
  * @param host - 宿主；基本类型 / null 时为 no-op
  * @param method - 只立即执行该名字的被装饰方法；省略时覆盖该宿主上所有防抖方法

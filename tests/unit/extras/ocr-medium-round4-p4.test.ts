@@ -11,7 +11,23 @@ import { SelectorComposer } from '@/extras/selector/selectorComposer.js'
 import { SKIP_CLONE_NODE, SnapshotAbortError } from '@/extras/snapshot/clone.js'
 import { processNodeAsync, type AsyncCloneTask } from '@/extras/snapshot/clone-async.js'
 import { SnapshotManager, createSnapshot, createSnapshotAsync } from '@/extras/snapshot/SnapshotManager.js'
-import type { AsyncSnapshotOptions, CloneContext, SnapshotError, SnapshotOptions, SnapshotStats } from '@/extras/snapshot/types.js'
+import type { AsyncSnapshotOptions, CloneContext, SnapshotError, SnapshotOptions, SnapshotResult, SnapshotStats } from '@/extras/snapshot/types.js'
+
+/**
+ * 取出结果里被交付的 `data`。
+ *
+ * `SnapshotResult.data` 已按 R5-238 改为 `T | undefined`（三条失败来源交付的就是 undefined）。
+ * 本文件多条用例的检查对象正是「交付出来的内容」（含失败时交付的半成品），
+ * 所以在已断言过 success / toBeDefined 之后再经这道 narrowing 取值，
+ * 而不是到处写 `data!` 或可选链——那样「本该有半成品却给了 undefined」的回归会被静默掉，
+ * 这里改成抛一条写明 success/errors 现场的可读失败。
+ */
+function delivered<T>(result: SnapshotResult<T>): T {
+  if (result.data === undefined) {
+    throw new Error(`期望交付 data，实际为 undefined（success=${String(result.success)}，errors=${result.errors.length}）`)
+  }
+  return result.data
+}
 
 function makeContext(path = 'root'): CloneContext {
   return { path, depth: 0, parent: undefined, key: 'root', visited: new WeakMap() }
@@ -93,8 +109,11 @@ describe('#304 onError 返回值按真值解释', () => {
     })
 
     expect(result.success).toBe(true)
-    expect(result.errors).toHaveLength(0)
-    expect(result.data.self).toBe('[Circular Reference]')
+    // R5-254 起 `errors` 是完整账本：circular 先落账再咨询 onError，与相邻 maxDepth 分支同口径，
+    // 于是 stats.circularReferences / metadata.hasCircular / errors 三处不再「两有一无」。
+    // success 仍为 true——只有 cloneError 参与 success 判定（见 types.ts 的三条不变量）。
+    expect(result.errors.map((e) => e.type)).toEqual(['circular'])
+    expect(delivered(result).self).toBe('[Circular Reference]')
   })
 
   it('#304 显式 return true 才是「忽略并继续」：属性被丢弃但快照存活', () => {
@@ -103,7 +122,7 @@ describe('#304 onError 返回值按真值解释', () => {
     expect(result.success).toBe(false)
     expect(result.errors.some((e) => e.type === 'cloneError')).toBe(true)
     expect(result.data).toBeDefined()
-    expect(result.data.boom).toBeUndefined()
+    expect(delivered(result).boom).toBeUndefined()
   })
 })
 
@@ -261,9 +280,9 @@ describe('#319 prop 占位在不会填充的出口都被摘除', () => {
 
     expect(result.success).toBe(false)
     expect(result.data).toBeDefined()
-    expect(result.data.name).toBe('x')
+    expect(delivered(result).name).toBe('x')
     // 修复前：占位以 key: undefined 留在半成品里，读起来像「源数据里 self 就是 undefined」
-    expect(Object.prototype.hasOwnProperty.call(result.data, 'self')).toBe(false)
+    expect(Object.prototype.hasOwnProperty.call(delivered(result), 'self')).toBe(false)
   })
 
   it('#319 超时退出时未处理任务的占位不残留 undefined 值', async () => {
@@ -277,9 +296,9 @@ describe('#319 prop 占位在不会填充的出口都被摘除', () => {
     expect(result.success).toBe(false)
     expect(result.errors.some((e) => e.type === 'timeout')).toBe(true)
     // 未填充的键（占位）全部摘除：交付的半成品里不出现值为 undefined 的键
-    expect(Object.values(result.data).every((v) => v !== undefined)).toBe(true)
+    expect(Object.values(delivered(result)).every((v) => v !== undefined)).toBe(true)
     // 队列确有未处理任务（被超时截断），否则本用例锁不住清理逻辑
-    expect(Object.keys(result.data).length).toBeLessThan(4000)
+    expect(Object.keys(delivered(result)).length).toBeLessThan(4000)
   })
 })
 
@@ -312,7 +331,16 @@ describe('#320 类型判定 / 外壳构造抛错走节点级降级', () => {
     const errors: SnapshotError[] = []
     const task: AsyncCloneTask = { value: hostilePrototypeHost(), context: makeContext() }
 
-    expect(() => processNodeAsync(task, asyncOptions(() => false), errors, makeStats(), makeCounters(), () => {})).toThrow(SnapshotAbortError)
+    expect(() =>
+      processNodeAsync(
+        task,
+        asyncOptions(() => false),
+        errors,
+        makeStats(),
+        makeCounters(),
+        () => {},
+      ),
+    ).toThrow(SnapshotAbortError)
     // handleCloneError 的记账顺序：先落账 cloneError 再咨询 onError，故中止时该条已在账上
     expect(errors).toEqual([expect.objectContaining({ type: 'cloneError', path: 'root' })])
   })
@@ -326,7 +354,7 @@ describe('#320 类型判定 / 外壳构造抛错走节点级降级', () => {
     expect(result.success).toBe(false)
     expect(onError).toHaveBeenCalledTimes(1)
     expect(result.errors.some((e) => e.type === 'cloneError' && e.path === 'root.d')).toBe(true)
-    expect(result.data.keep).toEqual({ a: 1 })
-    expect(Object.prototype.hasOwnProperty.call(result.data, 'd')).toBe(false)
+    expect(delivered(result).keep).toEqual({ a: 1 })
+    expect(Object.prototype.hasOwnProperty.call(delivered(result), 'd')).toBe(false)
   })
 })

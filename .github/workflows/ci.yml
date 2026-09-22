@@ -13,17 +13,66 @@ on:
   pull_request:
   workflow_dispatch:
 
-# 最小权限：本工作流只需读取仓库（checkout）与写制品（upload-artifact）。
-# actions: write 是 upload/download-artifact 调用 Runtime Tools API 的前置权限，缺失会 403。
+# 最小权限：工作流级只保留读取仓库；Actions 域的写权限单独下放给唯一真正需要它的
+# job（见 jobs.verify.permissions），跑 PR head 代码的其它 job 不再继承。
+# 注：actions: write 是 upload-artifact 的前置权限这一说法本轮仍无法在本沙箱离线核实
+# （无外网，GitHub docs / api 均不可达），故按「拿不准就收窄到单个 job」处置：
+# 删掉仓库级授予，只在上传制品的 job 上保留，行为不变、爆炸半径变小。
 permissions:
   contents: read
-  actions: write
 
 jobs:
-  verify:
-    name: Lint / Typecheck / Test / Build (Node ${{ matrix.node-version }})
+  # lint 与 typecheck 与 Node 运行版本无关（tsconfig target=ES2020、eslint/typescript 都是
+  # devDependencies 里锁定的版本），在 22/24 两条矩阵腿上各跑一遍只是把 runner 时间翻倍、
+  # 覆盖率为零，故拆成单腿 job，矩阵里只留 Test / Build / Smoke。
+  verify-static:
+    name: Lint / Typecheck
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm run lint:ci
+
+      - name: Typecheck (src)
+        run: pnpm run typecheck
+
+      - name: Typecheck (tests)
+        run: pnpm run typecheck:tests
+
+      - name: Typecheck (examples)
+        run: pnpm run typecheck:examples
+
+      # benchmark 子包不在 pnpm 工作区内（pnpm-workspace.yaml 无 `packages:` 键），
+      # 此前 CI 只编译根包 → 该包从未被执行过，runner/reporter/阈值推导的回归无人拦截。
+      # 产物落 packages/benchmark/dist/（已被 dist/ 规则忽略），冒烟入口见 src/smoke.ts。
+      - name: Benchmark package smoke
+        run: |
+          npx tsc -p packages/benchmark/tsconfig.json
+          node packages/benchmark/dist/smoke.js
+
+  verify:
+    name: Test / Build / Smoke (Node ${{ matrix.node-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # 本 job 末步上传覆盖率制品，需要 Actions 域写权限；仅在此处声明。
+    permissions:
+      contents: read
+      actions: write
     strategy:
       fail-fast: false
       matrix:
@@ -44,18 +93,6 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Lint
-        run: pnpm run lint:ci
-
-      - name: Typecheck (src)
-        run: pnpm run typecheck
-
-      - name: Typecheck (tests)
-        run: pnpm run typecheck:tests
-
-      - name: Typecheck (examples)
-        run: pnpm run typecheck:examples
-
       - name: Test with coverage
         run: pnpm run test:ci
 
@@ -66,10 +103,12 @@ jobs:
         run: |
           node --input-type=module -e '
             const { readFileSync } = await import("node:fs")
-            const { exports: exp } = JSON.parse(readFileSync("package.json", "utf8"))
-            const base = import.meta.resolve("./")
-            const viaExports = (key) => import(new URL("./" + exp[key].default.replace(/^\.\//, ""), base).href)
-            const s = await viaExports(".")
+            const { name, exports: exp } = JSON.parse(readFileSync("package.json", "utf8"))
+            // 用自引用 import 走 Node 自己的 exports 解析器，跟消费者的写法一致。
+            // 之前是手工拼 `./` + exp[key].default 再 new URL(...)：绕开解析器后，
+            // exports 里键名写错、条件顺序错、default 缺失都会照样「冒烟通过」，
+            // 而字符串型 exports / 通配子路径又会抛出看似产物损坏的 TypeError。
+            const s = await import(name)
             const store = s.createStore({
               name: "ci-smoke",
               state: { count: 1 },
@@ -78,15 +117,22 @@ jobs:
             store.dispatch("inc")
             if (store.getState().count !== 2) throw new Error("esm smoke failed")
             if (typeof s.composeStore !== "function") throw new Error("composeStore missing")
-            const err = await viaExports("./extras/error")
+            // exports 表里除 "." 与 "./package.json" 外的每个子路径都要能被 Node 解析出非空模块
+            for (const key of Object.keys(exp)) {
+              if (key === "." || key === "./package.json") continue
+              if (!key.startsWith("./")) throw new Error("exports key not a subpath: " + key)
+              const sub = await import(name + key.slice(1))
+              if (Object.keys(sub).length === 0) throw new Error("empty subpath module: " + key)
+            }
+            const err = await import(name + "/extras/error")
             if (typeof err.GeomStoreError !== "function") throw new Error("error subpath failed")
-            const plugins = await viaExports("./extras/plugins")
+            const plugins = await import(name + "/extras/plugins")
             if (!plugins.loggerPlugin) throw new Error("plugins subpath failed")
-            const selector = await viaExports("./extras/selector")
+            const selector = await import(name + "/extras/selector")
             if (typeof selector.createSelector !== "function") throw new Error("selector subpath failed")
-            const integrations = await viaExports("./integrations")
+            const integrations = await import(name + "/integrations")
             if (typeof integrations.bindMappings !== "function") throw new Error("integrations subpath failed")
-            console.log("ESM SMOKE OK (exports map exercised)")
+            console.log("ESM SMOKE OK (exports map exercised by node resolver)")
           '
 
       - name: Upload coverage report
@@ -95,4 +141,7 @@ jobs:
         with:
           name: coverage-report
           path: coverage/lcov-report
+          # 报告由 jest.config.js 的 html reporter 稳定产出；缺文件说明产出链断了，
+          # 必须让作业变红，而不是只留一条告警后静默丢报告。
+          if-no-files-found: error
           retention-days: 14

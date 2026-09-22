@@ -30,17 +30,20 @@
  *
  * store.dispatch('addItem', 'buy milk')
  *
- * // 访问时间旅行 API：全局表是唯一的公开入口（仅开发/测试环境挂载，
- * // 生产构建下插件根本不注册；表键为 store.name）
+ * // 访问时间旅行 API：全局表是唯一的公开入口（表键为 store.name）。
+ * // 全局表只在非生产环境挂载：生产构建下这句读到的是 undefined，
+ * // 插件本身仍在记录快照（见下方 @remarks）
  * const api = globalThis.__GEOMSTORE_TIME_TRAVEL__?.['todo']
  * api?.undo()
  * api?.redo()
  * api?.goTo(0)
  * ```
  *
- * @remarks 插件安装时也会把同一份 API 挂到 `store.__timeTravel__`（内部字段，
- * 不在 `Store` 公共类型上、生产构建下不存在），因此不要按 `store.__timeTravel__`
- * 写业务代码——它不参与类型检查，也没有对外契约
+ * @remarks 生产环境下不挂载的只有**全局调试入口**（连同两行 console 提示）：
+ * `install()` 本身照常执行，快照数组、状态订阅与 `store.__timeTravel__` 都在，
+ * 直到插件被卸载才清理。所以 `store.__timeTravel__` 在生产构建下同样存在——
+ * 它是内部字段，不在 `Store` 公共类型上、也不参与类型检查，更没有对外契约，
+ * 不要按它写业务代码
  */
 
 export { timeTravelPlugin } from './timeTravelPlugin.js'

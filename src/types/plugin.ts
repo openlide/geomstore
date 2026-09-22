@@ -34,6 +34,14 @@ export type HookName =
  * - `beforeDispatch` / `afterDispatch` 的 args 是 action 实参数组本体（非展开）
  * - `onError` 的 error 为 `unknown`：`catch` 捕获值可抛任意内容，
  *   刻意不写成 `Error`（处理器需自行 `instanceof Error` 收窄）
+ *
+ * patch / replace 两条是**刻意收宽**的，读载荷时别把它当成已按状态形状建模：
+ * 实现层传出的是精确的 `Partial<S>`（`Store.$patch`）与 `S`（`Store.$replaceState`），
+ * 而 `IHookSystem` 不随 `S` 泛型化（钩子表要能存进 `Map<HookName, Set<HookHandler>>`，
+ * 一旦带 S，一个 HookSystem 就只服务一种状态类型），载荷只能落到擦除形状
+ * `Record<string, unknown>` / `object`。前者按键读出 `unknown`，后者连键都读不出。
+ * `object` 还比实现层的接受面更宽：数组、函数都能通过编译，而 `$patch` / `$replaceState`
+ * 运行时会按「必须是普通对象」先抛 TypeError 再谈触发钩子——钩子观察不到非普通对象的载荷。
  */
 export interface HookArgsMap {
   beforeSetState: [key: string | number | symbol, value: unknown]
@@ -103,11 +111,17 @@ export interface IHookSystem {
   /**
    * 触发钩子：实参元组由 HookArgsMap 按钩子名给出，顺序/个数不符即编译报错
    *
-   * **处理器抛错时的语义**（插件作者据此决定要不要自己兜异常）：
+   * **处理器抛错时**：本签名返回 `void`，类型层无法规定实现怎么处理处理器抛出的异常，
+   * 所以下面四条是**仓库内当前实现**（`core/hooks` 的 HookSystem）的行为约定，
+   * 不是换一份 `IHookSystem` 就仍然成立的保证——`core/store/ActionManager.ts` 就是按
+   * 「接口不保证」这一点把 `emit` 放进了 try（见该文件的 dispatch 事务注释）。
+   * 插件若不能承受异常冒进业务调用栈，请在自己的处理器内部 try/catch，别依赖这里。
+   *
+   * 按当前实现：
    * - 单个处理器抛错既不中断本次触发的其余处理器，也**不会传播给 `emit` 的调用方**
-   *   （返回 `void`，实现按快照逐个 try/catch）。
+   *   （实现按快照逐个 try/catch）。
    * - 错误先 `console.error` 记录，再转投 `onError` 钩子（`emit('onError', error, hookName)`），
-   *   故 `onError` 是钩子系统唯一的上报通道；要接监控系统，注册 `onError` 处理器即可。
+   *   故 `onError` 是该实现唯一的上报通道；要接监控系统，注册 `onError` 处理器即可。
    * - `onError` 自身抛错只落 `console.error`，不再递归转投自己。
    * - 需要「让抛错冒泡到业务调用方」的语义不能靠钩子实现，请走 action 的错误边界。
    */

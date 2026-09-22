@@ -99,8 +99,13 @@ export const storage = {
    * 一种写法，无法区分 login 写入的裸 userId "1001" 与 JSON 化的数字 1001，
    * 若把前者解析为 number 会造成 Map/storage 键类型漂移、多账号隔离失效，
    * 故解析出 number/boolean 时按原始字符串返回。调用方对这两类原始值
-   * 只可依赖存在性/真值（如热更新标记），不可依赖 `<T>` 保型；
-   * 对象/数组与字符串经 JSON 往返均类型无损，现有库内调用点全部落在此范围内
+   * 只可依赖存在性、或与之对应的**字符串形式**（`=== 'true'`、`=== '0'`）；
+   * 真值判定只在「写入值本身为真」时成立——存 `false`/`0` 会读回非空字符串
+   * `"false"`/`"0"`（真值为真），与宿主直接返回原始值的非字符串分支（`typeof value !== 'string'`
+   * 原样返回 `false`/`0`）结果相反。要表达「关/否」请删键而非写 falsy 值：
+   * 库内热更新标记正是按「写入 true、缺席即 null」使用，故不受此限。
+   * 另外 `<T>` 对这两类原始值不保型；对象/数组与字符串经 JSON 往返均类型无损，
+   * 现有库内调用点全部落在此范围内
    *
    * 缺失键语义（#330）：wx.getStorageSync 对不存在的键返回 `''`（不抛错、不返回
    * undefined），因此「存了空串」与「键不存在」在平台层面不可区分，两者一律返回 null。
@@ -139,8 +144,10 @@ export const storage = {
     try {
       // JSON.stringify 对 undefined/函数/symbol 不抛错而是返回 undefined：
       // 直接透传给 setStorageSync 在小程序端要么报错要么静默丢值，
-      // 而函数照常返回 true 会谎报写入成功（热更新备份等路径依赖返回值判失败）
-      const serialized = typeof value === 'string' ? value : JSON.stringify(value)
+      // 而函数照常返回 true 会谎报写入成功（热更新备份等路径依赖返回值判失败）。
+      // lib.es5 把 JSON.stringify 的返回类型声明为 string，运行时契约与声明不符，
+      // 故此处显式放宽为 string | undefined——不标注的话下一行的判定读起来像死代码
+      const serialized: string | undefined = typeof value === 'string' ? value : JSON.stringify(value)
       if (serialized === undefined) {
         logger.error('Storage', `值不可序列化（undefined/函数/symbol），拒绝写入: ${key}`)
         return false
@@ -153,11 +160,17 @@ export const storage = {
     }
   },
   /**
-   * 删除键，返回是否删除成功（与 set 同口径的布尔结果）。
+   * 删除键，返回 `removeStorageSync` 是否**未抛错**（与 set 同口径的布尔结果）。
    *
    * 此前返回 void：登出与会话清理路径（StoreManager.logout、热更新标记清理）
-   * 无从得知凭证/会话键是否真的消失，删除失败会留下「已登出但数据仍在」的假象。
-   * 库内调用点仍以尽力而为为主（存储层已统一记日志），返回值供需要核验的调用方使用
+   * 连「删除有没有失败」都无从得知。
+   *
+   * 边界（勿把该返回值当「键已消失」的证明）：wx.removeStorageSync 对不存在的键
+   * 同样幂等不抛错，所以 false 只对应抛错类故障（配额/权限异常等），true 涵盖
+   * 「删掉了」与「本来就没有」两种情况。读取核验也补不上这个缺口——缺失键与存了
+   * 空串在平台层不可区分（见 get 的缺失键语义），get 返回 null 同样证明不了删除生效。
+   * 结论：本布尔值是「删除调用未被平台拒绝」的信号，用于让清理路径留痕，
+   * 不构成数据已不可读的证明
    */
   remove: (key: string): boolean => {
     try {

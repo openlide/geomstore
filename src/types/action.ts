@@ -6,9 +6,19 @@ import type { Actions, State } from './store.js'
 
 /**
  * 异步Actions类型（继承Actions）
+ *
+ * 索引签名的形参取 `any[]`，与基类型 `Actions`（`Record<string, (...args: any[]) => any>`）
+ * 同口径：属性式函数类型在 `strictFunctionTypes`（本仓库 `strict: true`）下按**逆变**比较，
+ * 写成 `unknown[]` 会让带标注的常见写法被拒——
+ * `{ fetchUser: (id: string) => Promise<User> }` 不满足
+ * `(...args: unknown[]) => Promise<unknown>`（`unknown` 不能赋给 `string`），
+ * 调用方被迫去掉形参标注或整体断言，而同样形状的函数式声明却能通过。
+ * 返回值保持 `Promise<unknown>`：返回类型是协变位置，具体类型可自由收窄，
+ * 不需要（也不应该）放宽到 `any`。
  */
 export interface AsyncActions extends Actions {
-  [key: string]: (...args: unknown[]) => Promise<unknown>
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  [key: string]: (...args: any[]) => Promise<unknown>
 }
 
 /**
@@ -34,15 +44,16 @@ export interface ActionLoaderOptions {
   /**
    * 共享的 loading 引用计数存储
    *
-   * @internal 供 withLoading 装饰器按宿主 + loading 键注入：
-   * 同一宿主上不同选项签名（如不同 errorKey）的装饰器实例各自持有计数时，
-   * 对同一 loading 键的并发计数互不可见，先完成的调用会提前翻转共享布尔键。
-   * 直接构造 ActionLoader 的调用方无需提供。
+   * 供 `withLoading` 装饰器按宿主 + loading 键注入：同一宿主上不同选项签名（如不同 `errorKey`）
+   * 的装饰器实例各自持有计数时，对同一 loading 键的并发计数互不可见，
+   * 先完成的调用会提前翻转共享布尔键。直接构造 `ActionLoader` 的调用方无需提供。
    *
-   * 注意：本字段只在 `ActionLoader` 构造函数被读取一次（`options.sharedLoadingCounts ?? new Map()`），
-   * `setOptions()` 会忽略它——运行期换 Map 会让新旧两本计数同时存在。
-   * 调用方自造/复用同一 Map 给多个 loader 时，「首个调用置 true、末个完成置 false」的
-   * 不变量由注入方负责，除非确有必要否则不要传本字段。
+   * 这是**公开可传**的选项（`docs/API.md` 的选项表里有它），不是类型层隐藏得了的内部件：
+   * `@internal` 标签既不阻止 tsc 导出它，也不让 `src/extras/index.ts` 的再导出少掉它，
+   * 留着只会让人以为它不该被碰。它的两条真实约束是：
+   * - **只在构造期读一次**（`options.sharedLoadingCounts ?? new Map()`），`setOptions()` 忽略它——
+   *   运行期换 Map 会让新旧两本计数同时存在，那比忽略更糟；
+   * - 自造/复用同一 Map 给多个 loader 时，「首个调用置 true、末个完成置 false」的不变量由注入方负责。
    */
   sharedLoadingCounts?: Map<string, number>
 }

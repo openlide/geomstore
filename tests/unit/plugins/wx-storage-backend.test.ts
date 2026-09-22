@@ -10,7 +10,9 @@
  * 1. #389 —— `getItem` 对「键无数据」的归一化（微信 `getStorageSync` 缺失键返回 `''`、
  *    写入非字符串载荷时原样返回该值）
  * 2. #390 —— 三个方法的错误语义一致：记录后一律重抛，读取失败不得退化成「键无数据」
- * 3. `wx` 整体缺失 / 单个方法缺席时的 `?.` 兜底（真机、开发者工具、Node 测试环境差异）
+ * 3. `wx` 整体缺失 / 单个方法缺席时的**抛错**语义（R5-279）：不得用 `?.` 短路成
+ *    「写入成功 / 读取无数据」——那会把丢失的写入伪装成成功（真机、开发者工具、
+ *    Node 测试环境的 wx 完整度本就参差不齐）
  * 4. #391 —— 「同步存储」这条契约的唯一实现：`isWxStorageSyncAvailable` 的可用性判定、
  *    `normalizeWxStoredValue` 的缺失键口径、以及**先守卫再归一化**的顺序
  *    （`persistencePlugin` 未传 `storage` 时的默认后端就是本类，两侧共享同一份判定）
@@ -136,40 +138,49 @@ describe('WxStorageBackend 读写删失败一律重抛（#390）', () => {
   })
 })
 
-// ==================== 环境降级：wx 整体缺失 / 单个方法缺席 ====================
+// ==================== 环境缺失：wx 整体缺失 / 单个方法缺席 ====================
 
-describe('WxStorageBackend 在 wx 不可用时的兜底（?. 短路）', () => {
-  it('globalThis.wx 整体缺失：读取按「无数据」、写删为 no-op，且都不抛错', () => {
-    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {})
-    const backend = new WxStorageBackend()
+describe('WxStorageBackend 在 wx 不可用时抛错（不得短路成静默 no-op）', () => {
+  let errorSpy: jest.SpiedFunction<typeof console.error>
 
-    expect(backend.getItem('k')).toBeNull()
-    expect(() => backend.setItem('k', 'v')).not.toThrow()
-    expect(() => backend.removeItem('k')).not.toThrow()
-    expect(errorSpy).not.toHaveBeenCalled()
+  beforeEach(() => {
+    // 三个方法都是「记录后重抛」，不 mock 会把告警刷进测试输出
+    errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {})
+  })
 
+  afterEach(() => {
     errorSpy.mockRestore()
   })
 
-  it('wx 存在但三个同步方法都不存在：同样短路，不抛 TypeError', () => {
+  it('globalThis.wx 整体缺失：读/写/删各自抛错并点名缺失的 API', () => {
+    const backend = new WxStorageBackend()
+
+    expect(() => backend.getItem('k')).toThrow('wx.getStorageSync 不可用')
+    expect(() => backend.setItem('k', 'v')).toThrow('wx.setStorageSync 不可用')
+    expect(() => backend.removeItem('k')).toThrow('wx.removeStorageSync 不可用')
+    expect(errorSpy).toHaveBeenCalledTimes(3)
+  })
+
+  it('wx 存在但三个同步方法都不存在：同样抛错，而不是把失败洗成成功', () => {
     withWx({})
     const backend = new WxStorageBackend()
 
-    expect(backend.getItem('k')).toBeNull()
-    expect(() => backend.setItem('k', 'v')).not.toThrow()
-    expect(() => backend.removeItem('k')).not.toThrow()
+    expect(() => backend.getItem('k')).toThrow('wx.getStorageSync 不可用')
+    expect(() => backend.setItem('k', 'v')).toThrow('wx.setStorageSync 不可用')
+    expect(() => backend.removeItem('k')).toThrow('wx.removeStorageSync 不可用')
   })
 
-  it('只缺读方法时写删照常工作，反之亦然（逐方法独立兜底）', () => {
+  it('逐方法独立判定：只缺读方法时写删照常工作，读仍抛错', () => {
     const written: Array<[string, string]> = []
     withWx({
       setStorageSync: (key: string, value: string) => void written.push([key, value]),
       removeStorageSync: () => undefined,
     })
+    const backend = new WxStorageBackend()
 
-    expect(new WxStorageBackend().getItem('k')).toBeNull()
-    new WxStorageBackend().setItem('k', 'v')
-    expect(new WxStorageBackend().getItem('k')).toBeNull()
+    expect(() => backend.getItem('k')).toThrow('wx.getStorageSync 不可用')
+    expect(() => backend.setItem('k', 'v')).not.toThrow()
+    expect(() => backend.removeItem('k')).not.toThrow()
     expect(written).toEqual([['k', 'v']])
   })
 })

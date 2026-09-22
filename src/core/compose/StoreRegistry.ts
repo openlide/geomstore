@@ -9,6 +9,17 @@ import type { Store, State } from '../../types/store.js'
 import { deepCloneState } from '../utils/clone.js'
 
 /**
+ * 该实例是否需要（且能够）被销毁
+ *
+ * `register()` 只校验 `getState`，鸭子类型的 store 完全可以没有 `destroy`；
+ * 裸调 `store.destroy()` 会抛 TypeError 并被清理路径吞成一条日志，
+ * 于是「本该发生的清理」静默不发生时与「无需清理」同形
+ */
+function isDestroyable(store: Store): boolean {
+  return typeof store.destroy === 'function' && !store.destroyed
+}
+
+/**
  * Store注册表类
  *
  * 用于管理多个Store实例，提供统一的注册、访问和生命周期管理
@@ -53,11 +64,14 @@ export class StoreRegistry {
   /**
    * 注册Store
    *
-   * 将Store实例注册到注册表中，如果同名Store已存在会覆盖
+   * 将Store实例注册到注册表中。返回后 `get(name)` 必等于本次传入的实例：
+   * 同名（含 `destroy()` 期间重入注册的同名）旧实例一律走覆盖流程退场。
+   * 被覆盖的旧实例会被销毁，且它在其它名字下的别名一并摘除（同 `unregister`）。
+   * 同一实例重复注册同名是幂等操作，不触发销毁
    *
    * @param {string} name - Store名称
    * @param {Store} store - Store实例
-   * @throws {Error} 如果名称无效或store无效
+   * @throws {Error} 如果名称无效或store无效（校验先于任何写入，注册表不会被改一半）
    *
    * @example
    * ```typescript
@@ -73,13 +87,7 @@ export class StoreRegistry {
    * ```
    */
   register(name: string, store: Store): void {
-    if (!name || typeof name !== 'string') {
-      throw new Error('[StoreRegistry] Store name must be a non-empty string')
-    }
-
-    if (!store || typeof store.getState !== 'function') {
-      throw new Error('[StoreRegistry] Invalid store object')
-    }
+    this._assertValidEntry(name, store)
 
     const existingStore = this.stores.get(name)
 
@@ -90,28 +98,79 @@ export class StoreRegistry {
       return
     }
 
+    const superseded: Store[] = []
     if (existingStore) {
-      // 销毁旧 store，避免内存泄漏。与 unregister/clear 一致地加保护：
-      // 旧实例 destroy() 抛出不得中断覆盖注册，否则注册表停留在半销毁实例上
-      if (typeof existingStore.destroy === 'function' && !existingStore.destroyed) {
-        console.warn(`[StoreRegistry] Store "${name}" already registered, destroying old store and overwriting`)
-        try {
-          existingStore.destroy()
-        } catch (error) {
-          console.error(`[StoreRegistry] Error destroying old store "${name}":`, error)
-        }
-      } else {
-        console.warn(`[StoreRegistry] Store "${name}" already registered, overwriting`)
+      console.warn(`[StoreRegistry] Store "${name}" already registered, ${isDestroyable(existingStore) ? 'destroying old store and ' : ''}overwriting`)
+      this._detachInstance(name, existingStore)
+      superseded.push(existingStore)
+
+      // 重入保护：destroy() 回调可以再次 register 同名 store（clear() 为这类重入
+      // 预留了「先摘链再销毁」的顺序，这里同样要显式处理）。上面的 set 若无条件执行，
+      // 重入写入的实例会被顶掉且永不被销毁 —— 那是个没人持有、也没人清理的悬挂 store。
+      // 本次调用是更外层的注册意图（其契约是「返回后 get(name) === store」），
+      // 故让重入实例走同一条覆盖流程退场，两个实例都不被静默遗弃。
+      // 例外：重入写入的正是本次要注册的实例（回调替调用方先行装好），摘毁它会让
+      // 下面的 set 把一个已销毁的实例登记为在册 store
+      const reentrant = this.stores.get(name)
+      if (reentrant !== undefined && reentrant !== existingStore && reentrant !== store) {
+        console.warn(`[StoreRegistry] Store "${name}" 在旧实例 destroy() 期间被重新注册，本次注册覆盖该重入实例`)
+        this._detachInstance(name, reentrant)
+        superseded.push(reentrant)
       }
     }
 
     this.stores.set(name, store)
 
-    // 覆盖注册后旧实例已被销毁：若默认 store 指向旧实例，同步指向新实例避免悬空。
-    // 必须排除「两者都为 undefined」——注册全新名字且从未 setDefault 时该等式同样成立，
-    // 否则首个注册的 store 会隐式成为默认，违反 getDefault「未设置则返回 undefined」的契约
-    if (existingStore !== undefined && this.defaultStore === existingStore) {
+    // 覆盖注册后旧实例已被销毁：若默认 store 指向被顶掉的实例，同步指向新实例避免悬空。
+    // 必须排除「没有实例被顶掉」的情况——注册全新名字且从未 setDefault 时
+    // defaultStore 与 existingStore 同为 undefined，直接等值比较会让首个注册的 store
+    // 隐式成为默认，违反 getDefault「未设置则返回 undefined」的契约
+    if (this.defaultStore !== undefined && superseded.includes(this.defaultStore)) {
       this.defaultStore = store
+    }
+  }
+
+  /**
+   * 校验注册表条目的形状
+   *
+   * `register()` 与 `registerAll()` 的预校验共用此判据：两处各写一遍迟早会漂移成
+   * 「一条路径接受、另一条拒绝」的 store 形状
+   */
+  private _assertValidEntry(name: string, store: Store): void {
+    if (!name || typeof name !== 'string') {
+      throw new Error('[StoreRegistry] Store name must be a non-empty string')
+    }
+    if (!store || typeof store.getState !== 'function') {
+      throw new Error(`[StoreRegistry] Invalid store object for name "${name}"`)
+    }
+  }
+
+  /**
+   * 摘除某实例在注册表里的全部名字并销毁它
+   *
+   * 别名一并摘除：同一实例可以注册在多个名字下（`register('a', s)` + `register('b', s)`），
+   * 而实例只有一个生命周期；只摘一个名字会让其余名字继续返回已销毁的 store。
+   * 先摘链再销毁，销毁期间重入的 register/unregister 看到的都是已摘除的状态
+   * （与 `clear()` 同序）
+   */
+  private _detachInstance(name: string, store: Store): void {
+    for (const [key, candidate] of this.stores) {
+      if (candidate === store) {
+        this.stores.delete(key)
+      }
+    }
+    this._destroyInstance(name, store)
+  }
+
+  /** 带形状守卫与异常兜底的销毁：register / unregister / clear 三条清理路径共用 */
+  private _destroyInstance(name: string, store: Store): void {
+    if (!isDestroyable(store)) {
+      return
+    }
+    try {
+      store.destroy()
+    } catch (error) {
+      console.error(`[StoreRegistry] Error destroying store "${name}":`, error)
     }
   }
 
@@ -142,12 +201,7 @@ export class StoreRegistry {
     // 预校验：逐条 register 时首条非法会让之前的条目已注册、之后的被静默跳过，
     // 调用方无法得知注册表停在哪一半（Object.entries 顺序也不保证与入参语义一致）
     for (const [name, store] of Object.entries(stores)) {
-      if (!name || typeof name !== 'string') {
-        throw new Error('[StoreRegistry] Store name must be a non-empty string')
-      }
-      if (!store || typeof store.getState !== 'function') {
-        throw new Error(`[StoreRegistry] Invalid store object for name "${name}"`)
-      }
+      this._assertValidEntry(name, store)
     }
 
     for (const [name, store] of Object.entries(stores)) {
@@ -158,7 +212,9 @@ export class StoreRegistry {
   /**
    * 注销Store
    *
-   * 从注册表中移除Store并调用其destroy方法
+   * 从注册表中移除该实例并调用其 destroy 方法。
+   * 同一实例若还注册在其它名字下（别名），那些条目一并移除：实例只有一个生命周期，
+   * 销毁后继续按别名返回它会交出已销毁的 store
    *
    * @param {string} name - Store名称
    *
@@ -179,19 +235,12 @@ export class StoreRegistry {
       return
     }
 
-    // 清理store：已在外部销毁的实例不再二次 destroy（与 register 的覆盖分支同口径），
-    // 但无论如何都要从注册表摘除
-    if (!store.destroyed) {
-      try {
-        store.destroy()
-      } catch (error) {
-        console.error(`[StoreRegistry] Error destroying store "${name}":`, error)
-      }
-    }
+    // 摘链（含该实例的其它别名）与销毁统一交给 _detachInstance：
+    // 已在外部销毁的实例不再二次 destroy，缺 destroy 方法的实例照常从注册表摘除
+    this._detachInstance(name, store)
 
-    this.stores.delete(name)
-
-    // 如果是默认store，清除引用
+    // 实例已被销毁且不再有名字指向它：默认引用必须清除，否则 getDefault()
+    // 返回一个已销毁的 store
     if (this.defaultStore === store) {
       this.defaultStore = undefined
     }
@@ -300,10 +349,15 @@ export class StoreRegistry {
    *
    * 注销所有Store并清空注册表
    *
+   * @remarks 契约是「进入本方法时在册的条目全部注销」，不是「调用后注册表为空」：
+   * 某个 `destroy()` 回调里重入 `register()`/`registerAll()` 的条目**会保留下来**
+   * （它们是在清空之后写入的，把它们连带销毁会白白牺牲仍被调用方持有的 store）。
+   * 因此那种场景下 `size()` 不为 0；需要绝对为空的调用方应在无重入注册时清空，
+   * 或清空后自行再清一次
    *
    * @example
    * ```typescript
-   * // 清空所有Store
+   * // 清空所有Store（无 destroy 重入注册时）
    * registry.clear()
    * console.log(registry.size()) // 0
    * ```
@@ -311,21 +365,16 @@ export class StoreRegistry {
   clear(): void {
     // 先摘链再逐个销毁：destroy() 实现可能重入 unregister()/register()，
     // 实时迭代 this.stores 会让重入的写入被本循环再次访问（同一实例销毁两次、
-    // 或新注册的实例被连带销毁）；清空后重入的注销只会命中空表，语义可预期
+    // 或新注册的实例被连带销毁）；清空后重入的注销只会命中空表，语义可预期。
+    // 重入的 register() 则按 @remarks 的契约留在表内，不被本循环吞掉
     const entries = Array.from(this.stores.entries())
     this.stores.clear()
     this.defaultStore = undefined
 
     for (const [name, store] of entries) {
-      // 已在外部销毁的实例跳过：与 register() 的覆盖分支同口径，避免二次 destroy
-      if (store.destroyed) {
-        continue
-      }
-      try {
-        store.destroy()
-      } catch (error) {
-        console.error(`[StoreRegistry] Error destroying store "${name}":`, error)
-      }
+      // 守卫与异常兜底统一走 _destroyInstance：已在外部销毁的实例跳过、
+      // 缺 destroy 的鸭子类型实例不会以 TypeError 收场
+      this._destroyInstance(name, store)
     }
   }
 

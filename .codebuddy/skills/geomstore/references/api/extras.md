@@ -12,6 +12,7 @@
 符号清单（详细声明见对应子入口文件）：
 
 - `ActionDecorator`
+- `ActionErrorData`
 - `ActionExecutionContext`
 - `ActionExecutor`
 - `ActionLoader`
@@ -40,6 +41,7 @@
 - `PerformanceStats`
 - `PersistenceOptions`
 - `RetryDecoratorOptions`
+- `RetryOptions`
 - `SnapshotDiff`
 - `SnapshotError`
 - `SnapshotManager`
@@ -50,8 +52,10 @@
 - `SnapshotStats`
 - `StorageBackend`
 - `StoreManager`
+- `TIMEOUT_ERROR_CODE`
 - `ThrottleDecoratorOptions`
 - `TimeTravelOptions`
+- `TimeoutError`
 - `UserInfo`
 - `UserPreferences`
 - `UserState`

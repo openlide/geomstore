@@ -8,7 +8,19 @@
 
 import type { GeomStoreError } from '../../core/errors/GeomStoreError.js'
 
-/** retryWindowStart / retryCount 的容量上限：防止动态 operation id 场景下的无界增长 */
+/**
+ * `retryCycleEnd` / `retryCount` 的容量上限：防止动态 operation id 场景下的无界增长
+ *
+ * 只描述「有上限」不够，溢出时的淘汰语义会直接影响 `maxRetries` 的有效性：
+ * - **判定时机**：仅 RETRY 策略走到 `executeRetryStrategy` 时才检查（其余策略不写这两张表，
+ *   `recover()` 成功、RESTART 与 `clearAllRetryCounts()` 只做定点/全量删除）
+ * - **两步淘汰**：先删掉「自身周期窗已到期」的键（每个键的到期时刻由该策略的退避总时长算出，
+ *   下限 60s，互不相同），仍超上限再按 **Map 插入顺序**从最旧端继续淘汰；开启新周期的键会被
+ *   重新插到队尾，所以「最旧插入」≈「最早进入当前故障周期」
+ * - **副作用**：被淘汰的键若属于仍在进行的故障周期，其累计尝试次数随之清零，
+ *   该 (code, store, operation) 的 `maxRetries` 防重试风暴保护会短暂失效（重新计满额度）。
+ *   动态 operation id 数量可能长期高于上限时，请改用固定的 operation 名（或提高本上限）
+ */
 export const MAX_RETRY_KEYS = 1000
 
 /**
@@ -78,9 +90,13 @@ export interface RecoveryConfig {
    * 类型是 `unknown` 而非某个具体形状，因此「回退值就是 undefined」是合法配置，
    * 与「没配」在类型上无法区分；引擎按 **`'fallback' in config`** 判定是否配过
    * （见 `ErrorRecovery.executeFallbackStrategy`），故默认策略里 `fallback: undefined`
-   * 表示「显式回退到 undefined」。反过来说：不要靠展开/序列化搬运 config 后还指望
-   * 该键保留（删掉键就等于没配回退值）。做成 `{ value: unknown }` 之类的判别式联合
-   * 能消除这层歧义，但会破坏已发布的公开配置形状，故保留现形并在此写明判据。
+   * 表示「显式回退到 undefined」。会真正丢掉这个键的是 **JSON 序列化/反序列化**
+   * （`JSON.parse(JSON.stringify(config))` 直接不写出 undefined 值属性）、**条件展开**
+   * （`...(ok ? { fallback: v } : {})` 为假时整键消失）与解构改名，搬运 config 时避开它们。
+   * 普通浅展开 `{ ...config }` 与 `Object.assign` 都保留自有可枚举键（值为 undefined
+   * 也保留，`'fallback' in copy === true`），`configure()` 内部的归一化正是这么做的，
+   * 不必绕路。做成 `{ value: unknown }` 之类的判别式联合能消除这层歧义，但会破坏已发布的
+   * 公开配置形状，故保留现形并在此写明判据。
    */
   fallback?: unknown
 

@@ -1134,14 +1134,14 @@ describe('ErrorRecovery 模块', () => {
           retryDelay: 0,
         },
       })
-      // 覆盖 maxRetries 为 undefined
+      // 覆盖 maxRetries 为 undefined（strategies 是 Map，须用 set 写入）
       const config = recovery.getConfig('TEST_CODE')!
-      ;(recovery as any).strategies['TEST_CODE'] = {
+      ;(recovery as unknown as { strategies: Map<string, unknown> }).strategies.set('TEST_CODE', {
         ...config,
         maxRetries: undefined,
         retryDelay: 0,
         exponentialBackoff: false,
-      }
+      })
 
       const error = new GeomStoreError('测试错误', 'TEST_CODE')
 
@@ -1163,12 +1163,12 @@ describe('ErrorRecovery 模块', () => {
         },
       })
       // 覆盖 retryDelay 为 undefined
-      ;(recovery as any).strategies['TEST_CODE'] = {
+      ;(recovery as unknown as { strategies: Map<string, unknown> }).strategies.set('TEST_CODE', {
         strategy: RecoveryStrategy.RETRY,
         maxRetries: 1,
         retryDelay: undefined,
         exponentialBackoff: false,
-      }
+      })
 
       const error = new GeomStoreError('测试错误', 'TEST_CODE')
 
@@ -1190,12 +1190,12 @@ describe('ErrorRecovery 模块', () => {
         },
       })
       // 覆盖 exponentialBackoff 为 undefined
-      ;(recovery as any).strategies['TEST_CODE'] = {
+      ;(recovery as unknown as { strategies: Map<string, unknown> }).strategies.set('TEST_CODE', {
         strategy: RecoveryStrategy.RETRY,
         maxRetries: 1,
         retryDelay: 0,
         exponentialBackoff: undefined,
-      }
+      })
 
       const error = new GeomStoreError('测试错误', 'TEST_CODE')
 
@@ -1334,7 +1334,7 @@ describe('ErrorRecovery 模块', () => {
       await expect(recovery.recover(error)).rejects.toThrow('No fallback value or function configured')
     })
 
-    it('BUG-13: RETRY 达到上限后应该清理计数，后续可重新计数', async () => {
+    it('BUG-13: 达到上限后本周期内持续拦截，超出周期窗才重新计额', async () => {
       recovery.configure({
         TEST_RETRY_CLEAR: {
           strategy: RecoveryStrategy.RETRY,
@@ -1345,14 +1345,26 @@ describe('ErrorRecovery 模块', () => {
       })
 
       const error = new GeomStoreError('测试错误', 'TEST_RETRY_CLEAR')
+      // 周期窗判定读 Date.now，用可控时钟才能稳定跨过窗口
+      let clock = 1_000_000
+      const clockSpy = jest.spyOn(Date, 'now').mockImplementation(() => clock)
 
-      // 两次重试均重抛原错误
-      await expect(recovery.recover(error)).rejects.toThrow(error)
-      await expect(recovery.recover(error)).rejects.toThrow(error)
-      // 达到上限：抛出 Max retries 错误
-      await expect(recovery.recover(error)).rejects.toThrow('Max retries (2) exceeded')
-      // 计数已被清理：重新从 0 开始，再次重抛原错误而非立即超限
-      await expect(recovery.recover(error)).rejects.toThrow(error)
+      try {
+        // 两次重试均重抛原错误
+        await expect(recovery.recover(error)).rejects.toThrow(error)
+        await expect(recovery.recover(error)).rejects.toThrow(error)
+        // 达到上限：抛出 Max retries 错误
+        await expect(recovery.recover(error)).rejects.toThrow('Max retries (2) exceeded')
+        // 同一故障周期内后续调用继续被拦截：清键等于每轮失败都重新发满额度，
+        // max-retries 的保护就只对触发超限的那一次生效
+        await expect(recovery.recover(error)).rejects.toThrow('Max retries (2) exceeded')
+
+        // 超出周期窗（retryDelay 0 时窗口取 60s 下限）才是新故障周期，额度归零
+        clock += 61_000
+        await expect(recovery.recover(error)).rejects.toThrow(error)
+      } finally {
+        clockSpy.mockRestore()
+      }
     })
   })
 })
@@ -1453,7 +1465,7 @@ describe('RETRY 额度按故障周期计量（BUG 回归）', () => {
       },
     })
     const mkError = () => new GeomStoreError('失败', 'TEST_CLEAR')
-    const windows = (recovery as unknown as { retryWindowStart: Map<string, number> }).retryWindowStart
+    const windows = (recovery as unknown as { retryCycleEnd: Map<string, number> }).retryCycleEnd
 
     // t=0：建立周期窗并计入一次额度
     await expect(recovery.recover(mkError())).rejects.toThrow('失败')
@@ -1478,7 +1490,7 @@ describe('RETRY 额度按故障周期计量（BUG 回归）', () => {
 })
 
 describe('ErrorRecovery 内存守卫（RECOVERY-LEAK）', () => {
-  it('RECOVERY-LEAK-001: 动态 operation id 场景 retryWindowStart 不无界增长', async () => {
+  it('RECOVERY-LEAK-001: 动态 operation id 场景 retryCycleEnd 不无界增长', async () => {
     const recovery = new ErrorRecovery()
     // 恢复策略须经 configure 注册：recover 的第二个参数只承载 RecoveryContext 上下文，
     // 不接受 strategy/maxRetries/retryDelay；未注册时 recover 会在取配置阶段即抛错，
@@ -1500,7 +1512,7 @@ describe('ErrorRecovery 内存守卫（RECOVERY-LEAK）', () => {
       })
 
     // 触发远超阈值的不同键（每个 operation 唯一），每个仅调用一次（不超 maxRetries），
-    // 使 retryWindowStart 持续累积，验证容量守卫将其限制在阈值附近而非无限增长
+    // 使 retryCycleEnd 持续累积，验证容量守卫将其限制在阈值附近而非无限增长
     for (let i = 0; i < 1200; i++) {
       try {
         await recovery.recover(makeErr(i))
@@ -1509,8 +1521,7 @@ describe('ErrorRecovery 内存守卫（RECOVERY-LEAK）', () => {
       }
     }
 
-    const size = (recovery as unknown as { retryWindowStart: Map<string, number> }).retryWindowStart.size
+    const size = (recovery as unknown as { retryCycleEnd: Map<string, number> }).retryCycleEnd.size
     expect(size).toBeLessThanOrEqual(1001)
   })
 })
-

@@ -17,6 +17,19 @@
  */
 /**
  * 性能指标类型
+ *
+ * 这份联合比内置插桩实际产出的标签更宽，按「谁会写它」分两组
+ * （产标签的唯一内置路径是 `src/plugins/performance/analyzerPlugin.ts` 里的 `monitor.start(...)`）：
+ *
+ * - 内置插桩产出：`'setState'`、`'patch'`、`'replaceState'`、`'dispatch'`、`'getter'`。
+ *   接内置监控器时，`getMetricsByType(type)` 只在这五个键上能看到真实流量。
+ * - 内置插桩**不**产出，留给自定义上报：`'notify'`、`'subscribe'`、`'plugin'`、`'state-update'`。
+ *   `PerformanceMonitor.record` 是公开入口，消费者可自行按这些维度写入并据此过滤；
+ *   类型不收窄正是为了放行这种自定义标签，别把它们当成内置一定会给的东西。
+ *
+ * `'state-update'` 与 `'setState'` 不是同一个桶，别混用：前者是「一次状态更新」的逻辑分类
+ * （与 `src/types/error.ts` 的 `OperationType` 同名成员同一口径），后者是 `setState()`
+ * 这次调用的计时。按类型统计时它们是两个独立分组，内置路径只会写后者。
  */
 export type MetricType = 'setState' | 'patch' | 'replaceState' | 'dispatch' | 'getter' | 'notify' | 'subscribe' | 'plugin' | 'state-update';
 ```
@@ -104,10 +117,10 @@ export declare class MetricsCollector {
      *
      * 根据谓词函数筛选指标，返回包含筛选结果的新采集器。
      *
-     * @param {(metrics: PerformanceMetrics) => boolean} predicate - 筛选函数
+     * @param {(metric: PerformanceMetrics) => boolean} predicate - 筛选函数
      * @returns {MetricsCollector} 包含筛选结果的新采集器
      */
-    filter(predicate: (metrics: PerformanceMetrics) => boolean): MetricsCollector;
+    filter(predicate: (metric: PerformanceMetrics) => boolean): MetricsCollector;
     /**
      * 按时间范围筛选
      *
@@ -151,7 +164,8 @@ export declare class MetricsCollector {
      *
      * 返回最频繁操作列表，包含执行次数和平均耗时。
      *
-     * @param {number} [limit=5] - 返回的热路径数量
+     * @param {number} [limit=5] - 返回的热路径数量；小数向下取整，非有限值（NaN/Infinity）、
+     *   0 与负数一律按 0 处理（返回空数组），与 PerformanceMonitor.getRecentMetrics 同口径
      * @returns {Array<{operation: string, count: number, avgDuration: number}>} 热路径数组
      */
     getHotPaths(limit?: number): Array<{
@@ -216,7 +230,7 @@ export declare class PerformanceAnalyzer {
      *
      * @private
      * @param {PerformanceMetrics[]} metrics - 性能指标数组
-     * @returns {Record<string, number>} 按操作分组的平均持续时间
+     * @returns {Map<string, number>} 按操作分组的平均持续时间
      */
     private static calculateAvgDurations;
 }
@@ -350,8 +364,9 @@ export declare class PerformanceMonitor implements PerformanceMonitorInterface {
     /**
      * 规范化采样率
      *
-     * `Math.random() > NaN` 恒为 false，未校验的 NaN 会让「采样」变成 100% 记录；
-     * 负值则让所有操作都被跳过。文档口径是 0-1，故统一夹到该区间，非有限值回退默认。
+     * 留存判据是 `Math.random() < sampleRate`（见 record()）：未校验的 NaN 与负值都会让
+     * 条件恒假，「采样」静默退化成一条都不留，而调用方以为自己在监控。文档口径是 0-1，
+     * 故统一夹到该区间，非有限值回退默认。
      *
      * @private
      */
@@ -433,7 +448,8 @@ export declare class PerformanceMonitor implements PerformanceMonitorInterface {
     /**
      * 记录指标
      *
-     * 直接记录一个性能指标
+     * 直接记录一个性能指标。入参对象**不会被留存**：缓冲区与 logger 拿到的都是它的副本，
+     * 调用方复用/改写该对象不会篡改已记录的历史指标。
      *
      * @param {PerformanceMetrics} metrics - 性能指标
      *
@@ -619,9 +635,13 @@ export declare class PerformanceMonitor implements PerformanceMonitorInterface {
     /**
      * 导出为JSON
      *
-     * 将所有指标和统计信息导出为JSON字符串
+     * 将所有指标和统计信息导出为JSON字符串。
      *
-     * @returns {string} JSON字符串
+     * @remarks `options` 段刻意不含 `logger`：它是函数，JSON.stringify 会静默丢键，
+     * 与其让报告形状「恰好」少一个字段，不如显式给出可序列化的那部分——
+     * 消费方据此知道报告里的 options 是配置的投影，而非构造入参的完整回放。
+     *
+     * @returns {string} JSON字符串，含 `metrics`（指标快照）、`stats`、`options`（不含 logger）
      *
      * @example
      * ```typescript
@@ -648,15 +668,36 @@ export declare class PerformanceMonitor implements PerformanceMonitorInterface {
 ```ts
 /**
  * 性能选项
+ *
+ * 数值域刻意不在类型上收窄（品牌类型/区间类型会把公开签名变成会报错的形状），
+ * 因此**归一化是实现层的义务**：越界值不会编译报错、也不会抛错，只会静默降级。
+ * 内置 `PerformanceMonitor` 在构造与 `setOptions` 两处都按下面的口径夹过
+ * （见 `src/core/performance/PerformanceMonitor.ts` 的三个 `normalize*`），
+ * `MetricsCollector` 的环形缓冲也按同一口径规范化 `maxSize`；自定义实现若不做归一，
+ * 表现如各条注释所述。
  */
 export interface PerformanceOptions {
-    /** 采样率（0-1） */
+    /**
+     * 采样率（0-1）
+     *
+     * 未夹取值时 > 1 等于全采样、负数与 `NaN` 让留存判据 `Math.random() < sampleRate` 恒假
+     * （一条都不留，而调用方以为自己在监控）。内置实现夹到 `[0, 1]`，非有限值回退默认 1。
+     */
     sampleRate?: number;
-    /** 超过阈值（毫秒）记录 */
+    /**
+     * 超过阈值（毫秒）记录
+     *
+     * `NaN` 会让 `duration > threshold` 恒假、预警静默失效；负值等价于 0。内置实现夹到 `>= 0`。
+     */
     threshold?: number;
     /** 自定义日志记录器 */
     logger?: (metrics: PerformanceMetrics) => void;
-    /** 最大记录数量 */
+    /**
+     * 最大记录数量
+     *
+     * 环形缓冲按整数下标运算：小数/负数会取到空洞下标（静默丢数据或无界增长）。
+     * 内置实现归一为「有限、非负、整数」，非有限值回退默认（监控器 1000 / 采集器 10000）。
+     */
     maxSize?: number;
     /** 是否启用内存监控 */
     trackMemory?: boolean;
@@ -780,15 +821,15 @@ analyzerPlugin: Plugin
  * // 导出为JSON
  * const report = monitor.exportJSON()
  *
- * // 访问全局API
- * const api = globalThis.__GEOMSTORE_ANALYZER__['user']
+ * // 访问全局API（仅在非生产环境注册；未安装插件或 store 名不符时为 undefined）
+ * const api = globalThis.__GEOMSTORE_ANALYZER__?.['user']
  *
  * // 获取指标
- * const allMetrics = api.getMetrics()
- * const allStats = api.getStats()
+ * const allMetrics = api?.getMetrics()
+ * const allStats = api?.getStats()
  *
  * // 分析性能瓶颈
- * const bottlenecks = api.analyzeBottlenecks(16)
+ * const bottlenecks = api?.analyzeBottlenecks(16) ?? []
  * bottlenecks.forEach(b => {
  *   console.log(`${b.operation}:`)
  *   console.log(`  Severity: ${b.severity}`)
@@ -797,10 +838,10 @@ analyzerPlugin: Plugin
  * })
  *
  * // 清除指标
- * api.clear()
+ * api?.clear()
  *
- * // 在控制台直接访问
- * // globalThis.__GEOMSTORE_ANALYZER__['user'].getStats()
+ * // 在控制台直接访问（自行判空）
+ * // globalThis.__GEOMSTORE_ANALYZER__?.['user']?.getStats()
  * ```
  */
 export declare function createAnalyzerPlugin(options?: PerformanceOptions): Plugin;

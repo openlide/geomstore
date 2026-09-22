@@ -151,6 +151,10 @@ export declare class OfflineManager<S extends State = State> {
      * 已「清空」的操作在同步结束时复活继续同步，故三段一并置空——
      * syncPending 清空后循环条件立即为假、同步停止；清空之后新入队的操作
      * 仍进 actionQueue，不受影响
+     *
+     * 已释放实例（dispose 之后）一律拒绝：该存储键可能已由接管的新实例持有（同 store 名
+     * 即同 queueKey，正是 saveQueue/syncQueue 加守卫的场景），旧实例的一次 clearQueue
+     * 会删掉新实例已持久化的队列，而新实例内存仍持有它们——重启即静默丢失
      */
     clearQueue(): void;
     /**
@@ -211,6 +215,9 @@ export declare class OfflineManager<S extends State = State> {
     getDeadLetters(): OfflineAction[];
     /**
      * 清空死信队列（业务层确认已处理丢失操作后调用）
+     *
+     * 与 clearQueue 同口径拒绝已释放实例：死信键由 queueKey 派生，实例释放后
+     * 同 store 名的新实例会继续往里追加，旧实例的一次清空会抹掉新实例记录的死信
      */
     clearDeadLetters(): void;
     /**
@@ -263,7 +270,7 @@ export declare class StoreManager {
      */
     getCurrentStore(): Store<UserState> | null;
     /**
-     * 清理所有 Store —— 仅释放内存实例，不清理持久化数据（#342）
+     * 清理所有 Store 实例与当前身份标记 —— 不删除各账号的持久化数据（#342）
      *
      * 与 logout 的差别是刻意的：本方法面向「测试重置 / 宿主整体换号」这类
      * 需要立刻回收全部实例的场景，而调用方无法指定「哪些账号的数据该被删除」；
@@ -271,8 +278,11 @@ export declare class StoreManager {
      * 风险远高于收益。需要真正清除某账号持久化数据请显式走 `logout()`（当前用户）
      * 或按 `userStoreKey(userId)` 自行清理。
      *
-     * 已知不一致：本方法把内存身份置空，但 `CURRENT_USER_KEY` 与各账号持久化键仍留在
-     * storage 中——冷启动恢复（createEnterpriseApp）会据此把身份指回最后一个登录账号。
+     * `CURRENT_USER_KEY` 则一并移除：它是身份/会话标记而非账号数据，与
+     * `currentUserId = null` 属于同一次「清理」。留着它会让内存报「无当前用户」
+     * 而下一次冷启动（createEnterpriseApp → switchUser）把身份指回最后一个登录账号，
+     * 调用方以为已经结束的会话被静默复活。需要跨 clearAll 保留身份的场景，
+     * 请在调用后自行 `storage.set(CURRENT_USER_KEY, userId)` 写回
      */
     clearAll(): void;
     /**
@@ -339,7 +349,12 @@ export interface UserState extends State {
 export interface UserStoreConfig {
     /** 用户唯一标识：参与 Store 名称与持久化键（`user-store-${userId}`），不可为空/纯空白 */
     userId: string;
-    /** 用户信息同步接口地址；缺省用模块默认 `DEFAULT_SYNC_URL`，便于按环境/宿主注入 */
+    /**
+     * 用户信息同步接口地址：必须是 `wx.request` 接受的绝对 URL（域名还需在小程序后台白名单内）。
+     * 缺省即「本 Store 不具备服务端同步能力」——`syncWithServer` 会在发起请求前直接 reject
+     * （库内不内置业务端点：相对路径在小程序端注定失败，内置一个「看起来像默认值」的地址
+     * 只会把配置缺失变成一次无法归因的网络错误）
+     */
     syncUrl?: string;
     /** 初始状态覆盖项（可选） */
     initialState?: Partial<UserState>;
@@ -390,7 +405,9 @@ export declare function createUserStore(config: UserStoreConfig): Store<UserStat
  * 多次调用不会重复包装全局 App：
  * 若全局 App 仍为本模块安装的包装函数，则仅注册新的处理器；
  * 若全局 App 已被外部替换（如测试重置），则重新安装包装，
- * 已有处理器注册表原样保留（新包装遍历同一注册表，清空只会丢弃其他调用方的注册）
+ * 已有处理器注册表原样保留（新包装遍历同一注册表，清空只会丢弃其他调用方的注册）；
+ * 若全局 App 尚不存在，处理器仍登记（注册表与包装相互独立），并告警提示
+ * 生命周期拦截要等 App 就位后安装
  */
 export declare function initBackgroundSync<S extends State = State>(config: BackgroundSyncConfig<S>): void;
 ```
@@ -398,6 +415,13 @@ export declare function initBackgroundSync<S extends State = State>(config: Back
 ### `initHotUpdate`
 
 ```ts
+/**
+ * 初始化热更新处理
+ * 在小程序更新时自动备份和恢复状态
+ *
+ * 重复调用（账号切换）会切换保护目标；对同一 `updateManager` 实例的监听安装是幂等的
+ * （`onUpdateReady` 为累加式注册且无 off API，见 `installedUpdateManagers`）
+ */
 export declare function initHotUpdate<S extends State = State>(config: HotUpdateConfig<S>): void;
 ```
 

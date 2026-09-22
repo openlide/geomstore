@@ -53,6 +53,37 @@ export function normalizeActionLoaderOptions(options: ActionLoaderOptions): Norm
 }
 
 /**
+ * `errorData` 状态键的内容形态（{@link ActionLoader.getErrorData} 的返回类型）
+ *
+ * 由 `setError` 单点构造，因此可以给出具体形状：此前 `getErrorData` 返回 `unknown`，
+ * 而它自己的文档示例就读 `errorData.timestamp` / `errorData.stack`——那在 `unknown` 上
+ * 过不了类型检查，等于强制每个调用方自行 cast（正是 `unknown` 想避免的事）。
+ */
+export interface ActionErrorData {
+  /** 规范化后错误对象的 `message` */
+  message: string
+  /** 规范化后错误对象的 `stack`：无栈的实现下为 undefined */
+  stack?: string
+  /** 记录时刻（`Date.now()`） */
+  timestamp: number
+}
+
+/**
+ * 一次 `wrap` 调用的配置快照 + 记账凭证
+ *
+ * 见 `ActionLoader.wrap` 的用法说明：increment 与配对的 decrement 必须在同一份配置下
+ * 决定，且必须能被「这次调用自己」识别（代际变更后作废）。
+ */
+interface CallScope {
+  /** 调用开始时 {@link ActionLoader.stateGeneration} 的值 */
+  generation: number
+  autoLoading: boolean
+  loadingKey: string
+  errorKey: string
+  errorDataKey: string
+}
+
+/**
  * Action加载状态管理器
  *
  * 用于包装异步Action，自动管理其执行状态（loading、error、errorData）
@@ -105,9 +136,19 @@ export class ActionLoader {
   /**
    * 错误数据映射
    * @private
-   * @type {Map<string, unknown>}
+   * @type {Map<string, ActionErrorData>}
    */
-  private errorData: Map<string, unknown> = new Map()
+  private errorData: Map<string, ActionErrorData> = new Map()
+
+  /**
+   * 记账代际：`clearInternalRecords()` 每次自增
+   *
+   * in-flight 调用在开始时捕获它的值，结算时比对：不一致就说明自己的 increment 记录
+   * 已被丢弃（`clear()` 或换配置的 `setOptions()` 都已给旧键补写复位值），此时任何
+   * 状态写入都只可能吞掉「重置之后新起的调用」的计数。见 {@link CallScope}
+   * @private
+   */
+  private stateGeneration = 0
 
   /**
    * 最近一次 `wrap` 注入的 setState
@@ -146,7 +187,11 @@ export class ActionLoader {
    * ```
    */
   constructor(options: ActionLoaderOptions = {}) {
-    this.loadingRefCounts = options.sharedLoadingCounts ?? new Map()
+    // 注入值的类型只有编译期效力：JS 调用方传非 Map（例如把两个 loader 的计数表跨进程序列化往返）
+    // 会在第一次 `get`/`set` 才炸，且炸点在异步收尾里、看不出现场。构造期认一次就够——
+    // 本字段本来也只在这里读一次（`setOptions()` 忽略它，运行期换表会让两本计数同时存在）。
+    const injectedCounts = options.sharedLoadingCounts
+    this.loadingRefCounts = injectedCounts instanceof Map ? injectedCounts : new Map()
     this.options = normalizeActionLoaderOptions(options)
   }
 
@@ -164,6 +209,15 @@ export class ActionLoader {
    * @remarks 约束用 `(...args: never[]) => Promise<unknown>` 而非 `unknown[]`：按参数逆变，
    * `unknown[]` 会拒掉类文档示例里 `(userId: string) => Promise<User>` 这类带具体参数类型的
    * action（调用方被迫写 `as any`），`never[]` 则放行且保留 T 的推导。
+   *
+   * 包装函数把自己的 receiver 原样转发给被包装的 action：本方法常被用来包一个**未绑定**的
+   * 方法引用（`loader.wrap(store.fetchUser, 'fetchUser', store.setState.bind(store))`），
+   * 那种写法下 `this` 就是宿主，丢掉它会让依赖 receiver 的 action 直接抛错。
+   *
+   * 派生状态（loading/error/errorData）的写入按「一次调用的配置快照 + 代际凭证」结算：
+   * `autoLoading` 与三个状态键都在调用开始时求值一次，结算时只认这份快照，且只在
+   * 代际未变时才写——见 {@link CallScope}。中途 `setOptions()`/`clear()` 之后进行的
+   * 收尾写入既可能对错键、也会吞掉别人调用的计数，故一并跳过。
    *
    * @example
    * ```typescript
@@ -187,38 +241,36 @@ export class ActionLoader {
   wrap<T extends (...args: never[]) => Promise<unknown>>(action: T, actionName: string, setState: (key: string, value: unknown) => void): T {
     // 记住最近一次注入的 setState：clear() 与换键的 setOptions() 要靠它给旧键补写复位值
     this.lastSetState = setState
+    // 包装函数是 function 表达式（要拿到调用方 receiver），故 loader 实例另存一份
+    const loader = this
 
-    const wrapped = async (...args: Parameters<T>): Promise<unknown> => {
-      // 设置loading状态（引用计数）。increment 在 try 之外且内部先计数再 setState：
+    const wrapped = async function (this: unknown, ...args: Parameters<T>): Promise<unknown> {
+      const receiver = this
+      // 本次调用的配置快照 + 代际凭证：increment 与配对的 decrement/settle 都按它决定，
+      // 中途的 setOptions()/clear() 不会让两端跑到不同配置或不同记账上去
+      const scope = loader.captureCallScope(actionName)
+
+      // 设置 loading 状态（引用计数）。increment 在 try 之外且内部先计数再 setState：
       // setState 同步抛错（如 store 已销毁）时计数残留 +1，loading 永远无法回 false，
       // 失败时回滚计数
-      if (this.options.autoLoading) {
+      if (scope.autoLoading) {
         try {
-          this.incrementLoading(actionName, setState)
+          loader.incrementLoading(scope.loadingKey, setState)
         } catch (error) {
-          this.decrementLoading(actionName, () => {})
+          loader.releaseLoadingSlot(scope.loadingKey)
           throw error
         }
       }
 
       try {
-        const result = await action(...args)
-
-        // 清除loading状态（引用计数归零才置 false）
-        if (this.options.autoLoading) {
-          this.safeRunStateEffect(() => this.decrementLoading(actionName, setState))
-        }
-        // 错误状态管理独立于 loading 开关：即使 autoLoading 关闭也应清除陈旧错误
-        this.safeRunStateEffect(() => this.clearError(actionName, setState))
+        const result = await action.apply(receiver, args)
+        // 清除 loading（引用计数归零才置 false）与陈旧错误
+        loader.settleCall(scope, setState, null)
 
         return result
       } catch (error) {
-        // 清除loading，设置error
-        if (this.options.autoLoading) {
-          this.safeRunStateEffect(() => this.decrementLoading(actionName, setState))
-        }
-        // 错误状态管理独立于 loading 开关：即使 autoLoading 关闭也应记录错误
-        this.safeRunStateEffect(() => this.setError(actionName, toError(error), setState))
+        // 清除 loading，设置 error
+        loader.settleCall(scope, setState, toError(error))
 
         throw error
       }
@@ -228,6 +280,43 @@ export class ActionLoader {
     // 声明包装函数、返回 Promise<unknown>，最后经 unknown 转成 T：包装前后运行时是同一个
     // 函数对象，类型层面只是把返回值的 resolve 值收敛为 unknown
     return wrapped as unknown as T
+  }
+
+  /**
+   * 取本次调用的配置快照与记账凭证
+   *
+   * @private
+   */
+  private captureCallScope(actionName: string): CallScope {
+    return {
+      generation: this.stateGeneration,
+      autoLoading: this.options.autoLoading,
+      loadingKey: this.getLoadingKey(actionName),
+      errorKey: this.getErrorKey(actionName),
+      errorDataKey: this.getErrorDataKey(actionName),
+    }
+  }
+
+  /**
+   * 一次调用的收尾：把派生状态写回宿主
+   *
+   * `error === null` 是成功路径（清错误），否则记录错误。错误状态管理独立于
+   * `autoLoading` 开关：即使关闭也应清掉/写上陈旧错误。
+   *
+   * 代际变了就直接返回：本调用的 increment 记录已被 `clear()`/换配置的 `setOptions()`
+   * 丢弃，而那两处都已给旧键补写复位值——再减一次只会把「重置之后新起的调用」的计数
+   * 吞掉、并在它仍在飞行时把共享键翻成 false。
+   *
+   * @private
+   */
+  private settleCall(scope: CallScope, setState: (key: string, value: unknown) => void, error: Error | null): void {
+    if (scope.generation !== this.stateGeneration) {
+      return
+    }
+    if (scope.autoLoading) {
+      this.safeRunStateEffect(() => this.decrementLoading(scope.loadingKey, setState))
+    }
+    this.safeRunStateEffect(() => this.writeError(scope, error, setState))
   }
 
   /**
@@ -256,8 +345,7 @@ export class ActionLoader {
    *
    * @private
    */
-  private incrementLoading(actionName: string, setState: (key: string, value: unknown) => void): void {
-    const key = this.getLoadingKey(actionName)
+  private incrementLoading(key: string, setState: (key: string, value: unknown) => void): void {
     const count = (this.loadingRefCounts.get(key) ?? 0) + 1
     this.loadingRefCounts.set(key, count)
     if (count === 1) {
@@ -270,9 +358,15 @@ export class ActionLoader {
    *
    * @private
    */
-  private decrementLoading(actionName: string, setState: (key: string, value: unknown) => void): void {
-    const key = this.getLoadingKey(actionName)
-    const count = Math.max(0, (this.loadingRefCounts.get(key) ?? 1) - 1)
+  private decrementLoading(key: string, setState: (key: string, value: unknown) => void): void {
+    const current = this.loadingRefCounts.get(key)
+    // 计数缺失 = 本次调用的 increment 记录已经不在（外部把注入的共享 Map 清了）。
+    // 此前这里是 `?? 1` 兜底：键缺失时 `?? 1` 与 `?? 0` 同样落到 count === 0，
+    // 它只掩盖了「这次调用没加过数」的事实，还会往一个本调用从没写过的键上补写 false
+    if (current === undefined) {
+      return
+    }
+    const count = Math.max(0, current - 1)
     this.loadingRefCounts.set(key, count)
     if (count === 0) {
       setState(key, false)
@@ -280,45 +374,49 @@ export class ActionLoader {
   }
 
   /**
-   * 设置error
+   * 回滚一次 increment（`setState` 抛错时），只退计数不写状态
    *
    * @private
-   * @param {string} actionName - Action名称
-   * @param {Error | null} error - 错误对象或null
-   * @param {(key: string, value: unknown) => void} setState - 设置状态的函数
    */
-  private setError(actionName: string, error: Error | null, setState: (key: string, value: unknown) => void): void {
-    const errorKey = this.getErrorKey(actionName)
-    const errorDataKey = this.getErrorDataKey(actionName)
-
-    this.errors.set(errorKey, error)
-    setState(errorKey, error)
-
-    if (error) {
-      // 单次构建 errorData：避免双重构建产生两个内容相同但引用不同的对象，
-      // 且两处 Date.now() 调用可能产生不一致的时间戳
-      const errorData = {
-        message: error.message,
-        stack: error.stack,
-        timestamp: Date.now(),
-      }
-      this.errorData.set(errorDataKey, errorData)
-      setState(errorDataKey, errorData)
+  private releaseLoadingSlot(key: string): void {
+    const current = this.loadingRefCounts.get(key)
+    if (current === undefined) {
+      return
+    }
+    const count = current - 1
+    if (count <= 0) {
+      this.loadingRefCounts.delete(key)
     } else {
-      this.errorData.delete(errorDataKey)
-      setState(errorDataKey, null)
+      this.loadingRefCounts.set(key, count)
     }
   }
 
   /**
-   * 清除error
+   * 写 error / errorData
+   *
+   * 键取自调用开始时的快照（{@link CallScope}），不在这里重算：中途 `setOptions()`
+   * 换过键名的话，重算会让「按旧键写的账」跑到新键上去补一笔，而新键属于切换之后的调用。
    *
    * @private
-   * @param {string} actionName - Action名称
-   * @param {(key: string, value: unknown) => void} setState - 设置状态的函数
    */
-  private clearError(actionName: string, setState: (key: string, value: unknown) => void): void {
-    this.setError(actionName, null, setState)
+  private writeError(scope: CallScope, error: Error | null, setState: (key: string, value: unknown) => void): void {
+    this.errors.set(scope.errorKey, error)
+    setState(scope.errorKey, error)
+
+    if (error) {
+      // 单次构建 errorData：避免双重构建产生两个内容相同但引用不同的对象，
+      // 且两处 Date.now() 调用可能产生不一致的时间戳
+      const errorData: ActionErrorData = {
+        message: error.message,
+        stack: error.stack,
+        timestamp: Date.now(),
+      }
+      this.errorData.set(scope.errorDataKey, errorData)
+      setState(scope.errorDataKey, errorData)
+    } else {
+      this.errorData.delete(scope.errorDataKey)
+      setState(scope.errorDataKey, null)
+    }
   }
 
   /**
@@ -395,7 +493,7 @@ export class ActionLoader {
    * 获取error data
    *
    * @param {string} actionName - Action名称
-   * @returns {unknown} 错误数据，包含message、stack、timestamp
+   * @returns {ActionErrorData | undefined} 错误数据（message/stack/timestamp），无错误时 undefined
    *
    * @example
    * ```typescript
@@ -406,7 +504,7 @@ export class ActionLoader {
    * }
    * ```
    */
-  getErrorData(actionName: string): unknown {
+  getErrorData(actionName: string): ActionErrorData | undefined {
     return this.errorData.get(this.getErrorDataKey(actionName))
   }
 
@@ -504,9 +602,13 @@ export class ActionLoader {
   /**
    * 丢弃内部记账（store 侧的复位由 `resetDerivedState` 负责）
    *
+   * 代际同时自增：进行中的调用据此认出自己的 increment 记录已不在，结算时不再改任何
+   * 状态键（见 {@link CallScope}）。
+   *
    * @private
    */
   private clearInternalRecords(): void {
+    this.stateGeneration += 1
     this.loadingRefCounts.clear()
     this.errors.clear()
     this.errorData.clear()

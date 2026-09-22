@@ -8,11 +8,13 @@ describe('storage.remove 的失败兜底', () => {
   const originalWx = (globalThis as any).wx
 
   afterEach(() => {
-    (globalThis as any).wx = originalWx
+    const g = globalThis as any
+    g.wx = originalWx
   })
 
   it('底层 removeStorageSync 抛错时只记日志不外抛', () => {
-    (globalThis as any).wx = {
+    const g = globalThis as any
+    g.wx = {
       removeStorageSync: () => {
         throw new Error('remove boom')
       },

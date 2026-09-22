@@ -4,6 +4,19 @@
 
 /**
  * 性能指标类型
+ *
+ * 这份联合比内置插桩实际产出的标签更宽，按「谁会写它」分两组
+ * （产标签的唯一内置路径是 `src/plugins/performance/analyzerPlugin.ts` 里的 `monitor.start(...)`）：
+ *
+ * - 内置插桩产出：`'setState'`、`'patch'`、`'replaceState'`、`'dispatch'`、`'getter'`。
+ *   接内置监控器时，`getMetricsByType(type)` 只在这五个键上能看到真实流量。
+ * - 内置插桩**不**产出，留给自定义上报：`'notify'`、`'subscribe'`、`'plugin'`、`'state-update'`。
+ *   `PerformanceMonitor.record` 是公开入口，消费者可自行按这些维度写入并据此过滤；
+ *   类型不收窄正是为了放行这种自定义标签，别把它们当成内置一定会给的东西。
+ *
+ * `'state-update'` 与 `'setState'` 不是同一个桶，别混用：前者是「一次状态更新」的逻辑分类
+ * （与 `src/types/error.ts` 的 `OperationType` 同名成员同一口径），后者是 `setState()`
+ * 这次调用的计时。按类型统计时它们是两个独立分组，内置路径只会写后者。
  */
 export type MetricType = 'setState' | 'patch' | 'replaceState' | 'dispatch' | 'getter' | 'notify' | 'subscribe' | 'plugin' | 'state-update'
 
@@ -29,15 +42,36 @@ export interface PerformanceMetrics {
 
 /**
  * 性能选项
+ *
+ * 数值域刻意不在类型上收窄（品牌类型/区间类型会把公开签名变成会报错的形状），
+ * 因此**归一化是实现层的义务**：越界值不会编译报错、也不会抛错，只会静默降级。
+ * 内置 `PerformanceMonitor` 在构造与 `setOptions` 两处都按下面的口径夹过
+ * （见 `src/core/performance/PerformanceMonitor.ts` 的三个 `normalize*`），
+ * `MetricsCollector` 的环形缓冲也按同一口径规范化 `maxSize`；自定义实现若不做归一，
+ * 表现如各条注释所述。
  */
 export interface PerformanceOptions {
-  /** 采样率（0-1） */
+  /**
+   * 采样率（0-1）
+   *
+   * 未夹取值时 > 1 等于全采样、负数与 `NaN` 让留存判据 `Math.random() < sampleRate` 恒假
+   * （一条都不留，而调用方以为自己在监控）。内置实现夹到 `[0, 1]`，非有限值回退默认 1。
+   */
   sampleRate?: number
-  /** 超过阈值（毫秒）记录 */
+  /**
+   * 超过阈值（毫秒）记录
+   *
+   * `NaN` 会让 `duration > threshold` 恒假、预警静默失效；负值等价于 0。内置实现夹到 `>= 0`。
+   */
   threshold?: number
   /** 自定义日志记录器 */
   logger?: (metrics: PerformanceMetrics) => void
-  /** 最大记录数量 */
+  /**
+   * 最大记录数量
+   *
+   * 环形缓冲按整数下标运算：小数/负数会取到空洞下标（静默丢数据或无界增长）。
+   * 内置实现归一为「有限、非负、整数」，非有限值回退默认（监控器 1000 / 采集器 10000）。
+   */
   maxSize?: number
   /** 是否启用内存监控 */
   trackMemory?: boolean
@@ -91,10 +125,9 @@ export interface PerformanceMonitor {
   /**
    * 获取所有指标
    *
-   * 契约：返回**快照**——实现不得把内部指标数组（或其切片）直接交出去，调用方拿到后可自由
-   * 排序/过滤而不污染后续 `getStats()`。`PerformanceMonitor.getMetrics` 目前是逐元素复制
-   * （浅拷贝数组仍共享元素，改 `m.duration` 会写脏内部数据）；`MetricsCollector.getAll` 只复制
-   * 数组、元素仍为原引用，属已知差异。
+   * 契约一句话：**交出去的是独立副本**——数组是新的，元素也是新的（`{ ...metric }`），
+   * 调用方排序、过滤、改写返回对象（含 `m.duration`）都不会写脏内部数据，
+   * 后续 `getStats()` 仍看到原样。实现若只复制数组而共享元素，就不满足本契约。
    *
    * 返回类型刻意保持可变数组：本接口并未随包发布（`core/performance/index.ts` 只导出
    * `PerformanceMetrics/Options/Stats/MetricType` 与本模块的实现类），公开面是那个类的方法签名，

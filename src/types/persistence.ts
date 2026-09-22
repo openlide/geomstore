@@ -39,11 +39,17 @@ export interface PersistenceOptions<S extends State = State> {
   key?: string | ((storeName: string) => string)
   /** 存储后端 */
   storage?: StorageBackend
-  /** 状态过滤器 */
+  /**
+   * 状态过滤器：决定哪些键落盘。
+   *
+   * **保存与恢复两条路径都会套用**（`src/plugins/builtin.ts`：落盘前 `filter(state)`，
+   * 恢复时对读出的状态再 `filter(parsedState)` 才 `$patch`），所以它同时是「写出的子集」
+   * 和「允许被恢复回来的子集」——只在前一条路径生效的直觉是错的。
+   */
   filter?: (state: S) => Partial<S>
   /** 状态验证器（恢复前校验，返回 false 则拒绝恢复） */
   validate?: (state: unknown) => state is S
-  /** 是否恢复状态 */
+  /** 是否在插件安装时恢复已持久化的状态（默认 `true`；置为 `false` 则只落盘、不回填状态） */
   restore?: boolean
   /**
    * 防抖延迟（毫秒），默认 0（每次变更立即落盘）。

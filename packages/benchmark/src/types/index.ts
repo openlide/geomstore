@@ -1,9 +1,10 @@
 /**
- * @geomstore/benchmark - 基准测试类型定义
+ * @openlide/geomstore-benchmark - 基准测试类型定义
  */
 
 export type {
   State,
+  DeepReadonly,
   CacheStats,
   StoreAction,
   ActionMap,
@@ -404,7 +405,13 @@ export interface BenchmarkUtilsContract {
   /** 测量执行时间 */
   measureTime<T>(fn: () => T): { result: T; duration: number }
 
-  /** 测量内存使用 */
+  /**
+   * 测量内存使用
+   *
+   * 前后各强制一次 GC（`globalThis.gc()`），因此**只有在 Node 带 `--expose-gc` 时才是干净的堆增量**；
+   * 无该 flag 时 GC 请求被静默忽略，读到的是采样时刻的 heapUsed 差值，含未回收的临时分配，
+   * 只能作相对比较、不能当绝对泄漏量。
+   */
   measureMemory<T>(fn: () => T): { result: T; memoryBefore: number; memoryAfter: number }
 
   /** 生成测试数据 */

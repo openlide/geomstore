@@ -19,7 +19,8 @@ describe('PerformanceMonitor', () => {
 
       expect(typeof timestamp).toBe('number')
     } finally {
-      (globalThis as any).wx = originalWx
+      const g = globalThis as any
+      g.wx = originalWx
     }
   })
 
@@ -575,7 +576,8 @@ describe('计时单位契约（_getTimestamp 恒返回毫秒）', () => {
   const originalWx = (globalThis as any).wx
 
   afterEach(() => {
-    (globalThis as any).wx = originalWx
+    const g = globalThis as any
+    g.wx = originalWx
   })
 
   /** 用受控毫秒时钟替换 wx.getPerformance().now() */

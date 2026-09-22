@@ -70,13 +70,17 @@ function installAppLifecycleHooks(): void {
     const now = Date.now()
 
     for (const handler of [...backgroundSyncHandlers]) {
+      // 回调重入：上一个 handler 的 onForeground / refreshData 副作用可能注销掉
+      // 快照里尚未遍历到的条目（如登出另一个账号）。快照不再反映现状，
+      // 以注册表当前下标为准：-1 即已注销，本轮不得再回调
+      const currentIndex = backgroundSyncHandlers.indexOf(handler)
+      if (currentIndex === -1) continue
       // 防御：Store 被外部直接销毁而未注销时，跳过并自清理，
       // 避免 dispatch 因 destroyed 检查抛错中断 App.onShow 生命周期
       if (handler.store.destroyed) {
-        const index = backgroundSyncHandlers.indexOf(handler)
-        if (index !== -1) {
-          backgroundSyncHandlers.splice(index, 1)
-        }
+        // 上方取位已证明它仍在注册表中，且两次语句之间没有可重入的回调，
+        // 再查一次并保留 -1 分支只会留下永远走不到的死代码
+        backgroundSyncHandlers.splice(currentIndex, 1)
         continue
       }
 
@@ -112,6 +116,8 @@ function installAppLifecycleHooks(): void {
 
   const runBackgroundChecks = (): void => {
     for (const handler of [...backgroundSyncHandlers]) {
+      // 与前台同口径：onBackground 回调里注销的处理器不得在本轮继续被调用
+      if (!backgroundSyncHandlers.includes(handler)) continue
       handler.lastActiveTime = Date.now()
       try {
         handler.onBackground?.()
@@ -122,6 +128,15 @@ function installAppLifecycleHooks(): void {
   }
 
   const wrappedApp = function (this: unknown, options: Record<string, unknown> = {}): unknown {
+    // 默认参数只挡 `undefined`：`App(null)` / `App('x')` / `App(123)` 会让 options 非空但
+    // 不是对象，下一行的属性读取即抛 TypeError，`options.onShow = ...` 与 defineProperty
+    // 在严格模式（ESM）下同样抛错——包装器把一次本来会被基础库忽略的调用变成了
+    // App 启动失败。非对象实参一律原样透传，不做任何包装。
+    const rawOptions = options as unknown
+    if (rawOptions === null || typeof rawOptions !== 'object') {
+      return originalApp.call(this, rawOptions as Record<string, unknown>)
+    }
+
     // 同一份配置二次进入（宿主缓存 config、热重载、测试重复调用全局 App）：
     // 回调已是本包装产物，直接透传，避免叠加包装导致检查按轮数翻倍执行
     // （symbol 键需显式走 Record<symbol, unknown> 视角：options 的声明类型只有字符串索引）
@@ -135,14 +150,24 @@ function installAppLifecycleHooks(): void {
     const userOnShow = typeof options.onShow === 'function' ? (options.onShow as (this: unknown, ...args: unknown[]) => void) : undefined
     const userOnHide = typeof options.onHide === 'function' ? (options.onHide as (this: unknown, ...args: unknown[]) => void) : undefined
 
-    // 先执行时效性检查再调用用户回调，保证切前台时状态刷新优先
-    options.onShow = function (this: unknown, ...args: unknown[]): void {
-      runForegroundChecks()
-      userOnShow?.apply(this, args)
-    }
-    options.onHide = function (this: unknown, ...args: unknown[]): void {
-      runBackgroundChecks()
-      userOnHide?.apply(this, args)
+    // 先执行时效性检查再调用用户回调，保证切前台时状态刷新优先。
+    // 注入与下方的标记写入必须同口径兜底：ESM 严格模式下给冻结对象、只读数据属性
+    // 或无 setter 的访问器赋值会直接抛 TypeError，此前只有 defineProperty 有 try/catch，
+    // 于是「不可写的 options」这一本已被容忍的场景反而让 App(options) 启动失败
+    try {
+      options.onShow = function (this: unknown, ...args: unknown[]): void {
+        runForegroundChecks()
+        userOnShow?.apply(this, args)
+      }
+      options.onHide = function (this: unknown, ...args: unknown[]): void {
+        runBackgroundChecks()
+        userOnHide?.apply(this, args)
+      }
+    } catch (error) {
+      // 赋值抛错的那一侧未被改写（另一侧若已改写则保留，其检查照常生效）；
+      // 这里只损失对应侧的时效性检查，配置本身照常交给宿主 App
+      logger.warn('BackgroundSync', 'options 的生命周期属性不可写（已冻结或为只读访问器），跳过该侧后台同步包装:', error)
+      return originalApp.call(this, options)
     }
     // 标记写入用 defineProperty + 不可枚举：options 会被框架与宿主 Object.keys/展开遍历，
     // 多出一个可枚举键会改变配置对象的可见形状。
@@ -204,15 +229,20 @@ export function unregisterBackgroundSync<S extends State = State>(store: Store<S
  * 多次调用不会重复包装全局 App：
  * 若全局 App 仍为本模块安装的包装函数，则仅注册新的处理器；
  * 若全局 App 已被外部替换（如测试重置），则重新安装包装，
- * 已有处理器注册表原样保留（新包装遍历同一注册表，清空只会丢弃其他调用方的注册）
+ * 已有处理器注册表原样保留（新包装遍历同一注册表，清空只会丢弃其他调用方的注册）；
+ * 若全局 App 尚不存在，处理器仍登记（注册表与包装相互独立），并告警提示
+ * 生命周期拦截要等 App 就位后安装
  */
 export function initBackgroundSync<S extends State = State>(config: BackgroundSyncConfig<S>): void {
   const { store, maxInactiveTime = DEFAULT_MAX_INACTIVE_MS, onForeground, onBackground } = config
 
   const globalObj = globalThis as { App?: unknown }
-  if (typeof globalObj.App !== 'function') return
-
-  if (globalObj.App !== installedAppWrapper) {
+  if (typeof globalObj.App !== 'function') {
+    // 注册表独立于 App 包装：这里照常登记，等 App 就位后由 ensureAppLifecycleHooks
+    // 或下一次 initBackgroundSync 安装包装即可生效。此前直接 return 会把处理器
+    // 静默丢弃，调用方看不出任何差别（非小程序宿主/测试环境尤易触发）
+    logger.warn('BackgroundSync', 'App 构造器当前不可用，处理器已登记但生命周期拦截要等 App 就位后安装')
+  } else if (globalObj.App !== installedAppWrapper) {
     // 全局 App 被外部替换：重装后的新包装遍历的仍是同一个模块级注册表，
     // 旧条目照样会被调用。此前在此清空整表，会静默丢弃其他调用方
     // （另一处 initBackgroundSync）已注册的处理器，且无任何重新注册的机会
