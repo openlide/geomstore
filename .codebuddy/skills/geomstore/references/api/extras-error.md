@@ -788,7 +788,7 @@ export declare class ErrorHandlerImpl {
      *
      * 当日志超过指定大小时，最旧的错误会被移除
      *
-     * @param {number} size - 最大日志数量（必须 >= 1；小数向下取整，非有限值回退默认 100）
+     * @param {number} size - 最大日志数量（必须 >= 1；小数向下取整，非有限值回退 {@link DEFAULT_MAX_LOG_SIZE}）
      *
      * @example
      * ```typescript

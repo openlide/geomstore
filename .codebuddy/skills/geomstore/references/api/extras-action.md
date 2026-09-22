@@ -360,11 +360,10 @@ export declare class ActionExecutor<A extends Actions = AsyncActions> {
  *
  * @example
  * ```typescript
+ * // 缺省键名即 loading / error / errorData，只在需要改名时才传
  * const loader = new ActionLoader({
- *   autoLoading: true,
- *   loadingKey: 'loading',
- *   errorKey: 'error',
- *   errorDataKey: 'errorData'
+ *   loadingKey: 'isBusy',
+ *   perActionKeys: true
  * })
  *
  * // 包装Action
@@ -416,9 +415,9 @@ export declare class ActionLoader {
      */
     private lastSetState;
     /**
-     * 配置选项
+     * 配置选项（由 {@link normalizeActionLoaderOptions} 补齐，缺省值见 {@link ACTION_LOADER_DEFAULTS}）
      * @private
-     * @type {Required<ActionLoaderOptions>}
+     * @type {NormalizedActionLoaderOptions}
      */
     private options;
     /**
@@ -929,6 +928,11 @@ export interface RetryDecoratorOptions {
  * - trailing：窗口内被抑制的调用在窗口结束时以最新参数补发（fire-and-forget，
  *   返回值不回传——节流场景调用方不应依赖被抑制调用的返回值）
  *
+ * 宿主生命周期收尾：窗口内挂起的补发由 `setTimeout` 驱动，宿主（小程序 Page /
+ * Component 实例）卸载后它仍会到期执行，最坏情况写入已销毁的 store。为此本模块
+ * 提供三个语义互斥的公开入口（`cancelThrottledCalls` / `flushThrottledCalls` /
+ * `disposeThrottledState`，见各自 JSDoc），在 `onUnload` / `detached` 里按宿主调用。
+ *
  */
 /**
  * 节流选项
@@ -947,6 +951,64 @@ export interface ThrottleDecoratorOptions {
      */
     assumeAsync?: boolean;
 }
+```
+
+### `cancelDebouncedCalls`
+
+```ts
+/**
+ * 取消宿主上挂起的防抖调用（**不执行**原方法）
+ *
+ * 每个被取消的调用返回的 Promise 以 `Error('[withDebounce] pending call was cancelled')`
+ * 拒绝（理由见 `cancelPendingCalls` 的注释：不结算会永久挂起调用方）。幂等——重复调用、
+ * 对没有挂起调用的宿主调用都是 no-op。
+ *
+ * @param host - 宿主（Page / Component 实例、类对象等）。基本类型 / null 时无从定位
+ *        状态，静默返回（与装饰器自身的降级口径一致）
+ * @param method - 只取消该名字的被装饰方法；省略时取消该宿主上所有防抖方法
+ *
+ * @example
+ * ```typescript
+ * class SearchPage {
+ *   @withDebounce(300)
+ *   async search(keyword: string) { return fetchSearch(keyword) }
+ *
+ *   onUnload() {
+ *     cancelDebouncedCalls(this) // 等待中的搜索不再发请求
+ *   }
+ * }
+ * ```
+ */
+export declare function cancelDebouncedCalls(host: unknown, method?: string | symbol): void;
+```
+
+### `cancelThrottledCalls`
+
+```ts
+/**
+ * 取消宿主上挂起的节流补发（**不执行**原方法）
+ *
+ * 用于宿主卸载点：窗口内被抑制、正等着补发的调用就此丢弃。幂等——重复调用、
+ * 对没有挂起调用的宿主调用都是 no-op；被抑制的那次调用当时返回的 Promise
+ * （若有）已在调用时刻以 `undefined` 结算，不受影响。
+ *
+ * @param host - 宿主（Page / Component 实例、类对象等）。基本类型 / null 时无从
+ *        定位状态，静默返回（与装饰器本身的降级口径一致）
+ * @param method - 只取消该名字的被装饰方法；省略时取消该宿主上所有节流方法
+ *
+ * @example
+ * ```typescript
+ * class ScrollPage {
+ *   @withThrottle(100)
+ *   onScroll(position: number) { this.store.patch(position) }
+ *
+ *   onUnload() {
+ *     cancelThrottledCalls(this) // 页面已销毁，挂起的补发不再执行
+ *   }
+ * }
+ * ```
+ */
+export declare function cancelThrottledCalls(host: unknown, method?: string | symbol): void;
 ```
 
 ### `createDecorator`
@@ -989,6 +1051,81 @@ export interface ThrottleDecoratorOptions {
  * ```
  */
 export declare function createDecorator(options?: DecoratorOptions): MethodDecorator;
+```
+
+### `disposeDebouncedState`
+
+```ts
+/**
+ * 释放宿主上的全部防抖状态（取消挂起调用 + 删除该宿主的状态表）
+ *
+ * 相当于 `cancelDebouncedCalls(host)` 之后再删掉该宿主的整张状态表：挂起队列、
+ * 定时器引用、方法槽位一并释放，此后若还有代码持有该宿主并调用被装饰方法，
+ * 会从零重新建状态。卸载点上想「一切从简」可以只调本函数。
+ *
+ * 与 `cancelDebouncedCalls` 一样对任何入参安全：宿主为基本类型 / null、
+ * 或本就没有防抖状态时都是 no-op（被取消的 Promise 同样以「已取消」拒绝）。
+ *
+ * @param host - 宿主
+ */
+export declare function disposeDebouncedState(host: unknown): void;
+```
+
+### `disposeThrottledState`
+
+```ts
+/**
+ * 释放宿主上的全部节流状态（取消挂起补发 + 清空窗口计时）
+ *
+ * 相当于 `cancelThrottledCalls(host)` 之后再删掉该宿主的整张状态表：窗口计时
+ * （`lastCallTime`）、异步观测标记（`sawPromise`）一并归零，此后若还有代码持有
+ * 该宿主并调用被装饰方法，会按「新窗口」重新计状态。卸载点上想「一切从简」可以
+ * 只调本函数，它比 cancel 多出的正是这份状态释放。
+ *
+ * 与 `cancelThrottledCalls` 一样对任何入参安全：宿主为基本类型 / null、
+ * 或本就没有节流状态时都是 no-op。
+ *
+ * @param host - 宿主
+ */
+export declare function disposeThrottledState(host: unknown): void;
+```
+
+### `flushDebouncedCalls`
+
+```ts
+/**
+ * 立即执行宿主上挂起的防抖调用（**至多一次**）
+ *
+ * 与 `cancelDebouncedCalls` 的区别是「现在就跑」而不是「丢弃」：适用于卸载前还想
+ * 把最后一次输入提交出去的场合。语义与延迟自然到期一致：
+ * - 一次调用只执行原方法一次，其挂起的全部 Promise 都按这次结果结算（合并语义不变）；
+ * - 没有挂起调用时不凭空执行原方法（再次 flush 因队列已空而是 no-op）；
+ * - 原方法失败仍按既有语义 reject 那些 Promise——调用方拿得到结果，不会漏成
+ *   unhandledRejection（未被处理的 rejection 与延迟自然到期时完全同构）。
+ *
+ * @param host - 宿主；基本类型 / null 时为 no-op
+ * @param method - 只立即执行该名字的被装饰方法；省略时覆盖该宿主上所有防抖方法
+ */
+export declare function flushDebouncedCalls(host: unknown, method?: string | symbol): void;
+```
+
+### `flushThrottledCalls`
+
+```ts
+/**
+ * 立即补发宿主上挂起的节流调用（**至多一次**）
+ *
+ * 与 `cancelThrottledCalls` 的区别是「执行」而不是「丢弃」：适用于卸载前还想把
+ * 最后一次输入/滚动位置落盘的场合。语义与窗口自然到期完全一致，因此：
+ * - 每个槽位只补发一次（补发后挂起参数即被清空，再次 flush 是 no-op）；
+ * - 没有挂起调用时不凭空执行原方法（只有被抑制过的调用才有补发资格）；
+ * - 补发是 fire-and-forget，其返回值不回传、失败就地 `console.error`，
+ *   不会把 rejection 漏成 unhandledRejection。
+ *
+ * @param host - 宿主；基本类型 / null 时为 no-op
+ * @param method - 只补发该名字的被装饰方法；省略时补发该宿主上所有挂起的节流调用
+ */
+export declare function flushThrottledCalls(host: unknown, method?: string | symbol): void;
 ```
 
 ### `withCache`
@@ -1047,6 +1184,11 @@ export declare function withCache(options?: CacheDecoratorOptions): MethodDecora
  * 导致同一装饰器装饰的所有方法/实例共享同一份状态（闭包陷阱）。
  * 现改为按宿主对象（this）隔离状态，每个实例拥有独立的定时器与 pending 队列。
  *
+ * 宿主生命周期收尾：等待期由 `setTimeout` 驱动，宿主（小程序 Page / Component 实例）
+ * 卸载后它仍会到期执行被装饰方法。为此本模块提供三个语义互斥的公开入口
+ * （`cancelDebouncedCalls` / `flushDebouncedCalls` / `disposeDebouncedState`），
+ * 在 `onUnload` / `detached` 里按宿主调用。
+ *
  */
 /**
  * 创建防抖装饰器
@@ -1063,6 +1205,11 @@ export declare function withCache(options?: CacheDecoratorOptions): MethodDecora
  *   @withDebounce(500)
  *   async search(query: string) {
  *     return await searchAPI(query)
+ *   }
+ *
+ *   detached() {
+ *     // 组件销毁：等待中的 search 调用以「已取消」结算，不再打接口
+ *     cancelDebouncedCalls(this)
  *   }
  * }
  *
@@ -1219,6 +1366,11 @@ export declare function withRetry(options?: RetryDecoratorOptions): MethodDecora
  *   // 纯 leading（旧行为）：窗口内的后续调用全部丢弃
  *   @withThrottle(100, { trailing: false })
  *   trackFirstHit(position: number) {}
+ *
+ *   detached() {
+ *     // 卸载时丢弃窗口内尚未补发的调用（也可用 flushThrottledCalls 立即补发一次）
+ *     cancelThrottledCalls(this)
+ *   }
  * }
  * ```
  */

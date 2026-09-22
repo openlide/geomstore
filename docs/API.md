@@ -19,7 +19,7 @@ import { createSnapshot } from '@openlide/geomstore/extras/snapshot'            
 | `@openlide/geomstore/extras` | 全部可选能力聚合 | 最大，仅调试/全都要用时 |
 | `@openlide/geomstore/extras/snapshot` | 快照引擎 | 按需 |
 | `@openlide/geomstore/extras/selector` | 选择器与组合器 | 按需 |
-| `@openlide/geomstore/extras/action` | ActionLoader / withLoading / 装饰器 | 按需 |
+| `@openlide/geomstore/extras/action` | ActionLoader / withLoading / 装饰器 / 防抖·节流的宿主收尾入口 | 按需 |
 | `@openlide/geomstore/extras/performance` | 性能监控与 analyzer 插件 | 按需 |
 | `@openlide/geomstore/extras/plugins` | 内置插件实现与存储后端 | 按需 |
 | `@openlide/geomstore/extras/error` | 错误类族 / 边界 / 恢复 / 监控 / 上报器 | 按需 |
@@ -315,14 +315,22 @@ class ActionLoader { constructor(options?: ActionLoaderOptions); wrap(fn, name, 
 withLoading(...)                      // loading 引用计数按 (宿主, loading 键) 集中
 class ActionExecutor { … }            // 异步 action 执行器
 class ActionUtils { … }               // 便捷工具（ActionUtilsOptions）
+
+cancelDebouncedCalls(host, method?)   / flushDebouncedCalls(host, method?)   / disposeDebouncedState(host)
+cancelThrottledCalls(host, method?)   / flushThrottledCalls(host, method?)   / disposeThrottledState(host)
+                                      // 防抖 / 节流挂起调用的宿主级收尾入口，见下方同名小节
 ```
 
 | `ActionLoaderOptions` | 默认 | 说明 |
 | --- | --- | --- |
 | `perActionKeys` | `false` | loading / error 键是否按 action 名后缀区分 |
+| `loadingKey` | `'loading'` | loading 状态键名（`perActionKeys: true` 时为 `${loadingKey}_${actionName}`） |
+| `errorKey` | `'error'` | 写入**错误对象本身**的键名（失败时为 `Error`，成功复位时为 `null`） |
+| `errorDataKey` | `'errorData'` | 写入 `{ message, stack, timestamp }`（`errorKey` 的可序列化形态，成功复位时为 `null`）的键名 |
 | `sharedLoadingCounts` | — | 共享引用计数表，**仅构造期读取**（`setOptions()` 会忽略它）；由 `withLoading` 内部注入，供跨 loader 实例集中引用计数，外部清空时按兜底值 1 递减、不出现负计数。改 `loadingKey` / `errorKey` / `errorDataKey` / `perActionKeys` 会先给派生键补写复位值再丢弃旧记账 |
 | `autoLoading` | `true` | 是否自动维护 loading |
-| `autoError` | `true` | 是否自动维护 error |
+
+> 上表的默认值是库内**单一来源**（`ACTION_LOADER_DEFAULTS` + `normalizeActionLoaderOptions`，未经 barrel 再导出、不是公开 API）：`ActionLoader` 构造器与 `withLoading` 的注册表分桶签名都从它派生。两侧曾各持一份字面量并漂移过，而签名桶决定「同一宿主上哪些被装饰方法共用一个 loader / 同一份 loading 引用计数」，漂移的后果是配置不同的装饰器落进同一桶（状态键互相覆盖）或该共享的被拆开（`loading` 被提前翻转）。
 
 `wrap` 的 `setState` 为 **`(key, value)` 两参数**签名。`ActionLoader.clear()` 会把 loading / error / errorData 派生键复位后再清内部记账（此前只清账、界面上残留 `loading: true`）。`ActionHistory.getHistory()` 返回的是**容器副本 + 共享条目**：数组本身可随意排序裁剪，条目按只读对待（改 `history[0].success` 会污染后续 `getStats()`）。
 
@@ -352,6 +360,70 @@ createDecorator(options?: DecoratorOptions)   // 自定义装饰器：{ before?,
 > `withTimeout(ms)` 在工厂阶段归一化：`0` / 负数 / `NaN` / `Infinity` 直接抛 `RangeError`（不等方法执行才炸），有限值截到 `2^31-1`；超时错误是普通 `Error`，`Timeout after <n>ms` 属稳定文案（改动即破坏性变更），按文案匹配时注意 `executeWithTimeout` 用的是 `Action timeout after <n>ms`。
 
 > `withDebounce` / `withThrottle` / `withCache` 按**宿主与方法**隔离状态，支持实例方法与静态方法。复用同一装饰器时，不同 Symbol 方法（即使 description 相同）以及与其字符串表示同名的方法不会串数据。异步判定基于函数原型比较，压缩后依然可靠。
+
+## 防抖 / 节流的宿主收尾入口
+
+```ts
+cancelDebouncedCalls(host: unknown, method?: string | symbol): void   // 丢弃挂起的防抖调用（不执行）
+flushDebouncedCalls(host: unknown, method?: string | symbol): void    // 立即执行一次（至多一次）
+disposeDebouncedState(host: unknown): void                            // 取消 + 释放该宿主的整张防抖状态表
+cancelThrottledCalls(host: unknown, method?: string | symbol): void   // 丢弃尚未发出的尾随补发
+flushThrottledCalls(host: unknown, method?: string | symbol): void    // 立即补发一次（至多一次）
+disposeThrottledState(host: unknown): void                            // 取消 + 释放该宿主的整张节流状态表
+```
+
+六个入口都在 `@openlide/geomstore/extras/action`（聚合入口 `@openlide/geomstore/extras` 同样给出）。
+
+| 入口 | 挂起的调用 | 留下的状态 | 什么时候用 |
+| --- | --- | --- | --- |
+| `cancel*` | **丢弃**，原方法不再执行 | 保留（节流仍按旧窗口计时判定后续调用） | 宿主已销毁，收尾写入没有意义 |
+| `flush*` | **立即执行且只执行一次**；无挂起调用时**不凭空执行**（队列已空，再次 flush 是 no-op） | 保留 | 卸载前还想把最后一次输入 / 滚动位置落盘 |
+| `dispose*` | 全部取消（等价于 `cancel*`） | **整张状态表删除**：节流连窗口计时与异步观测标记一起归零，防抖删掉该宿主的全部槽位 | 卸载点想「一切从简」，只调这一个 |
+
+- 三者都**幂等**：重复调用、对没有挂起调用的宿主调用都是 no-op。`method` 省略时覆盖该宿主上所有被装饰方法；传入时按方法名精确筛选（`Symbol` 键按**身份**匹配，不会因描述串相同而误命中其他方法）。宿主为基本类型 / `null` 时六个入口一律 no-op——与装饰器自身在该场景下的降级口径一致（状态无处存放，装饰器本来就退化为直接放行）。
+- **被取消的调用会收到什么**：防抖挂起的每个 Promise 以 `Error('[withDebounce] pending call was cancelled')` **拒绝**——不结算会让 `await` 方永久挂起；库在拒绝前先给每个挂起 promise 补一个 `catch` 处理器，那只消除全局未处理告警，真正 `await` / `.then` 的调用方**仍能看到**这条 rejection。节流**没有**挂起的 Promise：窗口内被抑制的那次调用在**调用时刻**就已返回 `undefined`（`async` 方法或 `assumeAsync: true` 时是 `Promise<undefined>`），`cancel` / `flush` 处理的只是尚未发出的尾随补发；补发是 fire-and-forget，失败就地 `console.error`（与窗口自然到期完全同口径），不会漏成 unhandledRejection，也拿不到返回值。
+- **为什么入口以宿主为参数，而不是装饰期发句柄**：装饰器表达式在类定义期求值后即被丢弃，`@withDebounce(300)` 的产物在 Page / Component 实例上无从寻址，卸载点手里只有 `this`。状态表因此从工厂闭包上提到模块级 `WeakMap<宿主, Map<slotKey, 状态>>`——`slotKey` 是每个被装饰方法一个 `Symbol`，隔离度与旧实现等价；键是宿主本身，宿主被回收时整条状态连带消失，不是一张需要手动清理的进程级强引用表。
+- **不调会怎样**：排程中的定时器回调持有宿主与状态直到窗口 / 延迟到期，期间宿主不可被回收，到点后它仍会调用被装饰方法——通常是往一个已销毁的 Store 里写，得到 `Cannot call … on a destroyed Store`。宿主生命周期短于窗口 / 延迟时，收尾调用不是可选项。
+- **与 `withCache` / `withRetry` 的差异**：那两者**没有**对应入口。`withCache` 的缓存表随装饰器实例存活（无 `dispose` 口），`withRetry` 的退避等待定时器无取消口（宿主卸载后在途重试仍会跑到次数用尽），理由与后续议题见 [CHANGELOG](../CHANGELOG.md) 的「Wave E 未收口的四项」。
+
+**页面（`onUnload`）**——`withPageStore` 的绑定清理与它不冲突：用户钩子先执行，绑定随后在 `finally` 中清理，所以收尾调用放在钩子**同步段**：
+
+```ts
+class SearchPage {
+  @withDebounce(300)
+  async search(keyword: string) {
+    return fetchSearch(keyword)          // 写 store：宿主销毁后不该再发生
+  }
+
+  onUnload() {
+    // 等待中的搜索一律以「已取消」结算，不再打接口、不再写已销毁的 store
+    cancelDebouncedCalls(this)
+    // 想在离开前把最后一次输入提交出去，就改用 flushDebouncedCalls(this)
+    // 不打算区分语义时，disposeDebouncedState(this) 一句搞定（取消 + 释放状态表）
+  }
+}
+```
+
+**组件（`lifetimes.detached`）**——同一宿主上的多个被装饰方法一次收尾：
+
+```ts
+class ScrollComponent {
+  @withThrottle(100)
+  onScroll(position: number) { this.store.dispatch('setScroll', position) }
+
+  @withThrottle(200)
+  persistPosition(position: number) { this.store.dispatch('save', position) }
+
+  lifetimes = {
+    detached() {
+      disposeThrottledState(this)                  // 两个方法的挂起补发与窗口计时一起清掉
+      // 只想丢一个方法的挂起调用：cancelThrottledCalls(this, 'onScroll')
+    },
+  }
+}
+```
+
+入口定位的是**调用被装饰方法时的 `this`**（即宿主实例），不是装饰期那个类对象：因此卸载钩子里传 `this` 就能命中状态，手工套用装饰器（`withDebounce(300)(proto, 'search', Object.getOwnPropertyDescriptor(proto, 'search'))`）同样按实例分桶、无需额外句柄。
 
 ---
 
@@ -388,13 +460,18 @@ class WxStorageBackend implements StorageBackend
 | `PersistenceOptions` | 默认 | 说明 |
 | --- | --- | --- |
 | `key` | Store 名 | 存储键 |
-| `storage` | 自动探测 `wx` 同步存储，否则内存 | **必须同步且三方法齐备**：`{ getItem, setItem, removeItem }`。缺任一方法在 `store.use()` 安装期即抛 `TypeError`（不再静默回落到别的后端）；返回 Promise 的实现在恢复 / 落盘 / 清理三条路径上各自明确报错（`wx` 适配器同样受检，Taro / uni-app 类 Promise 版 polyfill 下不再变成未处理 rejection） |
+| `storage` | 内置 `WxStorageBackend`（wx 三方法齐备时），否则内存 | **必须同步且三方法齐备**：`{ getItem, setItem, removeItem }`。缺任一方法在 `store.use()` 安装期即抛 `TypeError`（不再静默回落到别的后端）；返回 Promise 的实现在恢复 / 落盘 / 清理三条路径上各自明确报错（内置 wx 后端同样受检，Taro / uni-app 类 Promise 版 polyfill 下不再变成未处理 rejection）。**不传时的默认后端就是 `new WxStorageBackend()`**——两条路径共用一份实现，不再各写一套归一化与守卫 |
 | `filter` | 全量 | `(state) => Partial<state>`，指定落盘子集（未被持久化的键保留初始值） |
 | `validate` | — | 恢复前的数据校验 |
 | `debounce` | `0` | 写入防抖（毫秒）；卸载时会**同步补写**窗口内最后一次变更 |
 | `clearOnUninstall` | `false` | 为 `true` 时卸载改为清理存储（丢弃待写数据）；删除失败不再被吞掉，会记 `console.error` 并 `emit('onError', …, 'persistence')` |
 
-`WxStorageBackend` 封装 `wx.getStorageSync` / `setStorageSync` / `removeStorageSync`：`getStorageSync` 对缺失键返回**空串**，故 `getItem` 只把非空字符串视为有数据（`''` 与 `undefined` 同按「键无数据」处理）；三个方法的存储故障一律记录后**抛错**交给调用方（`getItem` 返回 `null` 只代表无数据，不代表读失败——混用会让下一次落盘覆盖真实数据）。不传 `storage` 且检测不到 `wx` 同步存储时降级为内存存储：开发模式 `console.warn`，**生产模式改经 `onError` 钩子上报**（`emit('onError', error, 'persistence')`），持久化静默失效从此可被监控发现。
+`WxStorageBackend` 封装 `wx.getStorageSync` / `setStorageSync` / `removeStorageSync`：`getStorageSync` 对缺失键返回**空串**，故 `getItem` 只把**非空字符串**视为有数据（`''`、`undefined` 与非字符串载荷一律按「键无数据」处理）；三个方法的返回值都过异步守卫（返回 Promise 即报错），存储故障一律记录后**抛错**交给调用方（`getItem` 返回 `null` 只代表无数据，不代表读失败——混用会让下一次落盘覆盖真实数据）。
+
+- **它是默认后端**：`persistencePlugin` 不传 `storage` 时用的就是这个类（与显式 `new WxStorageBackend()` 同一份实现）。此前默认路径走 `builtin.ts` 里另一段内联适配器，两侧口径并不相同，收口后可观测差异有四条：① `''` 归一为 `null`（旧适配器把 `''` 当成有数据送去 `JSON.parse`，恢复路径报一条解析错误）；② 非字符串载荷按无数据处理（旧适配器 `as string` 原样带出）；③ 报错现在额外带一条 `[WxStorage] <方法> error:` 日志（旧适配器只抛不记）；④ 可用性判定从「有 `getStorageSync`」收紧为**三方法齐备**。对**显式**传 `new WxStorageBackend()` 的调用方，①② 本来就成立，新增的是 Promise 守卫：该类的 `getItem` 此前会把 Promise 洗成 `null`＝「有数据误判无数据」，下一次落盘即覆盖真实数据，`setItem` / `removeItem` 则完全不看返回值。
+- **可用性判定收紧的后果**：只有读方法、没有写方法的残缺 `wx`（部分兼容层）不再被判定为可用后端——那种环境过去每次落盘抛 `TypeError`，现在直接走内存降级并给出一次告警信号。
+- 检测不到可用的 wx 同步 API 时降级为内存存储（重启即失）：开发模式 `console.warn`，**生产模式改经 `onError` 钩子上报**（`emit('onError', error, 'persistence')`），持久化静默失效从此可被监控发现。降级文案为 `[GeomStore][persistence] 未检测到可用的 storage 后端（非微信环境、wx 同步 API 不齐备，且未传入 storage），降级为内存存储，持久化不生效`——按文案匹配日志的调用方注意括号里新增了「wx 同步 API 不齐备」。
+- **实现位置**：类住在 `src/plugins/WxStorageBackend.ts`（此前在 `src/types/persistence.ts`），与唯一消费方 `persistencePlugin` 同层；`src/types/persistence.ts` 只留 `StorageBackend` / `PersistenceOptions` 两个契约。**公开子入口未变**：`@openlide/geomstore/extras/plugins` 与 `@openlide/geomstore/extras` 上的 `WxStorageBackend` 名字与形状都一致，无需改任何 import。
 
 `timeTravelPlugin(options?)` 另注意：`importHistory()` 会跳过 `state` 为数组或自持 `__proto__` 自有键的畸形条目（此前入栈后 `goTo` / `undo` 会在核心抛错）；`undo` / `redo` 在回放成功后才推进索引。
 
@@ -422,7 +499,7 @@ withErrorBoundary(boundary, fn?)
 - `fallback` 计算函数自身抛错时**重抛原始错误**（不丢失现场），且不重复触发 `onError`（`onError` 已就原始错误触发）
 - 非 `Error` 的抛出值（`throw 'str'` / `throw 42`）在入口处归一化为 `Error` 后再写入 `errorHistory`、传给 `onError` 与 `fallback`；**重抛时仍是原始值**，捕获方语义不变
 - 显式 `recoverable: true` 而未配 `fallback`（或 `setFallbackState(undefined)`）时 `execute` / `executeAsync` 返回 `undefined`，返回类型为 `T | F | undefined`
-- 错误历史上限 100；`getErrorHistory()` 可读
+- 错误历史上限 100：取库内单一常量 `DEFAULT_MAX_LOG_SIZE`，与 `ErrorHandler.errorLog` 的上限（及其 `setMaxLogSize` 非有限值的回退值）同源同值，不再两处各写一份。`ErrorBoundary` 自身的上限**不对外开放**，`ErrorHandler.setMaxLogSize` 也只影响 `errorLog`；`getErrorHistory()` 可读
 
 ## ErrorRecovery
 
@@ -512,6 +589,7 @@ createEnterpriseApp(config): Plugin
 | `bindMappings` 等底层绑定工具 | **不在主入口**，从 `@openlide/geomstore/integrations` 引入。日常优先用 `withPageStore` / `withComponentStore` / `withAppStore` |
 | `SnapshotManager.compareSnapshots` | **实例方法**（实现是无状态纯函数），需要实例或自备 `SnapshotManager` |
 | `extras` 聚合入口 | 会把所有可选能力拉进产物，只有调试或确实全都要用时才引入 |
+| 防抖 / 节流的挂起调用 | 窗口 / 延迟未到期就卸载宿主时，定时器到点仍会调用被装饰方法（并拖住宿主不被回收）。请在 `onUnload` / `detached` 调 `cancel*`（丢弃）/ `flush*`（立即执行一次）/ `dispose*`（取消并释放状态），见第四节「防抖 / 节流的宿主收尾入口」 |
 | `import type` | 类型（`SelectorOptions`、`MonitoringConfig`、`SnapshotResult` 等）请用 `import type` 引入，避免无谓的运行时代码 |
 | 深链内部源码路径 | 可选能力的**实现**已移到 `src/extras/**`（快照 / 选择器 / Action 增强）；仅入口在 `extras/*` 的还有 `cache` / `hooks` / `performance`（实现保留在 `core`） |
 

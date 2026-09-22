@@ -59,6 +59,8 @@
 - `WxStorageBackend`
 - `analyzerPlugin`
 - `builtinPlugins`
+- `cancelDebouncedCalls`
+- `cancelThrottledCalls`
 - `createAnalyzerPlugin`
 - `createDecorator`
 - `createEnterpriseApp`
@@ -66,6 +68,10 @@
 - `createSnapshotAsync`
 - `createUserStore`
 - `devtoolsPlugin`
+- `disposeDebouncedState`
+- `disposeThrottledState`
+- `flushDebouncedCalls`
+- `flushThrottledCalls`
 - `initBackgroundSync`
 - `initHotUpdate`
 - `loggerPlugin`

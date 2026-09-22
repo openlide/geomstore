@@ -37,7 +37,7 @@
 
 - `core` **不得**反向依赖 `extras` / `plugins`（钩子与插件运行时的契约放在 `core/hooks` + `types/plugin.ts`，plugin 实现只依赖契约）
 - `extras` 可以依赖 `core`；`extras/*` 之间尽量不互相依赖
-- 契约统一放 `src/types`，实现层不重复定义公共类型
+- 契约统一放 `src/types`，实现层不重复定义公共类型；`src/types/**` **只放类型与接口**，不得有运行时导出（类 / 函数 / 常量）。带 `wx.*` I/O 的 `WxStorageBackend` 曾是唯一违反者，现已迁到 `src/plugins/WxStorageBackend.ts`（公开子入口不变）：运行时实现住在那里会让「`types/*` 可被 `import type` 整体擦除」的假设失效，`verbatimModuleSyntax` 的消费者无法把 `types/*` 当纯类型看
 
 ## 3. 目录结构与职责
 
@@ -68,7 +68,7 @@ src/
   plugins/        4 文件        builtin（logger/persistence/devtools）/ WxStorageBackend / globalRegistry
     devtools/     2 文件        timeTravelPlugin
     performance/  2 文件        analyzerPlugin
-  types/         10 文件        公共契约（store/action/selector/error/…）
+  types/         10 文件        公共契约（store/action/selector/error/…）：只有类型与接口，无运行时导出
 ```
 
 ## 4. 核心模块
@@ -91,7 +91,7 @@ src/
 | `pluginSupport.ts` | 插件安装与回滚、钩子接线 |
 | `types.ts` / `utils.ts` / `index.ts` | 局部类型、内部工具与出口 |
 
-**写入追踪**：`setState` / `$patch` / `$replaceState` 推进版本并更新缓存；Action 可写代理对对象 / 数组 / Map / Set 的变异递增计数并标记顶层脏键，dispatch 收尾及异步结算时刷新键缓存（包含已删除键），整体替换则清空缓存后按新状态回填。代理按对象复用：归属关系按需求构建一次索引，标量写入 O(1) 查表；仅在结构变更（增删键、写入对象值、长度变化）或状态版本被外部推进时失效重建，因此覆盖未读取的别名、循环与重新挂接，逐项更新列表不再退化为平方级遍历。归属查找与构建都不求值访问器。类实例与类型化数组同样经代理包装：属性/元素写入正常标记，读取时方法绑定到原始接收者（`#private` 字段与内部槽位可用），实例方法调用保守标记所属键。Date/RegExp/WeakMap/WeakSet 仍保留原引用、内部变异不跟踪，应显式替换值。
+**写入追踪**：`setState` / `$patch` / `$replaceState` 推进版本并更新缓存；Action 可写代理对对象 / 数组 / Map / Set 的变异递增计数并标记顶层脏键，dispatch 收尾及异步结算时刷新键缓存（包含已删除键），整体替换则清空缓存后按新状态回填。代理按对象复用：归属关系索引（`对象 → 可达它的顶层键`）覆盖未读取的别名与环，构建与查找都不求值访问器。索引**增量维护**，按一次写入对被索引图的影响分三档：纯新增边只把容器归属键并入新子树（子树里已覆盖同批键的节点直接剪枝）、图不变的写入（标量改写、`Set` 重复 `add`、数组 `length` 改写未删掉尾部对象）原样复用索引、无法廉价判定的**删边**（覆盖已有对象值、`delete` 对象值键、`Map#set` 覆盖值已是对象的键、`Map` / `Set` 的 `delete` / `clear`、覆盖自有访问器、会自行改状态的实例方法调用）与状态版本被外部推进时退化为全量重建。退化是有意的保守：删边后旧子树是否仍可达判不准，猜错的后果是漏报，而漏报等于变更对页面永久不可见。类实例与类型化数组同样经代理包装：属性/元素写入正常标记，读取时方法绑定到原始接收者（`#private` 字段与内部槽位可用），实例方法调用保守标记所属键。Date/RegExp/WeakMap/WeakSet 仍保留原引用、内部变异不跟踪，应显式替换值。
 
 ### 4.2 `core/cache`：LRUCache
 
@@ -160,7 +160,7 @@ Page 的 `onUnload` / Component 的 `lifetimes.detached` 先调用用户钩子�
 | 插件 | 说明 |
 | --- | --- |
 | `loggerPlugin` | 打印 dispatch 名称、参数、耗时 |
-| `persistencePlugin(options)` | 状态持久化；**后端必须同步且三方法齐备**（安装期校验，缺项抛 `TypeError`）；卸载时同步补写防抖窗口内容；生产降级信号走 `onError` |
+| `persistencePlugin(options)` | 状态持久化；**后端必须同步且三方法齐备**（安装期校验，缺项抛 `TypeError`）；不传 `storage` 时的默认后端就是同目录的 `WxStorageBackend`（要求 `wx` 三方法齐备，否则降级内存存储）；卸载时同步补写防抖窗口内容；生产降级信号走 `onError` |
 | `devtoolsPlugin` / `timeTravelPlugin` | 调试与时间旅行（卸载带身份守卫，只清理属于本实例的全局项） |
 | `analyzerPlugin` | 接入 dispatch / setState / getter 计时；`onError` 精确清理配对栈 |
 

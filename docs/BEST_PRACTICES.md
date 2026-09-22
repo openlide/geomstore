@@ -49,6 +49,7 @@
 - **异步 action 的收尾放在 action 内**：通知语义规定「同步段不单独通知、结算时补发一次」，把 `await` 之后的写入也放进同一个 action，就能得到恰好一次通知。
 - **失败就抛**：`dispatch` 会把错误抛给调用方，同时触发 `onError` 钩子（监控插件据此上报）。吞掉错误会让上层无法区分「成功但无数据」与「失败」。
 - **Action 内可直接变异 `this.state`**：对象 / 数组 / Map / Set 的写入在两种通知模式下都标记顶层脏键；Date 等其他内建对象的内部变异不被跟踪，改用 `setState` / `$patch` 替换值。不要把 Action 状态代理带出执行范围继续写入。
+- **长列表优先「改叶子值 / 追加」，别逐个原地换对象**：脏键归属索引对新增边只做增量登记、对 `list[i].field = x` 这类标量写入是 O(1) 查表，而 `list[i] = { ...新对象 }`（覆盖一个值已是对象的位置）属于「删边」，无法廉价判定旧对象是否仍可达，每次都会触发一次全量重建。批量刷新列表时按字段写回或整体换掉该键（`setState('list', nextList)`），比逐项原地替换更省。
 - **`ActionLoader` 的 `setState` 是 `(key, value)` 两参数**签名，不是 patch 对象——这是最常见的接入错误。
 
 ## 4. Getter 与选择器
@@ -70,7 +71,7 @@
 
   载荷形态按「有没有可写订阅者」决定：全部只读时免深拷贝（开启状态保护拿到的是只读保护 Proxy，关闭时是**原始引用**——只读声明此时只是约定，没有运行时拦截）；只要有可写订阅者，本轮所有回调都拿到独立深拷贝。所以「给一个会写载荷的回调声明 readOnly」在保护开启时是写入抛错、在保护关闭时是静默改活状态，务必如实标注。页面 / 组件绑定本身就是只读注册。
 - **退订要落实**：`subscribe` 返回退订函数；页面 / 组件场景交给集成层（`onUnload` / `detached` 自动清理），自行订阅的场景务必在销毁前退订。本轮派发的是进入通知时在册的注册，回调内退订自己仍会收到最后一次，依赖「立即生效」请在回调里自判存活标记。
-- **`onlyOnChange` 用于跳过无写入的通知**：默认模式也使用 Action 脏跟踪代理；该选项额外依据变更计数决定 dispatch / batch 是否通知，不做内容深比较（同值赋值也可能计数）。嵌套写入的归属关系按需求构建一次索引、标量写入为 O(1) 查表，仅在增删键或写入对象值等结构变更时重建，逐项更新长列表不再退化。
+- **`onlyOnChange` 用于跳过无写入的通知**：默认模式也使用 Action 脏跟踪代理；该选项额外依据变更计数决定 dispatch / batch 是否通知，不做内容深比较（同值赋值也可能计数）。嵌套写入的归属索引按增量维护：新增边只登记新子树、标量写入 O(1) 查表，逐项更新长列表不再退化；覆盖已有对象值、`delete`、`Map` / `Set` 删除这类「删边」写入仍会走一次全量重建（判错就是漏报，宁可多重建一次）。
 - **不要用 `subscribe` 做数据转换**：转换放 getter / 选择器；订阅回调里转换会让同一份数据被反复计算。
 
 ## 6. 缓存
@@ -114,9 +115,27 @@
 - **分包**：企业集成（`extras/enterprise`）、调试插件（`extras/plugins` 的 devtools/timeTravel）建议放进分包。
 - **`setData` 优化**：集成层已按 `isStateKeyDirty` 跳过未变化的映射键，前提是**映射粒度合理**——映射整个大对象（`mapState: { whole: 'list' }`）会让任何内部变化都触发全量传输。映射到具体字段。
 - **`undefined` 不是合法值**：`setData` 不接受 `undefined`，集成层会过滤掉该字段。要「清空」用 `null`。
-- **持久化**：后端必须同步且 **`getItem` / `setItem` / `removeItem` 三项齐备**（缺项在 `store.use()` 安装期即抛 `TypeError`，不再悄悄换后端）；用 `filter` 收敛落盘字段；`debounce` 降低写入频率（卸载时会同步补写最后一次变更）；需要卸载即清理才开 `clearOnUninstall`。
+- **持久化**：后端必须同步且 **`getItem` / `setItem` / `removeItem` 三项齐备**（缺项在 `store.use()` 安装期即抛 `TypeError`，不再悄悄换后端）；不传 `storage` 时用的就是内置 `WxStorageBackend`（要求 `wx` 的三个同步方法齐备，残缺环境下走内存降级并给一次降级信号），显式传 `new WxStorageBackend()` 与不传已是同一份实现，缺失键（微信返回的 `''`）与非字符串载荷都按无数据处理；用 `filter` 收敛落盘字段；`debounce` 降低写入频率（卸载时会同步补写最后一次变更）；需要卸载即清理才开 `clearOnUninstall`。
 - **生产模式静默 ≠ 无信号**：插件安装/卸载、订阅驱逐等日志在 `NODE_ENV=production` 下关闭；但持久化降级为内存后端、监听器抛错、落盘与卸载清理失败都会 `emit('onError', …, source)`。上线前给 `onError` 挂一个上报处理器，比排查时临时切开发模式更可靠。
 - **生命周期**：组件端只认 `lifetimes` 写法；`onUnload` / `detached` 先执行用户钩子，再在 `finally` 清理绑定。需要映射 actions 的收尾放在钩子同步段，包装器不等待异步 Promise；清理绑定不等于销毁 Store，已销毁 Store 上的写操作仍会抛错（`setStateProtection()` 现在也在这条守卫之内）。
+- **集成层不清装饰器的挂起调用**：被 `withDebounce` / `withThrottle` 装饰的方法若还有窗口 / 延迟内的调用，退订不会替你把定时器摘掉——到点后它照常执行（并在此期间拖住宿主）。在同一个卸载钩子里收尾，`dispose*` 是「取消 + 释放该宿主整张状态表」的一句话方案：
+
+  ```ts
+  // 页面：withPageStore(...)({ ... }) 的 onUnload
+  onUnload() {
+    disposeDebouncedState(this)   // 挂起的搜索不再发请求，宿主状态表释放
+    disposeThrottledState(this)   // 挂起的滚动 / 输入补发丢弃，窗口计时一并归零
+  }
+
+  // 组件：lifetimes.detached（写在这一层的钩子才会被调用）
+  lifetimes: {
+    detached() {
+      disposeDebouncedState(this)
+    },
+  }
+  ```
+
+  离开前还想把最后一次输入落盘就改用 `flush*`（立即执行且只执行一次）；只丢某一只方法用 `cancel*(this, 'search')`。`withCache` / `withRetry` 没有对应入口（缓存表与退避定时器无法收尾），需要停止请在业务侧自判存活标记。
 
 ## 10. 测试与调试
 
@@ -143,7 +162,8 @@
 | 订阅回调里做数据转换 | 同一份数据被反复计算 | 转换放 getter / 选择器 |
 | 用 `$replaceState` 做局部更新 | 未列出的键会丢失；缓存全量失效 | `$patch` |
 | 把 `undefined` 写进要在 `setData` 里传输的字段 | `setData` 不接受 `undefined` | 用 `null` 表达「空」 |
-| 传异步 storage 或**残缺后端**给持久化插件 | 异步写入存在竞态与静默丢失；缺 `setItem` / `removeItem` 的后端会在首次落盘才炸并被吞成日志 | `WxStorageBackend` 或自封装、三方法齐备的同步实现（现在安装期即校验并抛错） |
+| 传异步 storage 或**残缺后端**给持久化插件 | 异步写入存在竞态与静默丢失；缺 `setItem` / `removeItem` 的后端会在安装期就被拦下（`TypeError`）。内置默认后端同样要求 `wx` 三方法齐备，残缺环境不再被当成可用后端（旧行为是每次落盘抛 `TypeError`），而是降级为内存存储 | `WxStorageBackend`（不传 `storage` 时即是它）或自封装、三方法齐备的同步实现 |
+| 宿主卸载后仍留着挂起的防抖 / 节流调用 | 定时器到点照样调用被装饰方法（常见后果：往已销毁的 Store 里写），期间宿主无法回收 | 在 `onUnload` / `lifetimes.detached` 调 `cancel*`（丢弃）/ `flush*`（立即执行一次）/ `dispose*`（取消并释放状态） |
 | 用不写 `return` 的箭头函数当快照 `onError` | 判定按真值走，`undefined` ＝「拒绝继续」，纯观测会把整次快照做成失败 | 显式 `return true`，或改用 `onProgress` 做观测 |
 | 给装饰器方法期待同步返回（`createDecorator`） | 0.5.2 起同步方法不再被包成 `async`——反过来说，之前依赖它返回 Promise 的调用方现在拿到的是同步值 | 同步方法按同步取值；异步方法照常 `await` |
 | 为省一行引入 `@openlide/geomstore/extras` | 全部可选能力进入产物，主包变大 | 按需 `extras/<能力>` |
@@ -163,5 +183,6 @@
 - [ ] `ErrorMonitoring` 的 reporter 幂等、有超时；`maxQueueSize` / `maxFlushRetries` 按流量设定
 - [ ] `ErrorRecovery` 的 operation 命名稳定（不含动态 id）
 - [ ] 页面 / 组件卸载后不再触发写入；订阅由集成层自动清理
+- [ ] 被 `withDebounce` / `withThrottle` 装饰的方法已在 `onUnload` / `detached` 里收尾（`cancel*` / `flush*` / `dispose*`）——集成层不会替你清这些定时器
 - [ ] `stateProtection` 保持开启
 - [ ] 大对象的快照走异步并调过 `batchSize`；`success` 与 `errors` 已接入监控

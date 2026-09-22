@@ -19,8 +19,8 @@ src/
   core/            核心：store / cache(LRUCache) / hooks / compose / performance / utils
   extras/          可选能力：snapshot / selector / action / error / performance / plugins / enterprise
   integrations/    微信小程序集成（withPageStore / withComponentStore / withAppStore）
-  plugins/         插件实现（builtin / devtools / performance）
-  types/           公共类型契约
+  plugins/         插件实现（builtin / WxStorageBackend / devtools / performance / globalRegistry）
+  types/           公共类型契约：**只放类型与接口**，不得有运行时导出（类 / 函数 / 常量）
 tests/             unit / integration（按领域分目录）
 examples/          可运行示例（分类目录 + 索引）
 docs/              文档
@@ -62,6 +62,7 @@ node --input-type=module -e 'const s = await import("./dist/index.js"); console.
 
 - TypeScript `strict`；**避免 `any`**（测试里也不滥用），类型收窄优先于断言
 - 注释解释**为什么**，而不是复述代码在做什么；对不直观的兜底、上限、复杂度处理尤其要写清楚
+- **同一语义的默认值只允许有一处来源**：跨文件复用的缺省值导出常量 + `normalize*` 函数（范例：`ACTION_LOADER_DEFAULTS` / `normalizeActionLoaderOptions`、`DEFAULT_MAX_LOG_SIZE`），不要再写第二份 `options.x ?? 字面量` 镜像。这类「注释自称同口径、值各持一份」的漂移过，且后果是行为错配而非数值难看（`withLoading` 的注册表按归一化选项分桶，默认值不一致就会拆桶）。它们默认**不是公开 API**（未经 barrel 再导出），注释要写明可达范围
 - 生产代码里避免为了覆盖率而改写表达式结构；确需改写时保持**语义等价**并在提交说明中标注
 - 公共 API 的类型一旦发布即视为契约：放宽（如泛型变宽、参数变可选）是非破坏性改动，收紧或重命名需要在 CHANGELOG 标注 **Breaking**
 - 行为变更（错误语义、通知时机、默认值）必须在 CHANGELOG 中说明影响面与迁移方式
@@ -83,6 +84,8 @@ node --input-type=module -e 'const s = await import("./dist/index.js"); console.
   - `withThrottle(interval, options)` 的间隔是**第一个位置参数**；`withLog(name?, options?)` 的名称在第一位；`createDecorator(options?)` 传的是 `{ before, after, onError }`
   - 装饰器选项为 `withRetry({ retries, delay, shouldRetry })`，`retries` 是首次执行**之外**的次数
   - 持久化后端必须是**同步且三方法齐备**的实现：`new WxStorageBackend()` 或自封装，**不要**写 `storage: wx`（`wx` 全局对象没有 `getItem`）
+  - 持久化**不传 `storage` 时的默认后端就是 `WxStorageBackend`**（内联适配器已删除）：缺失键（微信的 `''`）与非字符串载荷按「无数据」处理，可用性判定要求 `wx` 三方法齐备。实现住在 `src/plugins/WxStorageBackend.ts`，公开子入口仍是 `extras/plugins` 与 `extras`——写「定义在 `src/types/persistence.ts`」已失真
+  - `withThrottle` / `withDebounce` 的挂起调用有三个**语义不同**的收尾入口：`cancel*` 丢弃、`flush*` 立即执行**且只执行一次**、`dispose*` 取消**并**释放该宿主的整张状态表。参数是**宿主 `this`**（装饰器表达式在类定义期即被丢弃，没有句柄可传），别写成「装饰期返回 handle」；`withCache` / `withRetry` 没有对应入口
   - 同步快照克隆是**递归**实现（栈深＝数据深度），`deepEqual` 才是迭代实现；两者都不要写成「无限深度安全」
 - 新增/变更 API 时同步更新：[docs/API.md](./docs/API.md)、相关指南，以及（若涉及行为变更）[CHANGELOG.md](./CHANGELOG.md) 与 [docs/MIGRATION.md](./docs/MIGRATION.md)
 

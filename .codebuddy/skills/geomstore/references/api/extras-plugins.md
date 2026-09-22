@@ -55,6 +55,11 @@ export interface PersistenceOptions<S extends State = State> {
  * 否则损坏的存储会被误判为空状态并随后被覆盖。
  * persistencePlugin 已按此契约为三条路径（恢复 / 落盘 / clearOnUninstall）各自 try/catch
  * 并记录日志（落盘失败还会 emit `onError`），自定义后端只要照此抛错即可。
+ *
+ * 内置实现见 `src/plugins/WxStorageBackend.ts`（`wx.*StorageSync` 适配器）：
+ * 本文件只声明契约，带 I/O 的运行时实现与 `persistencePlugin` 同层。
+ * `persistencePlugin` **不传** `storage` 时的默认后端同样是这个类（判定与归一化口径
+ * 因此只有一处实现），仅在检测不到可用的 wx 同步 API 时降级为内存存储。
  */
 export interface StorageBackend {
     /** 获取值（必须同步返回；键不存在返回 null，读取失败抛错） */

@@ -135,14 +135,46 @@ withThrottle(100, { leading: true, trailing: true })   // 间隔是第一个位�
 
 0.5.2 起不会。`createDecorator` 只在被装饰方法返回 Promise（或 `before` 回调返回 Promise）时才让调用返回 Promise，同步方法保持同步返回；`before` / `after` 的异步返回被接续而非并发执行，rejection 不再变成 unhandled rejection。`onError` 收到的是规范化后的 `Error`，它自身抛错只记一条日志、不会顶替原始失败。装饰访问器（`get` / `set`）在装饰阶段就抛 `TypeError`。
 
+### 宿主（页面 / 组件）卸载了，挂起的防抖 / 节流调用怎么办？
+
+自己会到点执行——排程中的定时器回调持有宿主与状态直到窗口 / 延迟到期，期间宿主不可被回收，到点后它照常调用被装饰方法（通常是往已销毁的 Store 里写，抛 `Cannot call … on a destroyed Store`）。0.5.2 起有六个收尾入口，从 `@openlide/geomstore/extras/action` 引入：
+
+```ts
+import {
+  withDebounce, withThrottle,                              // 装饰器本身
+  cancelDebouncedCalls, flushDebouncedCalls, disposeDebouncedState,
+  cancelThrottledCalls, flushThrottledCalls, disposeThrottledState,
+} from '@openlide/geomstore/extras/action'
+
+class SearchPage {
+  @withDebounce(300)
+  async search(keyword: string) { return fetchSearch(keyword) }
+
+  @withThrottle(100)
+  onScroll(position: number) { this.store.dispatch('setScroll', position) }
+
+  onUnload() {
+    disposeDebouncedState(this)   // 挂起的搜索：取消并释放该宿主的防抖状态
+    cancelThrottledCalls(this)    // 挂起的尾随补发：丢弃（不执行原方法）
+  }
+}
+```
+
+- `cancel*` **丢弃**挂起调用，`flush*` **立即执行且只执行一次**（还想把最后一次输入落盘就用它；没有挂起调用时它不凭空执行），`dispose*` = 取消 **+** 释放该宿主的整张状态表（节流连窗口计时一起归零）。三者都幂等，卸载点「一切从简」可以只调 `dispose*`
+- **被取消的 Promise 收到什么**：防抖挂起的每个 Promise 以 `Error('[withDebounce] pending call was cancelled')` 拒绝（`await` 方看得到；库只是先给它们补了个 `catch` 来消除全局未处理告警，没有替你吞掉）。节流的被抑制调用在**调用时刻**就已返回 `undefined`（异步方法或 `assumeAsync: true` 时是 `Promise<undefined>`），没有可取消的 Promise；尾随补发失败按既有口径就地 `console.error`
+- 入口参数是**宿主**（`this`），不是装饰期发的句柄：`@withDebounce(300)` 这个表达式在类定义完就被丢弃了，卸载点手里只有实例。`method` 可选，省略即覆盖该宿主上所有被装饰方法
+- `withCache` 与 `withRetry` **没有**对应入口：缓存表随装饰器实例存活、退避等待定时器无法取消（理由见 CHANGELOG 的「Wave E 未收口的四项」）。对这两者，请在业务侧自判存活标记
+
 ## 插件与持久化
 
 ### 持久化没有生效 / 恢复后字段丢了？
 
-- **后端必须同步且三方法齐备**：`getItem` / `setItem` / `removeItem` 缺任一方法都会在 `store.use()` 安装期抛 `TypeError`；返回 Promise 的实现会在恢复 / 落盘 / 清理时被明确拒绝（避免写入静默丢失）。小程序用 `new WxStorageBackend()` 或自封装同步实现；浏览器的 `localStorage` 恰好实现了这三个同步方法，可直接传
+- **后端必须同步且三方法齐备**：`getItem` / `setItem` / `removeItem` 缺任一方法都会在 `store.use()` 安装期抛 `TypeError`；返回 Promise 的实现会在恢复 / 落盘 / 清理时被明确拒绝并记日志（避免写入静默丢失）。小程序用 `new WxStorageBackend()` 或自封装同步实现；浏览器的 `localStorage` 恰好实现了这三个同步方法，可直接传
+- **不传 `storage` 时的默认后端就是 `WxStorageBackend`**（0.5.2 起两条路径同一份实现，此前是 `builtin.ts` 里的内联适配器）：`wx.getStorageSync` 对缺失键返回的 `''` 归一为 `null`（＝无数据），写入过非字符串载荷时也按无数据处理，不再被送去 `JSON.parse`。可用性判定要求 `getStorageSync` / `setStorageSync` / `removeStorageSync` **三方法齐备**——只有读方法的残缺 `wx`（部分兼容层）从「每次落盘抛 `TypeError`」改为走内存降级并给一次降级信号
 - **恢复是合并语义**（走 `$patch`）：未被持久化的键保留初始值，不会被覆盖
 - 用 `filter` 指定落盘子集；用 `debounce` 控制写入频率（卸载时会同步补写窗口内最后一次变更）
 - 需要卸载即清理时用 `clearOnUninstall: true`（此时待写数据会被丢弃；删除失败会记日志并 `emit('onError', …, 'persistence')`，不再静默谎报已清除）
+- 检测不到可用 wx 同步 API 时降级为内存存储，降级文案里的括号新增了「wx 同步 API 不齐备」一项（`未检测到可用的 storage 后端（非微信环境、wx 同步 API 不齐备，且未传入 storage）…`）；按文案匹配日志的调用方需同步
 
 ### 生产环境为什么看不到插件日志？
 
@@ -172,7 +204,7 @@ withComponentStore(store, { mapState: ['count'] })({
 
 ### 卸载钩子里还能调用映射的 action 吗？
 
-可以在 `onUnload` / `lifetimes.detached` 的同步段调用。用户钩子先执行，绑定随后在 `finally` 中清理，即使钩子同步抛错也不会漏清理；包装器不等待异步钩子的 Promise，不要在 `await` 后依赖映射方法仍可用。
+可以在 `onUnload` / `lifetimes.detached` 的同步段调用。用户钩子先执行，绑定随后在 `finally` 中清理，即使钩子同步抛错也不会漏清理；包装器不等待异步钩子的 Promise，不要在 `await` 后依赖映射方法仍可用。**集成层只清订阅与映射**：宿主上被 `withDebounce` / `withThrottle` 装饰的方法若还有挂起调用，请在同一个钩子里显式收尾（`cancel*` / `flush*` / `dispose*`，见上文「宿主卸载了，挂起的防抖 / 节流调用怎么办？」）。
 
 ### 组件 / App 里要不要手写 `this` 类型？
 
@@ -223,6 +255,7 @@ Store 已 `destroy()`。销毁后除只读统计（如 `getCacheStats`、`isStat
 - `ErrorRecovery` 的重试键有容量守卫（`MAX_RETRY_KEYS = 1000`），动态 operation id（如 `fetchUser:${id}`）不会导致无界增长
 - 内部定时器做 `unref` 探测：小程序 / 浏览器无该 API 时自动跳过，不会阻止进程退出
 - `PerformanceMonitor.record` 会清理超时未结束的计时条目（调用方遗漏 `end()` 时的兜底）
+- 防抖 / 节流的**挂起定时器会拖住宿主**：排程中的回调持有宿主引用直到窗口 / 延迟到期。宿主状态表本身是 `WeakMap`（宿主回收即消失），但没人清定时器时宿主就回收不了——请在卸载点调 `cancel*` / `dispose*`（见「装饰器」一节）
 
 ### 为什么同一个功能在同步和异步路径行为不同？
 

@@ -185,8 +185,52 @@ const loader = new ActionLoader({ perActionKeys: true })  // loading/error 键�
 const wrapped = loader.wrap(doIt, 'doIt', setState)       // setState 为 (key, value) 两参数
 ```
 
-- `withLoading` 的引用计数按 (宿主, loading 键) 集中：多个装饰器并发不会提前翻转 `loading`
+- `withLoading` 的引用计数按 (宿主, loading 键) 集中：多个装饰器并发不会提前翻转 `loading`（其默认键名 `loading` / `error` / `errorData` 在库内是单一来源，与 `ActionLoader` 构造器同源）
 - `withThrottle(interval, { leading, trailing, assumeAsync })`：间隔是**第一个位置参数**；`assumeAsync` 用于「非 `async` 语法但返回 Promise」的方法被抑制时仍返回 Promise
+
+**宿主卸载点的收尾**（`withThrottle` / `withDebounce`）：窗口 / 延迟还没到期就销毁页面或组件时，挂起的调用到点仍会执行（并拖住宿主不被回收）。六个入口都以**宿主**为参数——装饰器表达式在类定义期就被丢弃，卸载点手里只有 `this`：
+
+```ts
+import {
+  withDebounce, withThrottle,
+  cancelDebouncedCalls, flushDebouncedCalls, disposeDebouncedState,
+  cancelThrottledCalls, flushThrottledCalls, disposeThrottledState,
+} from '@openlide/geomstore/extras/action'
+
+class CartPage {
+  @withDebounce(300)
+  async submitDraft(draft: string) { return this.store.dispatch('saveDraft', draft) }
+
+  @withThrottle(100, { leading: true, trailing: true })
+  onScroll(position: number) { this.store.dispatch('setScroll', position) }
+
+  onUnload() {
+    flushDebouncedCalls(this, 'submitDraft')  // 离开前把最后一次草稿提交掉：立即执行且只执行一次
+    cancelThrottledCalls(this)                // 挂起的滚动补发直接丢弃
+  }
+}
+```
+
+Component 侧同理，写在 `lifetimes.detached` 里（集成层只清订阅与映射，不会替你清这些定时器）：
+
+```ts
+class Panel {
+  @withDebounce(200)
+  persistHeight(height: number) { this.store.dispatch('resize', height) }
+
+  lifetimes = {
+    detached() {
+      disposeDebouncedState(this)   // 取消挂起调用 + 释放该宿主的整张防抖状态表
+    },
+  }
+}
+```
+
+入口认的是**调用被装饰方法时的 `this`**（宿主实例），不是装饰期那个类对象：`onUnload` / `detached` 里的 `this` 就是它，所以配置对象写法（`withComponentStore(store, {…})({ lifetimes: { detached() { disposeDebouncedState(this) } } })`）与类写法同样成立。这两个钩子由集成层先执行、再清订阅，收尾调用放在钩子**同步段**。
+
+- `cancel*` **丢弃**挂起调用；`flush*` **立即执行且只执行一次**（无挂起调用时不凭空执行，重复 flush 是 no-op）；`dispose*` = 取消 **+** 释放该宿主的整张状态表（节流连窗口计时一起归零），卸载点想一句话收尾就只调它
+- 被取消的防抖调用：其 Promise 以 `Error('[withDebounce] pending call was cancelled')` 拒绝，`await` 方看得到（库先补 `catch` 只为消除全局未处理告警）。节流的被抑制调用当时就已返回 `undefined`（或 `Promise<undefined>`），没有可取消的 Promise
+- `method` 参数可省略（覆盖该宿主上所有被装饰方法）；宿主为基本类型 / `null` 时六个入口都是 no-op；`withCache` / `withRetry` 目前**没有**对应入口
 
 ## 4. Getter
 
@@ -239,8 +283,9 @@ store.use(persistencePlugin({
 }))
 ```
 
-- **持久化后端必须是同步实现且三方法齐备**（`getItem` / `setItem` / `removeItem`）：缺任一方法在 `store.use()` 安装期即抛 `TypeError`，返回 Promise 的实现会在恢复 / 落盘 / 清理时明确报错——不再静默回落到别的后端（那会把数据写到另一个地方）
-- 非微信环境且未传 `storage` 时降级为内存存储：开发模式 `console.warn`，**生产模式经 `onError` 钩子上报**（`emit('onError', error, 'persistence')`），别再指望控制台
+- **持久化后端必须是同步实现且三方法齐备**（`getItem` / `setItem` / `removeItem`）：缺任一方法在 `store.use()` 安装期即抛 `TypeError`，返回 Promise 的实现会在恢复 / 落盘 / 清理时明确报错并记日志——不再静默回落到别的后端（那会把数据写到另一个地方）
+- **不传 `storage` 时的默认后端就是 `WxStorageBackend`**（与显式 `new WxStorageBackend()` 同一份实现，0.5.2 起收口）：微信对缺失键返回的 `''` 按「无数据」处理，非字符串载荷同样按无数据；`wx` 需 `getStorageSync` / `setStorageSync` / `removeStorageSync` **三方法齐备**才算可用后端
+- 检测不到可用的 wx 同步 API（非微信环境、或 `wx` 残缺）时降级为内存存储：开发模式 `console.warn`，**生产模式经 `onError` 钩子上报**（`emit('onError', error, 'persistence')`），别再指望控制台
 - 卸载时会**同步补写**防抖窗口内的最后一次变更；`clearOnUninstall: true` 则改为清理存储，删除失败会记日志并 `emit('onError', …)`（不再谎报已清除）
 - `store.use` 安装抛错会回滚入列，不留半安装插件；生产模式下安装/卸载日志静默
 - 独立函数 `usePlugin(plugin, store)` 等价且**无需断言**：泛型从 `store` 反推，`plugin` 需与其状态类型匹配（状态无关的插件写作 `Plugin<State>`，如 `loggerPlugin`）。日常也可直接用 `store.use`
@@ -336,7 +381,8 @@ const monitoring = new ErrorMonitoring({
 - **按需引入 extras**：不用到的能力不要 import，小程序主包只带真正用到的代码
 - **大对象用异步快照**：`batchSize` 控制单批工作量（默认 100），批间让出控制权避免长任务卡顿
 - **独立缓存**：需要自有策略时直接用 `LRUCache`（容量淘汰 + TTL）
-- 内部定时器均做 `unref` 探测，浏览器/小程序无该 API 时自动跳过，不会阻止进程退出
+- **列表逐项写入不再是平方级**：脏键归属索引改增量维护，`push` / 新增键这类「只加边」的写入按新子树增量登记，标量写入 O(1) 查表。仍会走一次全量重建的是**删边类**写入：覆盖已有的对象值、`delete` 掉对象值键、`Map#set` 覆盖值已是对象的键、`Map` / `Set` 的 `delete` / `clear`。高频循环里倾向「追加 / 换引用」，别反复原地替换同一批对象
+- 内部定时器均做 `unref` 探测，浏览器/小程序无该 API 时自动跳过，不会阻止进程退出；**防抖 / 节流的挂起定时器不在其列**——它会一直活到窗口 / 延迟到期，宿主卸载点请用 `cancel*` / `dispose*` 收尾（见第 3 节）
 
 ## 12. 排错手册
 
@@ -346,7 +392,8 @@ const monitoring = new ErrorMonitoring({
 | 监听器没被调用 | `onlyOnChange` 下确实没改动状态；或 `notify.async` 下还在同一 tick | 检查是否真的写入了状态；必要时去掉 `notify.async` |
 | 通知次数「偏多」 | 异步 action 同步段与续段各改一次，或与 batch 交叉 | 由 action 统一合并写入，或用 `batch` 收尾 |
 | `await dispatch(...)` 拿到 `undefined` | 方法不是 `async` 语法但返回 Promise，且首次调用被节流抑制 | `withThrottle(…, { assumeAsync: true })` |
-| 持久化没有生效 | 传了异步 storage 后端（被显式拒绝），或非微信环境下自动降级为内存存储 | 改用同步后端（`WxStorageBackend` 或自封装同步实现）；生产环境的降级信号在 `onError` 钩子里，不在控制台 |
+| 页面 / 组件已销毁却还在写 Store（`Cannot call … on a destroyed Store`），或宿主回收不掉 | 被 `withDebounce` / `withThrottle` 装饰的方法还有挂起调用，定时器到点照常执行 | 在 `onUnload` / `lifetimes.detached` 调 `cancel*`（丢弃）/ `flush*`（立即执行一次）/ `dispose*`（取消并释放状态），见第 3 节 |
+| 持久化没有生效 | 传了异步 storage 后端（被显式拒绝并记日志）；或 `wx` 三方法不齐备 / 非微信环境，被降级为内存存储 | 传同步且三方法齐备的后端（`new WxStorageBackend()` 或自封装实现），不传即用微信内置后端；生产环境的降级信号在 `onError` 钩子里，不在控制台 |
 | `store.use(persistencePlugin({ storage }))` 安装即抛 `TypeError` | 后端缺 `getItem` / `setItem` / `removeItem` 之一（只读适配器、键名拼错） | 补全三个同步方法；接入微信请传 `new WxStorageBackend()` |
 | 快照结果 `data` 是 `undefined` | 该次快照异常或被 `onError` 拒绝继续——失败结果按契约**不回传活引用** | 读 `errors` 的 `path` 定位；需要保留半成品请自行在 `onError` 里返回 truthy |
 | 日志里出现了 token / 用户数据 | `withLog` 在生产构建只输出摘要（类型 / 长度 / 键数），开发构建原样打印 | 需要自定义脱敏或改出口时传 `{ sink, redact }` |

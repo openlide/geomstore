@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-拟发布为 **0.5.2**：第四轮 ocr 复审的修复同步（454 条 = critical 6 / high 31 / medium 239 / low 178，分波提交 `1097621`、`5616cbb`、`4f08963`、`5a677d2`、`a954078`、`02bd20f`、`1510829`）。逐条判定与证据见 `.ocr-fix/decisions.md` 与 `.ocr-fix/verdicts/*.md`；本节只列**用户可感知**的语义变化，内部健壮性 / 注释类修复不逐条重复。
+拟发布为 **0.5.2**：第四轮 ocr 复审的修复同步（454 条 = critical 6 / high 31 / medium 239 / low 178，分波提交 `1097621`、`5616cbb`、`4f08963`、`5a677d2`、`a954078`、`02bd20f`、`1510829`）。逐条判定与证据见 `.ocr-fix/decisions.md` 与 `.ocr-fix/verdicts/*.md`；本节只列**用户可感知**的语义变化，内部健壮性 / 注释类修复不逐条重复。判定为「另立波次」的四项公开面改造也已落在本节（下称 Wave E，提交 `dba29b9`、`2e95032` + `841d1ab`、`c7027a0`、`666e1ea`），条目与第四轮修复混排在各分组内。
 
 ### Breaking（类型面与对外契约）
 
@@ -23,8 +23,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`setStateProtection()` 在销毁后抛错**：与 `setState` / `$patch` / `subscribe` / `use` / `cache` / `batch` 同口径（消息 `[GeomStore] Cannot call setStateProtection on a destroyed Store`）；只读的 `isStateProtectionEnabled` / `getStateProtectionConfig` 仍豁免。
 - **Store 品牌 Symbol 键更名**：`Symbol.for('__geomstore_brand__')` → `Symbol.for('@openlide/geomstore:brand')`，带包名命名空间以降低与第三方符号偶然碰撞，且刻意不加版本号（加版本会重新制造「分包副本 A 认不出副本 B 的 Store」）。`isGeomStore()` 用法不变；直接按旧键名读该 symbol 的代码需同步。该键不是安全边界，写入保护始终来自状态代理与内部访问令牌。
 
+### Added（新入口，Wave E）
+
+- **`withThrottle` / `withDebounce` 各三个宿主级收尾入口**（六个函数，Wave E）：`cancelThrottledCalls(host, method?)` / `flushThrottledCalls(host, method?)` / `disposeThrottledState(host)`、`cancelDebouncedCalls(host, method?)` / `flushDebouncedCalls(host, method?)` / `disposeDebouncedState(host)`，从 `@openlide/geomstore/extras/action` 或 `@openlide/geomstore/extras` 引入，供 Page `onUnload` / Component `lifetimes.detached` 调用。三个语义互斥：`cancel` **丢弃**挂起调用（原方法不再执行）、`flush` **立即执行且只执行一次**（与窗口 / 延迟自然到期同语义；无挂起调用时不凭空执行，队列已空则再次 flush 为 no-op）、`dispose` = 取消挂起调用 **+ 释放该宿主的整张状态表**（节流连窗口计时 `lastCallTime` 与异步观测标记一起归零，防抖删掉该宿主的整张槽位表），三者都幂等。
+  - **入口以宿主为参数、而不是装饰期发句柄**：装饰器表达式在类定义期求值后即被丢弃，卸载点手里只有 `this`，因此状态表从工厂闭包上提到模块级 `WeakMap<宿主, Map<slotKey, 状态>>`（`slotKey` 是每个被装饰方法一个 `Symbol`，隔离度与旧实现等价；键是宿主本身，宿主被回收时整条状态随之消失）。`method` 省略时覆盖该宿主上所有被装饰方法，传入时按方法名筛选（`Symbol` 身份同样精确匹配，不按描述串误命中）。
+  - **被取消的调用拿到什么**：防抖挂起的每个 Promise 都以 `Error('[withDebounce] pending call was cancelled')` 拒绝——拒绝前先给它们补一个 `catch` 处理器，只消全局未处理告警，真正 `await` 的调用方仍看得到这条 rejection（不结算会永久挂起调用方）。节流被抑制的那次调用**在调用时刻就已**以 `undefined` 结算（异步方法或 `assumeAsync: true` 时是 `Promise<undefined>`），`cancel` / `flush` 处理的只是尚未发出的尾随补发，补发失败按既有口径就地记日志、不外抛。宿主为基本类型 / `null` 时六个入口一律 no-op（与装饰器自身的降级口径一致）。
+
 ### Changed（行为变更）
 
+- **`persistencePlugin` 未传 `storage` 时的默认后端统一为 `WxStorageBackend`**（Wave E，`666e1ea`）：`builtin.ts` 里那段内联 wx 适配器整段删除，默认路径与显式 `storage: new WxStorageBackend()` 从此是同一份实现（缺失键归一化、异步守卫、可用性判定都不再各写一份）。四条可观测变化：
+  1. `getStorageSync` 返回 `''` 归一为 `null`（此前内联适配器只把 `undefined` / `null` 当缺失，`''` 会被当成「有数据」交给 `JSON.parse('')` 并在恢复路径报一条解析错误）；非字符串载荷（wx 会原样返回写入过的非字符串值）一律按无数据处理，不再被 `as string` 塞进 `JSON.parse`。
+  2. 三个方法的返回值仍过异步守卫，命中 Promise 时**抛错并记一条 `[WxStorage] <方法> error:` 日志**（内联适配器原本也抛错，但不打日志）。对显式传 `new WxStorageBackend()` 的调用方这是新行为：该类的 `getItem` 此前会把 Promise 洗成 `null`＝「有数据误判无数据」，下一次落盘即覆盖真实数据；`setItem` / `removeItem` 此前完全不看返回值。
+  3. 可用性判定由「有 `getStorageSync`」收紧为「`getStorageSync` / `setStorageSync` / `removeStorageSync` 三方法齐备」（与安装期校验用户后端的严格度同口径）：只提供读方法的残缺 `wx` 不再被当成可用后端、每次落盘抛 `TypeError`，而是走内存降级（开发模式 `console.warn`、生产模式 `emit('onError', …, 'persistence')`）。
+  4. 降级文案（`degradeMessage`）补「wx 同步 API 不齐备」：`[GeomStore][persistence] 未检测到可用的 storage 后端（非微信环境、wx 同步 API 不齐备，且未传入 storage），降级为内存存储，持久化不生效`——按文案匹配日志 / `onError` 的调用方需同步。
+- **`WxStorageBackend` 的实现文件从 `src/types/persistence.ts` 迁到 `src/plugins/WxStorageBackend.ts`**（Wave E，`c7027a0`；**非破坏性**）：公开子入口不变——`@openlide/geomstore/extras/plugins` 与 `@openlide/geomstore/extras` 拿到的仍是同名同类，`exports` 与 prepack 子路径表一字未动，逐入口比对的导出符号集（`extras` 76 / `extras/plugins` 9 / `plugins` 18）完全一致，只换了内部 `from` 说明符。类体与 `WxStorageApi` 迁移前后逐字节相同（本次零行为变更，行为变更来自上面那条的默认后端统一）。只有直接深链源码路径的写法需要换文件。`@openlide/geomstore/plugins`（prepack 生成的兼容别名）本就不导出该类，值导出面未扩。
+- **`ActionLoader` 与 `withLoading` 的选项缺省值单点化**（Wave E，`666e1ea`）：`loadingKey` / `errorKey` / `errorDataKey` / `autoLoading` / `perActionKeys` 的默认值与归一化收口到 `ActionLoader.ts` 的 `ACTION_LOADER_DEFAULTS` + `normalizeActionLoaderOptions`，`withLoading` 的第二份镜像整块删除（**值一字未改，无行为变更**）。这两个默认值此前漂移过一次，后果不是「值不好看」而是注册表分桶错配（有效配置相同的装饰器被拆开、配置不同的落进同一桶）。`ACTION_LOADER_DEFAULTS` 仅供库内复用，未经 barrel 再导出，**不是公开 API**。
+- **错误日志上限的默认值改为单一来源**（Wave E，`666e1ea`）：`ErrorHandler.errorLog`、`setMaxLogSize` 的非有限值回退与 `ErrorBoundary.errorHistory` 的裁剪都取同一个 `DEFAULT_MAX_LOG_SIZE`（值仍为 100，无行为变更；此前 `ErrorBoundary` 另持一份字面量、注释却自称「与 ErrorHandler 同口径」）。该常量同样只在同目录复用，未公开。
 - **`createDecorator` 不再把同步方法包成 `async`**：同步方法原样同步返回，返回 Promise 的方法才以 `.then` 挂 `after` / `onError`。`before` 返回 Promise 时整次调用降级为异步并等它 settle（其 rejection 走 `onError`）；`after` 返回 Promise 时只有被装饰方法本身是异步的才被接回返回值，同步路径就地兜住 rejection 并记日志，不再留下 unhandled rejection。`onError` 收到的是**规范化后的 `Error`**（`throw 'str'` 被包成带原文的 Error），且它自身抛错只记一条 `[Action] onError callback threw`，不再顶替原始失败。装饰非函数描述符（`get` / `set` 访问器）在装饰阶段即抛 `TypeError`；包装函数保留原方法的 `name` 与 `length`。
 - **`withLog` 新增 `sink` 与 `redact`**：`withLog(name?, options?)`，`sink` 接入项目 logger（缺省 `console`），`redact(value, phase)` 按 `args` / `result` / `error` 阶段决定脱敏形态。**生产构建默认只输出摘要**（类型 / 长度 / 键数），不再原样打印参数与返回值——action 参数常带 token、密码与用户数据；开发构建仍原样输出，显式传 `redact` 即视为自行决定了脱敏策略。
 - **快照失败不再回传活引用**：同步 / 异步快照在异常或中止路径上把 `data` 置为 `undefined`（此前是 `data as T` 原样带出调用方的活动对象，一次「失败快照」就能改到宿主状态）。中止根节点同理，`data` 为 `undefined`。
@@ -62,6 +76,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Performance
 
+- **脏键归属索引改增量维护**（`dirtyTracking`，ocr #178，Wave E `dba29b9`）：0.5.1 的做法是「按需构建一次索引，遇结构性写入整体失效重建」，列表逐项更新因此仍呈平方级。现按一次写入对被索引图的影响分三档处理——**纯新增边**（容器写入一个此前不是对象的位置）只把容器的归属键并入新子树，子树里某节点已含全部这批键时它的子树早已覆盖、直接剪枝；**图不变**（标量改写、同对象自赋值、数组 `length` 改写没删掉尾部对象、`Set` 重复 `add`）原样复用索引；**删边**（覆盖已有的对象值、`delete` 掉对象值键、`Map#set` 覆盖一个值已是对象的键、`Map` / `Set` 的 `delete` / `clear`、覆盖自有访问器、调用会自行改状态的实例方法）以及状态版本被外部推进时，一律退化为全量重建。**这是一处有意的保守分类，不是无脑 O(1)**：删边后旧子树是否仍从别的顶层键可达无法廉价判定，猜错的代价是漏报，而漏报等于变更对页面永久不可见，所以宁可多花一次重建。
+  - 量化（同进程 A/B，2000 元素列表 + 500 元素嵌套列表）：`2000× list.push(对象)` 的 `rebuildOwners` 由 4000 次降到 1 次、耗时 185567ms → 104.9ms；`10000×` 混合写入同样 4000 → 1 次、189827ms → 178.0ms；**原位替换对象值与 `delete` 按设计仍走全量重建，耗时不变**；标量写入路径不退化（≈450ms → ≈437ms）。整套单测 + 集成从 411s 降到 9.3s。
+  - 索引不变量本身未变：`owners(X)` 仍等于「沿被索引的边（数据属性值 / Map 键值 / Set 成员）能走到 X 的顶层键」，访问器一律不求值，解析不出归属时仍按「标记全部顶层键」多报不漏报。增量依赖的前提是「改变可达性的写入要么走代理陷阱、要么推进状态版本」——拿到内部引用后的裸写本来就不在追踪契约内，旧实现靠每次重建偶然捞回它，增量实现不再兜这种写（兜底方向仍是多报）。`benchmark` 的吞吐基线本轮未重标。
 - `LRUCache` 删掉两个只写不读的死字段（每次命中少一次 `Date.now` 与两次属性写），访问计时改到命中之后，未命中不再丢弃高精度时钟调用；淘汰加 `evicting` 重入标志与有界预算（回调内回填不再递归到 `RangeError`）。
 - 错误组的驱逐改为一次线性扫描取 `lastSeen` 最小值（此前每次 `addError` 达上限后都复制数组再排序）。
 - `withThrottle` 的尾随助手提升到装饰阶段，每次调用少分配两个闭包；`SelectorFactory` 的 `execute` 与 `withCacheResult` 合并为单条 `resolve()` 路径；`$patch` 别名标脏时的目标集合一次性建好（不再每个顶层键重建 `Set`）。
@@ -70,6 +87,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `README.md` / `docs/API.md` / `docs/CONCEPTS.md` / `docs/GUIDE.md` / `docs/BEST_PRACTICES.md` / `docs/FAQ.md` 与本轮语义同步：`notify.clone` 与 `readOnly` 的载荷判定、`$snapshot()` 的「部分冻结」口径、快照 `onError` 的真值语义与失败结果 `data`、`HookSystem` 的按钩子签名、持久化后端契约与生产降级信号、`withLog` 的 `sink` / `redact`、`LRUCache.resize` 的实际归一化规则。
 - `pnpm run skill:api` 重新生成 `.codebuddy/skills/geomstore/references/api/*`（机械映射，请勿手改）；`SKILL.md` 的 `withLog` / `createDecorator` 签名、`$snapshot` 冻结口径与持久化 `storage` 要求同步修正。
+- Wave E 四项的文档同步：`docs/API.md` 补 `cancel*` / `flush*` / `dispose*` 六个入口与宿主卸载点用法、`docs/GUIDE.md` 与 `docs/BEST_PRACTICES.md` 把「页面 / 组件卸载点收尾」写成具体片段并列入反模式、`docs/FAQ.md` 新增「宿主卸载后挂起的防抖 / 节流怎么办」与默认后端相关问答；`docs/ARCHITECTURE.md` 的写入追踪段改述为三档增量口径、`plugins/` 目录清单含 `WxStorageBackend.ts`，并把「`src/types` 只放类型与接口」从描述升为硬约定（`CONTRIBUTING.md` 同步）；`docs/API.md` 与 `docs/FAQ.md` 的持久化默认后端表述（`''` 归一、Promise 守卫、三方法齐备判定）按新实现订正，并顺手删掉 `ActionLoaderOptions` 表里并不存在的 `autoError` 一行。
 - 文档化的既有实现口径（本轮只写清、不改行为）：`$snapshot()` 冻结的是纯对象与数组链，经 Date/RegExp/Map/Set 触达的节点仍可变；`cloneDeep` 是**递归**实现（栈深＝数据深度，默认 `maxDepth: 100` 兜住，超深结构走异步路径）；`ActionLoaderOptions.sharedLoadingCounts` 仅构造期读取、`setOptions()` 忽略；`withTimeout` 的超时错误是普通 `Error` 且 `Timeout after <n>ms` 属稳定文案；`destroy()` 不注销 getter 定义（销毁后 `store.getters` 返回初始化时登记的那份）。
 
 ### Tooling（工程链）
@@ -85,7 +103,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **脏标记的上报时机保留「调用前」**（`dirtyTracking`）：改成「先调用后上报」会把「多报」换成「漏报」——方法内改完状态再抛错时脏标记丢失，视图永久漏更新。现状是注释明示的「宁可多报」保守契约；同步方法调用后抛错会多标一次键，属预期。
 - **`pnpm-workspace.yaml` 的 `allowBuilds` 不是拼写错误**：pnpm 12.3.4 实际识别并回写该键（见 `node_modules/.modules.yaml`）与 `nodeLinker: hoisted`（Windows junction / 重解析点的安全策略权衡已在该文件注释中记录）。按报告改回 `onlyBuiltDependencies` 会让白名单失效、`pnpm -r exec` 的行为反而需要重建布局复验。
 - **`no-extra-semi` 仍是 ESLint 9 的内置规则**：报告称「v9 已移除」不成立（该规则 v8.53 弃用、v10 才移除），`eslint --print-config` 输出 `[2]`、`pnpm lint` 退出 0。测试文件里行首 `;(` 的既有写法属 prettier 与 ESLint 的历史分歧，本轮未动。
-- **未纳入本轮的改动**：`withThrottle` / `withDebounce` 的 `dispose` / `cancel` 入口、`Storage` 与 `ActionLoader` 默认值的跨文件单点化、`WxStorageBackend` 从 `src/types/persistence.ts` 迁到运行时模块、脏键归属索引增量化（需与 benchmark 吞吐基线一起评估）——均涉及公开面或目录级搬迁，另立波次。
+- **Wave E 未收口的四项（另立议题）**：
+  - `withRetry` 的退避等待没有取消口——`retryWithBackoff` 的 `delay * 2^(n-1)` 定时器一旦排程，宿主卸载后在途重试仍会跑到次数用尽。本轮只给防抖 / 节流开了入口：重试的挂起态在 Promise 链里、且「取消后原调用返回什么」要先定义（`undefined` 还是 rejection），不是照抄 `cancel` 就行。`withCache` 同样没有 `dispose` 口（缓存表随装饰器实例存活），与本源同一议题。
+  - `isTrackableHost`（「宿主是否可作为状态键」）在 `debounce.ts` 与 `throttle.ts` 各写一份、`cache.ts` 是同型内联判断，三处未合并：合并要新起内部模块并让 `cache` 依赖它，收益只是整洁度，不动行为。
+  - `src/integrations/enterprise/env.ts` 的 storage 工具仍自己写一份缺失键判定（`value === '' || undefined || null → null`，此外还把非字符串载荷原样返回），**未接** `WxStorageBackend.ts` 的 `normalizeWxStoredValue`。两处语义不同源，接齐会让 `enterprise` 子入口依赖 `plugins`；本轮只把 wx 后端路径收口。
+  - #386 `ErrorContext.timestamp` 双写（`createErrorContext` 生成、`ErrorAggregator` 又以 `context.timestamp || Date.now()` 兜一层，且 `||` 会把合法的 `0` 当缺省）保留现状：彻底收口要把时钟做成可注入项（新公开配置），不在本轮范围。
 - **CI 第三方 action 尚未钉 SHA**：`pnpm/action-setup@v4` 仍按可变 tag 引用，需在有外网的机器上核验 `refs/tags/v4` 指向后换成 commit SHA（`packageManager` 字段已用 sha512 锁住 pnpm 本体）。
 
 ## [0.5.1] - 2026-09-17

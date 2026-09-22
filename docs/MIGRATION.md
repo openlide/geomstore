@@ -34,6 +34,8 @@
 - **`subscribe(fn, { readOnly })` 决定载荷形态**：仅有只读订阅者时免深拷贝（保护开启给只读 Proxy、关闭给原始引用）。`notify.clone` 未显式配置即自动模式——集成层绑定本身是只读注册，默认场景下通知开销显著下降；若有测试断言「回调拿到的是副本」，请改为显式 `notify: { clone: true }`。
 - **脏键与通知**：`$replaceState` 会把被删掉的旧键一并标脏；通知回调内的重入写入归下一轮（组合 Store 同口径）；监听器抛错与 action 收尾链路异常改由 `onError` 承接（生产控制台仍静默）。
 - **持久化生产降级改走 `onError`**（`emit('onError', error, 'persistence')`）；`clearOnUninstall` 删除失败不再被吞。`StorageBackend` 三方法一律「失败抛错」，`getItem` 返回 `null` 只代表键无数据。
+- **不传 `storage` 时的默认后端统一为 `WxStorageBackend`**（`builtin.ts` 的内联适配器已删除）：微信缺失键返回的 `''` 与非字符串载荷改按「无数据」处理（此前 `''` 会被送去 `JSON.parse` 并在恢复路径报一条解析错误）；可用性判定由「有 `getStorageSync`」收紧为「三方法齐备」，只有读方法的残缺 `wx` 不再每次落盘抛 `TypeError`，而是走内存降级；降级文案括号里新增「wx 同步 API 不齐备」，按文案匹配日志 / `onError` 的调用方需同步。显式传 `storage` 的路径不受影响。
+- **`WxStorageBackend` 的实现文件换位置**（`src/types/persistence.ts` → `src/plugins/WxStorageBackend.ts`）：**非破坏性**，`@openlide/geomstore/extras/plugins` 与 `@openlide/geomstore/extras` 的导出名与形状不变，import 无需改动；类体逐字节相同。
 - **`compareSnapshots` 不再把「深过 100 层」当成差异**（退化为整体 `deepEqual`）；`deepEqual` 的深度预算跨 Set 累加，超深结构按保守语义判不等且一次顶层调用只告警一次。
 - **错误子系统统计与上报**：`ErrorAggregator` 的样例不再携带 `payload` 且随命中刷新、`byStore` 随组驱逐保持一致；`ErrorMonitoring` 的 `reportTimeout <= 0` 表示不超时、`clear()` 复位连续失败计数；`ErrorRecovery` 的受控字段（`error` / `config` / `attempt`）不再被调用方上下文覆盖；`ErrorBoundary` 会把非 `Error` 抛出值归一化后记账（重抛仍用原始值）。
 - **时间旅行 `importHistory` 会跳过畸形条目**（`state` 为数组或自持 `__proto__` 键），`undo` / `redo` 在回放成功后才推进索引。
