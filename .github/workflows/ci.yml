@@ -109,6 +109,13 @@ jobs:
       - name: Build
         run: pnpm run build
 
+      # 0.6.0 的事故里 test / build / pack 全绿，坏产物照样发出去了——因为没有任何一步
+      # 真正加载过「要被微信构建 npm 拷走的那份文件」。这一步把该验证固化成门禁。
+      - name: Build & verify WeChat npm artifact (dist-weapp)
+        run: |
+          pnpm run build:weapp
+          pnpm run verify:weapp
+
       - name: Smoke test dist bundles (ESM + subpath)
         run: |
           node --input-type=module -e '

@@ -226,7 +226,8 @@ Store 通知 → 集成层合并订阅回调
 | 编译 | `build` → `tsc -p tsconfig.build.json` | 产出 `dist/**`（结构保留，供子路径导出） |
 | 收尾 | `postbuild-dist.mjs` | 写入 `dist/package.json` 的 `{"type":"module"}` 标记并移除 sourcemap |
 | 压缩 | `minify-dist.mjs`（`build:min` / `build:release`） | `build:release` 为**严格模式**：无可用压缩器时以退出码 1 中止 |
-| 子路径转发 | `generate-subpath-stubs.mjs`（`prepack` / `postpack`） | 生成/清理 `store/`、`hooks/`、`plugins/`、`integrations/` 等转发目录，供微信「构建 npm」使用 |
+| 子路径转发 | `generate-subpath-stubs.mjs`（`prepack` / `postpack`） | 生成/清理 `store/`、`hooks/`、`plugins/`、`integrations/` 等转发目录，供不解析 `exports` 的老式场景按目录裸导入 |
+| 微信产物 | `build-weapp.mjs` + `weapp-entries.mjs` + `verify-weapp-bundle.mjs` | 把 `exports` 里每个子路径打成**自包含单文件 CJS** 落进 `dist-weapp/`，由包根 `miniprogram` 字段交给微信「构建 npm」整目录拷贝。入口清单从 `exports` 派生（两处各抄一份必漂移）；verify 那一步是门禁——0.6.0 的坏产物能发出去，就是因为没有任何环节加载过这份文件（背景见 `WECHAT_NPM_FIX.md`） |
 
 `exports` 映射是运行时的唯一权威（`.` / `./core` / `./extras` / `./extras/*`）；转发子目录只是为不支持 `exports` 子路径的环境兜底。
 

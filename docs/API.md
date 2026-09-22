@@ -24,7 +24,8 @@ import { createSnapshot } from '@openlide/geomstore/extras/snapshot'            
 | `@openlide/geomstore/extras/plugins` | 内置插件实现与存储后端 | 按需 |
 | `@openlide/geomstore/extras/error` | 错误类族 / 边界 / 恢复 / 监控 / 上报器 | 按需 |
 | `@openlide/geomstore/extras/enterprise` | 企业微信集成 | 按需 |
-| `@openlide/geomstore/{store,hooks,plugins,integrations}` | 转发子目录（`pnpm stubs` 生成，供微信「构建 npm」等不支持 `exports` 子路径的场景） | — |
+| `@openlide/geomstore/{store,hooks,plugins,integrations}` | 转发子目录（`pnpm stubs` 生成，供不解析 `exports` 子路径的老式场景；指向 `dist` 的 ESM） | — |
+| 包根 `dist-weapp/`（非引入路径） | 微信「构建 npm」专用产物：`miniprogram` 字段指向的目录，11 个子路径各是一个**自包含单文件 CJS**，导出面与 `dist` 逐项一致。不要按路径 import 它，由工具整目录拷进 `miniprogram_npm` | 仅微信侧 |
 
 ---
 

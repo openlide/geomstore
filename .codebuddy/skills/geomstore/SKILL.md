@@ -1,6 +1,6 @@
 ---
 name: geomstore
-description: 微信小程序状态管理库 GeomStore（@openlide/geomstore，v0.6.0，纯 ESM 瘦核心）的使用指南。当需要编写、修改或审查使用 GeomStore 的代码（创建 Store、定义 actions/getters、接入微信小程序 Page/Component/App、按子入口引入插件/选择器/Store 组合/错误处理/性能监控/快照/缓存/Action 装饰器）时使用此 skill。触发场景：开发微信小程序并涉及状态管理、要求"用 GeomStore 实现 XX"、代码中已出现 createStore/withPageStore/composeStore/createSelector 等调用、或需要排查 GeomStore 相关问题。
+description: 微信小程序状态管理库 GeomStore（@openlide/geomstore，v0.6.1，纯 ESM 瘦核心）的使用指南。当需要编写、修改或审查使用 GeomStore 的代码（创建 Store、定义 actions/getters、接入微信小程序 Page/Component/App、按子入口引入插件/选择器/Store 组合/错误处理/性能监控/快照/缓存/Action 装饰器）时使用此 skill。触发场景：开发微信小程序并涉及状态管理、要求"用 GeomStore 实现 XX"、代码中已出现 createStore/withPageStore/composeStore/createSelector 等调用、或需要排查 GeomStore 相关问题。
 ---
 
 # GeomStore 使用指南
@@ -9,7 +9,7 @@ description: 微信小程序状态管理库 GeomStore（@openlide/geomstore，v0
 
 GeomStore 是轻量级微信小程序状态管理库，提供类 Pinia 的 API、完整的 TypeScript 类型推断、企业级能力（Store 组合、插件、错误处理、性能监控、快照、Action 增强）与原生小程序集成（Skyline / Webview）。
 
-当前版本 **v0.6.0**，两条硬性特征决定了绝大多数误用：
+当前版本 **v0.6.1**，两条硬性特征决定了绝大多数误用：
 
 - **纯 ESM**：产物为 ESM，没有 CJS 入口，`require('@openlide/geomstore')` 不可用。
 - **瘦核心 + 按需子入口**：主入口只含运行必需 API；快照 / 选择器 / 性能 / Action 增强 / 插件 / 企业微信等**不在主入口**，必须从 `extras/*` 引入。
@@ -28,7 +28,7 @@ GeomStore 是轻量级微信小程序状态管理库，提供类 Pinia 的 API�
    | `@openlide/geomstore/extras/{snapshot,selector,action,performance,plugins,error,enterprise}` | 各可选能力（推荐按子入口精确引入） |
    | `@openlide/geomstore/extras` | 全部可选能力聚合，会整体拉入产物，仅调试或确实全都要用时引入 |
 
-   微信「构建 npm」等不解析 `exports` 的场景，另有转发子目录（`store` / `hooks` / `plugins` / `integrations` / `compose` / `selectors` / `snapshot` / `performance` / `actions` / `cache` / `error`）可用，但 **Node 与打包器下请以上表为准**（如快照用 `extras/snapshot`，而非 `/snapshot`）。
+   微信「构建 npm」走 `package.json` 的 `miniprogram` 字段 → 包内 `dist-weapp/`（**自包含单文件 CJS，覆盖全部 11 个子路径**，导出面与 `dist` 逐项一致）；工具会整目录拷进 `miniprogram_npm`，不拼接、不做依赖分析。另有转发子目录（`store` / `hooks` / `plugins` / `integrations` / `compose` / `selectors` / `snapshot` / `performance` / `actions` / `cache` / `error`）供**其他**不解析 `exports` 的老式场景按目录裸导入，但 **Node 与打包器下请以上表为准**（如快照用 `extras/snapshot`，而非 `/snapshot`）。
 3. **环境要求**：Node ≥ 22；TypeScript **≥ 5.4**（`Store.use` / `usePlugin` 的公开签名使用 `NoInfer`，低版本会报 `Cannot find name 'NoInfer'`，除非开启 `skipLibCheck`）；用装饰器需 `experimentalDecorators`。
 4. **状态只能通过 action 修改**：禁止 `store.state.xxx = value`（开发模式直接抛错；生产模式由 `stateProtection.productionHandler` 决定：默认 `'warn'` 告警后放行、`'silent'` 静默放行、`'error'` 抛错；绕过 action 的写入不触发订阅通知）。合法写法：action 内 `this.state.xxx`、`this.setState(k, v)`、`this.$patch(partial)`、`this.$replaceState(next)`。
 5. **订阅是引用计数**：同一函数注册 N 次就通知 N 次，每个退订句柄只抵消自己那一次注册，重复调用同一句柄无效；句柄按注册标识精确退订，被上限驱逐的旧句柄不会误删同一回调的重新注册。`subscribe` 的监听器只接收**一个参数** `(state) => void`（新状态），没有 `prevState`。回调抛错被逐个隔离，开发模式打印、生产模式经 `onError` 钩子上报；`maxSubscribers`（默认 50）是**每一次注册**都过的硬上界，重复注册同样占额度，达限时按 `subscription.onLimit`（默认 `'evict-oldest'`）处置（`evict-oldest`：驱逐一份最早注册——本次是重复注册时让位的是该监听器自己最早的那一份——并向 `onError` 发一条事件；`throw`：直接抛错），所以 `size() <= maxSubscribers` 是常态（唯一例外：`maxSubscribers <= 0` 配 `evict-oldest`，在册为零、无可驱逐对象，首个订阅仍会成功）。
@@ -304,7 +304,7 @@ const diff = manager.compareSnapshots(result, createSnapshot(next))   // 传完�
 
 **1）本 skill 自带，任何环境可用**
 
-- `references/api/index.md` —— 由 `scripts/generate-skill-api-reference.mjs` 从 `dist/**/*.d.ts` **自动生成的 API 参考**（含精确签名与 JSDoc，重载会完整列出，当前对应 v0.6.0）。参考已**按入口拆分为 `references/api/*.md`**：先看索引的入口一览，再只打开所需入口的文件（渐进加载，不必读整个目录）。
+- `references/api/index.md` —— 由 `scripts/generate-skill-api-reference.mjs` 从 `dist/**/*.d.ts` **自动生成的 API 参考**（含精确签名与 JSDoc，重载会完整列出，当前对应 v0.6.1）。参考已**按入口拆分为 `references/api/*.md`**：先看索引的入口一览，再只打开所需入口的文件（渐进加载，不必读整个目录）。
 
   ```bash
   rg -n 'createSelector' references/api/          # 不确定符号属于哪个入口时
