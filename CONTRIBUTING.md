@@ -81,7 +81,7 @@ node --input-type=module -e 'const s = await import("./dist/index.js"); console.
   4. skill —— `pnpm run build && pnpm run skill:api` 重跑生成物（`references/api/*.md` 的「来源版本」行），另需手改 `SKILL.md` 三处版本号（frontmatter 的 `description`、正文「当前版本」、指向 `references/api/index.md` 那条的「当前对应 vX.Y.Z」）
   5. 门禁 —— `lint:ci` / 四条 `typecheck` / `test:ci` / `build:release` / `npm pack --dry-run`（核对文件数），并在本地复现 CI 那条**走 Node `exports` 解析器的子路径冒烟**
   6. `git tag` 与 `npm publish` 是**对外不可逆动作**（npm 不允许覆盖已发版本），须单独确认后再做
-- **0.x 的版本号语义**：`^0.5.1` 展开为 `>=0.5.1 <0.6.0`，因此**含破坏性变更的发版应升 minor（`0.6.0`）而不是 patch**——发成 `0.5.2` 会让按 caret 锁定的宿主自动升进来并编译失败
+- **0.x 的版本号语义**：`^0.5.1` 展开为 `>=0.5.1 <0.6.0`，即 caret **不跨 minor**——所以含破坏性变更的发版必须升 minor（0.6.0 就是这么定的）。发成 patch 会把破坏性变更自动装进按 caret 锁定的宿主并让它们的编译失败
 - 改动 `package.json` 的 `exports` / `files` 后，请用 `pnpm stubs` + `pnpm build` 验证一次真实解析
 
 ## 文档

@@ -9,11 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 暂无。
 
-## [0.5.2] - 2026-09-23
+## [0.6.0] - 2026-09-23
 
 本版本汇总**第四、五两轮 ocr 复审**与两处复审登记的语义债：第四轮 454 条（critical 6 / high 31 / medium 239 / low 178，分波提交 `1097621`、`5616cbb`、`4f08963`、`5a677d2`、`a954078`、`02bd20f`、`1510829`）、Wave E 四项公开面改造（`dba29b9`、`2e95032` + `841d1ab`、`c7027a0`、`666e1ea`）、第五轮 376 条（`b83d2df`）、`deepEqual` 的内建类型口径修复（`ffc810d`）。逐条判定与证据在 `.ocr-fix/decisions.md` + `.ocr-fix/verdicts/*.md`（第四轮）与 `.ocr-fix/decisions5.md` + `.ocr-fix/verdicts5/*.md`（第五轮）。本节只列**用户可感知**的语义变化，内部健壮性 / 注释类修复不逐条重复。
 
-> **升级为破坏性变更的版本**：下面「Breaking」一节有类型面收紧与若干判据反转（`equalityFn` 快照选项、`SnapshotResult.data`、`WxStorageBackend` 抛错、`maxSubscribers` 硬上界、`deepEqual` 子类/装箱判不等）。按 semver 这本该是 `0.6.0`，仓库沿用 0.x 的既有节奏发 `0.5.2`——**后果是 `^0.5.1` 的宿主会自动升进来**，升级前请读本节与 [docs/MIGRATION.md](./docs/MIGRATION.md)。
+> **本版含破坏性变更，因此升的是 minor（0.5.1 → 0.6.0）**：下面「Breaking」一节有类型面收紧与若干判据反转（`equalityFn` 快照选项、`SnapshotResult.data`、`WxStorageBackend` 抛错、`maxSubscribers` 硬上界、`deepEqual` 子类 / 装箱判不等）。按 `^0.5.1`（展开为 `>=0.5.1 <0.6.0`）锁定的宿主**不会被自动升级**，需要主动改依赖，并照 [docs/MIGRATION.md](./docs/MIGRATION.md) 的「需要改代码」一节逐条迁移。
 
 ### Breaking（类型面与对外契约）
 
@@ -25,7 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`persistencePlugin({ storage })` 在 `store.use()` 安装期校验后端完整性**：缺少 `getItem` / `setItem` / `removeItem` 任一项即抛 `TypeError` 并点名缺失方法（此前只检查 `getItem`，缺写入方法的「只读后端」会推迟到首次落盘才炸、且被 `saveState` 吞成一条日志；悄悄回落到 `wx` / 内存则把数据写到另一个后端）。`Store.use` 原样上抛安装异常，`usePlugin` 仍按既有口径吞掉并 `console.error`。
 - **`OfflineManager.execute` 失败不再抛错**：在线执行失败时返回 `null`（语义＝本次未执行、已交队列重放），原错误记 `logger.error`。此前「入队 + reject」双通道会让非幂等操作（下单 / 提交表单）被执行两次；原先 `catch` 它做重试的调用方请改读返回值或队列长度。
 - **`createUserStore({ userId })` 拒绝空标识**：`userId` 非字符串、空串或纯空白即抛错。此前会派生出 `user-store-` 这类畸形键，不同账号在存储与 `StoreManager` 上撞同一键＝跨账号数据泄漏。`createEnterpriseApp` 冷启动读到历史脏标识时按未登录处理（清键并记日志，不再中断 `App` 构造）。
-- **`syncWithServer()` 校验响应体**：`statusCode` 为 2xx 但响应体没有 `userInfo` 对象时改为 reject（此前把 `undefined` 直接写进 `userInfo: UserInfo | null` 的契约，UI 侧看到「同步成功但无用户」）。同步地址由 `syncUrl` 配置——**0.5.2 第五轮复审已把内置默认端点整个删除**，未配置即不发请求直接 reject，详见下方「第五轮复审」的 Breaking 条。
+- **`syncWithServer()` 校验响应体**：`statusCode` 为 2xx 但响应体没有 `userInfo` 对象时改为 reject（此前把 `undefined` 直接写进 `userInfo: UserInfo | null` 的契约，UI 侧看到「同步成功但无用户」）。同步地址由 `syncUrl` 配置——**0.6.0 第五轮复审已把内置默认端点整个删除**，未配置即不发请求直接 reject，详见下方「第五轮复审」的 Breaking 条。
 - **`setStateProtection()` 在销毁后抛错**：与 `setState` / `$patch` / `subscribe` / `use` / `cache` / `batch` 同口径（消息 `[GeomStore] Cannot call setStateProtection on a destroyed Store`）；只读的 `isStateProtectionEnabled` / `getStateProtectionConfig` 仍豁免。
 - **Store 品牌 Symbol 键更名**：`Symbol.for('__geomstore_brand__')` → `Symbol.for('@openlide/geomstore:brand')`，带包名命名空间以降低与第三方符号偶然碰撞，且刻意不加版本号（加版本会重新制造「分包副本 A 认不出副本 B 的 Store」）。`isGeomStore()` 用法不变；直接按旧键名读该 symbol 的代码需同步。该键不是安全边界，写入保护始终来自状态代理与内部访问令牌。
 
@@ -585,7 +585,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [0.1.1]: https://github.com/openlide/GeomStore/releases/tag/v0.1.1
 [0.1.2]: https://github.com/openlide/GeomStore/releases/tag/v0.1.2
 [0.2.0]: https://github.com/openlide/GeomStore/releases/tag/v0.2.0
-[Unreleased]: https://github.com/openlide/GeomStore/compare/v0.5.2...HEAD
-[0.5.2]: https://github.com/openlide/GeomStore/releases/tag/v0.5.2
+[Unreleased]: https://github.com/openlide/GeomStore/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/openlide/GeomStore/releases/tag/v0.6.0
 [0.5.1]: https://github.com/openlide/GeomStore/releases/tag/v0.5.1
 [0.5.0]: https://github.com/openlide/GeomStore/releases/tag/v0.5.0

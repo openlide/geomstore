@@ -176,7 +176,7 @@
 | 用不写 `return` 的箭头函数当快照 `onError` | 判定按真值走，`undefined` ＝「拒绝继续」，纯观测会把整次快照做成失败 | 显式 `return true`，或改用 `onProgress` 做观测 |
 | 只传 `equalityFn: (a, b) => a === b`、不关快照 | 状态无版本号时缓存的是**内容克隆**，与活引用永不相等 → 每次重算（memo 形同失效） | 一并传 `snapshotState: false`，或改传带版本号的 Store 状态 / `cache: false` |
 | 给自定义深比较器配 `snapshotState: false` | 缓存活引用后两个实参是同一对象，深比较恒等 → 就地变异看不见，TTL 内返回陈旧值 | 保持默认 `snapshotState: true`（深比较器必须配内容快照） |
-| 给装饰器方法期待同步返回（`createDecorator`） | 0.5.2 起同步方法不再被包成 `async`——反过来说，之前依赖它返回 Promise 的调用方现在拿到的是同步值 | 同步方法按同步取值；异步方法照常 `await` |
+| 给装饰器方法期待同步返回（`createDecorator`） | 0.6.0 起同步方法不再被包成 `async`——反过来说，之前依赖它返回 Promise 的调用方现在拿到的是同步值 | 同步方法按同步取值；异步方法照常 `await` |
 | 为省一行引入 `@openlide/geomstore/extras` | 全部可选能力进入产物，主包变大 | 按需 `extras/<能力>` |
 | reporter 里再写 Store / 再抛错 | 形成错误处理回路 | reporter 只做网络/日志，失败交给 flush 的重入队 |
 | 用动态 operation id 做重试计量 | 退避策略失去意义，键数持续增长 | 按「操作类型」命名 |

@@ -1,6 +1,6 @@
 ---
 name: geomstore
-description: 微信小程序状态管理库 GeomStore（@openlide/geomstore，v0.5.2，纯 ESM 瘦核心）的使用指南。当需要编写、修改或审查使用 GeomStore 的代码（创建 Store、定义 actions/getters、接入微信小程序 Page/Component/App、按子入口引入插件/选择器/Store 组合/错误处理/性能监控/快照/缓存/Action 装饰器）时使用此 skill。触发场景：开发微信小程序并涉及状态管理、要求"用 GeomStore 实现 XX"、代码中已出现 createStore/withPageStore/composeStore/createSelector 等调用、或需要排查 GeomStore 相关问题。
+description: 微信小程序状态管理库 GeomStore（@openlide/geomstore，v0.6.0，纯 ESM 瘦核心）的使用指南。当需要编写、修改或审查使用 GeomStore 的代码（创建 Store、定义 actions/getters、接入微信小程序 Page/Component/App、按子入口引入插件/选择器/Store 组合/错误处理/性能监控/快照/缓存/Action 装饰器）时使用此 skill。触发场景：开发微信小程序并涉及状态管理、要求"用 GeomStore 实现 XX"、代码中已出现 createStore/withPageStore/composeStore/createSelector 等调用、或需要排查 GeomStore 相关问题。
 ---
 
 # GeomStore 使用指南
@@ -9,7 +9,7 @@ description: 微信小程序状态管理库 GeomStore（@openlide/geomstore，v0
 
 GeomStore 是轻量级微信小程序状态管理库，提供类 Pinia 的 API、完整的 TypeScript 类型推断、企业级能力（Store 组合、插件、错误处理、性能监控、快照、Action 增强）与原生小程序集成（Skyline / Webview）。
 
-当前版本 **v0.5.2**，两条硬性特征决定了绝大多数误用：
+当前版本 **v0.6.0**，两条硬性特征决定了绝大多数误用：
 
 - **纯 ESM**：产物为 ESM，没有 CJS 入口，`require('@openlide/geomstore')` 不可用。
 - **瘦核心 + 按需子入口**：主入口只含运行必需 API；快照 / 选择器 / 性能 / Action 增强 / 插件 / 企业微信等**不在主入口**，必须从 `extras/*` 引入。
@@ -304,7 +304,7 @@ const diff = manager.compareSnapshots(result, createSnapshot(next))   // 传完�
 
 **1）本 skill 自带，任何环境可用**
 
-- `references/api/index.md` —— 由 `scripts/generate-skill-api-reference.mjs` 从 `dist/**/*.d.ts` **自动生成的 API 参考**（含精确签名与 JSDoc，重载会完整列出，当前对应 v0.5.2）。参考已**按入口拆分为 `references/api/*.md`**：先看索引的入口一览，再只打开所需入口的文件（渐进加载，不必读整个目录）。
+- `references/api/index.md` —— 由 `scripts/generate-skill-api-reference.mjs` 从 `dist/**/*.d.ts` **自动生成的 API 参考**（含精确签名与 JSDoc，重载会完整列出，当前对应 v0.6.0）。参考已**按入口拆分为 `references/api/*.md`**：先看索引的入口一览，再只打开所需入口的文件（渐进加载，不必读整个目录）。
 
   ```bash
   rg -n 'createSelector' references/api/          # 不确定符号属于哪个入口时

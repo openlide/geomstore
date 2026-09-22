@@ -144,11 +144,11 @@ withThrottle(100, { leading: true, trailing: true })   // 间隔是第一个位�
 
 ### 自定义装饰器（`createDecorator`）把同步方法变成返回 Promise 了？
 
-0.5.2 起不会。`createDecorator` 只在被装饰方法返回 Promise（或 `before` 回调返回 Promise）时才让调用返回 Promise，同步方法保持同步返回；`before` / `after` 的异步返回被接续而非并发执行，rejection 不再变成 unhandled rejection。`onError` 收到的是规范化后的 `Error`，它自身抛错只记一条日志、不会顶替原始失败。装饰访问器（`get` / `set`）在装饰阶段就抛 `TypeError`。
+0.6.0 起不会。`createDecorator` 只在被装饰方法返回 Promise（或 `before` 回调返回 Promise）时才让调用返回 Promise，同步方法保持同步返回；`before` / `after` 的异步返回被接续而非并发执行，rejection 不再变成 unhandled rejection。`onError` 收到的是规范化后的 `Error`，它自身抛错只记一条日志、不会顶替原始失败。装饰访问器（`get` / `set`）在装饰阶段就抛 `TypeError`。
 
 ### 宿主（页面 / 组件）卸载了，挂起的防抖 / 节流调用怎么办？
 
-自己会到点执行——排程中的定时器回调持有宿主与状态直到窗口 / 延迟到期，期间宿主不可被回收，到点后它照常调用被装饰方法（通常是往已销毁的 Store 里写，抛 `Cannot call … on a destroyed Store`）。0.5.2 起有六个收尾入口，从 `@openlide/geomstore/extras/action` 引入：
+自己会到点执行——排程中的定时器回调持有宿主与状态直到窗口 / 延迟到期，期间宿主不可被回收，到点后它照常调用被装饰方法（通常是往已销毁的 Store 里写，抛 `Cannot call … on a destroyed Store`）。0.6.0 起有六个收尾入口，从 `@openlide/geomstore/extras/action` 引入：
 
 ```ts
 import {
@@ -184,7 +184,7 @@ class SearchPage {
 - **`new WxStorageBackend()` 自己是「缺 wx 就抛错」的**：`wx` 或对应的 `getStorageSync` / `setStorageSync` / `removeStorageSync` 缺失、非函数时三个方法都抛错，不会把 `?.` 短路成静默 no-op（旧行为下写删「看起来成功」、`clearOnUninstall` 误报已清除，读被洗成「键无数据」后一次落盘就覆盖真实数据）。插件路径不受影响——它先用 `isWxStorageSyncAvailable()` 探测，探测不过才降级内存；在非微信环境里直接 new 这个类才会炸，请改传自建后端
 - **恢复被跳过**也编程可感知：后端抛错、JSON 语法错、解析结果不是可信纯对象（含自带 `__proto__` 自有键）、被 `validate` 拒收、`$patch` 被拒 —— 除 `console.error` 外统一 `emit('onError', error, 'persistence')`（改前只写控制台，只订阅 `onError` 的监控会漏掉这一类）
 - 用 `filter` 指定落盘子集；用 `debounce` 控制写入频率（卸载时会同步补写窗口内最后一次变更）
-- **不传 `storage` 时的默认后端就是 `WxStorageBackend`**（0.5.2 起两条路径同一份实现，此前是 `builtin.ts` 里的内联适配器）：`wx.getStorageSync` 对缺失键返回的 `''` 归一为 `null`（＝无数据），写入过非字符串载荷时也按无数据处理，不再被送去 `JSON.parse`。可用性判定要求 `getStorageSync` / `setStorageSync` / `removeStorageSync` **三方法齐备**——只有读方法的残缺 `wx`（部分兼容层）从「每次落盘抛 `TypeError`」改为走内存降级并给一次降级信号
+- **不传 `storage` 时的默认后端就是 `WxStorageBackend`**（0.6.0 起两条路径同一份实现，此前是 `builtin.ts` 里的内联适配器）：`wx.getStorageSync` 对缺失键返回的 `''` 归一为 `null`（＝无数据），写入过非字符串载荷时也按无数据处理，不再被送去 `JSON.parse`。可用性判定要求 `getStorageSync` / `setStorageSync` / `removeStorageSync` **三方法齐备**——只有读方法的残缺 `wx`（部分兼容层）从「每次落盘抛 `TypeError`」改为走内存降级并给一次降级信号
 - **恢复是合并语义**（走 `$patch`）：未被持久化的键保留初始值，不会被覆盖
 - 用 `filter` 指定落盘子集；用 `debounce` 控制写入频率（卸载时会同步补写窗口内最后一次变更）
 - 需要卸载即清理时用 `clearOnUninstall: true`（此时待写数据会被丢弃；删除失败会记日志并 `emit('onError', …, 'persistence')`，不再静默谎报已清除）

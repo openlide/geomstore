@@ -287,7 +287,7 @@ store.use(persistencePlugin({
 ```
 
 - **持久化后端必须是同步实现且三方法齐备**（`getItem` / `setItem` / `removeItem`）：缺任一方法在 `store.use()` 安装期即抛 `TypeError`，返回 Promise 的实现会在恢复 / 落盘 / 清理时明确报错并记日志——不再静默回落到别的后端（那会把数据写到另一个地方）
-- **不传 `storage` 时的默认后端就是 `WxStorageBackend`**（与显式 `new WxStorageBackend()` 同一份实现，0.5.2 起收口）：微信对缺失键返回的 `''` 按「无数据」处理，非字符串载荷同样按无数据；`wx` 需 `getStorageSync` / `setStorageSync` / `removeStorageSync` **三方法齐备**才算可用后端
+- **不传 `storage` 时的默认后端就是 `WxStorageBackend`**（与显式 `new WxStorageBackend()` 同一份实现，0.6.0 起收口）：微信对缺失键返回的 `''` 按「无数据」处理，非字符串载荷同样按无数据；`wx` 需 `getStorageSync` / `setStorageSync` / `removeStorageSync` **三方法齐备**才算可用后端
 - **直接用 `new WxStorageBackend()`（不经插件）时，`wx` 或对应方法缺失 / 非函数就抛错**，不会把读写删短路成静默 no-op——插件路径靠 `isWxStorageSyncAvailable()` 先探测，探测不通过才走降级；自建实例没有这道探测，请自行确认环境
 - 检测不到可用的 wx 同步 API（非微信环境、或 `wx` 残缺）时降级为内存存储：开发模式 `console.warn`，**生产模式经 `onError` 钩子上报**（`emit('onError', error, 'persistence')`），别再指望控制台
 - 卸载时会**同步补写**防抖窗口内的最后一次变更；`clearOnUninstall: true` 则改为清理存储，删除失败会记日志并 `emit('onError', …)`（不再谎报已清除）
