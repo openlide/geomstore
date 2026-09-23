@@ -227,7 +227,7 @@ Store 通知 → 集成层合并订阅回调
 | 收尾 | `postbuild-dist.mjs` | 写入 `dist/package.json` 的 `{"type":"module"}` 标记并移除 sourcemap |
 | 压缩 | `minify-dist.mjs`（`build:min` / `build:release`） | `build:release` 为**严格模式**：无可用压缩器时以退出码 1 中止 |
 | 子路径转发 | `generate-subpath-stubs.mjs`（`prepack` / `postpack`） | 生成/清理 `store/`、`hooks/`、`plugins/`、`integrations/` 等转发目录，供不解析 `exports` 的老式场景按目录裸导入 |
-| 微信产物 | `build-weapp.mjs` + `weapp-entries.mjs` + `verify-weapp-bundle.mjs` | 把 `src` 下全部模块**一比一转译成 CJS** 落进 `dist-weapp/`（文件树与 `dist` 一一对应、模块间保留相对 `require`），由包根 `miniprogram` 字段交给微信「构建 npm」整目录拷贝。公开入口清单从 `exports` 派生（两处各抄一份必漂移）。**不做 bundle**：CJS 多入口 bundle 会重复内联 core，且让每个入口各持一份模块实例（`.` 与 `./core` 的 `globalRegistry` 变两个对象）。背景见 `WECHAT_NPM_FIX.md` |
+| 微信产物 | `build-weapp.mjs` + `weapp-entries.mjs` + `verify-weapp-bundle.mjs` | 把 `src` 下全部模块**一比一转译成 CJS** 落进 `dist-weapp/`（文件树与 `dist` 一一对应、模块间保留相对 `require`），由包根 `miniprogram` 字段交给微信「构建 npm」整目录拷贝。公开入口清单从 `exports` 派生（两处各抄一份必漂移）。**不做 bundle**：CJS 多入口 bundle 会重复内联 core，且让每个入口各持一份模块实例（`.` 与 `./core` 的 `globalRegistry` 变两个对象）。背景与判据见 CHANGELOG 的 `[0.6.1]` 一节 |
 
 `exports` 映射是运行时的唯一权威（`.` / `./core` / `./extras` / `./extras/*`）；转发子目录只是为不支持 `exports` 子路径的环境兜底。
 

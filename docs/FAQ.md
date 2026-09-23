@@ -245,7 +245,7 @@ onLaunch(options) { console.log(this.globalData.appName); this.markLaunched(Stri
 ### `@openlide/geomstore/xxx` 解析不到？
 
 - 先确认该子路径在 `exports` 映射中（`core`、`extras`、`extras/*`）
-- 微信「构建 npm」解析的是包内 `miniprogram` 字段指向的 **`dist-weapp/`**（按模块一比一转译的 CJS，105 个模块与 `dist` 一一对应，11 个公开子路径的入口文件齐备、导出面逐项一致），不是 `exports`、也不是 `dist`；构建 npm 后仍取不到某个子路径，先在 `miniprogram_npm/@openlide/geomstore/` 下数文件，缺哪一条就是产物问题（判据与排查见 [WECHAT_NPM_FIX.md](./WECHAT_NPM_FIX.md)）
+- 微信「构建 npm」解析的是包内 `miniprogram` 字段指向的 **`dist-weapp/`**（按模块一比一转译的 CJS，105 个模块与 `dist` 一一对应，11 个公开子路径的入口文件齐备、导出面逐项一致），不是 `exports`、也不是 `dist`；构建 npm 后仍取不到某个子路径，先在 `miniprogram_npm/@openlide/geomstore/` 下数文件——应当是 **105 个 `.js`**、与 `dist` 同树；四条自检：① 该目录文件数 = `node_modules/@openlide/geomstore/dist-weapp` 的文件数；② 全目录搜 `outsideDeps` 必须无命中；③ 入口文件里每条相对 `require("./x.js")` 的目标都该在该目录内存在；④ 把 `index.js` 复制进一个只含 `{"type":"commonjs"}` 的 `package.json` 的目录后能被 `require` 且 `withPageStore` 等导出为函数。①③ 不满足就是产物缺文件，② ④ 不满足就是产物形态问题——两者都在发布方（本库）的 `pnpm run verify:weapp` 门禁覆盖范围内，出现即带信息来报 issue
 - `@openlide/geomstore/{store,hooks,plugins,integrations}` 这类**转发子目录**由 `pnpm stubs` 生成，服务的是**其他**不解析 `exports` 的老式场景（它们指向 `dist` 里的 ESM，微信侧不走这条）；Node / 打包器请优先用 `extras/*`
 - 注意 `bindMappings` 等底层绑定工具**不在主入口**，需从 `@openlide/geomstore/integrations` 引入（已在 `exports` 声明）；日常优先用 `withPageStore` / `withComponentStore` / `withAppStore`
 

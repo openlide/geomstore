@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.6.1] - 2026-09-23
 
-修复微信「构建 npm」产物损坏（`docs/WECHAT_NPM_FIX.md` 有完整证据链与事后排查记录）。**本版本没有库代码行为变更**——改的是构建与发布链，`src/**` 只有版本号镜像 `LIBRARY_VERSION` 一处。
+修复微信「构建 npm」产物损坏。缺陷特征、判据与修复原理记在本节与 `CONTRIBUTING.md` 的「构建与发布」里（当初的排查工作底稿已随仓库清理删除，结论已全部沉淀进这两处与 `scripts/*.mjs` 的注释）。**本版本没有库代码行为变更**——改的是构建与发布链，`src/**` 只有版本号镜像 `LIBRARY_VERSION` 一处。
 
 ### Fixed（构建与发布链）
 
