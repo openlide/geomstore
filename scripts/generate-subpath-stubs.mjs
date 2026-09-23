@@ -22,6 +22,11 @@
  * 3. 同名目标目录要么不存在，要么已经是本脚本自己的 stub。mkdirSync(recursive) 对
  *    已存在的目录是 no-op，紧接着的 writeFileSync 就会把一个同名真实目录的
  *    package.json（真包的 manifest）覆盖掉。
+ * 4. package.json 若有 `miniprogram` 字段（微信「构建 npm」的构建文件生成目录），
+ *    该目录必须存在、是目录、内含 .js 且在 files 白名单内。npm 对 files 里不存在的项
+ *    是静默跳过（实测目录缺失时 `npm pack --dry-run` 零告警出包），不拦就能发出
+ *    「字段指向空目录」的包；而 pnpm pack / --ignore-scripts / 复用旧 dist 的 CI
+ *    都绕过 prepublishOnly，所以这道判据只能放在每次打包都跑的 prepack 里。
  *
  * 落盘失败：逐目录记账后回滚（本次新建的整目录删掉、原本就是 stub 的写回原 manifest），
  * 再以退出码 1 + 可读原因结束。半途留下的转发目录同样在 files 白名单里，
@@ -155,6 +160,19 @@ function coveredByFiles(sub, filesList) {
   return false
 }
 
+/** 目录内是否递归存在至少一个 .js（空目录与被 npm 跳过的空目录在微信侧是同一件事） */
+function hasJsFileRecursive(dir) {
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name)
+    if (entry.isDirectory()) {
+      if (hasJsFileRecursive(full)) return true
+    } else if (entry.isFile() && entry.name.endsWith('.js')) {
+      return true
+    }
+  }
+  return false
+}
+
 /** 生成前的前置校验；返回人可读的失败原因列表，空数组表示可以安全生成 */
 function checkPreconditions() {
   const problems = []
@@ -183,9 +201,10 @@ function checkPreconditions() {
   // 没有 files 字段 = npm 会把整个包目录都打进包里，不存在「白名单漏了 stub」这回事，
   // 所以这里给 null（跳过覆盖校验）而不是空 Set：空 Set 会把每个登记项都报成未发布，
   // 白白用退出码 1 拦下一次本来正确的打包。
+  let pkg = null
   let filesList = null
   try {
-    const pkg = JSON.parse(fs.readFileSync(path.join(pkgRoot, 'package.json'), 'utf8'))
+    pkg = JSON.parse(fs.readFileSync(path.join(pkgRoot, 'package.json'), 'utf8'))
     filesList = Array.isArray(pkg.files) ? new Set(pkg.files.map((f) => f.replace(/\/+$/, ''))) : null
   } catch (error) {
     problems.push(`无法读取 package.json 校验 files 白名单：${error instanceof Error ? error.message : String(error)}`)
@@ -196,6 +215,35 @@ function checkPreconditions() {
       problems.push(
         `以下 stub 目录未列入 package.json 的 files 白名单，打包时不会随包发布：${unshipped.join(', ')}`,
       )
+    }
+  }
+
+  // miniprogram 字段是微信「构建 npm」的「构建文件生成目录」：工具会把该目录**整份拷贝**进
+  // miniprogram_npm。而 npm 对 files 白名单里不存在的项是**静默跳过**——实测目录缺失时
+  // `npm pack --dry-run` 零告警出包，于是能发出「字段指着不存在的目录」的包，微信侧行为不可预期。
+  // 判据必须落在这里而不是 prepublishOnly：`pnpm pack`、`npm pack --ignore-scripts`、
+  // CI 里复用旧 dist 的打包都绕过那条钩子，而 prepack 每次打包都跑。
+  if (pkg && pkg.miniprogram !== undefined) {
+    const mp = String(pkg.miniprogram).replace(/\/+$/, '')
+    if (mp === '') {
+      problems.push('package.json 的 miniprogram 字段是空串')
+    } else if (path.isAbsolute(mp) || mp.split(/[\\/]/).includes('..')) {
+      problems.push(`miniprogram 必须是包内相对目录（当前 ${JSON.stringify(pkg.miniprogram)}）`)
+    } else {
+      const dir = path.join(pkgRoot, mp)
+      let stat = null
+      try {
+        stat = fs.statSync(dir)
+      } catch {
+        problems.push(`miniprogram 指向的目录 ${mp}/ 不存在：跑一次 pnpm run build:weapp`)
+      }
+      if (stat && !stat.isDirectory()) problems.push(`miniprogram 指向的 ${mp} 不是目录`)
+      if (stat && stat.isDirectory()) {
+        if (!hasJsFileRecursive(dir)) problems.push(`miniprogram 目录 ${mp}/ 里没有任何 .js 产物`)
+        if (filesList && !coveredByFiles(mp.split(path.sep).join('/'), filesList)) {
+          problems.push(`miniprogram 目录 ${mp}/ 未列入 package.json 的 files 白名单，不会随包发布`)
+        }
+      }
     }
   }
 

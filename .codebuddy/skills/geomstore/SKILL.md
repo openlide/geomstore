@@ -35,7 +35,7 @@ GeomStore 是轻量级微信小程序状态管理库，提供类 Pinia 的 API�
 6. **action 的 `this`**：指向 action 上下文，含 `state` / `setState` / `$patch` / `$replaceState` / `getState` / `dispatch`，以及同 store 的其他 action；其余参数调用方传入。
 7. **插件已泛型化**：`Plugin<S extends State = State>`。写 `install(store)` 时可标注具体状态类型；`store.use(plugin)` 与 `usePlugin(plugin, store)` 传具体 Store **无需断言**，状态无关的插件写作 `Plugin<State>`（如 `loggerPlugin`）。
 8. **getter 是纯函数且不缓存**：`(state) => value`，每次读取重新执行；计算密集型派生用选择器。
-9. **小程序包体**：`extras` 聚合入口会拉入全部可选能力，按需能力一律走具体子路径。
+9. **小程序包体**：`extras` 聚合入口会拉入全部可选能力，按需能力一律走具体子路径。但「按子路径引」是否省包体积要看宿主：自带打包器（webpack / vite / esbuild）才摇得掉；只用 npm + 开发者工具「构建 npm」时，体积按包内 `miniprogram` 目录（`dist-weapp/`，全部子入口都在）整目录计，子路径分层只换来运行时按需加载。
 
 ## 快速上手
 

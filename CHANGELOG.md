@@ -20,6 +20,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `scripts/build-weapp.mjs` 的模块清单取 `src` 下全部 `.ts`（排除 `.d.ts`），公开入口清单**从 `package.json` 的 `exports` 派生**（`./dist/x/y.js` → `src/x/y.ts` → `dist-weapp/x/y.js`），两份都由 `scripts/weapp-entries.mjs` 单一实现供 build 与 verify 共用；对不上即退出码 1。esbuild 未装/不可用一律硬失败，口径与 `build:release` 对 terser 的一致（绝不静默产出缺目录的包）。
 - `package.json`：新增 `miniprogram: "dist-weapp"`、`files` 加 `dist-weapp`、`scripts` 加 `build:weapp` / `verify:weapp`、`prepublishOnly` 末尾串联两步；`esbuild` 由传递依赖升为**显式 devDependency**（`^0.28.2`，锁文件同步）。
 - `.gitignore` 忽略 `dist-weapp/`。**未**把它塞进 `clean-dist.mjs`：`build-weapp.mjs` 自己先整目录清空再写（不留已删除子路径的尸体），而让 `pnpm build` 去删 `dist-weapp` 反而会开出一条「`miniprogram` 字段指向空目录、npm 静默跳过缺失的 files 项、微信退回按 `main` 打包」的路。
+- **`prepack` 增加 `miniprogram` 目录守卫**（`generate-subpath-stubs.mjs` 前置校验第 4 条）：字段存在时，该目录必须存在、是目录、内含 `.js` 且在 `files` 白名单内，否则退出码 1。触发原因是实测到一条同型复发的活路——把 `dist-weapp/` 移走后 `npm pack --dry-run` **零告警出包**（npm 对 `files` 里不存在的项就是静默跳过），于是能发出「`miniprogram` 指向不存在目录」的包；而 `pnpm pack`、`npm pack --ignore-scripts`、复用旧产物的 CI 都绕过 `prepublishOnly`，判据只能放在每次打包都跑的 `prepack`。补上后同一步骤报 `miniprogram 指向的目录 dist-weapp/ 不存在：跑一次 pnpm run build:weapp` 并以退出码 1 中止。
+
+### Docs（口径修正）
+
+- **「按需引入」的体积收益改成分宿主说**：`extras/*` 分层在自带打包器（webpack / vite / esbuild）的宿主里确实等于「主包只带用到的代码」；但只用 npm + 开发者工具「构建 npm」的宿主，包体积按包内 `miniprogram` 目录（`dist-weapp/`，全部子入口都在）**整目录计**，与用到几个子路径无关——那条路上子路径分层换来的是**运行时**只加载被 `require` 的文件。原口径见 README 首行、`docs/GUIDE.md`「按需引入 extras」、`docs/BEST_PRACTICES.md` 对照表与 skill 的「小程序包体」条，均已改写，README 的「环境适配要点」新增一条专门讲这个边界。
 
 ### 体积与代价（消费端需要知道）
 

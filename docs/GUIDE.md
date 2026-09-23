@@ -384,7 +384,7 @@ const monitoring = new ErrorMonitoring({
 ## 11. 性能与体积
 
 - **只缓存热点键**：`enableCache(['visibleRows'])`；`cacheConfig.enableStats` 的统计采集有开销，按需开启
-- **按需引入 extras**：不用到的能力不要 import，小程序主包只带真正用到的代码
+- **按需引入 extras**：没 import 的能力不要进模块图。**体积上的收益取决于宿主有没有打包器**：走 webpack / vite / esbuild 时摇掉的代码直接不进包；只用 npm + 开发者工具「构建 npm」时，包体积按包内 `miniprogram` 目录（`dist-weapp/`，含全部子入口）整目录计，此时子路径分层换来的是「运行时只加载被 `require` 的文件」，不是上传体积变小
 - **大对象用异步快照**：`batchSize` 控制单批工作量（默认 100），批间让出控制权避免长任务卡顿。非法值不会交付半成品——构造期默认值与逐次调用共用一个归一化函数（`0` / 负数夹到 1，`NaN` / `Infinity` 回落 100），`timeout` / `batchInterval` 则统一按「非有限值与非正值 = 不设超时 / 无延迟」处理，`timeout: Infinity` 不会再被宿主夹成一次莫名的立即超时
 - **独立缓存**：需要自有策略时直接用 `LRUCache`（容量淘汰 + TTL）
 - **列表逐项写入不再是平方级**：脏键归属索引改增量维护，`push` / 新增键这类「只加边」的写入按新子树增量登记，标量写入 O(1) 查表。仍会走一次全量重建的是**删边类**写入：覆盖已有的对象值、`delete` 掉对象值键、`Map#set` 覆盖值已是对象的键、`Map` / `Set` 的 `delete` / `clear`。高频循环里倾向「追加 / 换引用」，别反复原地替换同一批对象

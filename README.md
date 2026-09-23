@@ -1,6 +1,6 @@
 # GeomStore
 
-面向**原生微信小程序优先**的 TypeScript 状态管理库：核心极简、可选能力下沉 extras，按需引入即可让主包只带真正用到的代码。
+面向**原生微信小程序优先**的 TypeScript 状态管理库：核心极简、可选能力下沉 extras，按需引入只为把真正用到的代码带进包里（体积上的收益取决于宿主有没有打包器，直接用「构建 npm」的宿主见「环境适配要点」）。
 
 - **核心 / extras 分层**：主入口与 `core` 只含运行必需 API；快照、选择器、Action 增强、性能监控、错误处理、企业集成等全部通过 `extras/*` 子路径按需引入
 - **小程序原生友好**：内置 `withPageStore` / `withComponentStore` / `withAppStore` 集成，页面卸载自动退订；环境差异（`wx.request`、同步存储、基础库缺失的 `console.group`）均已适配
@@ -111,6 +111,7 @@ import { createEnterpriseApp } from '@openlide/geomstore/extras/enterprise'
 
 ## 环境适配要点
 
+- **小程序包体与「按需」的边界**：`extras/*` 分层的体积收益**取决于宿主有没有打包器**。走 webpack / vite / esbuild 的宿主会把没 import 的子入口摇掉，主包确实只带用到的代码；而**直接用 npm + 开发者工具「构建 npm」** 的宿主走的是另一条路——包里的 `miniprogram` 目录（`dist-weapp/`，按模块一比一转译的 CJS）被**整目录拷贝**进 `miniprogram_npm` 并**全部计入小程序包体积**（压缩后合计 228.3 KB），与用到几个子路径无关；运行时仍是按需的（只有被 `require` 的文件才加载执行）。主包额度紧张的宿主可以只引主入口并自行裁剪该目录，或改走自带打包器的方案
 - **定时器**：内部对 `setInterval`/`setTimeout` 做 `unref` 探测，浏览器 / 小程序无该 API 时自动跳过，不会阻止进程退出
 - **网络**：错误上报自动选择 `wx.request`（校验 `statusCode`）或 `fetch`（校验 `ok`），均可注入自定义实现
 - **控制台**：基础库缺少 `console.group` 时错误报告自动降级为平铺输出
