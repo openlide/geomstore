@@ -3,29 +3,29 @@
 按**引入路径**组织：标注 [核心] 的符号从主入口引入并始终进入产物；标注 [extras] 的符号从对应子路径引入，不进入主包。
 
 ```ts
-import { createStore, withPageStore } from '@openlide/geomstore'                // 核心
-import { createSnapshot } from '@openlide/geomstore/extras/snapshot'            // extras
+import { createStore, withPageStore } from '@openlide/geomstore' // 核心
+import { createSnapshot } from '@openlide/geomstore/extras/snapshot' // extras
 ```
 
 > 本文签名与源码一致；未在此列出的类型请查阅 `src/types/*.ts`。使用示例见 [GUIDE.md](./GUIDE.md) 与 [`examples/`](../examples)。
 
 ## 入口一览
 
-| 引入路径 | 内容 | 体积 |
-| --- | --- | --- |
-| `@openlide/geomstore` | 核心：Store / 工厂 / 工具 / 钩子 / 小程序集成 / 组合 / LRU | 常驻 |
-| `@openlide/geomstore/core` | 与主入口同源的显式核心子入口 | 常驻 |
-| `@openlide/geomstore/integrations` | 小程序集成底层绑定工具（`bindMappings` 等） | 按需 |
-| `@openlide/geomstore/extras` | 全部可选能力聚合 | 最大，仅调试/全都要用时 |
-| `@openlide/geomstore/extras/snapshot` | 快照引擎 | 按需 |
-| `@openlide/geomstore/extras/selector` | 选择器与组合器 | 按需 |
-| `@openlide/geomstore/extras/action` | ActionLoader / withLoading / 装饰器 / 防抖·节流的宿主收尾入口 | 按需 |
-| `@openlide/geomstore/extras/performance` | 性能监控与 analyzer 插件 | 按需 |
-| `@openlide/geomstore/extras/plugins` | 内置插件实现与存储后端 | 按需 |
-| `@openlide/geomstore/extras/error` | 错误类族 / 边界 / 恢复 / 监控 / 上报器 | 按需 |
-| `@openlide/geomstore/extras/enterprise` | 企业微信集成 | 按需 |
-| `@openlide/geomstore/{store,hooks,plugins,integrations}` | 转发子目录（`pnpm stubs` 生成，供不解析 `exports` 子路径的老式场景；指向 `dist` 的 ESM） | — |
-| 包根 `dist-weapp/`（非引入路径） | 微信「构建 npm」专用产物：`miniprogram` 字段指向的目录，`src` 全部模块**一比一转译成的 CJS**（105 个文件与 `dist` 一一对应，模块间保留相对 `require`），11 个公开子路径的入口齐备、导出面与 `dist` 逐项一致。不要按路径 import 它，由工具整目录拷进 `miniprogram_npm` | 仅微信侧 |
+| 引入路径                                                 | 内容                                                                                                                                                                                                                                                                  | 体积                    |
+| -------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------- |
+| `@openlide/geomstore`                                    | 核心：Store / 工厂 / 工具 / 钩子 / 小程序集成 / 组合 / LRU                                                                                                                                                                                                            | 常驻                    |
+| `@openlide/geomstore/core`                               | 与主入口同源的显式核心子入口                                                                                                                                                                                                                                          | 常驻                    |
+| `@openlide/geomstore/integrations`                       | 小程序集成底层绑定工具（`bindMappings` 等）                                                                                                                                                                                                                           | 按需                    |
+| `@openlide/geomstore/extras`                             | 全部可选能力聚合                                                                                                                                                                                                                                                      | 最大，仅调试/全都要用时 |
+| `@openlide/geomstore/extras/snapshot`                    | 快照引擎                                                                                                                                                                                                                                                              | 按需                    |
+| `@openlide/geomstore/extras/selector`                    | 选择器与组合器                                                                                                                                                                                                                                                        | 按需                    |
+| `@openlide/geomstore/extras/action`                      | ActionLoader / withLoading / 装饰器 / 防抖·节流的宿主收尾入口                                                                                                                                                                                                         | 按需                    |
+| `@openlide/geomstore/extras/performance`                 | 性能监控与 analyzer 插件                                                                                                                                                                                                                                              | 按需                    |
+| `@openlide/geomstore/extras/plugins`                     | 内置插件实现与存储后端                                                                                                                                                                                                                                                | 按需                    |
+| `@openlide/geomstore/extras/error`                       | 错误类族 / 边界 / 恢复 / 监控 / 上报器                                                                                                                                                                                                                                | 按需                    |
+| `@openlide/geomstore/extras/enterprise`                  | 企业微信集成                                                                                                                                                                                                                                                          | 按需                    |
+| `@openlide/geomstore/{store,hooks,plugins,integrations}` | 转发子目录（`pnpm stubs` 生成，供不解析 `exports` 子路径的老式场景；指向 `dist` 的 ESM）                                                                                                                                                                              | —                       |
+| 包根 `dist-weapp/`（非引入路径）                         | 微信「构建 npm」专用产物：`miniprogram` 字段指向的目录，`src` 全部模块**一比一转译成的 CJS**（105 个文件与 `dist` 一一对应，模块间保留相对 `require`），11 个公开子路径的入口齐备、导出面与 `dist` 逐项一致。不要按路径 import 它，由工具整目录拷进 `miniprogram_npm` | 仅微信侧                |
 
 ---
 
@@ -51,71 +51,79 @@ createStore<S extends State, A extends Actions = Actions, G extends Getters<S> =
 >
 > `StoreConfig<S = Record<string, unknown>, …>` 的 `S` 默认值本轮由 `unknown` 改为 `Record<string, unknown>`：默认值为 `unknown` 时 `state?: unknown` 什么都能装，但 `cacheKeys?: Array<keyof ResolvedState<S>>` 会退化成 `never[]`，裸写 `StoreConfig` 的人连 `cacheKeys: ['count']` 都写不出来。代价是裸写法不再接受无索引签名的 interface 作为 `state`；走 `createStore` 的调用不经过这个默认值。同一文件新增导出别名 `ConfigState<S>`（getter 侧的退化兜底，与 `ResolvedState` 同属深路径导入面，主入口的精选再导出未列）。
 
-| 选项 | 类型 | 默认 | 说明 |
-| --- | --- | --- | --- |
-| `name` | `string` | — | Store 名称（日志、组合命名空间、错误上下文） |
-| `state` | `S \| (() => S)` | — | **推荐工厂函数**：创建时执行一次，避免引用类型被多实例共享 |
-| `actions` | `A` | — | 方法集合；`this` 为 action 上下文（`state` / `setState` / `$patch` / `$replaceState` / `dispatch` / `getState`） |
-| `getters` | `G` | — | 纯函数，**只接收 `state`** |
-| `notify.clone` | `boolean` | 未显式配置＝自动 | 通知时是否深拷贝载荷。**未显式配置**时按订阅者构成决定：仅有只读订阅者（页面 / 组件绑定）走零拷贝，存在可写订阅者才深拷贝；显式 `true` 强制深拷贝；显式 `false` 仍在有可写订阅者时深拷贝（防共享载荷被改）。判定为需要拷贝时，**可写注册各拿一份独立深拷贝、只读注册共用一份**（本轮此前共用一份时，先执行的可写回调改入参会让后面的监听器读到半成品）；份数由 `subscription.maxSubscribers` 封顶 |
-| `notify.async` | `boolean` | `false` | 微任务合并同一 tick 内的多次写入 |
-| `notify.onlyOnChange` | `boolean` | `false` | 根据变更计数抑制未检测到写入的 dispatch / batch 通知；脏键追踪不依赖此开关，同值写入也可能推进计数 |
-| `stateProtection.deep` | `boolean` | `true` | 是否递归保护嵌套对象（`false` 只保护顶层） |
-| `stateProtection.productionHandler` | `'error' \| 'warn' \| 'silent'` | `'warn'` | 生产模式下非法写入的处理方式；**取值在构造期校验**，越界值（含未类型化调用方传的任意字符串）让 `createStore` 当场抛 `TypeError`，而不是留到很远的一次状态写入才以别的面目失败 |
-| `cacheConfig.enableStats` | `boolean` | `true` | 是否采集缓存命中统计（有额外开销） |
-| `cacheConfig.ttl` | `number` | `0`（不过期） | 键级缓存过期毫秒数；非有限值与负数（`NaN` / `Infinity` / `-1`）归一为 `0` 并留一条开发期告警——此前这类取值靠 `Date.now()-ts > Infinity` 恒假「意外」得到永不过期，配置算错没有任何信号 |
-| `subscription.maxSubscribers` | `number` | `50` | 在册**注册**数上限（同一监听器注册两次计两笔）；达限时重复注册会让位该监听器自己最早的一笔 |
-| `subscription.onLimit` | `'evict-oldest' \| 'throw'` | `'evict-oldest'` | 订阅数达上限时的策略。`evict-oldest` 驱逐一份注册时，Store 会向 `onError` 钩子发一条带 Store 名 / 上限 / 被驱逐监听器标识的 `Error`（第二参 `'subscribe'`），生产不再完全静默；`throw` 分支不产生该事件 |
+| 选项                                | 类型                            | 默认             | 说明                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| ----------------------------------- | ------------------------------- | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `name`                              | `string`                        | —                | Store 名称（日志、组合命名空间、错误上下文）                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `state`                             | `S \| (() => S)`                | —                | **推荐工厂函数**：创建时执行一次，避免引用类型被多实例共享                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `actions`                           | `A`                             | —                | 方法集合；`this` 为 action 上下文（`state` / `setState` / `$patch` / `$replaceState` / `dispatch` / `getState`）                                                                                                                                                                                                                                                                                                                                                                   |
+| `getters`                           | `G`                             | —                | 纯函数，**只接收 `state`**                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `notify.clone`                      | `boolean`                       | 未显式配置＝自动 | 通知时是否深拷贝载荷。**未显式配置**时按订阅者构成决定：仅有只读订阅者（页面 / 组件绑定）走零拷贝，存在可写订阅者才深拷贝；显式 `true` 强制深拷贝；显式 `false` 仍在有可写订阅者时深拷贝（防共享载荷被改）。判定为需要拷贝时，**可写注册各拿一份独立深拷贝、只读注册共用一份**（本轮此前共用一份时，先执行的可写回调改入参会让后面的监听器读到半成品）；份数由 `subscription.maxSubscribers` 封顶                                                                                  |
+| `notify.async`                      | `boolean`                       | `false`          | 微任务合并同一 tick 内的多次写入                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `notify.onlyOnChange`               | `boolean`                       | `false`          | 根据变更计数抑制未检测到写入的 dispatch / batch 通知；脏键追踪不依赖此开关，同值写入也可能推进计数                                                                                                                                                                                                                                                                                                                                                                                 |
+| `stateProtection.deep`              | `boolean`                       | `true`           | 是否递归保护嵌套对象（`false` 只保护顶层）                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `stateProtection.productionHandler` | `'error' \| 'warn' \| 'silent'` | `'warn'`         | 生产模式下非法写入的处理方式；**取值在构造期校验**，越界值（含未类型化调用方传的任意字符串）让 `createStore` 当场抛 `TypeError`，而不是留到很远的一次状态写入才以别的面目失败                                                                                                                                                                                                                                                                                                      |
+| `cacheConfig.enableStats`           | `boolean`                       | `true`           | 是否采集缓存命中统计（有额外开销）                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `cacheConfig.ttl`                   | `number`                        | `0`（不过期）    | 键级缓存过期毫秒数；非有限值与负数（`NaN` / `Infinity` / `-1`）归一为 `0` 并留一条开发期告警——此前这类取值靠 `Date.now()-ts > Infinity` 恒假「意外」得到永不过期，配置算错没有任何信号                                                                                                                                                                                                                                                                                             |
+| `subscription.maxSubscribers`       | `number`                        | `50`             | 在册**注册**数上限（同一监听器注册两次计两笔）；达限时重复注册会让位该监听器自己最早的一笔。取值在构造期归一（与 `LRUCache` capacity / `cacheConfig.ttl` 同一条守卫）：**非有限值（`NaN` / `Infinity` / `-Infinity`）回落默认 50 并在开发模式告警**、小数向下取整（`2.5` → 2，此前实际放行 3 份）、`0` 与负数按「add 文档既有语义」保留。**这是一处修复方向的变更**：此前 `maxSubscribers: NaN` 让 `size >= NaN` 恒假 ⇒ 护栏被一个算错的配置静默关闭、注册表无界增长且没有任何信号 |
+| `subscription.onLimit`              | `'evict-oldest' \| 'throw'`     | `'evict-oldest'` | 订阅数达上限时的策略。`evict-oldest` 驱逐一份注册时，Store 会向 `onError` 钩子发一条带 Store 名 / 上限 / 被驱逐监听器标识的 `Error`（第二参 `'subscribe'`），生产不再完全静默；`throw` 分支不产生该事件                                                                                                                                                                                                                                                                            |
 
 ## 1.2 Store 实例
 
 ### 状态
 
-| 方法 | 签名 | 说明 |
-| --- | --- | --- |
-| `getState` | `(): S` | 返回活动引用（就地变异语义） |
-| `setState` | `<K extends keyof S>(key: K, value: S[K]): void` | 单键写入。**值按引用保存**（与 `_initializeState` / `$replaceState` 的深拷贝不同）：别名脏键归因与脏追踪索引都以对象身份做可达性判定，写入时换成克隆会把「同一对象被多个顶层键引用」从状态图里抹掉。代价是调用方事后再改入参不被追踪（无计数、无脏键、无钩子）；要「写入即定格」请用 `$patch`，要读隔离副本请用 `$snapshot()` |
-| `$patch` | `(partialState: Partial<S>): void` | 多键合并（底层 `deepMerge`，仅对纯对象递归）。**「合并即隔离」只对可安全克隆的值成立**：类实例、`Promise`、WeakMap/WeakSet、字节缓冲等非纯对象按引用并入，副本与补丁实参是同一个对象（要真隔离请自己先克隆） |
-| `$replaceState` | `(newState: S \| (() => S)): void` | 整体替换；未列出的键会丢失，且这些**消失的旧键同样被标脏**（`isStateKeyDirty` 对它们为 `true`） |
-| `$snapshot` | `(): Readonly<S>` | 深克隆后**部分冻结**：纯对象与数组链上深度只读；经 Date / RegExp / Map / Set 或非纯对象（类实例等）触达的节点仍可变，`Readonly<S>` 只是类型层面的承诺 |
-| `$restore` | `(snapshot: Readonly<S>): void` | 从快照恢复（经 `$replaceState`，不重复深拷贝） |
+| 方法            | 签名                                             | 说明                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| --------------- | ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `getState`      | `(): S`                                          | 返回活动引用（就地变异语义）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `setState`      | `<K extends keyof S>(key: K, value: S[K]): void` | 单键写入。**值按引用保存**（与 `_initializeState` / `$replaceState` 的深拷贝不同）：别名脏键归因与脏追踪索引都以对象身份做可达性判定，写入时换成克隆会把「同一对象被多个顶层键引用」从状态图里抹掉。代价是调用方事后再改入参不被追踪（无计数、无脏键、无钩子）；要「写入即定格」请用 `$patch`，要读隔离副本请用 `$snapshot()`。**原型链敏感键**（`__proto__` / `constructor` / `prototype`）走 DefineOwnProperty 而不是裸 `[[Set]]`，与 `deepMerge` / `$patch` / `$replaceState` 同一份判据：`setState('__proto__', { inj: 1 })` 从「把整个状态对象的原型换成入参、注入键此后经任何缺失键都读得到」变成「在状态对象上承载一个自有数据属性」，原型不动、注入键也不再经原型链可见。相等性判定对这类键按**自有描述符**取值（`state.__proto__` 的 `[[Get]]` 返回的是原型而非写入值），因此「值非对象、setter 静默丢弃、什么都没写成功」的那次写入不再推进变更计数 / 脏键 / 通知 |
+| `$patch`        | `(partialState: Partial<S>): void`               | 多键合并（底层 `deepMerge`，仅对纯对象递归）。**「合并即隔离」只对可安全克隆的值成立**：类实例、`Promise`、WeakMap/WeakSet、字节缓冲等非纯对象按引用并入，副本与补丁实参是同一个对象（要真隔离请自己先克隆）。顶层键的「改没改」按与 `setState` 同一条 `Object.is` 判据：命中的键整键跳过——不推进变更计数、不标脏、不写缓存、不通知，`$patch({})` 因此什么都不做（此前它无条件计一次变更并把补丁触及的每个键标脏 + 写一遍缓存，于是 `notify.onlyOnChange` 在最常用的补丁路径上省不掉 setData）                                                                                                                                                                                                                                                                                                                                                                              |
+| `$replaceState` | `(newState: S \| (() => S)): void`               | 整体替换；未列出的键会丢失，且这些**消失的旧键同样被标脏**（`isStateKeyDirty` 对它们为 `true`）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `$snapshot`     | `(): Readonly<S>`                                | 深克隆后**部分冻结**：纯对象与数组链上深度只读；经 Date / RegExp / Map / Set 或非纯对象（类实例等）触达的节点仍可变，`Readonly<S>` 只是类型层面的承诺                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `$restore`      | `(snapshot: Readonly<S>): void`                  | 从快照恢复（经 `$replaceState`，不重复深拷贝）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 
 ### Action 与 Getter
 
-| 方法 | 签名 | 说明 |
-| --- | --- | --- |
-| `dispatch` | `(name, ...args) => ReturnType<A[name]>` | 返回值原样透传（异步 action 返回 Promise） |
-| `getter` | `<K extends keyof G>(getterName: K): InferGetterReturn<G, K>` | 依赖未变时复用结果 |
-| `getGetterNames` | `(): string[]` | 供调试 / DevTools |
+| 方法             | 签名                                                          | 说明                                                                                                                                                                                                                                                                                                                                      |
+| ---------------- | ------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `dispatch`       | `(name, ...args) => ReturnType<A[name]>`                      | 返回值原样透传（异步 action 返回 Promise）                                                                                                                                                                                                                                                                                                |
+| `getter`         | `<K extends keyof G>(getterName: K): InferGetterReturn<G, K>` | 每次调用都执行一次 getter 函数。**Store 层没有 getter 结果缓存**（无版本号比较、无记忆表、无缓存键），所以「依赖未变时复用结果」不成立：连续读同一个 getter 就是连续重算 N 次。要「依赖未变则复用」请用 `extras/selector` 的 `createSelector`（失效凭证是状态对象身份 + 版本号，见第三节）；getter 保持纯函数，副作用会在每次读取时都执行 |
+| `getGetterNames` | `(): string[]`                                                | 供调试 / DevTools                                                                                                                                                                                                                                                                                                                         |
 
 ### 订阅与批量
 
-| 方法 | 签名 | 说明 |
-| --- | --- | --- |
-| `subscribe` | `(listener: StateListener<S>, options?: { readOnly?: boolean }): () => void` | 监听器**只接收新状态**；返回值为退订函数。`readOnly: true` 声明回调不写状态，全部订阅者都只读时通知载荷免深拷贝（开启状态保护时为只读保护 Proxy，关闭时为原始引用）；需要隔离时按注册可写性分配载荷——**可写注册各一份独立深拷贝，只读注册共用一份** |
-| `isStateKeyDirty` | `(key: string \| symbol): boolean` | 自上次通知以来该键是否变更（集成层据此跳过 `setData`）；脏键按 `Reflect.ownKeys` 收集，故 `symbol` 顶层键同样可查 |
-| `batch` | `<T>(fn: () => T): T` | 期间合并通知，结束时统一发一次（返回值与异常原样透传） |
-| `startBatch` / `endBatch` | `(): void` | 手动批量（支持嵌套，仅最外层收尾时通知） |
+| 方法                      | 签名                                                                         | 说明                                                                                                                                                                                                                                                |
+| ------------------------- | ---------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `subscribe`               | `(listener: StateListener<S>, options?: { readOnly?: boolean }): () => void` | 监听器**只接收新状态**；返回值为退订函数。`readOnly: true` 声明回调不写状态，全部订阅者都只读时通知载荷免深拷贝（开启状态保护时为只读保护 Proxy，关闭时为原始引用）；需要隔离时按注册可写性分配载荷——**可写注册各一份独立深拷贝，只读注册共用一份** |
+| `isStateKeyDirty`         | `(key: string \| symbol): boolean`                                           | 自上次通知以来该键是否变更（集成层据此跳过 `setData`）；脏键按 `Reflect.ownKeys` 收集，故 `symbol` 顶层键同样可查                                                                                                                                   |
+| `batch`                   | `<T>(fn: () => T): T`                                                        | 期间合并通知，结束时统一发一次（返回值与异常原样透传）                                                                                                                                                                                              |
+| `startBatch` / `endBatch` | `(): void`                                                                   | 手动批量（支持嵌套，仅最外层收尾时通知）                                                                                                                                                                                                            |
 
 - 同一监听器注册 N 次会收到 N 次通知。每个返回的退订句柄只抵消一份注册，**重复调用同一句柄无效**，不会移除其他注册。`maxSubscribers` 是**每一次注册**都生效的硬上界（含同一监听器的重复注册）：达限时重复注册挤掉自己最早的一笔，`onLimit: 'throw'` 下抛错，在册注册数不会超过上限（此前重复注册免检，循环订阅同一函数可让注册表无界增长）。
 - 直连 `SubscriptionManager` 的宿主可以配 `onSubscriberEvicted`（载荷类型 `SubscriberEvictionInfo`：`listener` / `maxSubscribers` / `size`，`size` 是「驱逐完成后、新注册写入前」的在册数），`'throw'` 策略不产生该事件。这两个名字只随内部 barrel `src/core/store/index.ts` 出口，该子路径不在 `package.json` 的 `exports` 映射里；**用 `createStore` 的调用方不需要它**——Store 已把驱逐事件接到 `onError` 钩子上（见 1.1 的 `subscription.onLimit`）。
 - 回调抛错被逐个隔离（不影响其余监听器）：开发模式打印，生产模式改由 `onError` 钩子承接（控制台仍静默），因此「某个订阅者一直在抛错」有可上报的入口。本轮派发对象是进入通知时在册的注册，回调内退订自己仍会收到本次这最后一次更新。
 - action 内通过 `this.state` 修改对象、数组及 Map/Set 时，会累积受影响的**顶层键**；共享别名可能同时使多个键变脏。这在默认模式与 `onlyOnChange` 模式下均生效。
 - 在同步订阅回调内读取 `isStateKeyDirty(key)`；脏键在通知结束后清空，批处理或异步通知等待期间会累积。`batch` 延迟的是通知，不是状态写入。
+- **异步 action 的通知在两个时点各补发一次**（0.7.0 起）：返回 thenable 时，**同步段结束当场补发一次**（覆盖 action 在第一个 `await` 之前写入的格子），settle 时再补发一次（覆盖 `await` 之后的续段变更）。此前只有 settle 那一轮，而 Store 侧的写入抑制是硬开关（`setState` / `$patch` / `$replaceState` 都看「是否在 dispatch 中」），于是返回**永不 settle** 的 promise（等用户交互才 resolve、`wx.request` 无回调也不 reject、超时未 reject）时，同步段那一格状态要等「下一个不相干的通知」才顺带补发——`dialogVisible = true` 得等对话框关掉之后才可见（而它根本没显示出来）。可见后果：**默认模式下「同步段有写入且最终 settle」的 action 通知数由 1 变 2**（按通知打点的宿主需重设期望），`notify.onlyOnChange` 按变更计数去重、仍是一次；同步段没有写入时不多刷（无变更的异步 action 仍是 0 次），`batch` 期间不提前通知。action 返回值是**手写 thenable** 时的状态可见性同样依赖这条兜底。
 - Date 等其他内建对象的内部变异不在此代理追踪范围；需要通知时，通过 `setState` 等 API 替换所属状态键。`getState()` 返回的裸引用不是 action 脏追踪视图。
 - **有意的保护豁免（非普通实例的方法）**：类实例、类型化数组等挂在状态里的对象，其方法被读取时绑定到**原始接收者**（绑到保护代理会让 `#private` 字段的品牌检查与类型化数组的内部槽位直接抛错）。后果是方法内部的写入（`this.count++`）不经过 set / deleteProperty / defineProperty 陷阱——既不被状态保护拦截，也不推进脏键与版本计数。这类状态请经 `setState` / `$patch` 修改。同一条读取上返回的是**同一个**函数引用（`state.method === state.method` 成立），方法被整体替换后则返回新实现的绑定。
-- **有意的追踪空洞（被锁死的数据属性）**：既不可配置也不可写变的自有数据属性，Proxy 不变量要求原样返回该值，调用方拿到的是裸对象，此后对它的写入不标脏、不推版本、不通知。这种属性只适合承载「不再被改的引用」。
+- **有意的追踪空洞（被锁死的数据属性）**：既不可配置也不可写变的自有数据属性，Proxy 不变量要求原样返回该值，调用方拿到的是裸对象，此后对它的写入不标脏、不推版本、不通知。这种属性只适合承载「不再被改的引用」。**读取行为在 0.7.0 变了**：此前深保护代理与数组代理会无条件把对象子值包成 Proxy，命中上述不变量时读一次就抛 `TypeError: 'get' on proxy: property 'x' is a read-only and non-configurable data property …`（典型来路是 `setState('user', otherStore.$snapshot().user)` 或 `setState('cfg', Object.freeze({ inner: {...} }))`，`stateProtection` 默认就是 `deep: true`）；现在深代理与数组代理（symbol 键 / 数字索引 / 附加自有键三处）在包装前先兑现 `[[Get]]` 不变量，**原样返回裸引用、不再抛错**，代价是这类属性不受写保护与脏追踪（与 `dirtyTracking` 早有同一条形同豁免的判定对齐）。要写保护请放在可配置 / 可写的属性上，或经 `setState` / `$patch` 整体替换。
 - Map / Set 的判定按「`instanceof` ∪ `Symbol.toStringTag` 标签」取并集，跨 realm 的集合（worker / iframe 传入）同样被识别为集合：此前它们走普通对象路径，内部写入绕过陷阱、挂在其中的子树也进不了脏追踪索引。
 
 ### 缓存
 
-| 方法 | 签名 | 说明 |
-| --- | --- | --- |
-| `enableCache` | `(keys?: Array<keyof S>): void` | 省略 `keys` 表示缓存全部顶层键 |
-| `disableCache` | `(): void` | 关闭缓存 |
-| `getCached` | `<K extends keyof S>(key: K): S[K]` | 走缓存读取 |
-| `invalidateCache` | `<K extends keyof S>(key?: K): void` | 省略 `key` 清空全部 |
-| `getCacheStats` | `(): CacheStats` | 只读，销毁后仍可调用 |
+| 方法              | 签名                                 | 说明                                                                                                                                                                                                                              |
+| ----------------- | ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `enableCache`     | `(keys?: Array<keyof S>): void`      | 省略 `keys`（`undefined`）表示缓存全部顶层键；**显式传空数组 `[]` ＝一个键都不缓存**（这两条是不同的语义，别用 `Object.keys(state).filter(...)` 的结果去表达「全缓存」——筛空了就变成不缓存）。`createStore` 的 `cacheKeys` 同口径 |
+| `disableCache`    | `(): void`                           | 关闭缓存                                                                                                                                                                                                                          |
+| `getCached`       | `<K extends keyof S>(key: K): S[K]`  | **缓存的唯一读取入口**，只有它计 `hits` / `misses`                                                                                                                                                                                |
+| `invalidateCache` | `<K extends keyof S>(key?: K): void` | 显式失效；省略 `key` 清空全部                                                                                                                                                                                                     |
+| `getCacheStats`   | `(): CacheStats`                     | 只读，销毁后仍可调用                                                                                                                                                                                                              |
+
+**缓存是写穿（write-through），不是失效（invalidate）**——这一条决定「怎么读才命中」：
+
+- `setState(key, value)` 与 `$patch` 在写入状态的同时把新值**写进**缓存条目（`$patch` 按合并后的最终值回写），既不清条目也不算未命中。所以「写完再读会重新计算」是错的：下次 `getCached(key)` 仍命中，并且拿到的就是新值。
+- `getState()` / `store.state` **完全不查缓存**（直接返回活动引用 / 保护代理）。连续 `getState()` 多少次都不产生 `hits`，`getCacheStats()` 会一直是 `hits: 0 / misses: 0`——想知道命没命中只有 `getCached()` 与 `getCacheStats()` 这一条路。
+- 真正的失效入口只有两个：`invalidateCache(key?)`（按键 / 整表）与 `$replaceState`（先整表清空再按新状态回填）。`enableCache()` 本身只做「开关 + 清旧条目 + 预填」，不计命中。
+- 小程序集成层的自动注入走的就是 `store.getCached`（`autoInject` / `autoUpdateOnShow`），所以页面侧看到的「缓存生效」是这条路径，不需要手写 `getCached`。
 
 action 完成时，缓存刷新同时检查已有缓存键与当前状态键，移除已被 `delete this.state.key` 删除的条目；`$replaceState` 则先清空整个键级缓存再按新状态回填。不要依赖 action 尚未完成时 `getCached` 已反映直接变异。
 
@@ -123,11 +131,11 @@ action 完成时，缓存刷新同时检查已有缓存键与当前状态键，�
 
 ### 插件与生命周期
 
-| 方法 | 签名 | 说明 |
-| --- | --- | --- |
-| `use` | `(plugin: Plugin): () => void` | 返回卸载函数；`install` 抛错会回滚入列 |
-| `hooks` | `HookSystem` | `on` / `emit` / `size` / `listenerCount` |
-| `destroy` | `(): void` | 销毁后所有写操作抛错（只读统计仍可用） |
+| 方法      | 签名                           | 说明                                     |
+| --------- | ------------------------------ | ---------------------------------------- |
+| `use`     | `(plugin: Plugin): () => void` | 返回卸载函数；`install` 抛错会回滚入列   |
+| `hooks`   | `HookSystem`                   | `on` / `emit` / `size` / `listenerCount` |
+| `destroy` | `(): void`                     | 销毁后所有写操作抛错（只读统计仍可用）   |
 
 > 除 `getCacheStats` 等只读操作外，销毁后调用任何方法都会抛 `[GeomStore] Cannot call … on a destroyed Store`。
 
@@ -135,20 +143,31 @@ action 完成时，缓存刷新同时检查已有缓存键与当前状态键，�
 
 ```ts
 import {
-  isObject, isPlainObject, isFunction, isArray, isPromise,
-  shallowEqual, deepEqual, deepMerge, get, set,
-  noop, identity, uniqueId, clone,
+  isObject,
+  isPlainObject,
+  isFunction,
+  isArray,
+  isPromise,
+  shallowEqual,
+  deepEqual,
+  deepMerge,
+  get,
+  set,
+  noop,
+  identity,
+  uniqueId,
+  clone,
 } from '@openlide/geomstore'
 import type { CloneMode } from '@openlide/geomstore'
 ```
 
-| 函数 | 说明 |
-| --- | --- |
-| `shallowEqual` / `deepEqual` | 仅比较**自有属性**；`shallowEqual` 对 Date/RegExp/Map/Set 按内容比较。`deepEqual(a, b, maxDepth?)` 为迭代实现（栈安全），默认深度预算 1000，**超出即判不等**并在一次顶层调用内只告警一次（告警状态随每次比较创建，重入的 `deepEqual` 各自计一条）；深度沿 Set 元素同样累加（不跨 Set 归零），`symbol` 与不可枚举属性不参与比较。内建类型一律**先判原型一致、再判内容**：Date 比时间值、RegExp 比 `source`+`flags`、Map 比键集（键按引用）与值、Set 比无序元素、**装箱原始值比 `valueOf()`**（`new Number(1)` 与 `new Number(2)` 判不等；`Object.keys` 对它们是空的，只比键集会漏）。原型优先的直接后果是**子类实例与基类实例判不等**（空的 `class MyMap extends Map` ≠ 空的 `new Map()`），而它正是默认比较器最关键的一条——判错方向的「假相等」会让选择器命中并返回陈旧值。**自反性优先于深度预算**：`deepEqual(x, x, n)`（含同一原始值）在任意 `n` 下都为 `true`，此前同一引用恰好落在 `maxDepth` 上会被判「已变更」，让选择器缓存白算一次 |
-| `deepMerge(target, ...sources)` | 仅对纯对象递归；其余类型整体替换；内置循环引用防护（WeakMap 配对跟踪）。整体替换走 `clone` 默认档，因此类实例 / `Promise` / WeakMap 等不可安全克隆的值是**按引用**并入 `target` 的（`$patch` 的共享来源即此处） |
-| `clone(value, mode?)` | `mode`: `'deep'`（默认）/ `'shallow'` / `'safe'`（尽力且绝不抛错）/ `'json'`（有损）。`'deep'` 下数组保留**空洞**与非下标的自有属性（副本与源在 `deepEqual` 下等价，此前 `length` 相同但槽位性质不同、附加属性丢失）；Date/RegExp/Map/Set/Array 的**子类**实例按引用返回（其构造参数与内部槽位不可知，重建必然得到丢方法的残缺副本），即克隆后与活状态共享同一实例。`'shallow'` 只展开有「保类型的一层展开」办法的容器：类实例 / Error / WeakMap / Promise 返回**原引用**（不再是丢掉全部方法的空壳），null 原型对象的副本仍保留 null 原型 |
-| `uniqueId(prefix?)` | 递增唯一 ID |
-| `get` / `set` | 路径读写（`set` 遇到中间路径为原始值时不静默替换） |
+| 函数                            | 说明                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `shallowEqual` / `deepEqual`    | 仅比较**自有属性**；`shallowEqual` 对 Date/RegExp/Map/Set 按内容比较。`deepEqual(a, b, maxDepth?)` 为迭代实现（栈安全），默认深度预算 1000，**超出即判不等**并在一次顶层调用内只告警一次（告警状态随每次比较创建，重入的 `deepEqual` 各自计一条）；深度沿 Set 元素同样累加（不跨 Set 归零），`symbol` 与不可枚举属性不参与比较。内建类型一律**先判原型一致、再判内容**：Date 比时间值、RegExp 比 `source`+`flags`、Map 比键集（键按引用）与值、Set 比无序元素、**装箱原始值比 `valueOf()`**（`new Number(1)` 与 `new Number(2)` 判不等；`Object.keys` 对它们是空的，只比键集会漏）。原型优先的直接后果是**子类实例与基类实例判不等**（空的 `class MyMap extends Map` ≠ 空的 `new Map()`），而它正是默认比较器最关键的一条——判错方向的「假相等」会让选择器命中并返回陈旧值。**自反性优先于深度预算**：`deepEqual(x, x, n)`（含同一原始值）在任意 `n` 下都为 `true`，此前同一引用恰好落在 `maxDepth` 上会被判「已变更」，让选择器缓存白算一次 |
+| `deepMerge(target, ...sources)` | 仅对纯对象递归；其余类型整体替换；内置循环引用防护（WeakMap 配对跟踪）。整体替换走 `clone` 默认档，因此类实例 / `Promise` / WeakMap 等不可安全克隆的值是**按引用**并入 `target` 的（`$patch` 的共享来源即此处）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `clone(value, mode?)`           | `mode`: `'deep'`（默认）/ `'shallow'` / `'safe'`（尽力且绝不抛错）/ `'json'`（有损）。`'deep'` 下数组保留**空洞**与非下标的自有属性（副本与源在 `deepEqual` 下等价，此前 `length` 相同但槽位性质不同、附加属性丢失）；Date/RegExp/Map/Set/Array 的**子类**实例按引用返回（其构造参数与内部槽位不可知，重建必然得到丢方法的残缺副本），即克隆后与活状态共享同一实例。`'shallow'` 只展开有「保类型的一层展开」办法的容器：类实例 / Error / WeakMap / Promise 返回**原引用**（不再是丢掉全部方法的空壳），null 原型对象的副本仍保留 null 原型                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `uniqueId(prefix?)`             | 递增唯一 ID                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `get` / `set`                   | 路径读写（`set` 遇到中间路径为原始值时不静默替换）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 
 ## 1.4 钩子与插件
 
@@ -193,12 +212,12 @@ withAppStore<S, A, G>(store, options?: ConnectOptions<S, A, G>): <C>(config: C) 
 
 **`ConnectOptions` 映射形式**（三端一致）：
 
-| 字段 | 简写 | 别名 |
-| --- | --- | --- |
-| `mapState` | `['isLoggedIn']` | `{ loggedIn: 'isLoggedIn' }` |
-| `mapGetters` | `['greet']` | `{ hello: 'greet' }` |
-| `mapActions` | `['login']` | `{ doLogin: 'login' }` |
-| `inject` | — | 注入额外值 / 方法 |
+| 字段         | 简写             | 别名                         |
+| ------------ | ---------------- | ---------------------------- |
+| `mapState`   | `['isLoggedIn']` | `{ loggedIn: 'isLoggedIn' }` |
+| `mapGetters` | `['greet']`      | `{ hello: 'greet' }`         |
+| `mapActions` | `['login']`      | `{ doLogin: 'login' }`       |
+| `inject`     | —                | 注入额外值 / 方法            |
 
 - `onUnload`（Page）/ `lifetimes.detached`（Component）先执行用户生命周期，再在 `finally` 中清理订阅与映射 actions；用户钩子同步执行期间仍可调用映射方法，抛错也会完成清理。包装器**不等待异步钩子返回的 Promise**，不要在 `await` 后依赖仍存在的映射方法。App 级绑定不随 `onHide` 清理。
 - 组件生命周期必须写在 `lifetimes` 字段内；配置顶层的 `attached` / `detached` 不会被执行
@@ -208,6 +227,7 @@ withAppStore<S, A, G>(store, options?: ConnectOptions<S, A, G>): <C>(config: C) 
 - `autoInject` 建立注入映射后，再开 `autoUpdateOnShow` 会在**页面 `onShow` / 组件 `pageLifetimes.show` / App `onShow`** 按 `getCached` 重新注入一次（App 侧此前不生效，`onLaunch` 时尚无缓存的键在 `globalData` 里永久缺失）；App 的 `globalData` 尚未建立时只转发用户 `onShow`、不注入，用户钩子由 `try/finally` 保住，注入失败不会吞掉它。宿主 `globalData` 上已有同名成员会被映射值覆盖，开发模式一条 `[withAppStore] globalData 已有成员 … 将被 store 映射值覆盖` 告警。
 - 绑定段（解析映射 → 订阅 → 注入）抛错时**回滚已建立的订阅**、告警并把原错误抛回框架，不留「方法已合并但无订阅」的中间态（Component 的 `methods` 合并并入同一段）。
 - `exposeStoreAPI` / `bindActions` 遇到宿主上不可重写的同名成员（非 `configurable`、或只读数据属性）时**跳过该键并汇总一条告警**，不再中途抛错让整批注入失效；写入按 `defineProperty` 落自有属性，宿主只有继承来的同名访问器时不再触发其 setter，解绑按原描述符回放。
+- **`mapActions` 与组件自身同名方法（0.7.0 行为变更）**：Component 侧此前在配置级把 `methods` 的同名键无条件覆盖、`detached` 再无条件 `delete`，结果是**组件自己的方法在解绑后彻底消失**（页面复用同一实例形状时表现为「按钮点不动」）。现在与 Page / App 的 `bindActions` 同口径：合并前先检查 `ComponentConfig.methods` 的自有同名键，命中就 `console.warn` 点名冲突方法与其对应的 action，并把原值登记进遮蔽表；**绑定期间 action 仍优先**（映射必须生效，这与 Page / App 一致），`detached` 时**有遮蔽原值就按自有属性回放原方法**、没有才 `delete` 掉绑定的那个。App 侧 `globalData` 的覆盖告警覆盖面同样扩到 `autoInject` 的**注入目标键**（此前只看映射键，注入进去的同名成员被覆盖是无声的）
 - 底层绑定工具 `parseMapping` / `bindMappings` / `bindActions` / `performAutoInject` / `exposeStoreAPI` / `cleanupBindings` **不在主入口**，需从 `@openlide/geomstore/integrations` 引入（已在 `exports` 声明）；日常优先使用上述高阶函数
 - 类型层的三处收紧/放宽：`mapState` 与 `mapGetters` 撞到同一个本地键时，该键的类型取**赢家（getter）的返回类型**而非 `never`（此前两侧都要写才能编译）；`AppThis` 上名为 `globalData` 的 action 让位——`this.globalData` 是数据对象、不可调用，需要调用请起别名 `mapActions: { setGlobalData: 'globalData' }`；`PageReservedKeys` 清单补 `onRouteDone`（该键不再被当作用户方法）
 
@@ -220,20 +240,25 @@ class StoreRegistry { register / get / has / delete / list … }
 export const globalRegistry: StoreRegistry
 ```
 
-| `ComposeOptions` | 默认 | 说明 |
-| --- | --- | --- |
-| `namespace` | `false` | 子 store 按 `name` 嵌套，dispatch 使用 `'store/action'` 斜杠路径 |
-| `strict` | `false` | 冲突与非法访问按严格模式处理 |
+| `ComposeOptions` | 默认    | 说明                                                             |
+| ---------------- | ------- | ---------------------------------------------------------------- |
+| `namespace`      | `false` | 子 store 按 `name` 嵌套，dispatch 使用 `'store/action'` 斜杠路径 |
+| `strict`         | `false` | 冲突与非法访问按严格模式处理                                     |
+
+> **`lazy` / `tree` 与 `NamespaceConfig` 是「已声明、未实现」项**（0.7.0 仍然如此）：三个名字都还在公开类型面上（`ComposeOptions.lazy` / `ComposeOptions.tree` 与 `NamespaceConfig`，后者经 `core` / `compose` / `plugins` 三个入口再导出），但运行时**零消费方**——`composeStore` 与 `createStoreTree` 的构造函数只读 `options.namespace` 与 `options.strict`，命名空间分隔符在实现里硬编码为 `'/'`（`separator` / `autoPrefix` 无人接受）。写了编译通过、静默无效，**不要按它安排懒加载或前缀策略**。是否在 0.7.0 一并删除是一个尚未拍板的公开决策（删成员与删导出都是破坏性变更），当前口径是「标注未实现、不静默删导出」。
 
 `ComposedStore`：`getState` / `dispatch`（支持斜杠路径）/ `subscribe` / `isStateKeyDirty`（形参同为 `string | symbol`）/ `hooks` / `$patch` / `$replaceState` / `destroy` 等，语义与单 Store 一致。导出的类型别名 `ComposedStore<S extends State = State>` 的形状是 `Store<S> & { stores }`——直接交叉同一份契约，而不是手抄 `name/state/stores` 三件套，实现类增删成员时这里会编译报错而非让按别名书写的调用方静默少 API。
 
 - `$patch` / `$replaceState` 在**命名空间 + `strict`** 下是原子操作：先完成全部子 store 查找与严格校验再统一写入，校验失败时一个 store 都不写（此前边找边写，后面的键找不到就留下「前一半已落库」且调用方无法回滚的半更新态）。
 - 子 store 在写入期间被销毁时，只有「销毁守卫」那一类异常被静默跳过；同一 tick 内该订阅者回调抛出的其它真实故障（状态保护拦截、监听器自身抛错）**照常冒泡**给调用方。
+- **子 store 在组合之外被独立销毁后的读取语义（0.7.0 变更）**：此前只有写路径容错（`$patch` / `$replaceState` / `startBatch` / `endBatch` 都是「已销毁即跳过 + 一次性告警」），三条读路径整体裸奔——`composed.getState()` 与 `composed.$snapshot()` 每次都抛 `[GeomStore] Cannot call getState on a destroyed Store`（一个死店就让整棵组合读不出来、集成层渲染热线直接崩），而 `composed.state` 因 `Store.state` 无守卫反而返回死店视图，三条路径口径互斥，同一时刻 `$patch` 却「正常」跳过该店写入。现在三条读路径的取值统一过同一个容错包装：**该子 store 按空视图并入**（其余子 store 照常可读），并按 store 去重**一次性告警** `[composeStore] 子 store "<name>" 已销毁，读取按空视图处理（其余子 store 不受影响）`；平铺模式的键归属判定（`findTargetStoreWithKey`）不再对死店调 `getState()`，合并缓存的版本校验把「已销毁」编成哨兵值，避免死店此前并入的键被当作新鲜数据继续读。**读写从此同一口径**：都不抛，都跳过，都只告警一次。要判归属请用显式的 `store.destroyed`，别把「读得到」当成「还活着」。
+- **命名空间模式下子 store 名字是路由键**（构造期一次性校验，0.7.0 新增）：`name` 为空串或含 `'/'` 时**抛错**并点名不合法的名字——此前 `createStore({ name: 'user/info' })` 编译通过、运行时「读得到写不进」（`'user/info/count'` 被按首段解析成 store `user` + 键 `info/count`，该子店在 `setState` / `getCached` / `dispatch` / `getter` 上永远路由不到）。平铺模式下 `name` 不参与路由（只是 `stores` 映射的键与告警文案），因此同样只开发模式告警、不抛错。名字为 `'__proto__'` 是**合法**的：映射按 DefineOwnProperty 语义承载，不会被 `[[Set]]` 吞成状态对象的原型。
 - `getState()` / `state` 的合并缓存在读取前校验子 store 版本，批内或 `notify.async` 尚未通知时也能读取最新状态；无版本号的子 store（含嵌套组合）保守地在每次读取时使缓存失效。
 - `actions` 汇总子 store 的 action 名称，外层非命名空间组合可以把裸名 `dispatch('increment', ...args)` 路由到内层非命名空间组合；同名 action 取第一个。命名空间模式仍使用 `'store/action'` 路径。
 - 非命名空间组合包含**命名空间内层**时，其子 store 的键以「子 store 名/键」出现在合并状态里：读写用完整斜杠路径（`setState('leaf/count', 1)`、`$patch({ 'leaf/count': 2 })`），构造期会在开发模式提示书写形式。`$replaceState` 不支持该路径（整树替换需按内层命名空间形状传值）。该路由判定**只看数据形状**，与 `warnMissingKeys`（`$replaceState` 的丢键告警开关）无关，开发/生产走同一分支
 - 通知回调内的重入写入会把对应子 store 记为「下一轮的脏」：本轮收尾只作废本轮脏键（与单 Store 的 `_deferredDirtyKeys` 同口径），集成层对稳定引用对象值的「未变化」跳过判定因此不会漏更新。覆盖注册子 store 时，旧实例 `destroy()` 抛错只记日志，注册一定会完成
-- `StoreRegistry` 的别名与实例同生命周期：一个实例被登记在多个名字下时，`unregister(name)` 与同名覆盖注册会一并摘除该实例的**全部**名字并只销毁一次（此前其余名字继续返回已销毁实例）。`clear()` 的契约是「进入本方法时在册的条目全部注销」——destroy 回调里重入 `register()` 新增的条目会保留，`size()` 因此可以不为 0。缺 `destroy` 的鸭子类型实例不再以 `TypeError` 收场，`register()` 无效 store 的文案统一为 `[StoreRegistry] Invalid store object for name "<name>"`
+- `globalRegistry` 的作用域是**进程内**，不是「当前模块副本」：它存放在 `globalThis` 的品牌槽位（`Symbol.for('@openlide/geomstore:store-registry')`）上，同一进程里的多份包副本（分包各自打包、宿主库把本库一起打进来、ESM 与 CJS 双份）拿到的是**同一个**注册表——此前它是模块级常量，每份副本各持一册，A 副本 `register` 的 store 在 B 副本 `get` 不到、`setDefault` 也不同步，两侧都「成功」，属静默丢引用。键名带包名命名空间但**不带版本号**（加版本会重新制造副本分裂）。`globalThis` 被冻结 / 该符号键不可写时退回本副本私有实例并出声一条告警（宁可退回单副本语义也不抛错，但副本分裂必须可见）
+- `StoreRegistry` 的别名与实例同生命周期：一个实例被登记在多个名字下时，`unregister(name)` 与同名覆盖注册会一并摘除该实例的**全部**名字并只销毁一次（此前其余名字继续返回已销毁实例）。`clear()` 的契约是「进入本方法时在册的条目全部注销」——destroy 回调里重入 `register()` 新增的条目会保留，`size()` 因此可以不为 0。缺 `destroy` 的鸭子类型实例不再以 `TypeError` 收场，`register()` 无效 store 的文案统一为 `[StoreRegistry] Invalid store object for name "<name>"`。幂等重注册与覆盖注册的两条提示**只在非生产输出**（幂等那条同时由 log 降为 debug）
 
 ## 1.7 LRUCache
 
@@ -241,13 +266,13 @@ export const globalRegistry: StoreRegistry
 new LRUCache<K, V>(options?: CacheOptions)
 ```
 
-| 方法 | 说明 |
-| --- | --- |
-| `get` / `set` / `has` / `delete` / `clear` | 基础读写（命中刷新顺序） |
-| `getOrSet(key, factory)` | 未命中时计算并写入（未命中计入 `misses`） |
-| `resize(size)` | 调整容量：只接受**有限值**并夹到 `≥ 1`（小数不取整，实际条目数为向下取整）；`NaN` / `Infinity` 保持当前容量不变 |
-| `getStats(): LRUCacheStats` | `hits` / `misses` / `size` / `avgAccessTime` / `missRate`。`hitRate` / `missRate` 为 0–100 的百分比（两位小数），`totalAccesses === 0` 时两者同为 0，需先看 `totalAccesses`；`avgAccessTime` / `avgItemLifetime` 的 `0` 兼作「无样本 / 未开启计时」哨兵。`evictions` 计的是 `onEvict` 触发次数（配置性清空亦计入）；`keys` 为字符串化后的键，需要原始键请用 `keys()` |
-| `forEach(fn)` | 遍历时删除当前项安全（先取后继再回调） |
+| 方法                                       | 说明                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `get` / `set` / `has` / `delete` / `clear` | 基础读写（命中刷新顺序）                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `getOrSet(key, factory)`                   | 未命中时计算并写入（未命中计入 `misses`）                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `resize(size)`                             | 调整容量：只接受**有限值**并夹到 `≥ 1`（小数不取整，实际条目数为向下取整）；`NaN` / `Infinity` 保持当前容量不变                                                                                                                                                                                                                                                                                                                                                                                  |
+| `getStats(): LRUCacheStats`                | `hits` / `misses` / `size` / `avgAccessTime` / `missRate`。`hitRate` / `missRate` 为 0–100 的百分比（两位小数），`totalAccesses === 0` 时两者同为 0，需先看 `totalAccesses`；`avgAccessTime` / `avgItemLifetime` 的 `0` 兼作「无样本 / 未开启计时」哨兵。`evictions` 计的是 `onEvict` 触发次数（配置性清空亦计入）；`keys` 为字符串化后的键，需要原始键请用 `keys()`                                                                                                                             |
+| `forEach(fn)`                              | **进入时取一次键快照**再逐键回查：回调内删除当前项、删除后面的项、重排顺序都不会漏访问未删条目，也不会回调已删条目（该键此刻不在表里就跳过）。遍历期间**新写入**的键本次不访问；值取回调时刻的当前值（不是进入遍历时的快照）。旧实现是「预取后继再回调」的手写链表遍历，两类静默失真都在（摘链会把 `prev/next` 置 `null` ⇒ 后继可能指向已删节点而多访问一条已删数据，且 `next === null` 会让剩余条目整体被跳过）。**行为变更（对外语义收紧）**：不要在回调里依赖「本次一定能看到刚 insert 的键」 |
 
 ---
 
@@ -260,41 +285,74 @@ class SnapshotManager { createSnapshot / createSnapshotAsync / compareSnapshots 
 export default SnapshotManager
 ```
 
-| 选项 | 默认 | 说明 |
-| --- | --- | --- |
-| `maxDepth` | — | 超限节点返回占位符（**不是活引用**）。同步引擎是递归实现，故另有一条与选项无关的**栈安全硬上限 1000**：生效上限为 `min(maxDepth, 1000)`（`maxDepth` 传 `NaN` / `Infinity` 时也落到 1000），超出部分按 `maxDepth` 降级——落一条 `maxDepth` 错误 + 占位，**不影响 `success`**（此前是一条伪装成某属性 `cloneError` 的 `RangeError` 且 `success: false`）。异步引擎按队列逐节点处理、栈深度与数据深度无关，不叠加该硬上限，超深结构走异步路径 |
-| `detectCircular` | `true` | 是否上报循环引用（防护始终生效） |
-| `includeNonEnumerable` | `false` | 是否包含不可枚举属性 |
-| `customCloner` | — | 自定义克隆；返回 `undefined` 表示交回默认流程 |
-| `batchSize` | `100` | 异步模式的单批节点数（批间让出控制权）；归一化对**构造期默认值与逐次调用合并后的值**生效（`0` / 负数 / `NaN` 回退默认，不再产出「success 却 data 为空」的半成品） |
-| `batchInterval` | `0` | 批间隔（毫秒）；`Infinity` / `NaN` 按 `0`（无延迟）处理 |
-| `timeout` | — | 超时后中断并置 `success: false`。**`0` / 负数 / `Infinity` / `NaN` 一律按「不设超时」**：`Infinity` 经宿主 `setTimeout` 会被夹成约 1ms 而变成一次莫名立即超时 |
-| `onProgress` | — | `(progress: SnapshotProgress) => void`；**抛错被就地兜住**（落一条 `unknown` 账、不影响 `success` 与克隆结果），首次异常后不再调用。`total` / `percentage` 是近似值（估算深度上限 10），别当完成判据 |
-| `onError` | 见下 | `(error, context) => boolean \| void`；按**真值**解释：truthy＝忽略该错误并按种类降级，falsy（含不写 `return` 的 `void` 写法）＝拒绝继续。拒绝的后果分岔：`cloneError` → 抛 `SnapshotAbortError`、整次快照 `success: false`；`circular` → 该位置写 `'[Circular Reference]'` 占位并继续（快照仍可 `success: true`）。纯观测请显式 `return true`，或改用 `onProgress`；`maxDepth` / `timeout` 两类不经本回调。`context` 只有 `path` / `depth` / `value` 三个键：恒真的 `recoverable` 标记已删除，按错误种类分流请读 `error.type` |
+| 选项                   | 默认    | 说明                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| ---------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `maxDepth`             | —       | 超限节点返回占位符（**不是活引用**）。同步引擎是递归实现，故另有一条与选项无关的**栈安全硬上限 1000**：生效上限为 `min(maxDepth, 1000)`（`maxDepth` 传 `NaN` / `Infinity` 时也落到 1000），超出部分按 `maxDepth` 降级——落一条 `maxDepth` 错误 + 占位，**不影响 `success`**（此前是一条伪装成某属性 `cloneError` 的 `RangeError` 且 `success: false`）。异步引擎按队列逐节点处理、栈深度与数据深度无关，不叠加该硬上限，超深结构走异步路径                                                                                      |
+| `detectCircular`       | `true`  | 是否上报循环引用（防护始终生效）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `includeNonEnumerable` | `false` | 是否包含不可枚举属性。**打开后它进克隆产物就是可枚举的**（0.7.0 变更）：此前这些属性被按源还原成 `enumerable: false`，于是「带进来」名不副实——它们既不进 `Object.keys`、不进 `JSON.stringify`，也不进 `compareSnapshots` 的键集比对（下游唯一读者就是可枚举键集），状态上挂的不可枚举版本号 / 计数标记两次快照之间变了也报 `changed: false`。现在语义定为「带进来并且读得到」，`writable` / `configurable` 仍按源还原，只有 `enumerable` 这一位是**故意改写**的                                                                |
+| `customCloner`         | —       | 自定义克隆；返回 `undefined` 表示交回默认流程                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `batchSize`            | `100`   | 异步模式的单批节点数（批间让出控制权）；归一化对**构造期默认值与逐次调用合并后的值**生效（`0` / 负数 / `NaN` 回退默认，不再产出「success 却 data 为空」的半成品）                                                                                                                                                                                                                                                                                                                                                              |
+| `batchInterval`        | `0`     | 批间隔（毫秒）；`Infinity` / `NaN` 按 `0`（无延迟）处理                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `timeout`              | —       | 超时后中断并置 `success: false`。**0 / 负数 / `Infinity` / `NaN` 一律按「不设超时」**：`Infinity` 经宿主 `setTimeout` 会被夹成约 1ms 而变成一次莫名立即超时。**判据在 0.7.0 收紧为「确实有货没交付」**：超时只在「队列里仍有未处理任务，或超时之后丢掉过入队任务」时才让整次快照 `success: false`；收尾竞态下（克隆已完成、只是被超时定时器撞上）交付的**完好克隆不再被误判为失败**，此前它会带着完整的 `data` 却报 `success: false`。三条不变量不变：`success: false ⇒ errors` 非空                                           |
+| `onProgress`           | —       | `(progress: SnapshotProgress) => void`；**抛错被就地兜住**（落一条 `unknown` 账、不影响 `success` 与克隆结果），首次异常后不再调用。`total` / `percentage` 是近似值（估算深度上限 10），别当完成判据                                                                                                                                                                                                                                                                                                                           |
+| `onError`              | 见下    | `(error, context) => boolean \| void`；按**真值**解释：truthy＝忽略该错误并按种类降级，falsy（含不写 `return` 的 `void` 写法）＝拒绝继续。拒绝的后果分岔：`cloneError` → 抛 `SnapshotAbortError`、整次快照 `success: false`；`circular` → 该位置写 `'[Circular Reference]'` 占位并继续（快照仍可 `success: true`）。纯观测请显式 `return true`，或改用 `onProgress`；`maxDepth` / `timeout` 两类不经本回调。`context` 只有 `path` / `depth` / `value` 三个键：恒真的 `recoverable` 标记已删除，按错误种类分流请读 `error.type` |
 
 **`SnapshotResult<T>`**
 
-| 字段 | 说明 |
-| --- | --- |
-| `data` | 类型是 `T \| undefined`（此前声明为 `T`，与「失败时为空」的实现相反）：隔离副本；**异常 / 中止 / 根节点被丢弃时为 `undefined`**（失败结果绝不回传活引用）。刻意不做成以 `success` 判别的联合——异步超时会交出半成品，且自造结果对象的调用方会转红 |
-| `success` | 无 `cloneError` 且未超时（`circular` / `maxDepth` / `onProgress` 属已降级项，不参与判定，故 `success: true` 且 `errors` 非空是合法状态）。传入已 `revoke()` 的 Proxy 时交付 `success: false` 的失败结果，不再向外抛 `TypeError` |
-| `errors` | 错误账本（`type` / `message` / `path` / `originalError`）；`circular` 条目**先落账再咨询 `onError`**，账本不再「stats / metadata 有、errors 无」 |
+| 字段       | 说明                                                                                                                                                                                                                                                                                                  |
+| ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `data`     | 类型是 `T \| undefined`（此前声明为 `T`，与「失败时为空」的实现相反）：隔离副本；**异常 / 中止 / 根节点被丢弃时为 `undefined`**（失败结果绝不回传活引用）。刻意不做成以 `success` 判别的联合——异步超时会交出半成品，且自造结果对象的调用方会转红                                                      |
+| `success`  | 无 `cloneError` 且未超时（`circular` / `maxDepth` / `onProgress` 属已降级项，不参与判定，故 `success: true` 且 `errors` 非空是合法状态）。传入已 `revoke()` 的 Proxy 时交付 `success: false` 的失败结果，不再向外抛 `TypeError`                                                                       |
+| `errors`   | 错误账本（`type` / `message` / `path` / `originalError`）；`circular` 条目**先落账再咨询 `onError`**，账本不再「stats / metadata 有、errors 无」                                                                                                                                                      |
 | `metadata` | `id` / `timestamp` / `dataType` / `size` / `nodeCount` / `duration` / `hasCircular` …。`nodeCount` 为实际进入克隆的节点数（同步 / 异步同口径，不含在计数前就被 `maxDepth` 截断的节点）；`size` 为估算值。失败结果的规模项归零（`data` 不可信，按它算出的值同样不可信），`duration` 两条路径都如实计算 |
-| `stats` | `cloneOperations` / `circularReferences` / `maxDepthHits` 等。`cloneOperations` 计「产出独立克隆值的节点数」（容器 + Date/RegExp + 按 `onError` 丢弃的降级；原语与函数按引用直返不计），含 Date/RegExp 的数据会比此前多计；**失败结果交出引擎实际累计到的值**（异步此前恒为全零），两条路径同口径 |
+| `stats`    | `cloneOperations` / `circularReferences` / `maxDepthHits` 等。`cloneOperations` 计「产出独立克隆值的节点数」（容器 + Date/RegExp + 按 `onError` 丢弃的降级；原语与函数按引用直返不计），含 Date/RegExp 的数据会比此前多计；**失败结果交出引擎实际累计到的值**（异步此前恒为全零），两条路径同口径     |
+
+**克隆的三道准入门槛（0.7.0 与 `deepCloneState` 合流）**：快照引擎此前对下述两类值**重建**，与核心 `deepCloneState` 对同一份 state 给出两套答案；现在同步引擎（`clone.ts`）与异步引擎（`clone-async.ts`）共用 `core/utils/clone` 的同一份判据（`isExactly` / `isSlotBearingBuiltin`），两条路径同时生效。
+
+| 输入                                                                                                                                                                                                                                                 | 0.7.0 之前                                                                                                                                                                                                                                                                                                                                                                                                                     | 现在                                                                                                                                   | 触发条件                                                                                                          |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `Map` / `Set` / `Date` / `RegExp` / `Array` 的**子类**实例（`class MyMap extends Map`）                                                                                                                                                              | `new Map()` 式重建：丢子类的构造参数、自有字段与子类方法，`snap.data.m instanceof MyMap` 为 false、调 `m.first()` 直接 `TypeError`                                                                                                                                                                                                                                                                                             | **保留原引用**（快照与活状态共享同一个实例）                                                                                           | 原型不是该内建类型自己的 `prototype`（判据是 `Object.getPrototypeOf(v) === X.prototype`，子类 / 跨 realm 都判假） |
+| 状态住在**内部槽位**里的内建值：`Promise`、装箱原始值（`new Number` / `new String` / `new Boolean` / `new Symbol` / `new BigInt`）、`ArrayBuffer` / `SharedArrayBuffer` / `DataView` / 全部 TypedArray、`WeakMap` / `WeakSet`、`Error`、函数与生成器 | `Object.create(原原型)` + 拷自有可枚举键的**空壳**：`instanceof` 仍为真却缺内部槽位——`await snap.data.p`（没有 `then`）、`Number(snap.data.n)`（`valueOf` 要 `[[NumberData]]`）、把字节缓冲交给宿主 API 都会在第一次消费时抛 `TypeError`；`Error.message` 本身不可枚举，空壳连消息一起丢。附带一个隐案：两副空壳原型相同、`Object.keys` 同为空，`compareSnapshots` 对 `new Number(1)` vs `new Number(2)` 恒报 `changed: false` | **保留原引用**，不再产出空壳（判据用 `Object.prototype.toString` 的 tag ∪ `ArrayBuffer.isView`，跨 realm 仍成立）                      | 同表第二列那一类值                                                                                                |
+| 带**附加自有键**的数组（`arr.meta = 'v2'`）                                                                                                                                                                                                          | 只按下标 `0..length-1` 逐项克隆，`meta` 整体丢失 → 快照少字段，且 `deepEqual(snap.data, state)` 由命中变失配（喂选择器缓存就是持续失配）                                                                                                                                                                                                                                                                                       | 除下标外**再补一趟附加自有键**（`isIndexKey` 过滤掉下标与 `length`，访问器按描述符还原，对象值走异步队列），与 `deepCloneState` 同口径 | 状态里出现带附加属性的数组（核心明确支持，非罕见）                                                                |
+
+类实例（原型为普通类）仍按既有契约**重建为同类实例**（方法 / 继承链可用、不触发构造器与 getter），这是快照与 `deepCloneState` 的**唯一**分叉点，也是本表前两行为什么走「保留原引用」——它们的差异在内部槽位与构造参数，不在自有可枚举属性上。
+
+> **残留边界**：状态不住在自有可枚举属性上、又没有内建 tag 的宿主对象（自定义 native 包装、部分 `wx` 宿主返回对象）识别不到，仍会被重建为空壳。**这类值请用 `customCloner` 提前接管**——它是宿主对象的兜底出口。
+>
+> **代价要说清**：以上两类值现在与活状态**共享同一引用**，「快照即隔离」对它们不成立（改 `snap.data.myMap` 会串回活状态）。要真隔离请自行 `slice(0)` / 结构化克隆 / 用 `customCloner` 造副本。函数同样按引用直返（无内部状态，共享无副作用）；命中循环引用的位置写 `'[Circular Reference]'` 占位，`onError` 判「拒绝继续」的节点仍按下面的丢弃语义处理。
 
 **隔离契约（丢弃语义）**：无法安全克隆的节点一律丢弃，绝不把原值兜底进快照。
 
-| 容器 | 丢弃时的表现 |
-| --- | --- |
-| 对象属性 | 不写入该属性 |
-| 数组 | 保留位置（留洞） |
-| `Set` | 不添加该元素 |
-| `Map` | 跳过整条 entry（键或值被丢弃时都跳过） |
-| 根节点 | `data` 为 `undefined` |
+| 容器     | 丢弃时的表现                           |
+| -------- | -------------------------------------- |
+| 对象属性 | 不写入该属性                           |
+| 数组     | 保留位置（留洞）                       |
+| `Set`    | 不添加该元素                           |
+| `Map`    | 跳过整条 entry（键或值被丢弃时都跳过） |
+| 根节点   | `data` 为 `undefined`                  |
 
 其他要点：类实例保留原型；访问器属性以**描述符里捕获的那个 getter** 求值（不二次触发，Proxy 上也不再重跑 `get` 陷阱，故陷阱返回值不会串成克隆值；setter-only 属性静默降级为 `undefined` 并还原成可写数据属性，setter 本身不进快照）；`Map` 的 **Symbol 键**按 `String(key)` 生成路径（不会再触 `ToString(Symbol)` 抛错），键与值的失败路径可区分（键失败写成 `path.key[A]`，值失败写成 `path[A]`，同一输入两条路径同口径）；节点的类型判定与外壳构造（`instanceof` / `getTime()` / `Object.getPrototypeOf`）也在错误处理范围内——被代理过的 Date/RegExp/Map/Set 触发陷阱抛错时按节点落 `cloneError` 并咨询 `onError`（异步路径），而不是冒成一条路径含糊的驱动层错误；`ownKeys` 抛错且 `onError` 允许继续时**该节点整体消失**（不再留下源数据里根本没有的 `{}` 空壳，且同时从 `visited` 除名，避免同一源对象的后续引用命中这副被丢弃的半成品）；`customCloner` 抛错语义在同步/异步路径**完全一致**（落账 → 咨询 `onError` → 继续丢子树 / 中止抛 `SnapshotAbortError`）。
 
 `SnapshotManager.compareSnapshots(snapshot1, snapshot2): SnapshotDiff` —— 传入两个完整的 `SnapshotResult`，而非 `.data`；纯函数实现，不依赖实例状态。数组逐元素比较；`Set` 元素与 `Map` 键共用同一套无序配对（第 1 层引用级匹配、第 2 层结构匹配，判等一律以 `Infinity` 深度预算调 `deepEqual`，深过 1000 层的等价键 / 元素不再被报成「一删一增」）。结构匹配的预算护栏按**比较次数**计费（`>2000` 次后该集合退化为一条整体差异），不再是「项数 >1000」这种与实际开销无关的判据；「一侧全对象、一侧全原语」的形状预先过滤，零次深比较。递归按对象对识别循环，等价循环不会仅因重复进入而产生差异；自有 `undefined` 属性的新增 / 删除与键缺失不同，分别报告 `kind: 'added' | 'removed'`，继承属性不参与。**原型不同的对象在任意深度都判为有差异**（此前这一条只在深过护栏、退化成 `deepEqual` 时才成立，浅层的类实例与结构相同的普通对象会判等）。逐路径展开的深度护栏（100 层）保留，但**超出护栏不再无条件记为差异**：退化为迭代式 `deepEqual`（深度预算不限），只有内容确实不同才 `changed`——两侧逐字节相同的超深结构不再永远报差异而让上层缓存全量失效。同步克隆 `cloneDeep` 是**递归**实现（栈深＝数据深度），生效上限为 `maxDepth`（默认 `100`）与栈安全硬上限 `1000` 取小；超深结构请用异步路径。
+
+**`SnapshotDiff` 新增必填字段 `inputTrusted: boolean`（0.7.0，破坏性）**：
+
+```ts
+interface SnapshotDiff {
+  changed: boolean
+  changes: Array<{ path: string; oldValue: unknown; newValue: unknown; kind?: 'changed' | 'added' | 'removed' }>
+  timestamp1: number
+  timestamp2: number
+  inputTrusted: boolean // 新增：两侧 success 全为 true 才为 true
+}
+```
+
+- **它表达的是「输入不可信」，不是「内容确有差异」**。任一侧快照 `success: false` 时 `inputTrusted` 为 `false`，此时**不再逐路径比对**，而是交付一条 `path: 'root'` 的整体差异并把 `changed` 恒置为 `true`（宁多勿漏）。
+- 为什么必须有这一步：`compareSnapshots` 此前是全库唯一不要求调用方先判 `success` 的 `SnapshotResult` 消费方，而失败快照的 `data` 按契约是 `undefined` 或超时半成品，于是同一入口给出**方向相反**的两个假结论——两侧都失败时 `data` 同为 `undefined`、被 `===` 短路成 `changed: false`（「两份都不可用」被报成「两次快照无差异」，据此做回滚判定 / 去重的调用方直接跳过回滚）；两侧都是半成品时，未填充的占位早已被摘掉、真实差异恰好落在「两侧都不存在的键」上，同样是静默漏报的 `changed: false`。
+- **`changed: true` 现在有歧义**，判定顺序请先读 `inputTrusted` 再读 `changes`：`inputTrusted === false` 时那一条 root 差异不代表内容真的变了。做回滚 / 去重时，不可信输入应当按「保守认为有差异」处理，或干脆回到上游重取快照。
+- 该字段**刻意保持必填**（不是可选默认 `true`）：`SnapshotDiff` 只由库产出，返回类型说「一定带这个字段」比可选更诚实。代价是自己构造 `SnapshotDiff` 对象字的调用方（mock / 回放日志）要补上它，属类型层破坏。
+- **`Map` 条目路径改按「键身份」而不是迭代下标（0.7.0）**：值差异记 `root[<String(key)>]`、键增删记 `root.key[<String(key)>]`，与克隆引擎给 `errors[].path` 用的同一套 scheme（此前是 `root.key[0]` 这种下标）。后果两条：旧路径串承载两种事实（`root.key[1]` 既可能是「1 号条目的值变了」也可能是「1 号键被移除」，只有 `kind` 能分流）从此消失；路径不再随插入顺序漂移，**可以作为条目身份**用于按 path 聚合 / 去重 / 回放，且 `result.errors` 与 `diff.changes` 现在能对得上同一条目。**`Set` 的增删条目路径仍是报告序下标**（`[removed:i]` 一类），那不是条目身份。
+- **内建值按内容比较**：装箱原始值在 tag 相同时按 `valueOf` / `toString` 兜一层，`compareSnapshots({ n: new Number(1) }, { n: new Number(2) })` 现在报 `changed: true`（此前恒 `false`——值差异在上游克隆阶段就没了），内容相同的两个实例不误报、同一引用仍短路。
 
 ---
 
@@ -320,13 +378,13 @@ createRetrySelectorAsync<S extends State, R>(selector: Selector<S, R>, options?:
 >
 > `createMemoizedSelector(selectorFn, equalityFn?)` 只是 `createSelector(selectorFn, { cache: true, equalityFn })` 的包装，**没有 `snapshotState` 出口**。因此给它传引用相等比较器（`(a, b) => a === b`）得到的是一份「永不命中」的缓存——无版本号的普通对象状态下命中判定是 `equalityFn(内容快照, 当前状态)`，克隆体与活引用永不相等（不返回错值，但 memo 静默失效）。要「只比引用、免整树克隆」请改用 `createSelector(fn, { cache: true, equalityFn, snapshotState: false })`。它的 `equalityFn` 形参本轮与 `SelectorOptions.equalityFn` 统一为 `(a: any, b: any) => boolean`（此前独立写成 `unknown`，于是 options 位能写的业务比较器在这个位置参数位被拒）；两条入口的方差口径由 `tests/types/selector-equalityfn-variance.typecheck.ts` 一起锁住。
 
-| `SelectorOptions` | 默认 | 说明 |
-| --- | --- | --- |
-| `cache` | `true` | 是否启用缓存 |
-| `cacheSize` | `10` | 历史条目容量；归一化为 `Number.isFinite(v) ? Math.max(1, v) : 10`（`0` / 负数夹到 1，不会关掉历史命中）。与 `cacheTTL` / `equalityFn` / `snapshotState` 一样只在 `cache: true` 时被读取 |
-| `cacheTTL` | `5000` | 缓存生存时间（毫秒）。归一化为 `typeof v === 'number' && v > 0 ? v : 5000`：`NaN`（`timestamp + NaN <= now` 恒假 ⇒ 永不过期、就地变异后仍返回陈旧值）、`0` / 负数（写入即过期 ⇒ 等于关缓存却仍每次付快照克隆与 push 成本）、未类型化调用方传的字符串（`timestamp + '60000'` 变成拼接）一律回落到 5000。**`Infinity` 有意放行**＝不按时间过期：版本化状态的失效凭证仍是版本号，这条出口有用，故它不与 `cacheSize` 共用同一个夹取函数（那里 `Infinity` 会让历史无界增长） |
-| `equalityFn` | `deepEqual` | 无状态版本号时的回退比较器——**比较的是输入状态**（`S` 形状）而非选择器结果。形参是 `(a: any, b: any) => boolean`：本类型不随 `S` 实例化，`unknown` 在 `strictFunctionTypes` 下会**拒掉调用方按具体状态标注的比较器**（`(x: OrderState, y: OrderState) => x.id === y.id` 报 `TS2322: Type 'unknown' is not assignable to type 'OrderState'`）。放宽只发生在逆变的形参位，返回值仍是 `boolean`，实现侧传进来的本来就是缓存的 state 与调用方的 state |
-| `snapshotState` | `true` | 状态**无版本标记**时用什么当失效凭证。`true`＝写缓存时深拷贝一份状态，命中判定用 `equalityFn(快照, 当前状态)` 比内容；`false`＝缓存**活引用**，判定退化为 `equalityFn(原引用, 当前引用)`。默认取 `true` 的理由：任何深比较器（`deepEqual`、lodash `isEqual`、`(a,b)=>deepEqual(a,b)` 包装）只有这一种正确形态——缓存活引用会让两个实参是同一个对象、深比较恒等，就地变异看不见，TTL 内持续返回陈旧值。`false` 仅在 `equalityFn` 就是引用相等（`(a, b) => a === b`）时可用（那时快照与活引用永不相等、缓存永不命中），换来省一次整树克隆，代价是前提被违反时返回陈旧值。状态带版本号时本选项不参与判定 |
+| `SelectorOptions` | 默认        | 说明                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| ----------------- | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cache`           | `true`      | 是否启用缓存                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `cacheSize`       | `10`        | 历史条目容量；归一化为 `Number.isFinite(v) ? Math.max(1, v) : 10`（`0` / 负数夹到 1，不会关掉历史命中）。与 `cacheTTL` / `equalityFn` / `snapshotState` 一样只在 `cache: true` 时被读取                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `cacheTTL`        | `5000`      | 缓存生存时间（毫秒）。归一化为 `typeof v === 'number' && v > 0 ? v : 5000`：`NaN`（`timestamp + NaN <= now` 恒假 ⇒ 永不过期、就地变异后仍返回陈旧值）、`0` / 负数（写入即过期 ⇒ 等于关缓存却仍每次付快照克隆与 push 成本）、未类型化调用方传的字符串（`timestamp + '60000'` 变成拼接）一律回落到 5000。**`Infinity` 有意放行**＝不按时间过期：版本化状态的失效凭证仍是版本号，这条出口有用，故它不与 `cacheSize` 共用同一个夹取函数（那里 `Infinity` 会让历史无界增长）                                                                                                                              |
+| `equalityFn`      | `deepEqual` | 无状态版本号时的回退比较器——**比较的是输入状态**（`S` 形状）而非选择器结果。形参是 `(a: any, b: any) => boolean`：本类型不随 `S` 实例化，`unknown` 在 `strictFunctionTypes` 下会**拒掉调用方按具体状态标注的比较器**（`(x: OrderState, y: OrderState) => x.id === y.id` 报 `TS2322: Type 'unknown' is not assignable to type 'OrderState'`）。放宽只发生在逆变的形参位，返回值仍是 `boolean`，实现侧传进来的本来就是缓存的 state 与调用方的 state                                                                                                                                                    |
+| `snapshotState`   | `true`      | 状态**无版本标记**时用什么当失效凭证。`true`＝写缓存时深拷贝一份状态，命中判定用 `equalityFn(快照, 当前状态)` 比内容；`false`＝缓存**活引用**，判定退化为 `equalityFn(原引用, 当前引用)`。默认取 `true` 的理由：任何深比较器（`deepEqual`、lodash `isEqual`、`(a,b)=>deepEqual(a,b)` 包装）只有这一种正确形态——缓存活引用会让两个实参是同一个对象、深比较恒等，就地变异看不见，TTL 内持续返回陈旧值。`false` 仅在 `equalityFn` 就是引用相等（`(a, b) => a === b`）时可用（那时快照与活引用永不相等、缓存永不命中），换来省一次整树克隆，代价是前提被违反时返回陈旧值。状态带版本号时本选项不参与判定 |
 
 - `createSelector` / `SelectorFactory` 的版本化缓存命中要求**状态对象身份与版本号同时相同**（O(1) 比较）；不同 Store 即使版本号相同，也不会串用结果。状态不带版本号（如传入普通对象）时回退 `equalityFn`（其失效凭证由 `snapshotState` 决定）；版本号存在但内容被就地改过时按版本判定，条目为版本化而输入是无版本号的普通对象时一律 miss。**版本化条目不再常驻一份无人读取的状态快照**：读快照的分支要求 `version === undefined`，版本化路径既不写也不读，因此不再把整棵活状态树钉在缓存值上（条目为版本化而状态标记随后消失时，按内容快照收敛）。写入缓存前会先剔除已过期条目，过期条目不再把仍有效的条目挤出 `cacheSize` 槽位（后果原本是「每次访问多算一次」＋过期条目的快照与结果值继续被强引用）。
 - `createParametricSelector` 按参数分别缓存；`ttl: 0` 表示条目立即过期（等同禁用缓存，每次调用重新计算）。`ttl` **刻意不做取值守卫**（与 `SelectorOptions.cacheTTL` 不同口径）：本工厂的读侧判据是 `timestamp + ttl > now`，`0` / 负数 / `NaN` 都退化成「立即过期＝不缓存」，不存在 `cacheTTL` 那种「NaN ⇒ 永不过期 ⇒ 返回陈旧值」的静默劣化，且 `ttl: 0` 已是被用例锁住的公开语义。`maxEntries` 归一化为 `Number.isFinite(v) ? Math.max(1, Math.floor(v)) : 1000`（`0` 夹到 1、小数向下取整、`NaN` / `Infinity` 回默认；此前 `Infinity` 会让条目只增不减、上限形同虚设），它控制**原始类型参数侧**的容量并在写入前清理过期项。**对象与函数参数侧都是 WeakMap**（`typeof === 'function'` 也算 WeakMap 键；此前函数被判给原始侧，既受 `maxEntries` 插入序淘汰，又把闭包捕获的作用域整片钉住），只有读侧 TTL 判定、没有容量上限与清扫；以复用对象为参数时，原地改内容会拿到陈旧结果（要换引用）。Map / Set 参数的缓存标记用数组承载条目（`['__map', entries]`），用户参数无法伪造标记而串用结果。**状态侧只降级不崩**：`state` 传 `null` / 原始值时返回「每次重算、不缓存」的内层函数（此前 `stateCache.set` 会抛 `Invalid value used as weak map key`）。
@@ -351,14 +409,14 @@ cancelThrottledCalls(host, method?)   / flushThrottledCalls(host, method?)   / d
                                       // 防抖 / 节流挂起调用的宿主级收尾入口，见下方同名小节
 ```
 
-| `ActionLoaderOptions` | 默认 | 说明 |
-| --- | --- | --- |
-| `perActionKeys` | `false` | loading / error 键是否按 action 名后缀区分 |
-| `loadingKey` | `'loading'` | loading 状态键名（`perActionKeys: true` 时为 `${loadingKey}_${actionName}`） |
-| `errorKey` | `'error'` | 写入**错误对象本身**的键名（失败时为 `Error`，成功复位时为 `null`） |
-| `errorDataKey` | `'errorData'` | 写入 `{ message, stack, timestamp }`（`errorKey` 的可序列化形态，成功复位时为 `null`）的键名；`getErrorData(name)` 的返回类型即 `ActionErrorData \| undefined`（此前是 `unknown`，而它自己的文档示例就在读 `errorData.timestamp`，等于强制每个调用方自行 cast） |
-| `sharedLoadingCounts` | — | 共享引用计数表，**仅构造期读取一次**（`setOptions()` 忽略它，原因与不变量归注入方见其 JSDoc）；由 `withLoading` 内部注入，供跨 loader 实例集中引用计数，外部清空时按兜底值 1 递减、不出现负计数。构造期对注入值做一次准入判定（非 `Map` 实例按未注入处理、自建新表），未类型化调用方传错形状不再拖到异步收尾的第一次 `get/set` 才炸。改 `loadingKey` / `errorKey` / `errorDataKey` / `perActionKeys` 会先给派生键补写复位值再丢弃旧记账 |
-| `autoLoading` | `true` | 是否自动维护 loading |
+| `ActionLoaderOptions` | 默认          | 说明                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| --------------------- | ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `perActionKeys`       | `false`       | loading / error 键是否按 action 名后缀区分                                                                                                                                                                                                                                                                                                                                                                                              |
+| `loadingKey`          | `'loading'`   | loading 状态键名（`perActionKeys: true` 时为 `${loadingKey}_${actionName}`）                                                                                                                                                                                                                                                                                                                                                            |
+| `errorKey`            | `'error'`     | 写入**错误对象本身**的键名（失败时为 `Error`，成功复位时为 `null`）                                                                                                                                                                                                                                                                                                                                                                     |
+| `errorDataKey`        | `'errorData'` | 写入 `{ message, stack, timestamp }`（`errorKey` 的可序列化形态，成功复位时为 `null`）的键名；`getErrorData(name)` 的返回类型即 `ActionErrorData \| undefined`（此前是 `unknown`，而它自己的文档示例就在读 `errorData.timestamp`，等于强制每个调用方自行 cast）                                                                                                                                                                         |
+| `sharedLoadingCounts` | —             | 共享引用计数表，**仅构造期读取一次**（`setOptions()` 忽略它，原因与不变量归注入方见其 JSDoc）；由 `withLoading` 内部注入，供跨 loader 实例集中引用计数，外部清空时按兜底值 1 递减、不出现负计数。构造期对注入值做一次准入判定（非 `Map` 实例按未注入处理、自建新表），未类型化调用方传错形状不再拖到异步收尾的第一次 `get/set` 才炸。改 `loadingKey` / `errorKey` / `errorDataKey` / `perActionKeys` 会先给派生键补写复位值再丢弃旧记账 |
+| `autoLoading`         | `true`        | 是否自动维护 loading                                                                                                                                                                                                                                                                                                                                                                                                                    |
 
 > 上表的默认值是库内**单一来源**（`ACTION_LOADER_DEFAULTS` + `normalizeActionLoaderOptions`，未经 barrel 再导出、不是公开 API）：`ActionLoader` 构造器与 `withLoading` 的注册表分桶签名都从它派生。两侧曾各持一份字面量并漂移过，而签名桶决定「同一宿主上哪些被装饰方法共用一个 loader / 同一份 loading 引用计数」，漂移的后果是配置不同的装饰器落进同一桶（状态键互相覆盖）或该共享的被拆开（`loading` 被提前翻转）。
 
@@ -376,16 +434,16 @@ withTimeout(timeout: number, options?)
 createDecorator(options?: DecoratorOptions)   // 自定义装饰器：{ before?, after?, onError? }
 ```
 
-| 选项 | 说明 |
-| --- | --- |
-| `LogDecoratorOptions.sink` | 输出目标（类型 `LogSink` = `{ log(message, ...data), error(message, ...data) }`），缺省 `console`；生产构建接入统一日志通道或整体 no-op。**sink 自身抛错只告警（走 `console`，避免 sink 故障时递归）：既不中断被装饰的 action，也不把成功的调用改判成失败** |
-| `LogDecoratorOptions.redact` | `(value, phase) => unknown`，`phase` 为类型 `LogPhase` = `'args'` / `'result'` / `'error'`。非生产构建下返回值即最终输出；**生产构建下它后面还要再过一道摘要**（见 `summarizeInProduction`） |
-| `LogDecoratorOptions.summarizeInProduction` | 默认 `true`：生产构建进 `sink` 的一律是不含内容的摘要（类型 / 长度 / 键数），自带 `redact` 也绕不过去——过于宽松或有 bug 的脱敏器不该能静默关掉这道防线。只有显式 `false` 才表示「我确认过，sink 侧自行脱敏」，此时 `redact` 单独决定形态。摘要里的 `Error` 只留 `name`（此前是 `name: message`：`message` 属内容且最常夹带凭证，拼进摘要等于在生产留一条外泄路径）；需要消息请在非生产构建看日志，或显式 `summarizeInProduction: false` 并自带 `redact` |
-| `ThrottleDecoratorOptions.leading` / `trailing` | 默认均为 `true`（窗口结束时以**最新参数**补发） |
-| `ThrottleDecoratorOptions.assumeAsync` | 默认 `false`；为 `true` 时被抑制的调用也返回 Promise（用于「非 `async` 语法但返回 Promise」的方法） |
-| `CacheDecoratorOptions.ttl` / `keyFn` | 默认 `5000`；并发同参调用会 in-flight 去重。`keyFn` 抛错时该次调用退化为「用一次性唯一键、直接执行原方法且不写缓存」，不再让整个业务方法失败（非生产期一条 `[Cache] keyFn threw` 调试日志）；`keyFn` **返回非 `string` / `number`**（箭头函数漏写 `return`、返回对象）时同样按不可缓存处理并降级直调——此前 `String()` 会把它们折成 `"undefined"` / `"[object Object]"`，所有参数共用一个键、第二次起拿到别人的结果 |
-| `RetryDecoratorOptions.retries` / `delay` / `shouldRetry` | `retries` 是**首次执行之外**的最大重试次数（总尝试 = `retries + 1`）；`shouldRetry` 收到的是规范化后的 `Error`（`throw 'str'` 被包成带原文的 Error），它抛错按「不再重试」处理（该回调异常上会挂 `cause` 指向真实失败，已有 `cause` 不覆盖）；对外抛出的仍是原始值。`delay` 为正的 `Infinity` 时钳到宿主可表达的 `MAX_TIMER_DELAY`（「能等多久等多久」不该被折成 0 变成紧贴重试），`NaN` / 负数仍按 0 |
-| `DecoratorOptions.before` / `after` / `onError` | 三个回调**自身的失败都先经 `onError`，再按原有语义传播**（此前 `before` 抛错会顶掉 action 本体、`after` 抛错会把成功的调用改判为失败）。`before` 返回 Promise 时整次调用降级为异步并等它 settle，其 rejection 走 `onError`；`after` 返回 Promise 时只有被装饰方法本身异步才被接回返回值（同步方法必须保持同步返回，此时该 Promise 的 rejection 就地记日志并按 `onError` 上报、不外抛）；`onError` 自身抛错只记日志、不顶替原始失败 |
+| 选项                                                      | 说明                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `LogDecoratorOptions.sink`                                | 输出目标（类型 `LogSink` = `{ log(message, ...data), error(message, ...data) }`），缺省 `console`；生产构建接入统一日志通道或整体 no-op。**sink 自身抛错只告警（走 `console`，避免 sink 故障时递归）：既不中断被装饰的 action，也不把成功的调用改判成失败**                                                                                                                                                                                             |
+| `LogDecoratorOptions.redact`                              | `(value, phase) => unknown`，`phase` 为类型 `LogPhase` = `'args'` / `'result'` / `'error'`。非生产构建下返回值即最终输出；**生产构建下它后面还要再过一道摘要**（见 `summarizeInProduction`）                                                                                                                                                                                                                                                            |
+| `LogDecoratorOptions.summarizeInProduction`               | 默认 `true`：生产构建进 `sink` 的一律是不含内容的摘要（类型 / 长度 / 键数），自带 `redact` 也绕不过去——过于宽松或有 bug 的脱敏器不该能静默关掉这道防线。只有显式 `false` 才表示「我确认过，sink 侧自行脱敏」，此时 `redact` 单独决定形态。摘要里的 `Error` 只留 `name`（此前是 `name: message`：`message` 属内容且最常夹带凭证，拼进摘要等于在生产留一条外泄路径）；需要消息请在非生产构建看日志，或显式 `summarizeInProduction: false` 并自带 `redact` |
+| `ThrottleDecoratorOptions.leading` / `trailing`           | 默认均为 `true`（窗口结束时以**最新参数**补发）                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `ThrottleDecoratorOptions.assumeAsync`                    | 默认 `false`；为 `true` 时被抑制的调用也返回 Promise（用于「非 `async` 语法但返回 Promise」的方法）                                                                                                                                                                                                                                                                                                                                                     |
+| `CacheDecoratorOptions.ttl` / `keyFn`                     | 默认 `5000`；并发同参调用会 in-flight 去重。`keyFn` 抛错时该次调用退化为「用一次性唯一键、直接执行原方法且不写缓存」，不再让整个业务方法失败（非生产期一条 `[Cache] keyFn threw` 调试日志）；`keyFn` **返回非 `string` / `number`**（箭头函数漏写 `return`、返回对象）时同样按不可缓存处理并降级直调——此前 `String()` 会把它们折成 `"undefined"` / `"[object Object]"`，所有参数共用一个键、第二次起拿到别人的结果                                      |
+| `RetryDecoratorOptions.retries` / `delay` / `shouldRetry` | `retries` 是**首次执行之外**的最大重试次数（总尝试 = `retries + 1`）；`shouldRetry` 收到的是规范化后的 `Error`（`throw 'str'` 被包成带原文的 Error），它抛错按「不再重试」处理（该回调异常上会挂 `cause` 指向真实失败，已有 `cause` 不覆盖）；对外抛出的仍是原始值。`delay` 为正的 `Infinity` 时钳到宿主可表达的 `MAX_TIMER_DELAY`（「能等多久等多久」不该被折成 0 变成紧贴重试），`NaN` / 负数仍按 0                                                   |
+| `DecoratorOptions.before` / `after` / `onError`           | 三个回调**自身的失败都先经 `onError`，再按原有语义传播**（此前 `before` 抛错会顶掉 action 本体、`after` 抛错会把成功的调用改判为失败）。`before` 返回 Promise 时整次调用降级为异步并等它 settle，其 rejection 走 `onError`；`after` 返回 Promise 时只有被装饰方法本身异步才被接回返回值（同步方法必须保持同步返回，此时该 Promise 的 rejection 就地记日志并按 `onError` 上报、不外抛）；`onError` 自身抛错只记日志、不顶替原始失败                      |
 
 > 子入口 `@openlide/geomstore/extras/action`（以及聚合入口 `@openlide/geomstore/extras`）本轮补齐的类型与值导出：`LogDecoratorOptions`、`ActionStats`、`LogSink`、`LogPhase`、`ActionErrorData`、`RetryOptions`、`TimeoutError` 与值 `TIMEOUT_ERROR_CODE`。此前它们只能从 `ActionLoader.js` / `async-core.js` / `decorators/log.js` 深链取，而 `RetryOptions` 是全库重试语义的唯一定义处（`RetryDecoratorOptions` 是它面向装饰器的**有意子集**：只暴露 `retries` / `delay` / `shouldRetry`，`onRetry` 只有执行器入口提供，两侧选项面并不等价）。
 
@@ -407,11 +465,11 @@ disposeThrottledState(host: unknown): void                            // 取消 
 
 六个入口都在 `@openlide/geomstore/extras/action`（聚合入口 `@openlide/geomstore/extras` 同样给出）。
 
-| 入口 | 挂起的调用 | 留下的状态 | 什么时候用 |
-| --- | --- | --- | --- |
-| `cancel*` | **丢弃**，原方法不再执行 | 保留（节流仍按旧窗口计时判定后续调用） | 宿主已销毁，收尾写入没有意义 |
-| `flush*` | **立即执行且只执行一次**；无挂起调用时**不凭空执行**（队列已空，再次 flush 是 no-op） | 保留 | 卸载前还想把最后一次输入 / 滚动位置落盘 |
-| `dispose*` | 全部取消（等价于 `cancel*`） | **整张状态表删除**：节流连窗口计时与异步观测标记一起归零，防抖删掉该宿主的全部槽位 | 卸载点想「一切从简」，只调这一个 |
+| 入口       | 挂起的调用                                                                            | 留下的状态                                                                         | 什么时候用                              |
+| ---------- | ------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- | --------------------------------------- |
+| `cancel*`  | **丢弃**，原方法不再执行                                                              | 保留（节流仍按旧窗口计时判定后续调用）                                             | 宿主已销毁，收尾写入没有意义            |
+| `flush*`   | **立即执行且只执行一次**；无挂起调用时**不凭空执行**（队列已空，再次 flush 是 no-op） | 保留                                                                               | 卸载前还想把最后一次输入 / 滚动位置落盘 |
+| `dispose*` | 全部取消（等价于 `cancel*`）                                                          | **整张状态表删除**：节流连窗口计时与异步观测标记一起归零，防抖删掉该宿主的全部槽位 | 卸载点想「一切从简」，只调这一个        |
 
 - 三者都**幂等**：重复调用、对没有挂起调用的宿主调用都是 no-op。`method` 省略时覆盖该宿主上所有被装饰方法；传入时按方法名精确筛选（`Symbol` 键按**身份**匹配，不会因描述串相同而误命中其他方法）。宿主为基本类型 / `null` 时六个入口一律 no-op——与装饰器自身在该场景下的降级口径一致（状态无处存放，装饰器本来就退化为直接放行）。
 - **被取消的调用会收到什么**：防抖挂起的每个 Promise 以 `Error('[withDebounce] pending call was cancelled')` **拒绝**——不结算会让 `await` 方永久挂起；库在拒绝前先给每个挂起 promise 补一个 `catch` 处理器，那只消除全局未处理告警，真正 `await` / `.then` 的调用方**仍能看到**这条 rejection。节流**没有**挂起的 Promise：窗口内被抑制的那次调用在**调用时刻**就已返回 `undefined`（`async` 方法或 `assumeAsync: true` 时是 `Promise<undefined>`），`cancel` / `flush` 处理的只是尚未发出的尾随补发；补发是 fire-and-forget，失败就地 `console.error`（与窗口自然到期完全同口径），不会漏成 unhandledRejection，也拿不到返回值。
@@ -425,7 +483,7 @@ disposeThrottledState(host: unknown): void                            // 取消 
 class SearchPage {
   @withDebounce(300)
   async search(keyword: string) {
-    return fetchSearch(keyword)          // 写 store：宿主销毁后不该再发生
+    return fetchSearch(keyword) // 写 store：宿主销毁后不该再发生
   }
 
   onUnload() {
@@ -442,14 +500,18 @@ class SearchPage {
 ```ts
 class ScrollComponent {
   @withThrottle(100)
-  onScroll(position: number) { this.store.dispatch('setScroll', position) }
+  onScroll(position: number) {
+    this.store.dispatch('setScroll', position)
+  }
 
   @withThrottle(200)
-  persistPosition(position: number) { this.store.dispatch('save', position) }
+  persistPosition(position: number) {
+    this.store.dispatch('save', position)
+  }
 
   lifetimes = {
     detached() {
-      disposeThrottledState(this)                  // 两个方法的挂起补发与窗口计时一起清掉
+      disposeThrottledState(this) // 两个方法的挂起补发与窗口计时一起清掉
       // 只想丢一个方法的挂起调用：cancelThrottledCalls(this, 'onScroll')
     },
   }
@@ -475,6 +537,8 @@ createAnalyzerPlugin(options?) / analyzerPlugin
 - `getMetrics()` / `getMetricsByType()` / `getRecentMetrics()` 返回**元素副本**（不再交出内部数组或其成员引用）；`MetricsCollector.getAll()` 只复制数组容器、元素与内部共享，按只读对待
 - 取「前 N 条」的两个入口口径统一：`getRecentMetrics(count)` 与 `MetricsCollector.getHotPaths(limit)` 对 `0` / 负数 / `NaN` / `Infinity` 一律返回空数组，小数向下取整（此前 `getHotPaths(-1)` 走 `slice(0, -1)` 返回「除最后一条之外」的全部，与「top-N 热路径」语义相反；`Infinity` 返回全部）
 - `analyzeBottlenecks()` 返回的是**全部出现过的操作**按 `avgDuration` 降序分组（未超阈值的记 `severity: 'low'`），不是过滤后的瓶颈子集；分级门槛为均值的 2x / 3x
+- **非有限耗时样本不再进入耗时聚合（0.7.0 统计口径变更）**：`duration` 为 `NaN` / `±Infinity` 的样本只计次数（`totalCount` / `exceedThreshold` 口径不变），不参与 `avg` / `max` / `min`；一组样本**全部非有限**时这三项归 `0`（此前 `avg` 是 `NaN`、`max`/`min` 会吐出 `±Infinity`，`JSON.stringify` 之后变成 `null`，看板与上报侧无从分辨「没有数据」与「数据坏了」）。四个派生出口（`getStats()` 的 byOperation、`getHotPaths()`、`analyzeBottlenecks()`、`calculateAvgDurations()`）都走同一条投影，不再有 `-Infinity` 初值外泄。被排除的样本数**目前没有对外字段**（`PerformanceStats` 未新增项），要区分请自己按 `totalCount` 与耗时项是否为 0 对照
+- `analyzeBottlenecks(threshold)` / `detectRegression(threshold)` 的**非法阈值不再静默失效**（0.7.0）：非有限值（`NaN` / `Infinity`）回退各自默认（16 与 0.2）、负值夹到 0。此前 `NaN` 让判据整体恒假——瓶颈列表变成空、回归检测「一条都没退化」，看起来像「没有性能问题」；负阈值让每次比较都成立，`0ms` 的操作被判 `severity: 'high'`
 - 阈值预警的 logger 收到的是记录副本（含 `memoryUsage`），`sampleRate` / `threshold` 在构造与 `setOptions` 两侧都归一化
 - `exportJSON()` 的 `options` 段是配置的投影且**不含 `logger`**（函数不可序列化，`JSON.stringify` 会静默丢键，显式投影让人知道报告里少了什么），`metrics` 段与 `getMetrics()` / `getStats()` 同源
 - `wx.getPerformance()` 的结果按**监控器实例**缓存并校验（不可用形状 / 工厂抛错 / 读数非有限值均降级 `Date.now`）：避免每次计时都新建对象，也避免不同原点的时间戳互减得到失真耗时。**基准降级时作废全部在途计时**并留一条 `console.debug`——wx 时钟（进程相对小值）写的 `startTime` 与 `Date.now()`（epoch ms）混算会得出 ~1.7e12 的 duration，每条都被记成超阈值样本并永久污染 `getStats()` / `exportJSON()`；宁可留监控缺口（`end()` 走既有「计时条目缺失」分支），也不写入跨基准的脏数据
@@ -493,15 +557,15 @@ class WxStorageBackend implements StorageBackend
 
 `timeTravelPlugin(options?)` 安装后通过 `store.__timeTravel__` 提供 `getSnapshots()`、`goTo(index)`、`undo()`、`redo()` 等调试接口。**插件的 `install` 无条件执行**（建快照数组、订阅 store），生产构建下缺席的只是**全局调试入口**：`store.__timeTravel__` 仍然存在，只是不参与类型检查、无对外契约，读取请用 `store.__timeTravel__?.getSnapshots()` 这类判空写法。`getSnapshots()` 对每条历史状态重新使用核心 `deepCloneState` 克隆：修改返回值中的普通对象、数组或 Date/RegExp/Map/Set，不会污染内部历史与后续 `goTo` 恢复值，循环引用也受支持。**这不是 extras/snapshot 的丢弃契约**：类实例、函数、Promise、WeakMap/WeakSet 等不可克隆节点仍保留原引用；不要修改这些共享节点。
 
-| `PersistenceOptions` | 默认 | 说明 |
-| --- | --- | --- |
-| `key` | Store 名 | 存储键 |
-| `storage` | 内置 `WxStorageBackend`（wx 三方法齐备时），否则内存 | **必须同步且三方法齐备**：`{ getItem, setItem, removeItem }`。缺任一方法在 `store.use()` 安装期即抛 `TypeError`（不再静默回落到别的后端）；返回 Promise 的实现在恢复 / 落盘 / 清理三条路径上各自明确报错（内置 wx 后端同样受检，Taro / uni-app 类 Promise 版 polyfill 下不再变成未处理 rejection）。**不传时的默认后端就是 `new WxStorageBackend()`**——两条路径共用一份实现，不再各写一套归一化与守卫 |
-| `filter` | 全量 | `(state) => Partial<state>`，指定落盘子集（未被持久化的键保留初始值）。**两条路径都会套上**：落盘前 `filter(state)`、恢复时 `filter(parsedState)` 再 `$patch`——单向理解的写法会让「只持久化子集」的配置在恢复时静默吃掉未过滤键 |
-| `validate` | — | 恢复前的数据校验 |
-| `restore` | `true` | 安装时是否从存储恢复 |
-| `debounce` | `0` | 写入防抖（毫秒）；卸载时会**同步补写**窗口内最后一次变更。**卸载一律摘掉待触发的定时器**（`clearOnUninstall: true` 也不例外），只有「补写」本身受 `clearOnUninstall` 约束 |
-| `clearOnUninstall` | `false` | 为 `true` 时卸载改为清理存储（丢弃待写数据）；删除失败不再被吞掉，会记 `console.error` 并 `emit('onError', …, 'persistence')` |
+| `PersistenceOptions` | 默认                                                 | 说明                                                                                                                                                                                                                                                                                                                                                                                                  |
+| -------------------- | ---------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `key`                | Store 名                                             | 存储键                                                                                                                                                                                                                                                                                                                                                                                                |
+| `storage`            | 内置 `WxStorageBackend`（wx 三方法齐备时），否则内存 | **必须同步且三方法齐备**：`{ getItem, setItem, removeItem }`。缺任一方法在 `store.use()` 安装期即抛 `TypeError`（不再静默回落到别的后端）；返回 Promise 的实现在恢复 / 落盘 / 清理三条路径上各自明确报错（内置 wx 后端同样受检，Taro / uni-app 类 Promise 版 polyfill 下不再变成未处理 rejection）。**不传时的默认后端就是 `new WxStorageBackend()`**——两条路径共用一份实现，不再各写一套归一化与守卫 |
+| `filter`             | 全量                                                 | `(state) => Partial<state>`，指定落盘子集（未被持久化的键保留初始值）。**两条路径都会套上**：落盘前 `filter(state)`、恢复时 `filter(parsedState)` 再 `$patch`——单向理解的写法会让「只持久化子集」的配置在恢复时静默吃掉未过滤键                                                                                                                                                                       |
+| `validate`           | —                                                    | 恢复前的数据校验                                                                                                                                                                                                                                                                                                                                                                                      |
+| `restore`            | `true`                                               | 安装时是否从存储恢复                                                                                                                                                                                                                                                                                                                                                                                  |
+| `debounce`           | `0`                                                  | 写入防抖（毫秒）；卸载时会**同步补写**窗口内最后一次变更。**卸载一律摘掉待触发的定时器**（`clearOnUninstall: true` 也不例外），只有「补写」本身受 `clearOnUninstall` 约束                                                                                                                                                                                                                             |
+| `clearOnUninstall`   | `false`                                              | 为 `true` 时卸载改为清理存储（丢弃待写数据）；删除失败不再被吞掉，会记 `console.error` 并 `emit('onError', …, 'persistence')`                                                                                                                                                                                                                                                                         |
 
 > **恢复失败现在也上报**：载荷不是普通对象、`validate` 拒绝、后端抛错 / JSON 语法错 / `$patch` 被拒这几条出口，除 `console.error` 外都补发 `emit('onError', err, 'persistence')`。只订阅 `onError` 做监控的调用方会因此多看到一类事件（此前它们只在控制台里，监控完全不可见）。恢复入口还新增一条准入判定：自带 `__proto__` 自有键的载荷直接拒收（深层同名键由 clone / merge 的 `defineProperty` 兜底）。
 
@@ -575,16 +639,17 @@ generateReport() / getErrorGroups() / getAggregationStats() / getDroppedErrors()
 
 > `reportBatch(errors)` 不在 `ErrorMonitoring` 上，它是 `ErrorReporter` 契约的一侧（监控层在每次 flush 里调 `reporter.report` 与 `reporter.reportBatch`）。
 
-| `MonitoringConfig` | 默认 | 说明 |
-| --- | --- | --- |
-| `reporters` | — | `ErrorReporter[]` |
-| `batchThreshold` | `10` | 达到条数立即 flush |
-| `batchInterval` | `5000` | 定时 flush（毫秒） |
-| `reportTimeout` | `10000` | 单个 reporter 的超时（毫秒） |
-| `enableAggregation` | `true` | 是否聚合相同错误 |
-| `enableConsoleLog` | `true` | 是否输出控制台日志 |
-| `maxQueueSize` | `1000` | 队列容量；超容量按最旧优先淘汰。**下限 1**：非有限值回退默认，其余 `Math.max(1, floor(v))`（此前 `0` 让每条新错误先挤掉上一条、负值让重入队的 `slice` 算出空数组，整条上报链近乎静默失效） |
-| `maxFlushRetries` | `3` | 「全部 reporter 连续失败」的重入队上限，超过则丢弃该批并告警。**下限 0**（负值此前会让首批立即被丢弃） |
+| `MonitoringConfig`  | 默认    | 说明                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| ------------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `reporters`         | —       | `ErrorReporter[]`                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `batchThreshold`    | `10`    | 达到条数立即 flush                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `batchInterval`     | `5000`  | 定时 flush（毫秒）                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `reportTimeout`     | `10000` | 单个 reporter 的超时（毫秒）                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `enableAggregation` | `true`  | 是否聚合相同错误                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `enableConsoleLog`  | `true`  | 是否输出控制台日志                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `maxQueueSize`      | `1000`  | 队列容量；超容量按最旧优先淘汰。**下限 1**：非有限值回退默认，其余 `Math.max(1, floor(v))`（此前 `0` 让每条新错误先挤掉上一条、负值让重入队的 `slice` 算出空数组，整条上报链近乎静默失效）                                                                                                                                                                                                                                             |
+| `maxFlushRetries`   | `3`     | 「全部 reporter 连续失败」的重入队上限，超过则丢弃该批并告警。**下限 0**（负值此前会让首批立即被丢弃）                                                                                                                                                                                                                                                                                                                                 |
+| `maxGroups`         | `100`   | **0.7.0 新增**：聚合器同时存活的**错误组数**上限，达上限按「最近最少出现」驱逐旧组（首次驱逐出声一次，不在错误高发路径上刷屏）。归一化与 `maxQueueSize` 同一条 `normalizeCapacity`：非有限值（`NaN` / `Infinity`）回退缺省 100，有限值取 `Math.max(1, Math.floor(v))`（`0` / 负数 / 小数夹到 1——它不是「关掉聚合」，`maxGroups: 0` 只会让刚建的组立刻被踢掉）。此前该上限只在 `ErrorAggregator` 内部、配置层无处可传（实现有、契约无） |
 
 > `batchInterval` / `batchThreshold` / `reportTimeout` 用 `??` 兜底，**显式传入的 `0` 是合法语义**（立即 / 无延迟），不会被替换为默认值；`reportTimeout <= 0` 一律按「不超时」处理（不创建定时器，直接等 reporter 任务）。
 
@@ -592,7 +657,8 @@ generateReport() / getErrorGroups() / getAggregationStats() / getDroppedErrors()
 - `flushReports()` 排空的是**入口时刻**在册的批次；`isFlushing` 期间的并发调用不会追加排空保证（关闭时的最终 flush 才保证排空）
 - `clear()` 同时复位「连续全部失败」计数（否则新批次会被上一次的失败次数提前判定丢弃）、作废**在途 flush 的重入队**（按代际标记整批丢弃，否则上一代条目会回流进新队列），但**不停止调度器**、也**不断**那条已在网络上的请求本体
 - 溢出丢弃量是可见的：入队淘汰与失败批次重入队时的超容量裁剪都计入 `getDroppedErrors()`，并随 `generateReport().summary.droppedErrors` 一起出去。`summary.totalErrors` 是「观测到的错误」口径（被丢弃者仍是真实发生过的错误，不回退聚合计数），`queuedErrors` 是「还在队列里」口径——**三个口径互不重叠、不能相加核对**：一条被丢弃的错误在它自己那次 `report()` 里已计入 `totalErrors`，而成功投递过的既不在 `queued` 也不在 `dropped`
-- 聚合统计：`getAggregationStats().byStore` 与错误组同生命周期，组被 `maxGroups` 驱逐时对应计数一并删除，故 `sum(byStore) === totalErrors` 长期成立；同一指纹的组在邻居被驱逐后仍复用原组 ID（指纹 → 组 ID 是反向索引，不会分裂成两组而把 `count` 归零）。`ErrorGroup.sampleError` 是只含标量字段 + `error` 引用的浅拷贝（**不含 `payload`**，避免进程级缓存钉住 store / 页面节点），并随每次命中刷新为最近一次出现
+- **聚合的两套口径（0.7.0 分家，对外可读的行为变更）**：`getAggregationStats()` / `ErrorAggregator.getStats()` 的 `totalErrors` / `byCode` / `byStore` 由「把存活组的 count 求和 / 现算」改为**按条独立累计**（`sum(byCode) === sum(byStore) === totalErrors` 恒成立，三者自上次 `clear()` 起单调不减），因此 `maxGroups` 驱逐**不再让它们倒退**——此前两次 `generateReport()` 之间的 `totalErrors` 会因为驱逐而**变小**（已发生过的错误整笔抹掉），与它被钉下的语义（「观测到的错误数」）正好相反。另一侧 `totalGroups` 与 `getGroups()` / `getGroupsByStore()` / `summary.topErrors` 仍只是**当前存活组**的视图，会随驱逐变小；**两者的差额看得见**：`getAggregationStats()` 新增 `evictedGroups`（被驱逐的组数）与 `evictedErrors`（随组消失的组内条数），`clear()` 把两套账与留痕一起归零。要看聚合有没有丢数据就读这两项，别拿 `totalGroups` 当「错误种类总数」。`ErrorGroup.sampleError` 是只含标量字段 + `error` 引用的浅拷贝（**不含 `payload`**，避免进程级缓存钉住 store / 页面节点），并随每次命中刷新为最近一次出现；同一指纹的组在邻居被驱逐后仍复用原组 ID（指纹 → 组 ID 是反向索引，不会分裂成两组而把 `count` 归零）
+- `affectedStores` 与全局 `byStore` 都有**基数上限**（单组 50 个 Store、全局 200 个键），超出后并入保留字 `__others__` 溢出桶——它不是某个真实 Store，计数已经并进去了，**截断的只是「列得全不全」这份诊断视图，一条错误都不丢**。因此 `getGroupsByStore(name)` 对溢出组「没返回」不等于「该 Store 没在那组里报错」，要按 Store 拿准确条数请用 `getStats().byStore`
 - 对外一律给**副本**：`ErrorAggregator.getGroups()` / `getGroupsByStore()` / `addError()` 的返回值、`ErrorMonitoring.getErrorGroups()` / `generateReport()` 里的 `topErrors` / `recentErrors` 都是拷贝（`affectedStores` 与 `sampleError` 各再拷一层），改它们不再污染内部账目；同一次 `generateReport()` 里 `topErrors` 与 `recentErrors` 是同一批副本的两个视图
 - 定时器做 `unref` 探测（小程序 / 浏览器无该 API 时自动跳过，不阻止进程退出）
 
@@ -614,7 +680,8 @@ defaultErrorHandler / createErrorContext / ErrorHandlerImpl
 # 八、extras/enterprise —— 企业微信集成
 
 ```ts
-createUserStore(config)                // 账号态 Store 工厂：{ userId, syncUrl?, initialState? }
+createUserStore(config)                // 账号态 Store 工厂：{ userId, syncUrl?, initialState?, persistUserInfoKeys? }
+                                       // actions: setUserInfo / updatePreferences / syncWithServer / refreshData
 class StoreManager { getUserStore / switchUser / logout / getCurrentStore / clearAll }
 export const storeManager: StoreManager
 initHotUpdate(config) / restoreFromHotUpdate()
@@ -623,11 +690,24 @@ initBackgroundSync(config) / unregisterBackgroundSync()
 createEnterpriseApp(config): Plugin
 ```
 
+**`UserStoreConfig`**
+
+| 字段                  | 默认                           | 说明                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| --------------------- | ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `userId`              | —（必填）                      | 非字符串 / 空串 / 纯空白直接抛错（畸形键会让不同账号撞同一存储键）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `syncUrl`             | 无默认                         | `wx.request` 接受的绝对 URL；缺省即「本 Store 不具备服务端同步能力」，`syncWithServer` 在发起请求前直接 reject                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `initialState`        | —                              | 额外的初始状态                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `persistUserInfoKeys` | 未设＝整个 `userInfo` 原样落盘 | **0.7.0 新增**：`readonly string[]`，声明哪些 `userInfo` 字段允许写进本地存储，其余字段被投影掉（按自有键 `defineProperty` 落键）。为什么需要它：`syncWithServer` 的响应体 `userInfo` 会被**整体**写进明文的小程序 storage（键 `user-store-<userId>`），服务端顺带下发的 session / token / 手机号因此长期驻留设备。缺省**刻意不作保守白名单**——`UserInfo` 是 `[key: string]: unknown` 的开放形状，内置白名单会让未列出的业务字段重启后凭空消失（那是破坏性变更），所以**收窄必须显式声明**。该选项只管 `userInfo`：`preferences` 由宿主自己的 `updatePreferences` 写入，本就不来自服务端响应 |
+
 - `getUserStore(userId)` 只「取 / 建」指定账号的 store，**不改变当前登录身份**（切换请显式 `switchUser`）；被 LRU 淘汰或 `logout()` 后的 store 已 `destroy()`，不可继续 dispatch。`clearAll()` 只清内存实例与**当前身份键 `current_user_id`**，不删任何 `user-store-*` 数据键（连带删账号数据会越权，注销请用 `logout()`）。移除 `current_user_id` 是因为它是身份 / 会话标记而非账号数据，与内存里的 `currentUserId = null` 属同一次清理；依赖「`clearAll()` 后冷启动仍恢复旧身份」的宿主需要在调用后自行把该身份键写回存储（键名是 `current_user_id`，库内常量 `CURRENT_USER_KEY`，不在公开导出面上）。
-- `createUserStore` 对 `userId` 严格入口校验：非字符串、空串或纯空白直接抛错（畸形键会让不同账号撞同一存储键）。`syncWithServer()` 先校验响应体再 resolve：`statusCode` 为 2xx 但没有 `userInfo` 对象时 **reject**。同步地址**只能由 `syncUrl` 提供，库内不再有默认端点**：未配置时 `dispatch('syncWithServer')` **不发出任何请求**，直接以 `[UserStore] 未配置 syncUrl…` reject 并记一条日志（此前它带着内置的 `/api/user/sync` 去打一次注定失败的请求，把配置缺口伪装成网络错误）。`syncUrl` 在类型上仍是可选——`StoreManager.getUserStore` 就以 `createUserStore({ userId })` 建 store，语义是「缺省即该 Store 不具备服务端同步能力」。并发同步按请求序号丢弃被取代的旧响应；`await` 期间 store 被销毁（`logout` / LRU 淘汰）时丢弃结果并告警，不再把 `$patch` 的销毁报错记成「同步用户信息失败」并诱导重试。`lastSyncTime` 是**会话级**字段，刻意不持久化（重启后由 `syncWithServer` 重新写入）
+- **`logout()` 的清理范围（0.7.0 安全修复，行为变更）**：账号 store 的持久化键 `user-store-<userId>` + 当前身份键 `current_user_id` + 该 store 的离线队列键 `offline_action_queue_<store name>` **及其死信键**（`..._dead_letter`）。后两个键是本轮补上的——此前登出会在设备上**残留离线队列与死信**（队列载荷是明文 storage 里的操作参数，可能含用户数据），并且**重新登录会把登出前的操作重放一遍**（`login()` 的构造期 `loadQueue()` 会复活它们）。清理在 `OfflineManager.dispose()` **之前**执行（`clearQueue()` / `clearDeadLetters()` 对已释放实例一律拒绝，顺序是硬要求）；`StoreManager.logout()` 本身不越界删这两个键（它不持有 OfflineManager），归属在 `createEnterpriseApp` 那一侧。要清某账号的数据请走 `logout()`，或按该账号 store 的 `name` 自行删键（`user-store-` 前缀是对外契约，`userStoreKey()` 不在公开导出面上）
+- `createEnterpriseApp` 的 `onShow`（离线队列补同步）判据从「队列长度 > 0」换成「**是否有一轮同步在途**」：在途时直接返回，不再出现第二次 loading 闪烁、也不会去收起别人那一轮的提示（此前切前台撞上网络恢复的自动同步就会两套 loading 互相顶）。`globalData.offlineManager` / `getOfflineManager()` 的对外类型仍是 `OfflineManager`
+- `createUserStore` 对 `userId` 严格入口校验：非字符串、空串或纯空白直接抛错（畸形键会让不同账号撞同一存储键）。`syncWithServer()` 先校验响应体再 resolve：`statusCode` 为 2xx 但没有 `userInfo` 对象时 **reject**。同步地址**只能由 `syncUrl` 提供，库内不再有默认端点**：未配置时 `dispatch('syncWithServer')` **不发出任何请求**，直接以 `[UserStore] 未配置 syncUrl…` reject 并记一条日志（此前它带着内置的 `/api/user/sync` 去打一次注定失败的请求，把配置缺口伪装成网络错误）。`syncUrl` 在类型上仍是可选——`StoreManager.getUserStore` 就以 `createUserStore({ userId })` 建 store，语义是「缺省即该 Store 不具备服务端同步能力」。并发同步按请求序号丢弃被取代的旧响应；`await` 期间 store 被销毁（`logout` / LRU 淘汰）时丢弃结果并告警，不再把 `$patch` 的销毁报错记成「同步用户信息失败」并诱导重试。`lastSyncTime` 是**会话级**字段，刻意不持久化（重启后由 `syncWithServer` 重新写入）。**action 面 0.7.0 新增一个公开成员 `refreshData()`**（返回 `Promise<void>`，实现是 `return this.dispatch('syncWithServer')`）：它是上面那条后台同步隐式契约的落地，于是 `createEnterpriseApp` / `initBackgroundSync` 注册的自带 handler 切前台真的会刷新数据。对按 `{ setUserInfo, updatePreferences, syncWithServer }` 三个 action 枚举过该 store 的宿主（自建 action 列表 / 快照断言）这是一次**新增公开 action**，枚举面会变
 - `StoreManager` 为真正 LRU（命中刷新顺序），且不会淘汰当前登录用户的 store；无可淘汰候选（只剩当前用户）时会告警而非静默超限；`switchUser` 会写回「当前用户」键（此前只有 `login` 写，其它入口换号后冷启动会恢复旧身份）。冷启动只在**持久化标识本身无效**（空 / 纯空白 / 非字符串）时才清键按未登录处理；标识有效但 `switchUser` 抛错时只记 error 并保留身份，下次冷启动可重试
 - `initBackgroundSync` 包装全局 `App` 构造器注入 `onShow` / `onHide`（修改 `App.prototype` 在微信中不生效）；注册表在重装包装器时**保留**（清空会静默停用其他模块的前台回调），同一份 `App` 配置被重复包装是幂等的。`App(...)` 传入非对象实参（`null` / 字符串 / 数字）时原样透传给宿主基础库，不再因包装器自己写属性而把一次本会被忽略的调用升级成 App 启动失败；`options` 被冻结 / `onHide` 不可写时整段注入告警并回退为「把原配置交给 App」。`typeof App !== 'function'` 时只告警、**照常登记**回调，App 就位后由 `ensureAppLifecycleHooks()`（`createEnterpriseApp` 已调）或下一次 init 装上
-- `OfflineManager`：`execute(type, action, payload)` 的契约是**失败不外抛**——在线执行抛错时记 `logger.error`、入队并返回 `null`（＝本次未执行、已交队列重放），重放唯一入口是 `syncQueue`，按 `(type, payload)` 组装（传入的 `action` 闭包不会被重放）。`getQueueLength()` 不含在途段；`getDeadLetters()` 与 `syncQueue` 同口径过滤损坏条目并告警丢弃条数；已 `dispose()` 的实例上 `execute` 会告警「不会重放」并返回 `null`。同步期间落盘完整联合队列视图；未知 action 走重试 → 死信路径。`showLoading` / `hideLoading` 抛错都不卡死互斥标记、也不跳过本次同步（记 error 后继续 `syncQueue()`）
+- **`refreshData` 是后台同步的隐式契约，不是可选装饰（0.7.0 起显式化）**：`BackgroundSyncConfig.maxInactiveTime`（默认 5 分钟）判定时效成立后，实现按**名字** `dispatch('refreshData')`——全库没有任何地方定义这个 action，注册进来的 store 必须自带它（判据是自有键 `hasOwnProperty(store.actions, 'refreshData')`）。0.7.0 的两处变化：① **缺失时不再打「刷新状态」的假日志**——那条 `logger.log('BackgroundSync', '非活跃时间过长(…) 刷新状态')` 原先印在守卫**之前**，于是「切前台自动刷新」实际什么都没做、日志里却每次留一行与事实相反的记录；现在日志移到守卫之后**按实际结果打印**（派发一次才打一行），缺 action 时改为**每个 handler 一次性 `logger.warn`**，点名缺失的 action 名与后果（`store "<name>" 未定义 action "refreshData"，切前台不会自动刷新数据`），既不静默也不每次切前台刷屏。② **库自带的 `createUserStore` 现在提供 `refreshData`**（见下一条），`createEnterpriseApp` 注册的两个 handler 从此真能进刷新分支——此前官方示例组合里「切前台自动刷新数据」整体失效，测试能跑过只因每条用例都手写了一份 `actions: { refreshData() {} }`。自研 store 接入后台同步有两条路：提供 `refreshData`（通常委托给自身的同步 action），或干脆不为它注册后台同步
+- `OfflineManager`：`execute(type, action, payload)` 的契约是**失败不外抛**——在线执行抛错时记 `logger.error`、入队并返回 `null`（＝本次未执行、已交队列重放），重放唯一入口是 `syncQueue`，按 `(type, payload)` 组装（传入的 `action` 闭包不会被重放）。**但「入队即等待外部事件」这个旧读法已不成立（0.7.0 行为变更）**：`execute()` 失败入队时（在线态）会**自动补跑一轮重放**，一轮收尾时队列里仍有存货也会补跑，让排队的操作不必等到下一次网络恢复才落地；**离线态不自驱**（那是 `onNetworkChange` / 显式 `syncQueue` 的职责）。补跑排的是 **0 延时的宏任务**（不是微任务），所以 `await execute()` 之后同帧读 `getQueueLength()` 仍能看到刚入的那条——它在下一轮事件循环被带走，`getQueueLength()` 归 0 属正常收敛而非丢单；已 `dispose()`、断网、或另一轮同步在途时该次补跑直接跳过。`getQueueLength()` 不含在途段；`getDeadLetters()` 与 `syncQueue` 同口径过滤损坏条目并告警丢弃条数；已 `dispose()` 的实例上 `execute` 会告警「不会重放」并返回 `null`。同步期间落盘完整联合队列视图；未知 action 走重试 → 死信路径。`showLoading` / `hideLoading` 抛错都不卡死互斥标记、也不跳过本次同步（记 error 后继续 `syncQueue()`）
+- 企业级 `storage` 适配层的字符串往返（0.7.0 行为变更）：`storage.set` 对「回读会被读成另一种值」的字符串加**引号信封**，`storage.get` 的字符串往返自此类型无损（写 `'42'` 不会再读回数字 `42`、写 `'null'` 不会再读回 `null`）；`number` / `boolean` 读回原始字符串那条**不对称契约本轮未改**，别把标量当往返安全的类型。热更新备份的存储格式同时换为带 `'#gs'` 标记的编解码：**旧备份仍可读**，但支持集从「JSON 可表达的值」扩到 `Date` / `RegExp` / `Map` / `Set` / `undefined` / 非有限数字 / `BigInt`；类实例恢复后原型丢失、函数与 symbol 成员恢复为 `undefined`，这两种有损情况都会打一条 lossy 告警
 - 热更新：备份在用户确认时执行；**备份写入失败只跳过「待更新标记」的写入（无恢复源必须防），用户确认的更新照常 `applyUpdate`**——此前整段更新被静默跳过，用户点了确认却什么都不知道，损失范围现在收敛为「本次更新无状态恢复」。`onBeforeUpdate` 回调抛错按自己的名字记日志、同样不再阻断更新；`applyUpdate` 抛错时**成对**清掉标记与备份（否则下一次普通冷启动会被误判为「更新后首启」并回滚备份点之后的全部持久化变更）；备份时间戳非有限值按「已过期」处理（不再静默绕过过期清理）；`onLaunch` 与 `login` 共用同一份热更新配置（换号后 `onBeforeUpdate` 不再在本次会话余下时间里静默丢失）；`createEnterpriseApp` 的 `onLaunch` 四步各自兜异常，热更新失败不再让后台同步与离线队列永不初始化
 - 后台同步的前台 / 后台两条循环都按注册表现状复核成员身份后才回调：本轮内被 `unregisterBackgroundSync` 注销的 handler 不再收到 `onForeground` / `onBackground`
 - 集成层的调试入口（`exposeStoreAPI` / `devtoolsPlugin`）默认以**只读**订阅注册（回调收到只读保护 Proxy；需要就地改载荷请显式传 `{ readOnly: false }`），注入的成员按自有属性写入并在解绑时恢复宿主原值（`__proto__` / `constructor` 不再污染原型链）
@@ -636,14 +716,19 @@ createEnterpriseApp(config): Plugin
 
 # 九、易误用点
 
-| 事项 | 说明 |
-| --- | --- |
-| `bindMappings` 等底层绑定工具 | **不在主入口**，从 `@openlide/geomstore/integrations` 引入。日常优先用 `withPageStore` / `withComponentStore` / `withAppStore` |
-| `SnapshotManager.compareSnapshots` | **实例方法**（实现是无状态纯函数），需要实例或自备 `SnapshotManager` |
-| `extras` 聚合入口 | 会把所有可选能力拉进产物，只有调试或确实全都要用时才引入 |
-| 防抖 / 节流的挂起调用 | 窗口 / 延迟未到期就卸载宿主时，定时器到点仍会调用被装饰方法（并拖住宿主不被回收）。请在 `onUnload` / `detached` 调 `cancel*`（丢弃）/ `flush*`（立即执行一次）/ `dispose*`（取消并释放状态），见第四节「防抖 / 节流的宿主收尾入口」 |
-| `import type` | 类型（`SelectorOptions`、`MonitoringConfig`、`SnapshotResult` 等）请用 `import type` 引入，避免无谓的运行时代码 |
-| 深链内部源码路径 | 可选能力的**实现**已移到 `src/extras/**`（快照 / 选择器 / Action 增强）；仅入口在 `extras/*` 的还有 `cache` / `hooks` / `performance`（实现保留在 `core`） |
+| 事项                                               | 说明                                                                                                                                                                                                                                                                                                                          |
+| -------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `bindMappings` 等底层绑定工具                      | **不在主入口**，从 `@openlide/geomstore/integrations` 引入。日常优先用 `withPageStore` / `withComponentStore` / `withAppStore`                                                                                                                                                                                                |
+| `SnapshotManager.compareSnapshots`                 | **实例方法**（实现是无状态纯函数），需要实例或自备 `SnapshotManager`。返回值的 `changed` 有两种来源，**先读 `inputTrusted` 再读 `changes`**（任一侧快照 `success: false` ⇒ `inputTrusted: false` 且 `changed` 恒 `true`，见第二节）                                                                                           |
+| 「读取状态」≠「读缓存」                            | `getState()` / `store.state` **不查缓存**，连续读多少次都不产生 `hits`；缓存的唯一读取入口是 `getCached(key)`。`setState` / `$patch` 是**写穿**而非失效——写完再 `getCached` 仍命中且拿到新值；要真失效请用 `invalidateCache()` 或 `$replaceState`                                                                             |
+| 「getter 会缓存结果」                              | **没有这回事**：Store 层无 getter 结果缓存，每次 `getter(name)` 都重算。要记忆化请用 `extras/selector` 的 `createSelector`                                                                                                                                                                                                    |
+| `ComposeOptions.lazy` / `tree` / `NamespaceConfig` | 名字还在公开类型面上，**运行时零消费方**（构造只读 `namespace` / `strict`，分隔符硬编码 `'/'`）：写了编译通过、静默无效，不要按它安排懒加载与前缀策略                                                                                                                                                                         |
+| 后台同步的 `refreshData`                           | `initBackgroundSync` / `createEnterpriseApp` 在切前台时**按名字** `dispatch('refreshData')`；该 action 全库不定义，注册进来的 store 不提供就是「切前台不刷新」（现在会一次性告警，不再打假日志）。库自带的 `createUserStore` 已提供它                                                                                         |
+| 快照对子类与宿主内建值**保留原引用**               | `Map` / `Set` / `Date` / `RegExp` / `Array` 的**子类**实例、`Promise` / 装箱原始值 / TypedArray·ArrayBuffer·DataView / WeakMap·WeakSet / Error / 函数一律不克隆——它们与活状态**同一个对象**，「快照即隔离」对这些值不成立（改 `snap.data.myMap` 会串回活状态）。要隔离请自行 `slice(0)` / 结构化克隆 / 用 `customCloner` 接管 |
+| `extras` 聚合入口                                  | 会把所有可选能力拉进产物，只有调试或确实全都要用时才引入                                                                                                                                                                                                                                                                      |
+| 防抖 / 节流的挂起调用                              | 窗口 / 延迟未到期就卸载宿主时，定时器到点仍会调用被装饰方法（并拖住宿主不被回收）。请在 `onUnload` / `detached` 调 `cancel*`（丢弃）/ `flush*`（立即执行一次）/ `dispose*`（取消并释放状态），见第四节「防抖 / 节流的宿主收尾入口」                                                                                           |
+| `import type`                                      | 类型（`SelectorOptions`、`MonitoringConfig`、`SnapshotResult` 等）请用 `import type` 引入，避免无谓的运行时代码                                                                                                                                                                                                               |
+| 深链内部源码路径                                   | 可选能力的**实现**已移到 `src/extras/**`（快照 / 选择器 / Action 增强）；仅入口在 `extras/*` 的还有 `cache` / `hooks` / `performance`（实现保留在 `core`）                                                                                                                                                                    |
 
 ---
 

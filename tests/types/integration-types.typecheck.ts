@@ -329,30 +329,52 @@ void [_bareCount, _bareLogin]
 // （withPageStore 当前正是按默认值实例化 PageThis 的；接线属集成层，见本轮待办）
 bareThis.customMethod
 
-// ==================== 注入成员的四处同形（#429） ====================
+// ==================== 注入成员的视角拆分（#429 → #R6-063） ====================
 
-// `data` / `setData` 由 types/integration.ts 的内部基类型 `InjectedDataShape` 声明一次，
-// 页面/组件 × 实例视角/配置视角 四处复用。任一处退回各写一遍，就可能悄悄漂移成
-// 「声明出运行时不存在的成员」——下面用 Equal 逐对钉住同一形状
+// `data` 由 types/integration.ts 的内部基类型声明一次：实例视角是 `InjectedDataShape`、
+// 配置视角是 `InjectedConfigDataShape`；`setData` **只在实例视角声明**。
+// 两侧曾共用同一份带必选 `setData` 的基座，于是「配置对象上有 setData」被一起声明出来，
+// 而运行时 `enhancedConfig = { ...用户配置 }` 从不带这个成员（全链路只调 `this.setData`），
+// `cfg.setData({ count: 1 })` 编译通过、运行时 TypeError —— 正是本文件反复防范的那类错误。
 type PageM = { mapState: ['count'] }
 type PgThis = PageThis<UserState, UserActions, Getters<UserState>, PageM>
 type PgCfg = PageConfig<UserState, PageM>
 type CpThis = ComponentThis<UserState, UserActions, Getters<UserState>, PageM>
 type CpCfg = ComponentConfig<UserState, UserActions, Getters<UserState>, PageM>
 
+// data 的口径四处仍一致（映射的 state + getters）；差异只在配置视角没有 setData
 const _dataIsExtractPageData: [Equal<PgThis['data'], ExtractPageData<UserState, PageM>>, Equal<PgCfg['data'], ExtractPageData<UserState, PageM>>] = [true, true]
 void _dataIsExtractPageData
 const _dataSameAcrossFour: [Equal<CpThis['data'], PgThis['data']>, Equal<CpCfg['data'], PgThis['data']>] = [true, true]
 void _dataSameAcrossFour
-const _setDataSameAcrossFour: [
-  Equal<PgCfg['setData'], PgThis['setData']>,
-  Equal<CpThis['setData'], PgThis['setData']>,
-  Equal<CpCfg['setData'], PgThis['setData']>,
-] = [true, true, true]
-void _setDataSameAcrossFour
-// setData 的确切形状（框架签名，本库不改其语义）
+// setData 的确切形状（框架签名，本库不改其语义），且两个实例视角同形（#429 的去重锁的就是这一条）
 const _setDataExact: Equal<PgThis['setData'], (data: Record<string, unknown>, callback?: () => void) => void> = true
-void _setDataExact
+const _setDataSameAcrossInstances: Equal<CpThis['setData'], PgThis['setData']> = true
+void [_setDataExact, _setDataSameAcrossInstances]
+// 反例：两个配置视角都不再声明 setData。
+// ⚠️ 这里写成「键在不在」（`Equal<'setData' extends keyof T ? true : false, false>`），
+// 而不是 `const x: PgCfg['setData'] = undefined` 那种取值写法——后者在旧实现（配置视角带必选
+// setData），而 `undefined` 不可赋给函数）上同样报错，两态皆红 = 什么都没锁
+// （同 `tests/types/store-config-base.typecheck.ts` 里「正向赋值锁不住任何东西」那条判据）。
+// 下面四条 + 端到端那条在旧实现上实测全部失败，故它们抓得住（证据见 .ocr-fix/verdicts6/f1-10.md）。
+type PgCfgHasSetData = 'setData' extends keyof PgCfg ? true : false
+type CpCfgHasSetData = 'setData' extends keyof CpCfg ? true : false
+const _cfgNoSetDataKey: Equal<PgCfgHasSetData, false> = true
+const _cpCfgNoSetDataKey: Equal<CpCfgHasSetData, false> = true
+// 反向：实例视角的 setData 不能被一并删掉（挡住「一刀切」的另一种漂移），data 两侧都仍在。
+// 这两条是**单向**守卫（旧实现下也成立），敏感的是上面那两条 + 下面端到端那条：
+// 在「配置视角仍带必选 setData」的实现上实测报 3 处（362/363 的 TS2322 与端到端的 TS2578）。
+type PgThisHasSetData = 'setData' extends keyof PgThis ? true : false
+type CpThisHasSetData = 'setData' extends keyof CpThis ? true : false
+type PgThisHasData = 'data' extends keyof PgThis ? true : false
+type PgCfgHasData = 'data' extends keyof PgCfg ? true : false
+const _thisSetDataKept: [Equal<PgThisHasSetData, true>, Equal<CpThisHasSetData, true>] = [true, true]
+const _dataKeyKept: [Equal<PgThisHasData, true>, Equal<PgCfgHasData, true>] = [true, true]
+void [_cfgNoSetDataKey, _cpCfgNoSetDataKey, _thisSetDataKept, _dataKeyKept]
+// 端到端反例：装饰器返回的配置对象上调用 setData 必须编译报错（运行时是 TypeError）；
+// 用户自己在配置字面量里声明了 setData 时仍按 C 原样保留，不受本条影响
+// @ts-expect-error setData 由框架只挂在页面实例上
+pageOutput.setData({ count: 1 })
 // getTabBar 只在页面侧声明（组件侧原本就没有）
 const _getTabBarPageOnly: [PgThis['getTabBar'], PgCfg['getTabBar']] = [undefined, undefined]
 void _getTabBarPageOnly
@@ -371,12 +393,18 @@ type ClashActions = { getState: () => string; login: (id: string) => Promise<boo
 type ClashMap = { mapActions: ['getState', 'login'] }
 declare const clashThis: AppThis<UserState, ClashActions, Getters<UserState>, ClashMap>
 
-// 运行时是 bindActions 先、exposeStoreAPI 后（后者无条件覆写同名成员），所以留在实例上的是调试 API。
+// 运行时是 bindActions 先、exposeStoreAPI 后（后者逐个键经 `canOwnKey` 判定后用
+// `Object.defineProperty` 覆写同名成员；宿主该键不可重定义时两侧都留不下，只剩一条跳过告警），
+// 所以留在实例上的是调试 API。
 // 修复前两侧直接求交：`() => string` 这个 action 签名排在重载集首位，下面这行能编译，
 // 而运行时拿到的是 UserState —— 类型谎报。现在它必须报错。
-// 注（#R5-355）：这一段只是**类型侧**的口径，运行时的挂载顺序另由
-// tests/integration/with-app-store.test.ts 断言，那里目前只查 `app.__store__.getState()`，
-// 未查展平成员 `app.getState` 的优先级；补运行时断言的事本轮记为 NEEDS-MAIN（该文件不在本分片）。
+// 注（#R5-355 → #R6-110 改写）：两侧各有其锁，本节**不是**孤立断言——
+// 类型侧由下面的 `_clashLooksLikeActionString` 锁，运行时侧由
+// `tests/integration/with-app-store.test.ts` 的「action 名与调试 API 同名（getState）时，
+// App 上的展平成员仍是基座 API」锁：那里断言的正是**展平成员本身**
+// （`expect(typeof app.getState).toBe('function')` + `expect(app.getState()).toEqual({ count: 3 })`），
+// 并以 `expect(app.__store__.dispatch('getState')).toBe('from-action')` 证明 action 没被丢掉、
+// 只是不再占这个名字。补运行时断言的旧待办已在第五轮收口（b83d2df）落地，勿再重复劳动。
 // @ts-expect-error getState 归调试 API（返回 S），不再是 action 的 () => string
 const _clashLooksLikeActionString: string = clashThis.getState()
 void _clashLooksLikeActionString

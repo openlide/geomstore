@@ -9,8 +9,20 @@ let _seq = 0
  *
  * 此前直接写 `StoreOptions<S>`，其 `state?: S | (() => S)` 是可选的，于是
  * `createTestStore({})`（漏写初始状态）在编译期完全合法 —— 而 `createStore` 的两个公开
- * 重载（`FactoryStoreConfig` / `LiteralStoreConfig`）都要求 `state`。这里显式补回该约束，
- * 让测试工厂与真实 API 在同一处对齐。
+ * 重载（`FactoryStoreConfig` / `LiteralStoreConfig`）都要求 `state`。这里显式补回该约束。
+ *
+ * ⚠️ 对齐的**只是 `state` 的必填性**，不含它的形状接受面（#R6-113，别照这段去「补齐」）：
+ * 交叉成 `StoreOptions<S, A, G> & { state: S | (() => S) }` 后，`S` 同时收到「函数」与
+ * 「函数返回值」两个推断候选，于是**带形参的 state 工厂**
+ * `state: (seed: number) => ({ count: seed })` 在本工厂上报 TS2322（错误文案形如
+ * `({...} | (() => {...}) | undefined) & ({...} | (() => {...}))`，与「state 必填」毫无相似之处），
+ * 而公开入口 `createStore` 今天**不拒**它（重载 1 的 `() => S` 匹配失败后落到重载 2，
+ * `S extends State`（= `object`）直接把函数类型吸收进去）。两侧已在同一份 compilerOptions 下实测复现。
+ *
+ * 该不对称刻意保留：真正该收紧的是 `createStore` 那一侧——它让 store 的类型谎称 state 是函数，
+ * 而运行时 `_initializeState` 按**无参**调用工厂（`Store.ts` 的 `(state as () => S)()`），
+ * 得到的是 `{ count: undefined }`。工厂这里先拒绝，等于替 src 兜了底；把工厂放宽去「对齐」
+ * 只会把这个缺口固化，故 src 侧修好之前本工厂保持更严。
  *
  * `A` / `G` 作为独立类型参数穿透：入参形状里写 `StoreOptions<S, A, G>` 时它们仍出现在
  * 可推断位置，actions / getters 的字面量形状会被真正推断下来，返回的 Store 因此保留

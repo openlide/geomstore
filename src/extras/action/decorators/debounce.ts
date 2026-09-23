@@ -12,6 +12,16 @@
  * （`cancelDebouncedCalls` / `flushDebouncedCalls` / `disposeDebouncedState`），
  * 在 `onUnload` / `detached` 里按宿主调用。
  *
+ * 这三个入口定位的是**调用被装饰方法时的 `this`**（状态表 `debounceStates` 的键就是它），
+ * 因此只对「`this` 可被业务侧拿到」的宿主有效：Page / Component 实例、类实例、普通对象。
+ * **装饰 store action 时本组入口不可用**——`ActionManager` 把每个 action 包成
+ * `originalAction.call(actionContext, ...)`，运行时的 `this` 是 store 内部的 action 上下文
+ * 代理（只被那批箭头闭包捕获，不挂在任何公开成员上；`store.actions` 拿到的是另一个对象），
+ * 在 Page/Component 的卸载点上传 `this` 会拿到空数组并**静默 no-op**，挂起的防抖 action
+ * 照样到点执行并往（可能已销毁的）store 里写。装饰 store action 时请在业务侧自判存活标记
+ * （action 体内先确认页面/store 仍存活再落状态），与「`withCache` / `withRetry` 没有对应的
+ * 收尾入口」同一口径。`withThrottle` 的三个同名入口受同一条限制，见其模块头。
+ *
  */
 
 /**
@@ -254,16 +264,20 @@ export function withDebounce(delay: number = DEFAULT_DELAY): MethodDecorator {
   // 定义期求值，抛错会把一个参数笔误升级成模块加载失败
   const wait = Number.isFinite(delay) && delay > 0 ? delay : DEFAULT_DELAY
 
-  return function (_target: unknown, propertyKey: string | symbol, descriptor: PropertyDescriptor): PropertyDescriptor {
-    const originalMethod = descriptor.value as DecoratedMethod | undefined
+  return function (_target: unknown, propertyKey: string | symbol, descriptor?: PropertyDescriptor): PropertyDescriptor {
     const methodKey = propertyKey
 
     // 访问器描述符 / 非函数属性：value 为 undefined，晚到失败会以
     // `Cannot read properties of undefined (reading 'apply')` 的形式出现在定时器回调里，
-    // 还被下方的 catch 吞成「所有 pending 调用都 reject」，故在装饰阶段就报错
-    if (typeof originalMethod !== 'function') {
+    // 还被下方的 catch 吞成「所有 pending 调用都 reject」，故在装饰阶段就报错。
+    // 判据同时覆盖「没有描述符」：legacy 装饰器误用到类字段上时按 PropertyDecorator 调用，
+    // 运行时只收到两个实参，此前在这里裸读 `descriptor.value` 抛的错误会把真实原因
+    // （用错了地方）盖掉——与 withRetry / withTimeout / withThrottle / withCache 同一形态
+    if (descriptor === undefined || typeof descriptor.value !== 'function') {
       throw new TypeError(`[withDebounce] can only decorate a method, but "${String(methodKey)}" is not a function`)
     }
+
+    const originalMethod = descriptor.value as DecoratedMethod
 
     // 该 (装饰器实例, 方法) 的槽位身份：宿主状态表按它分桶（隔离度见 `debounceStates` 注释）
     const slotKey = Symbol('withDebounce')
@@ -307,7 +321,9 @@ export function withDebounce(delay: number = DEFAULT_DELAY): MethodDecorator {
  * 对没有挂起调用的宿主调用都是 no-op。
  *
  * @param host - 宿主（Page / Component 实例、类对象等）。基本类型 / null 时无从定位
- *        状态，静默返回（与装饰器自身的降级口径一致）
+ *        状态，静默返回（与装饰器自身的降级口径一致）。装饰 store action 时传 Page 的
+ *        `this` 同样定位不到状态（`this` 是 store 内部的 action 上下文代理），
+ *        见模块头的「本组入口不可用于 store action」
  * @param method - 只取消该名字的被装饰方法；省略时取消该宿主上所有防抖方法
  *
  * @example
@@ -339,7 +355,8 @@ export function cancelDebouncedCalls(host: unknown, method?: string | symbol): v
  *   fire-and-forget 的调用方也不会漏出 unhandledRejection（`runPendingCalls` 在 reject
  *   前给每个挂起 promise 补了 catch，与延迟自然到期完全同构）。
  *
- * @param host - 宿主；基本类型 / null 时为 no-op
+ * @param host - 宿主；基本类型 / null 时为 no-op（装饰 store action 时同样定位不到状态，
+ *        见模块头）
  * @param method - 只立即执行该名字的被装饰方法；省略时覆盖该宿主上所有防抖方法
  */
 export function flushDebouncedCalls(host: unknown, method?: string | symbol): void {
@@ -362,7 +379,8 @@ export function flushDebouncedCalls(host: unknown, method?: string | symbol): vo
  * 与 `cancelDebouncedCalls` 一样对任何入参安全：宿主为基本类型 / null、
  * 或本就没有防抖状态时都是 no-op（被取消的 Promise 同样以「已取消」拒绝）。
  *
- * @param host - 宿主
+ * @param host - 宿主；基本类型 / null、以及装饰 store action 时的 action 上下文代理都定位不到
+ *        状态（见模块头），此时本函数为 no-op
  */
 export function disposeDebouncedState(host: unknown): void {
   if (!isTrackableHost(host)) {

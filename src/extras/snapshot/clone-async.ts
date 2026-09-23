@@ -14,6 +14,7 @@
  */
 
 import type { AsyncSnapshotOptions, CloneContext, SnapshotError, SnapshotStats } from './types.js'
+import { isExactly, isIndexKey, isSlotBearingBuiltin } from '../../core/utils/clone.js'
 import {
   SKIP_CLONE_NODE,
   cloneDeep,
@@ -96,18 +97,27 @@ export function processNodeAsync(
   // objectShell 由 try 末尾赋值后交给属性循环使用
   let objectShell: Record<string, unknown>
   try {
+    // 三道门槛与同步引擎 clone.ts 完全同口径（改一处必须改两处，理由见那边的注释）：
+    // 内部槽位承载值的内建类型保留原引用、内建容器只重建恰好该类型的实例、类实例仍走通用分支。
+    if (isSlotBearingBuiltin(value)) {
+      return value
+    }
+
     // 处理特殊类型（与同步路径同口径：Date/RegExp 产出了新对象，计一次克隆操作）
     if (value instanceof Date) {
+      if (!isExactly(value, Date.prototype)) return value
       stats.cloneOperations++
       return new Date(value.getTime())
     }
 
     if (value instanceof RegExp) {
+      if (!isExactly(value, RegExp.prototype)) return value
       stats.cloneOperations++
       return new RegExp(value.source, value.flags)
     }
 
     if (value instanceof Map) {
+      if (!isExactly(value, Map.prototype)) return value
       const cloned = new Map()
       context.visited.set(value as object, cloned)
 
@@ -159,6 +169,7 @@ export function processNodeAsync(
     }
 
     if (value instanceof Set) {
+      if (!isExactly(value, Set.prototype)) return value
       const cloned = new Set()
       context.visited.set(value as object, cloned)
 
@@ -185,6 +196,7 @@ export function processNodeAsync(
 
     // 处理数组
     if (Array.isArray(value)) {
+      if (!isExactly(value, Array.prototype)) return value
       const cloned: unknown[] = []
       context.visited.set(value as object, cloned)
 
@@ -212,6 +224,80 @@ export function processNodeAsync(
           })
         } else {
           cloned[i] = item
+        }
+      }
+
+      // 数组上的附加自有键（`arr.meta = …`）：与同步路径 clone.ts 的同名一趟对齐（R6-100）。
+      // 整趟丢弃会让附加键在异步快照里凭空消失，而 `deepEqual` 比的是 `Object.keys` 键集，
+      // 于是同一份数据「同步快照看得见、异步快照看不见」，diff 还会把丢键报成删除。
+      // 下标归上面的循环负责；`length` 只有被显式 defineProperty 过才是自有键，一并排除。
+      let extraKeys: string[]
+      try {
+        extraKeys = (options.includeNonEnumerable ? Object.getOwnPropertyNames(value) : Object.keys(value)).filter(
+          (key) => key !== 'length' && !isIndexKey(key),
+        )
+      } catch (error) {
+        dropFailedNode(value, context, error, options, errors, stats)
+        return SKIP_CLONE_NODE
+      }
+
+      for (const key of extraKeys) {
+        let descriptor: PropertyDescriptor | undefined
+        try {
+          descriptor = Object.getOwnPropertyDescriptor(value, key)
+          if (!descriptor) {
+            continue
+          }
+          // 访问器/归一化标志/占位可写的口径与上方对象分支逐字一致（同一个 R6-099 结论）
+          const isAccessor = descriptor.get !== undefined || descriptor.set !== undefined
+          const sourceValue = isAccessor ? (descriptor.get ? descriptor.get.call(value) : undefined) : descriptor.value
+          const descriptorFlags = normalizeDescriptorFlags(descriptor, isAccessor)
+
+          if (sourceValue !== null && typeof sourceValue === 'object') {
+            Object.defineProperty(cloned, key, {
+              value: undefined,
+              writable: true,
+              enumerable: descriptorFlags.enumerable,
+              configurable: true,
+            })
+            enqueue({
+              value: sourceValue,
+              context: {
+                ...context,
+                path: `${context.path}.${key}`,
+                depth: context.depth + 1,
+                parent: value,
+                key,
+              },
+              target: {
+                kind: 'prop',
+                container: cloned,
+                key,
+                descriptor: {
+                  writable: descriptorFlags.writable,
+                  enumerable: descriptorFlags.enumerable,
+                  configurable: descriptorFlags.configurable,
+                },
+              },
+            })
+          } else {
+            Object.defineProperty(cloned, key, {
+              value: sourceValue,
+              ...descriptorFlags,
+            })
+          }
+        } catch (error) {
+          handleCloneError(
+            error,
+            {
+              path: `${context.path}.${key}`,
+              depth: context.depth,
+              value: descriptor ? descriptor.value : safeReadProperty(value as unknown as Record<string, unknown>, key),
+            },
+            options,
+            errors,
+            stats,
+          )
         }
       }
 

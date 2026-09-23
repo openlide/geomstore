@@ -89,6 +89,30 @@ function toMetricRows(result: BenchmarkResult): ReportRow[] {
   return rows
 }
 
+/** 单场景的附加段（警告 / 错误） */
+interface ReportSection {
+  /** 段标题，同时决定 HTML 里的样式类 */
+  heading: string
+  className: 'warnings' | 'errors'
+  items: string[]
+}
+
+/**
+ * 警告 / 错误段
+ *
+ * markdown 与 HTML 共用同一份「附加段」数据，与 `toMetricRows` / `toSummaryRows` 同一条
+ * 原则：两种格式各拼一遍就会开始漂移。这里漂移过一次的实际代价是 HTML 整块丢了
+ * warnings/errors——而 HTML 恰恰是给非工程同事看的那份报表，场景在测量前抛错时
+ * （runner 的 catch → createErrorResult，本包最常见的失败路径）它只长成一张红边卡片、
+ * 指标全 0，完全看不到失败原因。
+ */
+function toDetailSections(result: BenchmarkResult): ReportSection[] {
+  const sections: ReportSection[] = []
+  if (result.warnings?.length) sections.push({ heading: '警告', className: 'warnings', items: result.warnings })
+  if (result.errors?.length) sections.push({ heading: '错误', className: 'errors', items: result.errors })
+  return sections
+}
+
 /**
  * 基准测试报告生成器
  */
@@ -153,17 +177,10 @@ export class BenchmarkReporter {
       lines.push(`- **${escapeMarkdown(row.label)}**: ${escapeMarkdown(row.value)}`)
     }
 
-    if (result.warnings?.length) {
-      lines.push(`\n**警告**:`)
-      for (const w of result.warnings) {
-        lines.push(`  - ${escapeMarkdown(w)}`)
-      }
-    }
-
-    if (result.errors?.length) {
-      lines.push(`\n**错误**:`)
-      for (const e of result.errors) {
-        lines.push(`  - ${escapeMarkdown(e)}`)
+    for (const section of toDetailSections(result)) {
+      lines.push(`\n**${escapeMarkdown(section.heading)}**:`)
+      for (const item of section.items) {
+        lines.push(`  - ${escapeMarkdown(item)}`)
       }
     }
 
@@ -192,6 +209,18 @@ export class BenchmarkReporter {
               <span class="value">${escapeHtml(row.value)}</span>
             </div>`)
           .join('\n')
+        // 警告 / 错误段：与 markdown 同一份数据（见 toDetailSections）。没有附加段时整块
+        // 不输出，避免卡片里留一个空的 <div class="notes">
+        const notesHtml = toDetailSections(r)
+          .map(
+            (section) => `          <div class="notes ${section.className}">
+            <h4>${escapeHtml(section.heading)}</h4>
+            <ul>
+${section.items.map((item) => `              <li>${escapeHtml(item)}</li>`).join('\n')}
+            </ul>
+          </div>`
+          )
+          .join('\n')
 
         return `
         <div class="result ${statusClass}">
@@ -199,6 +228,7 @@ export class BenchmarkReporter {
           <div class="metrics">
 ${metricsHtml}
           </div>
+${notesHtml}
         </div>`
       })
       .join('\n')
@@ -226,6 +256,12 @@ ${metricsHtml}
     .metric { background: #f9f9f9; padding: 10px; border-radius: 4px; }
     .metric .label { display: block; color: #666; font-size: 12px; }
     .metric .value { display: block; font-size: 18px; font-weight: bold; color: #333; }
+    .notes { margin-top: 15px; }
+    .notes h4 { margin: 0 0 6px; font-size: 14px; color: #555; }
+    .notes ul { margin: 0; padding-left: 20px; }
+    .notes li { margin: 4px 0; font-size: 14px; }
+    .notes.errors li { color: #b71c1c; }
+    .notes.warnings li { color: #8a6d1b; }
     .recommendations { background: #e3f2fd; padding: 20px; border-radius: 8px; margin-top: 20px; }
     .recommendations li { margin: 10px 0; }
   </style>

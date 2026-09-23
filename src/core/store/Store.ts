@@ -36,7 +36,7 @@ import type {
 } from '../../types/store.js'
 import type { Plugin as PluginType } from '../../types/plugin.js'
 import { HookSystem } from '../hooks/index.js'
-import { deepMerge, isPlainObject } from '../utils/helpers.js'
+import { deepMerge, isPlainObject, PROTO_SENSITIVE_KEYS, defineOwnProperty } from '../utils/helpers.js'
 import { LRUCache } from '../cache/LRUCache.js'
 
 // 子模块导入
@@ -57,6 +57,22 @@ const DEFAULT_MAX_SUBSCRIBERS = 50
 
 /** 自动生成 Store 名称时使用的前缀 */
 const STORE_NAME_PREFIX = 'store-'
+
+/**
+ * 读取「一次按键写入将要写入/比对的那个值」，原型链敏感键按**自有属性描述符**取。
+ *
+ * `__proto__` / `constructor` / `prototype` 在 `Object.prototype` 上是 accessor：
+ * `target['__proto__']` 拿到的是原型而不是写入值，拿它做等值比对会得出与合并结果相反的结论
+ * （`setState` 与 `$patch` 共用这一条判据——两处各写一遍就会漂移成「一侧挡住、另一侧没挡」，
+ * 与 deepMerge / defineOwnProperty 的既定口径同源，见 R6-007）。
+ */
+function readOwnValue(target: Record<string, unknown>, key: string): unknown {
+  if (!PROTO_SENSITIVE_KEYS.has(key)) {
+    return target[key]
+  }
+  const descriptor = Object.getOwnPropertyDescriptor(target, key)
+  return descriptor ? descriptor.value : undefined
+}
 
 /**
  * destroy() 排空插件卸载函数的最大轮数（见 _drainPluginUninstalls）：
@@ -343,15 +359,25 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
 
     this._hooks.emit('beforeSetState', key, value)
 
-    // 相等性检查：值未变化时跳过写入和通知，避免无意义的订阅触发
-    const oldValue = this._state[key]
+    // 原型链敏感键与 deepMerge 同口径：Object.prototype 上的 `__proto__` 是 accessor，
+    // 裸 [[Set]] 会改写状态对象的原型（值非对象时按规范静默丢弃却仍被记成一次变更）。
+    // defineProperty 只定义自有数据属性，不触发任何 setter。
+    const protoSensitive = typeof key === 'string' && PROTO_SENSITIVE_KEYS.has(key)
+
+    // 相等性检查：值未变化时跳过写入和通知，避免无意义的订阅触发。
+    // 敏感键的取值经 `readOwnValue`（读自有描述符而不是 [[Get]]），与 $patch 同一判据
+    const oldValue = readOwnValue(this._state as unknown as Record<string, unknown>, key as string)
     if (Object.is(oldValue, value)) {
       this._hooks.emit('afterSetState', key, value)
       return
     }
 
     this._withInternalAccess(() => {
-      this._state[key] = value
+      if (protoSensitive) {
+        defineOwnProperty(this._state as unknown as Record<string, unknown>, key as string, value)
+      } else {
+        this._state[key] = value
+      }
     })
 
     this._mutationCount++
@@ -366,6 +392,19 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
 
   /**
    * 批量更新状态
+   *
+   * 「改没改」的判据与 `setState` 同一条（顶层键 `Object.is` 比对，命中的键整键跳过）：
+   * `_mutationCount` 是 `notify.onlyOnChange` 的唯一依据（见 `_onBatchEnd` 与 ActionManager
+   * 的 dispatch 收尾），此前 `$patch` 无条件推进它、并无条件把补丁触及的每个键标脏 + 写缓存，
+   * 于是 `$patch({})` 与「补丁值与当前状态逐字相同」都被记成一次真实变更——
+   * 两个公开写入 API 对同一次写入给出相反答案，onlyOnChange 想省的 setData
+   * 在最常用的补丁路径上省不掉。现在两侧一样：没有任何键发生变化 ⟹ 不计数、不标脏、
+   * 不写缓存、不调度通知，钩子照常成对触发（与 setState 的等值早退同形）。
+   *
+   * 只比顶层键，不下探：嵌套对象即便内容相同也是不同引用，deepMerge 仍会逐层合并
+   * （可能补进目标里原本没有的键），所以那种补丁照常计 —— 早退只覆盖
+   * 「合并后不可能产生任何差异」的键（同引用或等值原始值）。
+   *
    * @param partialState - 部分状态对象（不能为 null/undefined）
    */
   $patch(partialState: Partial<S>): void {
@@ -378,17 +417,44 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
 
     this._hooks.emit('beforePatch', partialState)
 
+    // 逐键取出「真正要合并的键」。两侧都经 `readOwnValue`：原型链敏感键
+    // （`state.__proto__` / `partial.__proto__`）按 [[Get]] 拿到的是原型而不是写入值，
+    // 拿它做等值比对会得出与合并结果相反的结论（与 setState 同一份判据）
+    const stateRecord = this._state as unknown as Record<string, unknown>
+    const patchRecord = partialState as unknown as Record<string, unknown>
+    const effective: Record<string, unknown> = {}
+    for (const key of Object.keys(patchRecord)) {
+      const patchValue = readOwnValue(patchRecord, key)
+      if (Object.is(readOwnValue(stateRecord, key), patchValue)) {
+        continue
+      }
+      const protoSensitive = PROTO_SENSITIVE_KEYS.has(key)
+      // 敏感键以 defineProperty 承载：`effective['__proto__'] = value` 走 [[Set]]，
+      // 会把这份中间对象的原型换掉并把该键整条丢掉，补丁就静默不生效了
+      if (protoSensitive) {
+        defineOwnProperty(effective, key, patchValue)
+      } else {
+        effective[key] = patchValue
+      }
+    }
+
+    if (Object.keys(effective).length === 0) {
+      this._hooks.emit('afterPatch', partialState)
+      return
+    }
+
     // 别名脏键的目标集必须在合并**之前**采集：deepMerge 之后「被就地改写的对象」
     // 和「被换成新克隆的值」在状态里长得一模一样，事后无法区分
-    const mergedInPlace = this._collectInPlaceMergedObjects(this._state as Record<string, unknown>, partialState as Record<string, unknown>)
+    const mergedInPlace = this._collectInPlaceMergedObjects(stateRecord, effective)
 
     this._withInternalAccess(() => {
-      deepMerge(this._state as Record<string, unknown>, partialState as Record<string, unknown>)
+      deepMerge(stateRecord, effective)
     })
 
     this._mutationCount++
 
-    Object.keys(partialState).forEach((key) => {
+    const changedKeys = Object.keys(effective) as Array<keyof S>
+    changedKeys.forEach((key) => {
       // 缓存应写入 deepMerge 后的最终状态值：嵌套对象被递归合并后，
       // this._state[key] 与 partialState[key] 可能不同（如 {a:{x:1}} patch {a:{y:2}}），
       // 写入 partial 值会导致缓存与状态不一致
@@ -397,7 +463,7 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
       this._markDirtyKey(key as keyof S)
     })
     // deepMerge 就地改写的对象可能同时被其他顶层键引用，那些键的内容也变了
-    this._markAliasedKeys(mergedInPlace, new Set(Object.keys(partialState) as Array<keyof S>))
+    this._markAliasedKeys(mergedInPlace, new Set(changedKeys))
 
     if (!this._dispatching && !this._batchManager.isInBatch) {
       this._scheduleNotify()

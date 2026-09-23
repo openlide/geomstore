@@ -151,11 +151,16 @@ export class ActionLoader {
   private stateGeneration = 0
 
   /**
-   * 最近一次 `wrap` 注入的 setState
+   * 最近一次**实际调用**用到的 setState
    *
    * `clear()` 与换键的 `setOptions()` 据此给旧键补写复位值：内部记账被清空后已无
    * 在途调用来纠正 store，`loading: true` 会永久卡住。
    * 需要复位的键直接取自下面的几张表（键即状态键），无需另设登记表。
+   *
+   * 赋值点在 wrapper 内部（每次调用登记一次），而不是只在 `wrap()` 当时：本类的常见
+   * 用法是 wrap 一次、复用同一个 wrapper 反复调用，而 `clear()` 会把本字段清成
+   * undefined。只在 wrap 时赋值的话，「wrap → clear → 继续用同一个 wrapper」之后
+   * 下一次 clear()/setOptions() 就拿不到写入函数，复位值一个也写不出去。
    * @private
    */
   private lastSetState: ((key: string, value: unknown) => void) | undefined
@@ -239,13 +244,15 @@ export class ActionLoader {
    * ```
    */
   wrap<T extends (...args: never[]) => Promise<unknown>>(action: T, actionName: string, setState: (key: string, value: unknown) => void): T {
-    // 记住最近一次注入的 setState：clear() 与换键的 setOptions() 要靠它给旧键补写复位值
-    this.lastSetState = setState
     // 包装函数是 function 表达式（要拿到调用方 receiver），故 loader 实例另存一份
     const loader = this
 
     const wrapped = async function (this: unknown, ...args: Parameters<T>): Promise<unknown> {
       const receiver = this
+      // 复位能力跟着「实际发生过的调用」登记，而不是跟着 wrap 那一次：`clear()` 会把
+      // lastSetState 清成 undefined，此后继续复用同一个 wrapper 时若不重新登记，
+      // 下一次 clear()/换键的 setOptions() 就拿不到写入函数，store 里的 loading 永久卡在 true
+      loader.lastSetState = setState
       // 本次调用的配置快照 + 代际凭证：increment 与配对的 decrement/settle 都按它决定，
       // 中途的 setOptions()/clear() 不会让两端跑到不同配置或不同记账上去
       const scope = loader.captureCallScope(actionName)
@@ -558,7 +565,7 @@ export class ActionLoader {
    * 因此失去计数（与 `setOptions` 换选项时的处理口径一致）。
    *
    * @param {(key: string, value: unknown) => void} [setState] - 复位写入用的 setState，
-   *   缺省复用最近一次 `wrap` 注入的那个
+   *   缺省复用最近一次调用（wrapper 实际执行时）登记的那个
    *
    * @example
    * ```typescript
@@ -569,7 +576,10 @@ export class ActionLoader {
   clear(setState?: (key: string, value: unknown) => void): void {
     this.resetDerivedState(setState)
     this.clearInternalRecords()
-    // 记账已空，无需再保留宿主侧的写入函数（它通常 bind 了 store，会拖住宿主不被回收）
+    // 记账已空，此刻没有待复位的键，先把这份写入函数丢掉（它通常 bind 了 store，
+    // 拖住宿主不被回收）。丢掉不影响后续的复位能力：同一个 wrapper 再被调用时会在
+    // 调用时刻重新登记（见 {@link lastSetState}），不会像此前「只在 wrap 时赋值」那样
+    // 一旦 clear 就永久失去复位能力
     this.lastSetState = undefined
   }
 
@@ -581,7 +591,7 @@ export class ActionLoader {
   private resetDerivedState(setState?: (key: string, value: unknown) => void): void {
     const write = setState ?? this.lastSetState
     if (!write) {
-      // 从未 wrap 过：没有 setState 可用，也就没写过宿主状态
+      // 从未有过一次实际调用：没有 setState 可用，也就没写过宿主状态
       return
     }
     for (const [key, count] of this.loadingRefCounts) {

@@ -63,6 +63,13 @@ export class OfflineManager<S extends State = State> {
   private isOnline = true
   /** 同步互斥标志：防止网络恢复回调与手动 syncQueue 并发重复执行队列 */
   private syncing = false
+  /** 本轮同步进行中是否有新操作入队：syncQueue 的 finally 据此补跑下一轮
+   *  （新项入队时本轮 syncing 为真，scheduleResync 的互斥守卫会直接返回，
+   *   不记这个标记的话它只能等外部事件才会被再碰） */
+  private enqueuedWhileSyncing = false
+  /** 自驱动重放的待跑定时器（null = 没排）：dispose 时要撤销，
+   *  否则已释放实例会在下一个宏任务里再跑一轮并往新实例接管的存储键上落盘 */
+  private resyncTimer: ReturnType<typeof setTimeout> | null = null
   /** 同步进行中的队列中间状态：saveQueue 落盘时据此拼接完整联合视图。
    *  同步期间 enqueue 会触发 saveQueue，若只写 this.actionQueue，
    *  磁盘会被「仅剩新项」的队列覆写——进程恰在此窗口被杀时，
@@ -100,6 +107,12 @@ export class OfflineManager<S extends State = State> {
    * 「本次未执行、已交由队列重放」。此前是「入队 + 抛错」并存：调用方拿到
    * rejection 自行重试、队列稍后又会重放同一操作，非幂等操作（下单/提交表单）
    * 会被执行两次，故把重放职责收敛给队列这一个入口。
+   *
+   * 重放的触发点（入队**不**等于「等外部事件」）：① 入队后立即安排一轮（仅在线时；
+   * 本轮同步在途则记一次标记，由该轮收尾补跑）；② 一轮收尾仍有存货且本轮有推进；
+   * ③ 网络状态恢复；④ App 切前台（wechat-enterprise 的 onShow）。
+   * 「全失败且都未到重试上限、又没有新入队」时不自驱（止损点见 scheduleResync），
+   * 此时操作仍留在队列里，等 ③/④ 或调用方手动 `syncQueue()`
    *
    * 重放按 `(type, payload)` 经 `store.dispatch` 组装（见 executeAction），
    * 传入的 `action` 闭包本身不会被重放：payload 必须完整描述该 action 的参数
@@ -141,6 +154,9 @@ export class OfflineManager<S extends State = State> {
 
     this.syncing = true
     const failedActions: OfflineAction[] = []
+    // 本轮是否「有推进」：任一操作成功、落进死信、或作为损坏条目被丢弃都算——三条路都会
+    // 让操作永久离开队列。它是自动重放唯一的止损依据（见 finally 里的 scheduleAutoSync）
+    let progressed = false
     // 快照-清空模式：先取走当前队列，同步期间新入队的操作保留在 this.actionQueue，
     // 结束后合并回填。三份中间状态同步到实例字段，供 saveQueue 拼接联合视图落盘
     this.syncPending = this.actionQueue
@@ -159,6 +175,7 @@ export class OfflineManager<S extends State = State> {
         // 混入的损坏条目不能拖垮整个队列（retryCount++ 会抛 TypeError）
         if (!isValidOfflineAction(action)) {
           logger.warn('OfflineManager', `丢弃损坏的离线操作条目: ${this.queueKey}`)
+          progressed = true
           continue
         }
 
@@ -166,7 +183,9 @@ export class OfflineManager<S extends State = State> {
         // 执行期间被 dispose：本轮就此停止，剩余项（含当前项）在 finally 回填但不落盘
         if (this.disposed) break
 
-        if (!success) {
+        if (success) {
+          progressed = true
+        } else {
           action.retryCount++
           if (action.retryCount < this.maxRetryCount) {
             failedActions.push(action)
@@ -175,6 +194,7 @@ export class OfflineManager<S extends State = State> {
             // 避免企业场景离线订单/表单直接丢失且无感知
             logger.error('OfflineManager', `操作重试次数超过限制，移入死信队列: ${action.type}`)
             if (this.appendDeadLetter(action)) {
+              progressed = true
               this.onDrop?.(action)
             } else {
               // 死信落盘失败（配额满等）：不得丢弃——队列落盘会覆盖磁盘副本，
@@ -190,7 +210,17 @@ export class OfflineManager<S extends State = State> {
       // 同步途中 clearQueue 会把字段重绑为新数组，此时 failedActions 已是脱管副本，
       // 按它计数会告诉用户「N 个操作同步失败」，而这几条恰恰已被用户清掉、不会被保留
       if (this.syncFailed.length > 0) {
-        wx.showToast({ title: `${this.syncFailed.length}个操作同步失败`, icon: 'none' })
+        // UI 反馈与同步结果解耦（本目录既有约定：wechat-enterprise 给 showLoading/hideLoading
+        // 各自单独包 try/catch）：宿主没有 showToast（非 wx 环境/精简宿主/插件上下文）、
+        // 或它抛错（部分基础库在页面栈为空时抛）时，异常会沿 syncQueue 变成 rejection——
+        // 而此时队列已跑完、回填与落盘都正常。两个调用方都会把它读成「同步失败」，
+        // 排障者按同步逻辑找原因，真实故障却只是一条提示没弹出来；直接调用 syncQueue
+        // 且不 catch 的宿主还会得到 unhandled rejection。这里只损失提示
+        try {
+          wx.showToast({ title: `${this.syncFailed.length}个操作同步失败`, icon: 'none' })
+        } catch (error) {
+          logger.warn('OfflineManager', '同步失败提示未弹出（不影响同步结果）:', error)
+        }
       }
     } finally {
       // 回填必须覆盖循环未迭代到的剩余项：中途异常（死信落盘配额满、
@@ -220,7 +250,46 @@ export class OfflineManager<S extends State = State> {
           logger.warn('OfflineManager', `同步后队列落盘失败，未同步操作仅存于内存: ${this.queueKey}`)
         }
       }
+      // 自驱动重放：本轮把操作打回去（失败待重试）或同步期间又有新项落进 actionQueue 时，
+      // 补跑下一轮。缺这一步，一轮收尾留下的操作就得等「网络状态变化」或「App 切前台」
+      // 这两个外部事件才会被再碰——设备一直在线、网络状态不再变化（onNetworkStatusChange
+      // 只在变化时触发）、用户停在同一页面时，那条操作既不重试也永远累计不到 maxRetryCount
+      // 进死信，getQueueLength 长期报 1、getDeadLetters 为空，业务层两条兜底通道都拿不到信号
+      this.scheduleResync(progressed || this.enqueuedWhileSyncing)
+      this.enqueuedWhileSyncing = false
     }
+  }
+
+  /**
+   * 安排一次自驱动重放（入队后、以及一轮同步收尾仍有存货时）
+   *
+   * 在微任务里跑，且**不**接进当前这条 promise 链：调用方 `await syncQueue()` 只应等到
+   * 本轮结束，不该被顺带跑完的下一轮拖着。异常一律就地记日志（与网络恢复回调同一口径），
+   * 否则会成为 unhandled rejection
+   *
+   * @param hasWorkSignal 本轮是否存在「值得再跑一轮」的信号：有操作永久离开队列
+   *   （成功 / 落死信 / 丢弃损坏条目），或同步期间有新操作入队。全失败且都未到重试上限、
+   *   又没有新项时传 false —— 否则「服务端持续 5xx + 网络状态不变」会让 syncQueue 变成
+   *   不等任何外部信号的紧循环，把重试压力打满
+   */
+  private scheduleResync(hasWorkSignal: boolean): void {
+    if (!hasWorkSignal || this.disposed || !this.isOnline || this.syncing) return
+    if (this.actionQueue.length === 0) return
+    // 已经排了一次就不再重复排队：那个待跑的本轮会把期间新入队的项一并带走
+    if (this.resyncTimer !== null) return
+
+    // 0 延时的**宏任务**而不是微任务：微任务会抢在调用方 `await execute()` 的续体之前起跑，
+    // 于是 execute 刚返回、getQueueLength() 读到的是「同步在途」的 0（syncQueue 已把整批
+    // 快照移进 syncPending），调用方完全看不出自己刚入过队。宏任务让调用方的同帧代码先跑完，
+    // 重放在下一轮事件循环开始——外部事件（网络变化 / 切前台）依然不是必要条件
+    this.resyncTimer = setTimeout(() => {
+      this.resyncTimer = null
+      // 定时器排队之后状态可能已变（dispose / 断网 / 另一轮已在跑），起跑前再判一次
+      if (this.disposed || !this.isOnline || this.syncing) return
+      this.syncQueue().catch((error) => {
+        logger.error('OfflineManager', '自驱动重放失败:', error)
+      })
+    }, 0)
   }
 
   /**
@@ -269,6 +338,11 @@ export class OfflineManager<S extends State = State> {
   dispose(): void {
     if (this.disposed) return
     this.disposed = true
+    // 撤销尚未起跑的自驱动重放：已释放实例的落盘会覆写共享键上新实例的队列
+    if (this.resyncTimer !== null) {
+      clearTimeout(this.resyncTimer)
+      this.resyncTimer = null
+    }
     if (this.networkHandler) {
       wx.offNetworkStatusChange?.(this.networkHandler)
       this.networkHandler = null
@@ -291,6 +365,12 @@ export class OfflineManager<S extends State = State> {
     if (!this.saveQueue()) {
       logger.warn('OfflineManager', `队列落盘失败，操作仅存于内存（进程被杀即丢失）: ${type}`)
     }
+    if (this.syncing) this.enqueuedWhileSyncing = true
+    // 入队即安排一次自驱动重放（在线时）：新操作本身就是起跑理由，故信号恒为真。
+    // 缺这一步，在线提交失败（服务端 5xx）的操作要等设备网络状态**变化**或 App 切前台
+    // 才会被再碰，两个事件都不发生时它既不重试也进不了死信。离线入队不起跑
+    // （scheduleResync 的 isOnline 守卫），仍由网络恢复回调接管
+    this.scheduleResync(true)
   }
 
   /**
@@ -346,8 +426,6 @@ export class OfflineManager<S extends State = State> {
         })
       }
     }
-    wx.onNetworkStatusChange(this.networkHandler)
-
     wx.getNetworkType({
       success: (res) => {
         if (!this.disposed) {
@@ -355,6 +433,14 @@ export class OfflineManager<S extends State = State> {
         }
       },
     })
+    // 探测在前、注册在后：wx.getNetworkType 在精简宿主/测试替身下可能缺失或抛错，
+    // 注册在前会让异常从构造函数逸出时留下一个**永远无人撤销**的网络监听——
+    // dispose() 是唯一的撤销点，而调用方根本没拿到实例可以调它。此后每次网络恢复都会在
+    // 一个没人认领的实例上跑 syncQueue 并 dispatch 进 store（它闭包抓着 this 与 store 引用），
+    // 账号每切换一次就再漏一个，多个实例还会对同一存储键并发落盘（正是 dispose 注释要防的场景）。
+    // 本模块已经承认宿主 API 可能缺失（dispose 里用的是 wx.offNetworkStatusChange?.()），
+    // 构造侧理应有等价的顺序守卫
+    wx.onNetworkStatusChange(this.networkHandler)
   }
 
   /**

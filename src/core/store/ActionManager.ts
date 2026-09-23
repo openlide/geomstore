@@ -78,6 +78,12 @@ export class ActionManager<S extends State = State, A extends Actions = Actions>
    * 仍要求成对提供 `getMutationCount`，见下方守卫）。
    */
   private readonly _mutationGate?: () => number
+  /**
+   * 变更计数读取器（与 `_mutationGate` 同源，但不受 onlyOnChange 开关限制）
+   *
+   * @private
+   */
+  private readonly _getMutationCount?: () => number
   private readonly _refreshCache?: () => void
   private readonly _getLastNotifiedMutationCount?: () => number
   private readonly _isInBatch?: () => boolean
@@ -96,6 +102,7 @@ export class ActionManager<S extends State = State, A extends Actions = Actions>
       throw new TypeError('[GeomStore] ActionManager: `getMutationCount` is required when `notifyOnlyOnChange` is enabled')
     }
     this._mutationGate = options.notifyOnlyOnChange ? options.getMutationCount : undefined
+    this._getMutationCount = options.getMutationCount
     this._refreshCache = options.refreshCache
     this._getLastNotifiedMutationCount = options.getLastNotifiedMutationCount
     this._isInBatch = options.isInBatch
@@ -217,11 +224,15 @@ export class ActionManager<S extends State = State, A extends Actions = Actions>
     // 同步刷新缓存：action 可能通过 this.state.xxx = ... 直接变异状态，
     // 绕过 setState/$patch 导致缓存陈旧，此处按状态源强制回写
     this._safeRefreshCache()
-    // 异步 action：通知统一延迟到 Promise 结束（fulfill 或 reject）时补发。
-    // 同步段不单独通知——其变更会被完成时的补发覆盖，否则与续段 setState 的
-    // 自发通知、完成补发叠加成三重通知。
+    // 异步 action：通知在两个时点各补发一次。
+    // 1) 同步段结束时（见 _flushAfterSyncSegment）——Store 侧的抑制是硬开关（setState /
+    //    $patch / $replaceState 都看 `_dispatching`），而 action 返回的 promise 可能
+    //    **永不 settle**（等用户交互才 resolve、请求无回调也不 reject、超时未 reject）。
+    //    只把收尾挂在 onSettled 上时，同步段那一格状态变更要等到「下一个不相干的通知」
+    //    才顺带补发——`dialogVisible = true` 要等对话框被关掉之后才可见（而它没显示出来）。
+    // 2) settle 时（onSettled）——覆盖 await 之后的续段变更。
     // await 之后的续段运行在内部访问作用域之外，对裸状态的直接写入既无通知也无计数：
-    // - 默认模式无任何变更跟踪，完成时无条件补发（裸写入不可检测，宁多勿漏）
+    // - 默认模式无任何变更跟踪，完成时无条件补发（裸写不可检测，宁多勿漏）
     // - onlyOnChange 模式按「计数 > 已通知覆盖计数」精确补发：
     //   续段 setState 已自发通知过的（计数已被覆盖）不再重复
     const onSettled = (): void => {
@@ -231,6 +242,7 @@ export class ActionManager<S extends State = State, A extends Actions = Actions>
     // bundle 里的 Promise 子类都会判假，被当作同步结果处理时，await 之后的状态变更
     // 永远等不到补发通知
     if (result !== null && typeof result === 'object' && typeof (result as { then?: unknown }).then === 'function') {
+      this._flushAfterSyncSegment(mutationsBefore)
       // 异步失败同样触发 onError 钩子：reject 是 action 最常见的失败形态
       // （网络请求等），监控/上报插件对其不可失明——与同步 catch 路径对称。
       // 拒绝值保持原始错误不包装，不改变调用方捕获到的异常类型。
@@ -274,6 +286,48 @@ export class ActionManager<S extends State = State, A extends Actions = Actions>
    */
   private _shouldNotifyNow(baseline: number): boolean {
     return this._dispatchDepth === 0 && !this._isInBatch?.() && (!this._mutationGate || this._mutationGate() > baseline)
+  }
+
+  /**
+   * 异步 action 同步段的兜底补发：promise 永不 settle 时同步段的写入也要可见
+   *
+   * 与 {@link _settleAfterDispatch} 的区别只有两点：不回刷缓存（`execute` 在进这一支之前
+   * 刚按状态源刷过一遍，同步段之后没有任何新变更），以及**必须**按「本段是否改过状态」
+   * 把关——settle 补发是每轮 dispatch 一次的固定动作，这里若无条件补发，
+   * 每个异步 action 都会白白多刷一轮监听器（同步段一轮 + settle 一轮）。
+   *
+   * 把关口径：
+   * - onlyOnChange 模式：与 settle 完全同一条判据（基线取「最近一次通知已覆盖的计数」），
+   *   本段没改过 ⇒ 判假；改过 ⇒ 补发，并把该计数带走，settle 那一轮自动去重
+   * - 默认模式：通知本就无条件，故改由变更计数把关；计数源缺失（非 Store 消费方
+   *   自建 ActionManager 时可以不传 `getMutationCount`）按「有变更」处理——
+   *   可见性优先，多刷一轮只是浪费，少刷一轮是页面不动
+   *
+   * @param mutationsBefore - 进入 dispatch 前采集的变更计数基线
+   *
+   * @private
+   */
+  private _flushAfterSyncSegment(mutationsBefore: number): void {
+    if (!this._mutationGate && !this._getMutationCount) {
+      // 非 Store 消费方自建 ActionManager 时可以两个计数源都不传。此时按「有变更」
+      // 无条件补发等于给每个异步 action 白加一轮通知，而这类宿主本来也没有 Store 的
+      // dispatch 抑制（同步段的写入当场就通知了），不存在被吞的问题 ⇒ 保持仅 settle 补发
+      return
+    }
+    const baseline = this._mutationGate ? (this._getLastNotifiedMutationCount?.() ?? mutationsBefore) : mutationsBefore
+    if (!this._mutationGate && this._getMutationCount && this._getMutationCount() <= mutationsBefore) {
+      // 默认模式：通知本就无条件，补发前提改由「同步段是否改过状态」把关
+      return
+    }
+    if (!this._shouldNotifyNow(baseline)) {
+      return
+    }
+    try {
+      this._notifyListeners()
+    } catch (error) {
+      // 与 _settleAfterDispatch 同一口径：补发链路自身抛错就地归口，不外溢给调用方
+      this._reportSettledFailure(error)
+    }
   }
 
   /**

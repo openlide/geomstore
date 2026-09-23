@@ -62,13 +62,14 @@ coverage-report.json
 # 三份素材都钉在仓库根：不加前导 / 时它们会命中任意层级，docs/ocr.md、packages/*/review.json
 # 这类合法文件名会被静默忽略。
 /ocr.md
-/ocrreview.md
+/ocrreview*.md
 /review.json
+# 白名单按**模式**写，不按轮次点名。逐轮加 `!.ocr-fix/decisionsN.md` 已经两次漏放新一轮的
+# 台账（第五轮补 decisions5/verdicts5 时第六轮还不存在，第六轮的 decisions6.md、verdicts6/**
+# 同样落在 `.ocr-fix/*` 里）：被忽略的文件 `git status` 不列、`git add` 只安静跳过，
+# 断链要等到下一轮在干净检出上读不到判定结论才暴露。改成模式后每轮自动覆盖。
 .ocr-fix/*
-!.ocr-fix/decisions.md
-!.ocr-fix/verdicts/
-!.ocr-fix/verdicts/**
-!.ocr-fix/decisions5.md
-!.ocr-fix/verdicts5/
-!.ocr-fix/verdicts5/**
+!.ocr-fix/decisions*.md
+!.ocr-fix/verdicts*/
+!.ocr-fix/verdicts*/**
 

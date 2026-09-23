@@ -5,7 +5,8 @@
  * 本文件是 `export * from './selector/index.js'` 的薄壳，公开面即该 index 的清单：
  *
  * - 值：`createSelector` / `createMemoizedSelector` / `createStructuredSelector`
- *   / `createParametricSelector` / `SelectorFactory` / `SelectorComposer`
+ *   / `createParametricSelector` / `createRetrySelector` / `createRetrySelectorAsync`
+ *   / `SelectorFactory` / `SelectorComposer`
  * - 类型：`RetrySelectorOptions` / `AsyncRetrySelectorOptions`（来自 `selectorComposer`），
  *   以及 `Selector` / `SelectorOptions` / `SelectorCacheItem` / `SelectorResult`
  *   / `SelectorComposerInput` / `ParametricSelector`（定义在 `src/types/selector.ts`）
@@ -16,10 +17,15 @@
  * ```ts
  * import { createSelector } from '@openlide/geomstore/extras/selector'
  *
- * const selectDouble = createSelector(
- *   (s: State) => s.count,
- *   (count) => count * 2,
- * )
+ * // 签名是 createSelector(selectorFn, options?)：派生逻辑就写在 selectorFn 里，
+ * // 这里**没有** reselect 那样的「输入选择器 + 组合函数」两参形态
+ * const selectDouble = createSelector((s: State) => s.count * 2)
+ *
+ * // 需要控制缓存时走第二个参数（口径见 types/selector.ts 的 SelectorOptions）
+ * const selectName = createSelector((s: State) => s.user.name, {
+ *   cache: true,
+ *   cacheTTL: 10000,
+ * })
  * ```
  *
  * @remarks 选择器缓存的失效依据是 `core/store` 的 state 版本号（`getStateVersion`），

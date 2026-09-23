@@ -281,6 +281,9 @@ export function withPageStore<S extends State, A extends Actions, G extends Gett
  * 订阅生命周期与绑定失败的回滚口径同 withPageStore：按组件实例登记 `__geomUnbinds`、
  * detached 统一清理，attached 重入时先清理旧订阅
  *
+ * action 绑定与组件自身 `methods` 同名时同 Page/App 侧 bindActions：一条覆盖告警 +
+ * detached 恢复原值（映射的 action 在绑定期间始终优先，与 Page 一致）
+ *
  * @template S - 状态类型
  * @template A - Actions 类型
  * @template G - Getters 类型
@@ -348,6 +351,26 @@ export function withComponentStore<S extends State, A extends Actions, G extends
   ): ComponentConfig<S, A, G, O, ComponentOwnMethods<C>> &
     Omit<C, 'data' | 'methods'> & { data: (C extends { data: infer D } ? D : object) & ExtractPageData<S, O, G> } {
     const enhancedConfig: ComponentOptions = { ...ComponentConfig }
+
+    // action 绑定的本地名与组件自身 methods 同名时的遮蔽表：键 → 用户原方法。
+    // 与 Page/App 侧的 bindActions 同口径（utils.ts 里那份会「告警 + 解绑时按原描述符
+    // 恢复」）：Component 的 action 走下面的 methods 合并，boundMethods 排在后，
+    // 用户同名方法既没有提示也永不回来（合并发生在配置级，重新 attached 照样被顶掉），
+    // 同一库对「action 绑定遮蔽宿主成员」已裁定为需要告警的事件，这里两个保障都缺。
+    // 判定在配置级做一次（每个组件配置一份表，实例共用），告警随之只刷一次
+    const shadowedMethods = new Map<string, unknown>()
+    // 取 enhancedConfig.methods 而非 ComponentConfig.methods：前者是同一份引用
+    // （enhancedConfig 为浅拷贝），且类型已由 ComponentOptions 收敛，不必依赖 C 上
+    // 是否存在 methods 键。判定必须发生在下面的 methods 合并之前
+    const configMethods = enhancedConfig.methods
+    if (configMethods) {
+      for (const [localName, actionName] of Object.entries(actionsMapping)) {
+        if (Object.prototype.hasOwnProperty.call(configMethods, localName)) {
+          shadowedMethods.set(localName, configMethods[localName])
+          console.warn(`[withComponentStore] 组件已有同名方法 "${localName}"，将被 action "${actionName}" 覆盖，detached 时恢复原值`)
+        }
+      }
+    }
 
     // 扩展 lifetimes
     // 仅从 lifetimes 捕获原始 attached/detached：基础库 3.15.0+ 仅支持 lifetimes 写法，
@@ -435,7 +458,20 @@ export function withComponentStore<S extends State, A extends Actions, G extends
             const methods = { ...this.methods }
             this.methods = methods
             Object.keys(actionsMapping).forEach((localName) => {
-              delete methods[localName]
+              if (shadowedMethods.has(localName)) {
+                // 被遮蔽的组件自身方法按 bindActions 的「解绑恢复原值」口径回放，
+                // 而不是连同用户方法一起 delete 掉（那条路径下用户方法在重新 attached
+                // 之后也回不来）。按自有属性写入：本地名由调用方配置，`'__proto__'`
+                // 用普通赋值会命中 Object.prototype 的 setter
+                Object.defineProperty(methods, localName, {
+                  value: shadowedMethods.get(localName),
+                  writable: true,
+                  enumerable: true,
+                  configurable: true,
+                })
+              } else {
+                delete methods[localName]
+              }
             })
           }
         }
@@ -461,6 +497,8 @@ export function withComponentStore<S extends State, A extends Actions, G extends
     }
 
     // 扩展 methods
+    // boundMethods 排在后：action 绑定覆盖组件同名方法（与 Page/App 侧 bindActions 一致，
+    // action 映射必须生效）。同名情况已在上面登记进 shadowedMethods 并告警，detached 时回放原值
     enhancedConfig.methods = {
       ...ComponentConfig.methods,
       ...boundMethods,

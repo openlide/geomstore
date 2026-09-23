@@ -1449,7 +1449,7 @@ describe('Builtin Plugins 补充覆盖', () => {
   })
 
   describe('persistencePlugin options || {} 分支覆盖', () => {
-    it('PERSIST-COVER-018: options 为 null 时应该触发 || {} 分支', () => {
+    it('PERSIST-COVER-018: options 为 null 时走默认配置，不再自相矛盾地崩', async () => {
       const mockGetStorageSync = jest.fn().mockReturnValue(null)
       const mockSetStorageSync = jest.fn()
       ;(global as any).wx.getStorageSync = mockGetStorageSync
@@ -1462,18 +1462,21 @@ describe('Builtin Plugins 补充覆盖', () => {
         state: { count: 0 },
       })
 
-      // 传 null 作为 options，触发 options || {} 分支
-      // options=null 不会触发参数默认值（默认值只在 undefined 时触发）
-      // 但 options || {} 中 null 是 falsy，会使用 {}
-      // 之后 options.storage 会抛出 TypeError（因为 null 没有 storage 属性）
+      // 传 null 作为 options，触发 `options || {}` 归一分支
+      // （options=null 不会触发参数默认值，默认值只在 undefined 时生效）
       const plugin = {
         name: 'null-persistence',
         install: (store: any) => (persistencePlugin as any).install(store, null),
       }
 
-      // 应该抛出 TypeError，因为 options 为 null 时 options.storage 报错
-      // 但 line 122 的 options || {} 分支已经被执行覆盖
-      expect(() => store.use(plugin)).toThrow(TypeError)
+      // 第六轮改掉的自相矛盾判据：旧实现归一成了 `{}` 却仍在 `options.storage` 上
+      // 解引用崩掉（TypeError），并把那次崩溃当成契约钉住。现在 null 与 undefined
+      // 同义——一律落到默认配置（默认 wx 后端、debounce 0），因此不抛错且照常落盘。
+      expect(() => store.use(plugin)).not.toThrow()
+
+      store.setState('count', 1)
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      expect(mockSetStorageSync).toHaveBeenCalled()
 
       consoleLogSpy.mockRestore()
     })

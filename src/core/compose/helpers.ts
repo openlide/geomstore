@@ -54,6 +54,24 @@ function ownsNestedStore(store: Store, head: string): boolean {
 }
 
 /**
+ * 「子 store 已销毁」告警的去重表：按 store 实例记，同一死店只报一次。
+ *
+ * 归属判定与读路径合并都在渲染/setData 热路径上被反复调用，不去重会刷屏；
+ * WeakSet 不驻留已销毁实例，不会因为告警而留内存。
+ */
+const destroyedChildrenWarned = new WeakSet<object>()
+
+function warnDestroyedChildOnce(store: Store): void {
+  if (destroyedChildrenWarned.has(store)) {
+    return
+  }
+  destroyedChildrenWarned.add(store)
+  if (!isProduction()) {
+    console.warn(`[composeStore] 子 store "${store.name}" 已销毁，跳过（其余子 store 不受影响）`)
+  }
+}
+
+/**
  * 对子 store 应用写入，跳过已被独立销毁的子 store
  *
  * 子 store 可在组合之外被独立销毁，此时 $patch/$replaceState 会抛
@@ -205,6 +223,13 @@ export function findTargetStoreWithKey(key: string, stores: Store[], namespace?:
   } else {
     // 非命名空间模式：直接查找
     const matchingStores = stores.filter((s) => {
+      // 已销毁的子 store 不参与归属判定：它的 getState() 会抛，把整条读路径带着一起崩。
+      // 判据与写侧 applyToStore 的「已销毁 → 跳过并告警」同口径，故这里也要告警——
+      // 否则键的归属被死店吃掉后，$patch/setState 会静默什么都不做（R5-277/285 已否决过静默）
+      if (s.destroyed) {
+        warnDestroyedChildOnce(s)
+        return false
+      }
       const state = s.getState()
       // own property 判定：`in` 会命中 Object 原型链（'toString'/'constructor' 等），
       // 导致原型链属性名被误判为所有 store 都匹配并写入第一个 store

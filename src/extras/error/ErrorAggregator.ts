@@ -13,11 +13,49 @@ import { isGeomStoreError } from '../../core/errors/GeomStoreError.js'
 const STACK_FINGERPRINT_CHARS = 100
 
 /**
- * 一个错误组及其全部记账数据
+ * 存活错误组的默认上限（`maxGroups` 缺省值）
  *
- * 组、按 Store 的次数、指纹三者生命周期完全一致（建组时一起出现、驱逐/clear 时一起消失），
- * 分放三张表就是三处需要同步的删除点——漏一处即留下永久无人清理的孤儿计数
- * （`sum(byStore) > totalErrors` 就是这么来的）。收进同一个对象后无从漏删。
+ * 上限本身可调（构造参数），但把它接进 `MonitoringConfig` 需要改契约层
+ * `src/types/error.ts`，本轮未动（见 `ErrorMonitoring` 构造器）。
+ */
+export const DEFAULT_MAX_GROUPS = 100
+
+/**
+ * 单个错误组最多逐个列出的 Store 数，超出后并入 {@link OTHER_STORES_BUCKET}
+ *
+ * `maxGroups` 只约束「组的个数」，管不到「一组里有多少个 storeName」。storeName 在本库里
+ * 是动态的（`integrations/enterprise/user-store.ts` 按 `userStoreKey(userId)` 逐账号建 Store），
+ * 于是账号切换/注销会在进程级长寿单例的同一个高频错误组上不断追加字符串，组不被驱逐就永不释放；
+ * 而「是否已登记」的判定在 `report()` 的错误高发路径上，逐个比对随长度线性增长。
+ *
+ * 上限只截断**列表**（`affectedStores` 是一份诊断视图），不截断**计数**：按 Store 的账目
+ * 由 `observedByStore` 单独记，`sum(byStore) === totalErrors` 与截断无关。
+ */
+const MAX_STORES_PER_GROUP = 50
+
+/**
+ * 全局按 Store 账目最多逐个开键的 Store 数，超出后并入 {@link OTHER_STORES_BUCKET}
+ *
+ * 与 `MAX_STORES_PER_GROUP` 同一动机：这份账目如今随组驱逐而长期驻留，
+ * 不给基数设上限就等于把「按组累积」换成「按进程累积」。
+ */
+const MAX_TRACKED_STORE_KEYS = 200
+
+/**
+ * Store 基数溢出后的归并桶键（保留字，不作为真实 Store 名参与逐个列出）
+ *
+ * 出现在 `ErrorGroup.affectedStores` 末尾与 `getStats().byStore` 里，表示「其余未逐个列出的
+ * Store 合起来的量」。用保留字而非静默丢弃，是为了让读报表的人看得出这里被折叠过。
+ */
+const OTHER_STORES_BUCKET = '__others__'
+
+/**
+ * 一个错误组及其随组数据
+ *
+ * 组本体与指纹两者生命周期完全一致（建组时一起出现、驱逐/clear 时一起消失），
+ * 分放多张表就是多处需要同步的删除点——漏一处即留下永久无人清理的孤儿条目。
+ * 「Store → 次数」的账目不再随组存放（改由 `observedByStore` 按条累计）：
+ * 随组存放会让 maxGroups 驱逐把已发生过的错误整笔抹掉，见 `getStats` 的口径说明。
  */
 interface GroupEntry {
   /** 聚合体本体（对外读取时经 `copyGroup` 复制，见 `getGroups`） */
@@ -26,16 +64,25 @@ interface GroupEntry {
   /** 建组时使用的指纹原文，驱逐时据此删掉反向索引条目 */
   fingerprint: string
 
-  /** 「Store → 该组内该 Store 的次数」 */
-  hits: Map<string, number>
+  /**
+   * 该组已逐个列出的 storeName 集合
+   *
+   * 只为 O(1) 去重而存在（此前是 `affectedStores.includes`，在错误高发路径上按数组长度线性扫描）。
+   * 规模被 `MAX_STORES_PER_GROUP` 约束。
+   */
+  storeNames: Set<string>
+
+  /** 该组的 Store 列表是否已溢出（溢出后不再逐个登记，见 `_recordGroupStore`） */
+  storesOverflowed: boolean
 }
 
 /**
  * 复制一个错误组用于对外交付
  *
  * 内部组是可变对象且长期驻留：直接把引用交给调用方，则一句 `group.count = 0` 或
- * `group.affectedStores.push('x')` 就会让此后所有 `getStats()`/`byStore`/`byCode` 失真，
- * 且无从发现。两个容器字段各拷一层，`sampleError.error` 按约定是外部持有的不可变引用。
+ * `group.affectedStores.push('x')` 就会让此后所有 `getGroups()`/`topErrors`/`recentErrors`
+ * 失真（`getStats()` 的三条账不受影响——它们按条独立累计，正是这套账目不随组存放的理由）。
+ * 两个容器字段各拷一层，`sampleError.error` 按约定是外部持有的不可变引用。
  */
 function copyGroup(group: ErrorGroup): ErrorGroup {
   return {
@@ -49,6 +96,12 @@ function copyGroup(group: ErrorGroup): ErrorGroup {
  * 错误聚合器
  *
  * 将相似的错误聚合成组，便于分析和报告
+ *
+ * 两套口径要分清（`getStats` 里同时给出）：
+ * - **账目**（`totalErrors` / `byCode` / `byStore`）按条累计，自 `clear()` 起单调不减，
+ *   与组是否被 `maxGroups` 驱逐无关；
+ * - **分组视图**（`totalGroups` / `getGroups()` / `getGroupsByStore()`）只反映当前存活的组，
+ *   会随驱逐变小，差额记在 `evictedGroups` / `evictedErrors` 里。
  */
 export class ErrorAggregator {
   /** groupId → 组及其记账数据 */
@@ -69,9 +122,34 @@ export class ErrorAggregator {
    */
   private readonly groupIdByFingerprint = new Map<string, string>()
 
+  /** 存活组数量上限（只约束「组本体驻留多少组」，不约束账目，见 `getStats`） */
   private readonly maxGroups: number
 
-  constructor(maxGroups: number = 100) {
+  /**
+   * 自上次 `clear()` 以来观测到的错误条数（每次 `addError` 加一，驱逐不减）
+   *
+   * 这是 `totalErrors` 的唯一来源。此前它由「存活组的 count 求和」现算，于是 maxGroups
+   * 驱逐会把已发生过的错误整笔抹掉：两次 `generateReport()` 之间 totalErrors 会**变小**，
+   * 与它在 `ErrorMonitoring` 里被钉下的口径（「观测到的错误数」）相反。
+   */
+  private observedErrors = 0
+
+  /** 按错误码的累计账目（键集合有限，无需上限） */
+  private readonly observedByCode = new Map<string, number>()
+
+  /** 按 Store 的累计账目，Store 基数超上限后并入 `OTHER_STORES_BUCKET` */
+  private readonly observedByStore = new Map<string, number>()
+
+  /** 因 maxGroups 驱逐而消失的组数（账目已转入 `observedByCode`/`observedByStore`，此处只是留痕） */
+  private evictedGroups = 0
+
+  /** 因 maxGroups 驱逐而消失的组内错误条数 */
+  private evictedErrors = 0
+
+  /** 首次驱逐时出声一次：之后再驱逐只累计计数，不在错误高发路径上重复刷屏 */
+  private evictionWarned = false
+
+  constructor(maxGroups: number = DEFAULT_MAX_GROUPS) {
     this.maxGroups = maxGroups
   }
 
@@ -90,11 +168,15 @@ export class ErrorAggregator {
 
     // context.error 只是「契约上」的 Error：`throw null` / 抛非 Error 值都会流到这里
     // （defaultErrorHandler 与 describeErrorProperty 已按此设防，buildFingerprint 也做了
-    // 保护式读取）。裸读 error.name 会抛 TypeError，而此刻该组的计数已写入，
-    // 组却没建出来——清理只遍历已存在的组，这条孤儿计数永远留在表里，
-    // sum(byStore) 自此永久大于 totalErrors。故先保护式取值、组建好之后再计数。
+    // 保护式读取）。这里裸读 error.name 会抛 TypeError，把一次「上报错误」变成调用方的异常，
+    // 故先保护式取值（与 `copySample`/`serializeContext` 同一口径）
     const type = typeof error?.name === 'string' ? error.name : 'Error'
     const message = typeof error?.message === 'string' ? error.message : String(error)
+
+    // 账目先于分组落定：三张账（总数 / byCode / byStore）在同一个调用点一起推进，
+    // 因此 `sum(byCode) === sum(byStore) === totalErrors` 与「这条错误最终落进哪个组」
+    // 「那个组有没有被驱逐」都无关
+    this._account(context.storeName, code)
 
     // 检查是否已存在该组
     const existing = this.groups.get(groupId)
@@ -104,14 +186,11 @@ export class ErrorAggregator {
       group.count++
       group.lastSeen = now
 
-      // 更新受影响的Store
-      if (!group.affectedStores.includes(context.storeName)) {
-        group.affectedStores.push(context.storeName)
-      }
+      // 更新受影响的Store（基数有上限，溢出后并入 `__others__`，见 `_recordGroupStore`）
+      this._recordGroupStore(existing, context.storeName)
       // 样本刷新为最近一次出现：首次 occurrence 往往是最不具代表性的一次，
       // 且组可能长期存活，冻结的样本会让诊断停留在过期状态
       group.sampleError = this.copySample(context, now)
-      this._countStoreHit(existing, context.storeName)
 
       return undefined
     }
@@ -129,12 +208,12 @@ export class ErrorAggregator {
       sampleError: this.copySample(context, now),
     }
 
-    const entry: GroupEntry = { group: newGroup, fingerprint, hits: new Map() }
+    const entry: GroupEntry = { group: newGroup, fingerprint, storeNames: new Set([context.storeName]), storesOverflowed: false }
     this.groups.set(groupId, entry)
     this.groupIdByFingerprint.set(fingerprint, groupId)
-    this._countStoreHit(entry, context.storeName)
 
-    // 限制组数量
+    // 限制组数量：被驱逐那组的条数转入 evictedErrors（见 cleanupOldGroups），
+    // 因此 totalErrors 只增不减，「聚合丢过数据」也从此有账可查
     if (this.groups.size > this.maxGroups) {
       this.cleanupOldGroups()
     }
@@ -158,6 +237,11 @@ export class ErrorAggregator {
   /**
    * 获取指定Store的组
    *
+   * 口径限制：某组波及的 Store 数超过 `MAX_STORES_PER_GROUP` 后，后到的 Store 只以
+   * `__others__` 桶计入该组的 `affectedStores`（计数照常累计，见 {@link getStats}），
+   * 故对本方法而言「没返回某组」**不等于**该 Store 没在那组里报错。
+   * 要按 Store 拿准确的错误条数请用 `getStats().byStore`。
+   *
    * @param {string} storeName - Store名称
    * @returns {ErrorGroup[]} 错误组数组
    */
@@ -166,17 +250,57 @@ export class ErrorAggregator {
   }
 
   /**
-   * 记录一次「组内某 Store」的错误计数
+   * 记一条错误的账：总数、按错误码、按 Store 三张表同时推进
    *
-   * 单独按次计数而非按组求和：错误组会把同一站点在不同 Store 的报错合并为一条，
-   * 若把组 count 累加给每个受影响 Store，跨 Store 的组会重复计入，byStore 之和超过 totalErrors。
-   * 计数随组一起存放，组被 maxGroups 驱逐时同步消失，因此
-   * `sum(byStore) === totalErrors` 在驱逐后依旧成立（此前独立累计的口径会永久偏离）。
+   * 三处必须一起改，否则 `sum(byCode) === sum(byStore) === totalErrors` 的账目不变量就会破。
+   * 单独按条计数而非「把存活组的 count 求和」：错误组会把同一站点在不同 Store 的报错合并为一条，
+   * 若把整组 count 记给每个受影响 Store，跨 Store 的组会重复计入（那正是此前
+   * `sum(byStore) > totalErrors` 的来源）；而按组求和还会让 maxGroups 驱逐把已发生过的
+   * 错误整笔抹掉（totalErrors 倒退）。求和口径与驱逐留痕由此分开。
    *
    * @private
    */
-  private _countStoreHit(entry: GroupEntry, storeName: string): void {
-    entry.hits.set(storeName, (entry.hits.get(storeName) ?? 0) + 1)
+  private _account(storeName: string, code: string): void {
+    this.observedErrors++
+    this.observedByCode.set(code, (this.observedByCode.get(code) ?? 0) + 1)
+
+    const seen = this.observedByStore.get(storeName)
+    if (seen !== undefined) {
+      this.observedByStore.set(storeName, seen + 1)
+      return
+    }
+    if (this.observedByStore.size >= MAX_TRACKED_STORE_KEYS) {
+      // 新 Store 不再逐个开键，并入溢出桶：桶键本身也是 byStore 的一项，求和不变量不破
+      this.observedByStore.set(OTHER_STORES_BUCKET, (this.observedByStore.get(OTHER_STORES_BUCKET) ?? 0) + 1)
+      return
+    }
+    this.observedByStore.set(storeName, 1)
+  }
+
+  /**
+   * 把一个 Store 逐个登记进某个组的 `affectedStores`
+   *
+   * 去重走 `entry.storeNames`（Set），不再是 `affectedStores.includes` 的线性扫描——
+   * 本方法在 `report()` 的错误高发路径上，数组越长每次聚合越贵。
+   * 达到 `MAX_STORES_PER_GROUP` 后只留一个 `__others__` 桶标记并出声一次：
+   * 截断的是「列得全不全」这份诊断视图，条数账目由 `_account` 独立负责，不受影响。
+   *
+   * @private
+   */
+  private _recordGroupStore(entry: GroupEntry, storeName: string): void {
+    if (entry.storesOverflowed || entry.storeNames.has(storeName)) {
+      return
+    }
+    if (entry.storeNames.size >= MAX_STORES_PER_GROUP) {
+      entry.storesOverflowed = true
+      entry.group.affectedStores.push(OTHER_STORES_BUCKET)
+      console.warn(
+        `[ErrorAggregator] 错误组 ${entry.group.groupId} 波及的 Store 已达 ${MAX_STORES_PER_GROUP} 个上限，后续并入 '${OTHER_STORES_BUCKET}' 桶（计数不受影响，见 getStats）`,
+      )
+      return
+    }
+    entry.storeNames.add(storeName)
+    entry.group.affectedStores.push(storeName)
   }
 
   /**
@@ -186,6 +310,9 @@ export class ErrorAggregator {
    * 再排序（O(n log n) + n 个临时对象），而本方法在组数达到上限后的**每次** addError
    * 都会进入，属于错误高发期的热路径。线性扫描取最小 lastSeen 即可，不分配临时数组。
    * 新增一组最多越界一组，while 只是对 maxGroups 被改小等异常情形的兜底。
+   *
+   * 驱逐同时留痕（`evictedGroups` / `evictedErrors`）：组本体的 count 随组消失，
+   * 但条数账目早在 `addError` 里按条落定，故 totalErrors 不因此倒退。
    *
    * @private
    */
@@ -207,6 +334,16 @@ export class ErrorAggregator {
       if (victimId === undefined || victim === undefined) {
         return
       }
+      if (!this.evictionWarned) {
+        this.evictionWarned = true
+        console.warn(
+          `[ErrorAggregator] 存活错误组已达 maxGroups=${this.maxGroups} 上限，开始按「最近最少出现」驱逐旧组；组本体消失但条数仍随 getStats() 的 totalErrors/byStore/byCode 累计`,
+        )
+      }
+      // 驱逐留痕：组本体（含其 count 与 affectedStores）就此消失，不记账的话
+      // getStats() 只能对存活组求和，totalErrors 会随新错误的发生而倒退
+      this.evictedGroups++
+      this.evictedErrors += victim.group.count
       this.groups.delete(victimId)
       // 指纹索引与组同生命周期：留下条目会让该指纹此后一直解析到这个已释放的 ID，
       // 而删掉它则与「组已不存在、下次出现即新建一组」的语义一致
@@ -285,50 +422,43 @@ export class ErrorAggregator {
   }
 
   /**
-   * 清空所有错误组
+   * 清空所有错误组与全部账目
+   *
+   * 驱逐留痕一并归零：`evictedErrors`/`evictedGroups` 与 `getStats()` 各项的口径都是
+   * 「自上次 `clear()` 以来」（与 `ErrorMonitoring.getDroppedErrors()` 同一约定）
    */
   clear(): void {
     this.groups.clear()
     this.groupIdByFingerprint.clear()
+    this.observedErrors = 0
+    this.observedByCode.clear()
+    this.observedByStore.clear()
+    this.evictedGroups = 0
+    this.evictedErrors = 0
+    this.evictionWarned = false
   }
 
   /**
    * 获取统计信息
    *
+   * 口径：`totalErrors` / `byCode` / `byStore` 是**自上次 `clear()` 以来观测到的全部错误**，
+   * 与组是否被 maxGroups 驱逐无关，因此三者随时间单调不减，且恒有
+   * `sum(byCode) === sum(byStore) === totalErrors`。
+   * `totalGroups` 与 `getGroups()` 则只反映**当前存活**的组（驱逐后必然变小），
+   * 两者的差额由 `evictedGroups` / `evictedErrors` 说明——聚合丢过数据在这里看得见。
+   *
+   * 返回的是新建对象，调用方改写不影响内部账目。
+   *
    * @returns {object} 统计信息
    */
   getStats() {
-    let totalErrors = 0
-    const byCode: Record<string, number> = {}
-    // 直接读内部组而非 getGroups()：后者为了对外安全会复制每个组，
-    // 本方法只取标量字段，没必要为一组求和分配 n 个临时对象
-    for (const { group } of this.groups.values()) {
-      totalErrors += group.count
-      byCode[group.code] = (byCode[group.code] || 0) + group.count
-    }
-
     return {
       totalGroups: this.groups.size,
-      totalErrors,
-      byCode,
-      // 按 Store 汇总组内计数（而非把组 count 累加给每个受影响 Store），
-      // 且组被驱逐时计数同步消失，保证 byStore 各项之和恒等于 totalErrors
-      byStore: this._byStoreCounts(),
+      totalErrors: this.observedErrors,
+      byCode: Object.fromEntries(this.observedByCode),
+      byStore: Object.fromEntries(this.observedByStore),
+      evictedGroups: this.evictedGroups,
+      evictedErrors: this.evictedErrors,
     }
-  }
-
-  /**
-   * 汇总现存各组的按 Store 计数
-   *
-   * @private
-   */
-  private _byStoreCounts(): Record<string, number> {
-    const counts: Record<string, number> = {}
-    for (const { hits } of this.groups.values()) {
-      for (const [storeName, count] of hits) {
-        counts[storeName] = (counts[storeName] || 0) + count
-      }
-    }
-    return counts
   }
 }

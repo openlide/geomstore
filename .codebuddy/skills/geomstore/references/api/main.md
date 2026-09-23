@@ -2,7 +2,7 @@
 
 > **本文件由 `scripts/generate-skill-api-reference.mjs` 从 `dist/**/*.d.ts` 生成，请勿手工编辑。**
 >
-> - 来源版本：`@openlide/geomstore@0.6.1`
+> - 来源版本：`@openlide/geomstore@0.7.0`
 > - 内容来源：构建产物类型声明（随 npm 包发布，与安装版本必然一致）
 > - 重新生成：`pnpm build && pnpm skill:api`
 > - 引入路径：`.`
@@ -129,8 +129,10 @@ export type CloneMode = 'deep' | 'shallow' | 'safe' | 'json';
  * 与 `ComponentThis` 的分工：配置对象上的注入 action 位于 `methods` 内（集成层确实把它们
  * 合并进 `config.methods`，再由微信提升到实例），故这里不在顶层重复声明——否则返回类型会
  * 声明出配置对象上并不存在的顶层方法（`config.add()` 能编译却在运行时失败）。
+ *
+ * 同样不声明 `setData`（#R6-063），`data` 的读法约定见 {@link InjectedConfigDataShape}。
  */
-export type ComponentConfig<S extends State, A extends Actions, G extends Getters<S> = Getters<S>, M extends ConnectOptions<S, A, G> = ConnectOptions<S, A, G>, ExtraMethods extends object = object> = InjectedDataShape<S, M, G> & ComponentMethodsShape<ExtraMethods, A, M>;
+export type ComponentConfig<S extends State, A extends Actions, G extends Getters<S> = Getters<S>, M extends ConnectOptions<S, A, G> = ConnectOptions<S, A, G>, ExtraMethods extends object = object> = InjectedConfigDataShape<S, M, G> & ComponentMethodsShape<ExtraMethods, A, M>;
 ```
 
 ### `ComponentOwnMethods`
@@ -166,15 +168,32 @@ export type ComponentThis<S extends State, A extends Actions, G extends Getters<
 ```ts
 /**
  * 组合选项
+ *
+ * ⚠️ 本接口有三个成员，但运行时只消费两个：`namespace` 与 `strict`
+ * （`core/compose/composeStore.ts` 的构造函数仅读这两项，`createStoreTree` 只读 `namespace`）。
+ * `lazy` / `tree` 是**已声明未实现**的历史遗留项，见各自注释（#R6-061）。
+ * 未实现项刻意保留在公开类型面上：`ComposeOptions` 已随 0.x 发布，删成员属破坏性变更，
+ * 需走主版本窗口，故本轮只把「写了也不生效」写在明面上，不做静默删除。
  */
 export interface ComposeOptions {
     /** 命名空间模式：true 启用（默认分隔符 /），或指定前缀字符串 */
     namespace?: string | boolean;
-    /** 延迟初始化 */
+    /**
+     * 延迟初始化
+     *
+     * **未实现**（#R6-061）：全库没有任何读取方（`grep lazy src/` 只命中本文件），
+     * `composeStore(stores, { lazy: true })` 编译通过、静默无效，且 `docs/API.md` 无对应条目。
+     * 需要「按访问才建组合 Store」请另提实现，勿依赖本项。
+     */
     lazy?: boolean;
     /** 严格模式（访问不存在的Store报错） */
     strict?: boolean;
-    /** Store树结构 */
+    /**
+     * Store树结构
+     *
+     * **未实现**（#R6-061）：与 `lazy` 同判据——`ComposedStore` 从不读它，
+     * 树结构由独立入口 `createStoreTree`（同样只读 `namespace`）提供，本项不构成开关。
+     */
     tree?: boolean;
 }
 ```
@@ -224,6 +243,8 @@ declare class ComposedStore<S extends State = State> implements Store<S> {
     private _childSubscriptionsReady;
     /** 已告警过的 state 键冲突组合（每个组合只告警一次，避免高频 getState 刷屏） */
     private _warnedStateKeyConflicts;
+    /** 已按「空视图」读过的销毁子 store：每个子 store 只告警一次（WeakSet 不驻留死店） */
+    private _warnedDestroyedChildren;
     /** 子 Store 钩子桥接的退订函数（destroy 时统一移除，防止闭包残留） */
     private _hookUnsubscribers;
     /** 自上次通知以来发生变更的子 store 名集合：命名空间模式下供 isStateKeyDirty 精确跳过 setData */
@@ -275,6 +296,24 @@ declare class ComposedStore<S extends State = State> implements Store<S> {
      * 合并策略已拆至 ./merge.js
      */
     private _mergeNamespaced;
+    /**
+     * 「子 store 已被独立销毁」的统一判据：命中即按 store 去重告警一次，返回 true 表示调用方应跳过它。
+     *
+     * 读路径（`_readablePick`）与缓存 API（`enableCache` / `getCacheStats`）共用这一条，
+     * 避免各处再各写一份 `store.destroyed` + WeakSet 而漂移成不同文案、不同次数。
+     * 告警按 store 去重：这些调用点都在渲染 / setData 热线上被反复触发。
+     */
+    private _skipDestroyedChild;
+    /**
+     * 读路径取值前的容错包装：子 store 可在组合之外被独立销毁，此时它的 `getState()` 会抛，
+     * 于是**一个死店就让整棵组合读不出来**（集成层渲染/computed 热线直接崩），而同一时刻
+     * `$patch` 却按「已销毁 → 跳过」正常写入其余子店——读写一侧崩一侧静默通过。
+     *
+     * 读侧采取与写侧相同的判据：该子 store 记为**空视图**并一次性告警，其余子 store 照常可读。
+     * 三条读路径（`getState` 的裸引用 / `state` 的保护视图 / `$snapshot` 的深拷贝）都经此处，
+     * 消除此前「getState 抛、state 返回死店视图（Store.state 无守卫）、$snapshot 又抛」的三方分叉。
+     */
+    private _readablePick;
     getState(): S;
     /**
      * 非命名空间模式下平铺合并各 store 的 state 键。
@@ -285,6 +324,14 @@ declare class ComposedStore<S extends State = State> implements Store<S> {
     get state(): S;
     /** 记录当前各子 store 的状态版本号，供读取时校验缓存新鲜度 */
     private _recordChildVersions;
+    /**
+     * 子 store 的合并缓存新鲜度判据：状态版本号，外加「是否已被独立销毁」这一维度。
+     *
+     * 销毁本身不推进版本号，只比版本号会让死店此前合并进缓存的键一直被当作新鲜数据读出来。
+     * 哨兵取 -1：`getStateVersion` 返回的是单调非负计数，不会与它相等，故「活着 → 销毁」
+     * 必然失配并触发重算（重算后该店按空视图并入）。
+     */
+    private _childVersion;
     setState<K extends keyof S>(key: K, value: S[K]): void;
     $patch(partialState: Partial<S>): void;
     $replaceState(newState: S): void;
@@ -361,9 +408,32 @@ declare class ComposedStore<S extends State = State> implements Store<S> {
      */
     destroy(destroyStores?: boolean): void;
     getCached<K extends keyof S>(key: K): S[K];
+    /**
+     * 为子 store 启用缓存：命名空间模式下按键前缀路由到归属 store
+     *
+     * 这组缓存 API 原先是组合层里唯一不做命名空间路由的一组，与同类方法自相矛盾：
+     * `setState` / `getCached` / `invalidateCache` 都先过 `findTargetStoreWithKey` 解析
+     * `storeName/key`，而 `enableCache` 把收到的键原样透传给**每一个**子 store，于是
+     * 命名空间模式下 `enableCache(['user/profile'])` 在子 store 上匹配不到任何键
+     * （子店只认裸键 `profile`）⟹ 缓存静默不生效；不写前缀的 `enableCache(['profile'])`
+     * 又会在所有含 `profile` 键的子 store 上同时开启 ⟹ 越权开启调用方从未点名的 store。
+     * 现在解析方向与读侧一致：带前缀的键只投递给归属 store，无归属键按 strict 口径处理。
+     * 平铺模式保持「广播给各子店」——子 store 只缓存自己拥有的键，多店同名键的歧义
+     * 由 `mergeStateMaps` / `findTargetStoreWithKey` 的既有开发模式告警覆盖。
+     */
     enableCache(keys?: Array<keyof S>): void;
     disableCache(): void;
     invalidateCache<K extends keyof S>(key?: K): void;
+    /**
+     * 聚合各子 store 的缓存统计。
+     *
+     * `keys` 是**组合层可直接使用**的键列表（拿它去调 `getCached` / `invalidateCache` 必须能打中），
+     * 因此命名空间模式下回填 `storeName/key` 形式：此前这里把各子店的本地裸键原样拼进来，
+     * 与 `getCached` 的入参形状不同构，于是
+     * `composed.getCached(composed.getCacheStats().keys[0])` 在命名空间模式下恒为 undefined。
+     * 平铺模式下多店同名键会在子店列表里重复，而合并视图只有这一个键 ⟹ 按键去重
+     * （命中数属于哪个店仍看不出来，这是平铺模式歧义配置的既有代价，与 hits/misses 的累加口径一致）。
+     */
     getCacheStats(): CacheStats;
     startBatch(): void;
     /** 对各子 store 开启批量：已被独立销毁的子 store 跳过。
@@ -403,9 +473,22 @@ export interface ConnectOptions<S extends State = State, A extends Actions = Act
     mapActions?: readonly (keyof A)[] | Record<string, keyof A>;
     /** 是否自动注入到页面/组件data（使用getCached） */
     autoInject?: boolean;
-    /** 自动注入的字段映射（从store键到本地键） */
+    /** 自动注入的字段映射（从store键到本地键）。为空对象时视为「没有注入条目」，与未写等价 */
     injectMapping?: Record<string, string>;
-    /** 是否在页面onShow/组件attached时更新注入（默认仅在onLoad时） */
+    /**
+     * 是否在页面 `onShow` / 组件 `pageLifetimes.show` / App `onShow` 时按 `getCached` 重新注入一次。
+     *
+     * 生效条件（三者同时，缺一即整项无效且**不会告警**，#R6-062）：
+     * `autoUpdateOnShow && autoInject && Object.keys(injectMapping).length > 0`
+     * —— 见 `with-store.ts` 的 page/component 两处判定与 `with-app-store.ts:267`，
+     * 只写本项（或把 `injectMapping` 给成 `{}`）时连包装器都不安装。
+     *
+     * 挂载点口径（旧文案在此处有三处偏差，已按实现改写）：
+     * - 页面：`onShow`（首次注入仍在 `onLoad`）
+     * - 组件：`pageLifetimes.show`——组件配置上的 `onShow` **不是**组件生命周期，
+     *   框架不会调用它；`attached` 是首次注入点（等价于页面的 `onLoad`），不是本项的挂载点
+     * - App：`onShow`（`onLaunch` 是首次注入点；`globalData` 尚未建立时只转发用户 `onShow`）
+     */
     autoUpdateOnShow?: boolean;
 }
 ```
@@ -856,6 +939,13 @@ export declare class LRUCache<K, V> {
     /**
      * 遍历缓存（按最近使用顺序）
      *
+     * @remarks 迭代口径与 `clear()` 一致：进入时先按当前链序取一份**键快照**，
+     * 再逐个按键从缓存取「回调时刻的当前值」。因此回调内对缓存的改动只影响快照：
+     * - 删除非当前键：该键从迭代中消失（不会把已删条目再回调一次），其余条目不丢；
+     * - 读取其他键（`get`/`getOrSet` 命中会 moveToHead 重排）：每个快照键恰好访问一次；
+     * - 遍历期间新写入的键：本次不访问（它们不在快照里），下次遍历可见。
+     * 值不取快照：读到的是当前值，故回调内改过的条目以改动后的值参与回调。
+     *
      * @param {(value: V, key: K) => void} callback - 回调函数
      */
     forEach(callback: (value: V, key: K) => void): void;
@@ -1007,6 +1097,13 @@ export interface LRUCacheStats {
 ```ts
 /**
  * 命名空间配置
+ *
+ * **未接线**（#R6-061）：本库没有任何 API 接受该配置对象——命名空间分隔符在
+ * `core/compose/helpers.ts`（`key.indexOf('/')`）里是**硬编码**的 `/`，
+ * `ComposeOptions.namespace` 只接受「布尔 / 前缀字符串」两档，`autoPrefix` 亦无读取方。
+ * 它经 `core/index.ts:80`、`core/compose/index.ts:7`、`core/compose/composeStore.ts:958`
+ * 三处再导出对外发布，但按本类型书写配置只会得到无声的空操作。
+ * 删除导出属破坏性变更（需主版本窗口 + 上述三处再导出同步收口，均不在本分片），故本轮只做标注。
  */
 export interface NamespaceConfig {
     /** 命名空间分隔符 */
@@ -1024,7 +1121,11 @@ export interface NamespaceConfig {
  *
  * 与 `PageThis` 的分工：`PageThis` 描述**方法内的 `this`**（含映射 action，注入于页面实例），
  * 本类型描述**装饰器返回的配置对象**——注入的 action 运行时绑定在实例上、并不存在于配置对象，
- * 故这里只含 data 与框架成员。
+ * 故这里不含 action；`setData` 同理（#R6-063：框架只在实例上提供它，配置对象是用户字面量的
+ * 浅拷贝，见 {@link InjectedConfigDataShape}）。
+ *
+ * 读法约定：本类型的 `data` 是**实例 data** 的口径（映射值并入后的形状），
+ * 不代表「在装饰器返回的那一刻就能从配置对象上读到」——那时映射还没跑，读到的会是 `undefined`。
  *
  * 之所以拆开：把「实例视角」直接当作「配置视角」会让返回类型声明出运行时并不存在的成员
  * （例如 `config.increment()` 能通过编译却在运行时失败）。
@@ -1032,7 +1133,7 @@ export interface NamespaceConfig {
 export type PageConfig<S extends State, M extends {
     mapState?: readonly (keyof S)[] | Record<string, keyof S>;
     mapGetters?: readonly PropertyKey[] | Record<string, PropertyKey>;
-} = ConnectOptions<S, Actions, Getters<S>>, G extends Getters<S> = Getters<S>> = InjectedDataShape<S, M, G> & {
+} = ConnectOptions<S, Actions, Getters<S>>, G extends Getters<S> = Getters<S>> = InjectedConfigDataShape<S, M, G> & {
     getTabBar?: () => {
         syncSelectedTab?: () => void;
     } | undefined;
@@ -1292,6 +1393,19 @@ export declare class Store<S extends State = State, A extends Actions = Actions,
     setState<K extends keyof S>(key: K, value: S[K]): void;
     /**
      * 批量更新状态
+     *
+     * 「改没改」的判据与 `setState` 同一条（顶层键 `Object.is` 比对，命中的键整键跳过）：
+     * `_mutationCount` 是 `notify.onlyOnChange` 的唯一依据（见 `_onBatchEnd` 与 ActionManager
+     * 的 dispatch 收尾），此前 `$patch` 无条件推进它、并无条件把补丁触及的每个键标脏 + 写缓存，
+     * 于是 `$patch({})` 与「补丁值与当前状态逐字相同」都被记成一次真实变更——
+     * 两个公开写入 API 对同一次写入给出相反答案，onlyOnChange 想省的 setData
+     * 在最常用的补丁路径上省不掉。现在两侧一样：没有任何键发生变化 ⟹ 不计数、不标脏、
+     * 不写缓存、不调度通知，钩子照常成对触发（与 setState 的等值早退同形）。
+     *
+     * 只比顶层键，不下探：嵌套对象即便内容相同也是不同引用，deepMerge 仍会逐层合并
+     * （可能补进目标里原本没有的键），所以那种补丁照常计 —— 早退只覆盖
+     * 「合并后不可能产生任何差异」的键（同引用或等值原始值）。
+     *
      * @param partialState - 部分状态对象（不能为 null/undefined）
      */
     $patch(partialState: Partial<S>): void;
@@ -1556,7 +1670,12 @@ export interface StoreOptions<S extends State = State, A extends Actions = Actio
     actions?: ActionsWithThis<S, A>;
     /** Getters */
     getters?: G;
-    /** 需要缓存的state键（为空时缓存所有） */
+    /**
+     * 需要缓存的 state 键：**未提供（`undefined`）时缓存所有键；显式传空数组表示一个键都不缓存**
+     *
+     * 判据、告警文案与 `StoreConfig.cacheKeys` 上那段说明同一条（实现看 `core/store/StoreCache.ts`），
+     * 两处都不接受「空数组 = 全缓存」这一读法。
+     */
     cacheKeys?: Array<keyof S>;
 }
 ```
@@ -1937,6 +2056,15 @@ export type WithPageThis<C, T> = {
  *   （Date 变字符串、Map/Set 变 `{}`、丢 undefined/函数）已移至显式命名的 `json` 模式
  * - `json`：JSON 序列化往返，产出可结构化克隆的纯数据副本（有损），
  *   序列化失败（循环引用等）时返回原引用
+ *
+ * @remarks 内建容器的**子类实例**（`class MyMap extends Map`、`class MyDate extends Date`……）
+ * 在 deep/shallow/safe 下都按原引用返回，不会被重建为基类副本：子类的构造参数、内部槽位与
+ * 自有字段都不可知，重建只会得到丢方法与字段的基类副本（调用子类方法直接 TypeError）。
+ * 该准入门槛与 clone.ts 的 `isExactly` 同口径，故五种内建容器（Date/RegExp/Map/Set/Array）
+ * 在「顶层输入」与「嵌在对象里」两处得到同一结果——`clone(x, {mode:'deep'})` 与
+ * `deepCloneState(x)` 对同一个顶层输入不再有两套口径，shallow 也不会把子类降级成基类副本。
+ * `json` 模式不受影响：它的契约本就是有损的 JSON 往返（子类实例也只剩可枚举自有键）。
+ *
  * @returns 克隆后的对象
  */
 export declare function clone<T>(obj: T, options?: {
@@ -2245,7 +2373,8 @@ export declare function usePlugin<S extends State, A extends Actions, G extends 
  * 运行期行为（与 withPageStore / withComponentStore 同口径）：
  * - `autoInject` + `injectMapping` 在 onLaunch 注入一次；再开 `autoUpdateOnShow` 时
  *   每次 App `onShow` 重新注入，异步 action 之后才进缓存的键因此有补偿路径
- * - 映射键与宿主 `globalData` 已有成员同名时告警后覆盖（store 是唯一事实来源）
+ * - 映射键、`injectMapping` 的目标键与宿主 `globalData` 已有成员同名时告警后覆盖
+ *   （store 是唯一事实来源）
  * - 绑定阶段抛错：回滚本次已登记的订阅、告警并把错误原样抛给框架，
  *   不在映射未就绪的实例上转发用户 `onLaunch`
  *
@@ -2335,6 +2464,9 @@ export declare function withAppStore<S extends State, A extends Actions, G exten
  *
  * 订阅生命周期与绑定失败的回滚口径同 withPageStore：按组件实例登记 `__geomUnbinds`、
  * detached 统一清理，attached 重入时先清理旧订阅
+ *
+ * action 绑定与组件自身 `methods` 同名时同 Page/App 侧 bindActions：一条覆盖告警 +
+ * detached 恢复原值（映射的 action 在绑定期间始终优先，与 Page 一致）
  *
  * @template S - 状态类型
  * @template A - Actions 类型

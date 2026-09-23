@@ -8,6 +8,7 @@
  */
 
 import type { ActionResult } from '../../types/action.js'
+import { isProduction } from '../../core/store/utils.js'
 
 /** 单个 Action 的执行统计 */
 export interface ActionStats {
@@ -19,9 +20,23 @@ export interface ActionStats {
 }
 
 /**
+ * 桶数（同时被跟踪的 Action 名个数）上限
+ *
+ * `maxHistory` 只封顶**桶内**长度，桶数原本无任何上限：以运行期拼出来的动作名做动态派发
+ * （拼错前缀、循环/重试里派发不存在的 action）时，每次失败都会新开一个桶并留下一条记录，
+ * `actionResults` 因此随调用次数线性增长（每条记录还连带持有 data/error）。故给桶数设上限，
+ * 超限时按「最近一次记录」的顺序淘汰整桶——与 `decorators/cache.ts` 的 MAX_CACHE_ENTRIES 同思路。
+ *
+ * 取 1000：单个 store 的 action 数量在几十量级，1000 个不同名字同时活跃只出现在
+ * 「名字是运行期拼出来的」这种误用场景，正常业务不会被静默降载。
+ */
+const MAX_TRACKED_ACTIONS = 1000
+
+/**
  * Action 执行历史与统计
  *
- * 历史按 Action 名分桶，每桶有界（超出淘汰最旧一条）。
+ * 历史按 Action 名分桶：每桶有界（超出淘汰最旧一条），桶数也有界
+ * （超出 {@link MAX_TRACKED_ACTIONS} 时淘汰最久没有被记录的那个桶）。
  *
  * @remarks 下方各方法的 `@example` 一律通过 `executor`（`AsyncActionSupport` 门面）调用：
  * 其 `getHistory`/`getStats`/`setMaxHistory` 与本类同名，`clearHistory(actionName)` 委托到
@@ -31,6 +46,9 @@ export interface ActionStats {
 export class ActionHistoryTracker {
   /**
    * Action执行历史记录
+   *
+   * Map 的迭代序在这里兼作「最近记录序」：{@link record} 每次都会把该桶移到表尾，
+   * 桶数越限时从表头（最久没有被记录的那个）淘汰。
    * @type {Map<string, ActionResult[]>}
    */
   private actionResults: Map<string, ActionResult[]> = new Map()
@@ -46,22 +64,53 @@ export class ActionHistoryTracker {
    *
    * @param {ActionResult} result - 执行结果
    * @param {string} actionName - Action名称
+   *
+   * @remarks 桶数逼近 {@link MAX_TRACKED_ACTIONS} 时会整桶淘汰最久没有被记录的那个 Action
+   * （其 `getStats`/`getHistory` 随之归零），开发期打一条 `console.debug` 点名原因：
+   * 触发它的基本是「以运行期拼出来的名字派发」，那条 debug 才是真正要看的线索。
    */
   record(result: ActionResult, actionName: string): void {
     // get-or-create 后局部持有数组：此前先 `has`/`set` 再 `get` + `if (history)`，
     // 两次查表之间没有任何能让条目消失的代码路径，那层守卫的 false 分支不可达
     let history = this.actionResults.get(actionName)
-    if (history === undefined) {
+    if (history !== undefined) {
+      // 已有桶：delete + set 把它挪到表尾，维持「迭代序 = 最近记录序」
+      history.push(result)
+      this.actionResults.delete(actionName)
+      this.actionResults.set(actionName, history)
+    } else {
+      if (this.actionResults.size >= MAX_TRACKED_ACTIONS) {
+        this.evictLeastRecentlyRecorded()
+      }
       history = []
+      history.push(result)
       this.actionResults.set(actionName, history)
     }
-
-    history.push(result)
 
     // 限制历史大小
     if (history.length > this.maxHistory) {
       history.shift()
     }
+  }
+
+  /**
+   * 淘汰最久没有被记录的整桶，把桶数压回上限之内
+   *
+   * @private
+   */
+  private evictLeastRecentlyRecorded(): void {
+    const oldest = this.actionResults.keys().next()
+    if (oldest.done === true) {
+      // 表空即「桶数未越限」，调用方不会走到这里；保留为对未来改动的防御
+      return
+    }
+    if (!isProduction()) {
+      console.debug(
+        `[ActionHistory] 跟踪的 Action 数已达上限 ${MAX_TRACKED_ACTIONS}，淘汰最久未记录的 "${oldest.value}"` +
+          '（其历史与统计一并丢弃）。请检查是否在用运行期拼出来的动作名派发',
+      )
+    }
+    this.actionResults.delete(oldest.value)
   }
 
   /**

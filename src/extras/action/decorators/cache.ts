@@ -60,6 +60,50 @@ function identityId(value: object): number {
   return id
 }
 
+/** 数组的规范下标键（'0'、'1'…）：这类键由元素路径负责，附加键收集要跳过它们 */
+function isIndexKey(key: string): boolean {
+  const index = Number(key)
+  return Number.isInteger(index) && index >= 0 && String(index) === key
+}
+
+/**
+ * 自有**可枚举**键，含 symbol 键
+ *
+ * 不用 `Object.keys`：它只返回字符串键，会让「只差在 symbol 键上」的两个互异参数生成
+ * 同一个缓存键（详见 {@link sortKeysDeep} 的失效清单）。非枚举键仍按原口径排除——
+ * JSON.stringify 也不认它们，纳入只会让键与可观察到的值语义不一致。
+ */
+function ownEnumerableKeys(value: object): Array<string | symbol> {
+  const keys: Array<string | symbol> = []
+  for (const key of Reflect.ownKeys(value)) {
+    if (Object.prototype.propertyIsEnumerable.call(value, key)) {
+      keys.push(key)
+    }
+  }
+  return keys
+}
+
+/** 按键标记排序，使「声明顺序不同的等价参数」生成同一份键 */
+function byKeyMarker(a: [string, unknown], b: [string, unknown]): number {
+  return a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0
+}
+
+/**
+ * 把给定键折成 `[键标记, 值标记]` 对（按键标记排序）
+ *
+ * 这些键都进不了 JSON.stringify 的键位：symbol 键被它整体忽略，数组的非下标自有键被它整体
+ * 丢弃。折成数组元素后两侧都参与序列化，键标记恒为字符串（`String()` 只是把 `unknown` 收窄
+ * ——sortKeysDeep 的 symbol 叶子分支给出的就是 `symbol:...#id` 文本，字符串键则是 `s:"..."`）。
+ */
+function keyValuePairs(value: object, keys: Array<string | symbol>): Array<[string, unknown]> {
+  const record = value as Record<string | symbol, unknown>
+  const pairs: Array<[string, unknown]> = []
+  for (const key of keys) {
+    pairs.push([String(sortKeysDeep(key)), sortKeysDeep(record[key])])
+  }
+  return pairs.sort(byKeyMarker)
+}
+
 /**
  * 递归排序对象键并给每个叶子打上类型标记
  *
@@ -72,6 +116,12 @@ function identityId(value: object): number {
  * - RegExp 序列化为 `{}`，所有正则互相撞键且与普通空对象撞键
  * - Date 序列化为 ISO 字符串，与同文本的字符串参数撞键
  * - Promise/WeakMap 等无可枚举键的对象恒为 `{}`，互相撞键
+ * - **自有可枚举 symbol 键被整体丢弃**（`Object.keys` 与 JSON.stringify 都只认字符串键）：
+ *   `{ id: 1, [TOKEN]: 'a' }` 与 `{ id: 1, [TOKEN]: 'b' }` 撞键，`{ [s]: 1 }` 与 `{}` 撞键。
+ *   带 symbol 令牌/品牌键的选项对象是常见写法，后果同样是返回别人的结果，
+ *   故 symbol 键按 `[键标记, 值标记]` 对折进承载结构（键标记复用 symbol 叶子的身份编号口径）
+ * - 数组的非下标自有键（`arr.meta = 1`、`arr[TOKEN] = 'a'`）同样被 JSON.stringify 丢弃，
+ *   与「没有这些附加键的同内容数组」撞键，按同一方式折入
  *
  * 故所有叶子统一映射为「类型前缀 + 文本」。字符串叶子经 JSON.stringify 转义，
  * 无法伪造其他类型的前缀（字符串 `"n:5"` 标记为 `s:"n:5"`，与数字 5 的 `n:5` 不同），
@@ -120,7 +170,18 @@ function sortKeysDeep(value: unknown): unknown {
   if (value instanceof RegExp) return `r:${JSON.stringify([value.source, value.flags])}`
 
   if (Array.isArray(value)) {
-    return value.map(sortKeysDeep)
+    const ownKeys = ownEnumerableKeys(value)
+    // 第三个元素承载「非下标的自有可枚举键」：JSON.stringify 只序列化下标元素，
+    // `arr.meta = 1` 与 `arr[TOKEN] = 'a'` 这类附加键此前被整体丢掉（与不带附加键的
+    // 同内容数组撞键 → 返回别人的结果）。元素本身仍按下标序参与，不做排序
+    return [
+      '__arr',
+      value.map(sortKeysDeep),
+      keyValuePairs(
+        value,
+        ownKeys.filter((key) => typeof key === 'symbol' || !isIndexKey(key)),
+      ),
+    ]
   }
   if (value instanceof Map) {
     const entries: Array<[unknown, unknown]> = []
@@ -135,20 +196,35 @@ function sortKeysDeep(value: unknown): unknown {
     return ['__set', [...value].map(sortKeysDeep)]
   }
 
-  const record = value as Record<string, unknown>
-  const keys = Object.keys(record)
-  // 无可枚举键的非纯对象按身份标记：Object.keys 恒为空，按值序列化会让
-  // 互异的 Promise/WeakMap/无状态类实例全部折叠为 {} 而串用缓存
+  const record = value as Record<string | symbol, unknown>
+  const ownKeys = ownEnumerableKeys(record)
+  // 无可枚举键的非纯对象按身份标记：键集为空时按值序列化会让
+  // 互异的 Promise/WeakMap/无状态类实例全部折叠为 {} 而串用缓存。
+  // 判据含 symbol 键（此前用 Object.keys）：只有一个 `[TOKEN]` 品牌键的类实例
+  // 会被误判成「无可枚举键」而按身份标记，与同样只差 symbol 值的另一实例互相串用
   const proto = Object.getPrototypeOf(value)
-  if (keys.length === 0 && proto !== Object.prototype && proto !== null) {
+  if (ownKeys.length === 0 && proto !== Object.prototype && proto !== null) {
     return `o:${identityId(value as object)}`
   }
 
   // 纯对象与带可枚举状态的类实例：按键排序后递归，保持值语义
   // Object.create(null) 承载：参数可合法含自有 __proto__ 键，普通对象上赋值会触发
   // 原型 setter（键被静默丢弃且容器原型被换）；null 原型对象无该 setter
+  //
+  // 字符串键与 symbol 键分开收集：`Array.prototype.sort` 的默认比较器对非字符串元素做
+  // ToString，而 ToString(symbol) 会抛 TypeError（`String(sym)` 才放行）——混在一个数组里
+  // 排序会让整次键生成失败、退化成「每次都 miss」
+  const stringKeys: string[] = []
+  const symbolKeys: symbol[] = []
+  for (const key of ownKeys) {
+    if (typeof key === 'symbol') {
+      symbolKeys.push(key)
+    } else {
+      stringKeys.push(key)
+    }
+  }
   const sorted: Record<string, unknown> = Object.create(null) as Record<string, unknown>
-  for (const key of keys.sort()) {
+  for (const key of stringKeys.sort()) {
     sorted[key] = sortKeysDeep(record[key])
   }
   // 值语义路径也要带类型标签：只按自有可枚举键取值会让 `new Uint8Array([1, 2])`、
@@ -159,7 +235,8 @@ function sortKeysDeep(value: unknown): unknown {
   // 用户参数自带的 `__obj` 键能原样伪造标签（与 __map/__set 的包装同一理由）
   const typeTag = proto === Object.prototype || proto === null ? '' : `p:${identityId(proto as object)}`
 
-  return ['__obj', typeTag, sorted]
+  // 第四元素承载 symbol 键：它们占不了 `sorted` 的键位（JSON.stringify 整体忽略 symbol 键）
+  return ['__obj', typeTag, sorted, keyValuePairs(record, symbolKeys)]
 }
 
 /** 缓存条目：`pending` 非空即在途占位（同参并发复用它，值由结算后回填） */
@@ -362,7 +439,14 @@ export function withCache(options: CacheDecoratorOptions = {}): MethodDecorator 
     return cache
   }
 
-  return function (_target: unknown, propertyKey: string | symbol, descriptor: PropertyDescriptor): PropertyDescriptor {
+  return function (_target: unknown, propertyKey: string | symbol, descriptor?: PropertyDescriptor): PropertyDescriptor {
+    // 装饰期判据与 withDebounce / withRetry / withTimeout / createDecorator 同族：
+    // legacy 装饰器误用到类字段上时按 PropertyDecorator 调用（运行时只有两个实参，descriptor
+    // 为 undefined），裸读 `descriptor.value` 抛的错误会把真实原因（用错了地方）盖掉
+    if (descriptor === undefined || typeof descriptor.value !== 'function') {
+      throw new TypeError(`[withCache] can only decorate a method, but "${String(propertyKey)}" is not a function`)
+    }
+
     const originalMethod = descriptor.value
     // 每次装饰独立编号，避免复用工厂时不同方法（含同描述 Symbol）共享参数缓存。
     const methodKey = `${++nextMethodId}::`

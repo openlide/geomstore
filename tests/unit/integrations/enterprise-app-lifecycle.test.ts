@@ -95,10 +95,14 @@ describe('createEnterpriseApp 生命周期兜底', () => {
     await manager?.execute('unknownAction', async () => 'never')
     expect(manager?.getQueueLength()).toBe(1)
 
-    // 同步失败会调用 wx.showToast；此处让该 API 抛错 → syncQueue reject
-    mockWx.showToast.mockImplementation(() => {
-      throw new Error('wx.showToast unavailable')
-    })
+    // 制造一条**仍会外溢**的同步失败：重试用尽 → 移入死信 → onDrop 抛错 → syncQueue reject。
+    // （第六轮 R6-103 起 `wx.showToast` 抛错已被单独兜底，不再把 syncQueue 变成 rejection——
+    //  旧写法用 showToast 制造失败，测的正是那个被判掉的 bug。）
+    const internals = manager as unknown as { maxRetryCount: number; onDrop?: (action: unknown) => void }
+    internals.maxRetryCount = 1
+    internals.onDrop = () => {
+      throw new Error('onDrop boom')
+    }
     const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {})
 
     try {

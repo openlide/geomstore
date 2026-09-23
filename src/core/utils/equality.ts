@@ -25,6 +25,38 @@ interface Comparison {
   warnedAtMaxDepth: boolean
 }
 
+/** 仅用于「对应全局缺席」时兜底识别装箱值的 [[Class]] 标签，命中即返回该标签 */
+const optionalBoxedTagOf = (value: object): string => Object.prototype.toString.call(value)
+
+/**
+ * 是否为装箱原始值（`new Number(1)` / `Object(Symbol('x'))` / `Object(10n)` 等）
+ *
+ * 用 `instanceof` 而非「原型 ∈ 五个包装原型」：后者会漏掉 `class MyNum extends Number`，
+ * 而它的 [[NumberData]] 同样是它身份的一部分。
+ *
+ * `BigInt` / `Symbol` 这两个全局**必须经能力探测后再参与 instanceof**：未声明的全局标识符
+ * 取值是 ReferenceError（不是 false），而本判断位于「所有同原型对象对」的必经路径上——
+ * 前三个 instanceof 对普通对象全为 false，短路停不下来，必定求值到后面两个。缺 BigInt 全局的
+ * 运行时（BigInt 是 ES2020 内容，旧基础库普遍缺失，本库 target 也只做降级到 ES2020）里，
+ * `deepEqual({a:1},{a:1})` 会直接抛 ReferenceError，并从比较器外溢到 createSelector /
+ * notify 去重 / 快照 diff 等全部调用方。`typeof` 对未声明标识符是安全的，故先行探测。
+ * 探测失败时用 [[Class]] 标签兜底：该运行时里装箱 BigInt/Symbol 只能来自跨 realm 或被删全局，
+ * 此时按标签比 `valueOf()` 仍优于把它们当普通对象（自有键恒空 ⇒ 判等）。
+ * 注：`Number`/`String`/`Boolean` 三个全局自 ES1 起必在，无需探测。
+ */
+const isBoxedPrimitive = (value: object): boolean => {
+  if (value instanceof Number || value instanceof String || value instanceof Boolean) return true
+  if (typeof globalThis.BigInt === 'function') {
+    if (value instanceof globalThis.BigInt) return true
+  } else if (optionalBoxedTagOf(value) === '[object BigInt]') {
+    return true
+  }
+  if (typeof globalThis.Symbol === 'function') {
+    return value instanceof globalThis.Symbol
+  }
+  return optionalBoxedTagOf(value) === '[object Symbol]'
+}
+
 /**
  * 深度比较两个值（使用迭代实现避免栈溢出）
  *
@@ -149,13 +181,12 @@ function compareWithSeenPairs(a: unknown, b: unknown, comparison: Comparison, pa
     // 注：本函数只比自有可枚举**字符串**键，symbol 键与不可枚举属性的差异不纳入比较。
     if (Object.getPrototypeOf(currentA) !== Object.getPrototypeOf(currentB)) return false
 
-    // 装箱原始值（`new Number(...)` / `Object(Symbol(...))` / `Object(10n)` 等）：
+    // 装箱原始值（`new Number(1)` / `Object(10n)` / `Object(Symbol())` 等）：
     // Object.keys 对它们恒为空（String 只有索引键），只比键集会把
     // `new Number(1)` 与 `new Number(2)` 判等。先比内部的原始值；**不 continue**——
     // 装箱类的子类实例可以另带自有属性，那些仍要走下面的通用键比较。
-    // instanceof 而非「原型 ∈ 五个包装原型」：后者会漏掉 `class MyNum extends Number`，
-    // 而它的 [[NumberData]] 同样是它身份的一部分。
-    if (currentA instanceof Number || currentA instanceof String || currentA instanceof Boolean || currentA instanceof BigInt || currentA instanceof Symbol) {
+    // 判定本身（含 BigInt/Symbol 的能力探测）见 {@link isBoxedPrimitive}。
+    if (isBoxedPrimitive(currentA)) {
       const other = currentB as { valueOf(): unknown }
       if (!Object.is(currentA.valueOf(), other.valueOf())) {
         return false

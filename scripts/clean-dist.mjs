@@ -62,6 +62,14 @@ function lstatOrNull(target) {
  * 报告成普通目录，此时递归就会删掉链接目标（可能在仓库之外）里的真实文件。
  * realpath 失败时按 'link' 处理：本脚本的删除不可回滚，判不准时宁可留下残留（外层只告警），
  * 也不能冒删错目录的风险。
+ *
+ * 参照系必须两侧同源（都经 realpath 解析）：左侧 realpathSync(full) 会解析整条路径上的
+ * 重解析点，而右侧若只用 path.resolve(full)（仅绝对化、不解析），那么**仓库根本身经由
+ * 符号链接到达**时（POSIX 的 /tmp、/var/folders、bind mount、symlink 过的 workspace；
+ * Windows 下 realpathSync 还会展开 8.3 短名）两侧恒不相等，dist 内每个真实目录都会被判成
+ * 'link'：countFiles 把整目录算成 1 个文件、removeDirTree 走 unlinkSync/rmdirSync 抛错，
+ * 最后只剩一条 WARN —— 本脚本存在的理由（清掉源已删除的旧产物）被整体抹掉。
+ * 故先解析**父目录**再拼条目名，与左侧同源于真实路径空间。
  */
 function classifyEntry(full) {
   const stat = fs.lstatSync(full)
@@ -73,7 +81,14 @@ function classifyEntry(full) {
   } catch {
     return 'link'
   }
-  return samePath(real, path.resolve(full)) ? 'dir' : 'link'
+  // 父目录同样解析不动时按 'link' 收尾：判不准的保守侧与 realpathSync(full) 一致
+  let realParent
+  try {
+    realParent = fs.realpathSync(path.dirname(full))
+  } catch {
+    return 'link'
+  }
+  return samePath(real, path.join(realParent, path.basename(full))) ? 'dir' : 'link'
 }
 
 /** 递归统计文件数（仅用于日志）：链接按 1 个条目计，绝不跟随进目标 */
@@ -200,10 +215,7 @@ if (!distExists) {
     removeDirTree(distDir, true)
     fs.rmdirSync(distDir)
   } catch (error) {
-    console.warn(
-      `[clean-dist] WARN: 未能清空 dist（${reasonOf(error)}）。\n` +
-        '            构建将继续，但 dist 中可能残留源文件已删除的旧产物。',
-    )
+    console.warn(`[clean-dist] WARN: 未能清空 dist（${reasonOf(error)}）。\n` + '            构建将继续，但 dist 中可能残留源文件已删除的旧产物。')
   }
   // 后置校验：日志不能只由「有没有抛错」推断结果——removeDirTree 可能在半途失败后
   // 只留下告警，也可能整个目录被外部进程重建。以 dist 是否真的消失为准；仍按本脚本

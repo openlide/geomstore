@@ -91,11 +91,27 @@ rootStore.dispatch('settings/setTheme', 'dark')
 const state = readRoot()
 console.log('更新后:', state.user.name, '/', state.cart.items.length, '件商品 /', state.settings.theme)
 
-// 组合订阅：任一子 store 变化都会收到通知
-const unsubscribe = rootStore.subscribe((next) => {
-  console.log('组合状态变化:', (next as unknown as RootState).settings.theme)
-})
-rootStore.dispatch('settings/setTheme', 'light')
-unsubscribe()
+// 组合订阅：任一子 store 变化都会收到通知。
+//
+// 组合层的通知一律按微任务合并（ComposedStore._scheduleNotify → queueMicrotask），
+// 与 notify.async 配置无关。因此**同一个 tick 内退订会把本轮广播整批丢掉**：
+// dispatch 之后立刻 unsubscribe()，监听器在微任务真正执行前就被摘掉，回调一次都不跑。
+// 正确姿势是让出一个宏任务再退订。
+async function demoComposeSubscription(): Promise<void> {
+  const received: string[] = []
+  const unsubscribe = rootStore.subscribe((next) => {
+    received.push((next as unknown as RootState).settings.theme)
+  })
+
+  rootStore.dispatch('settings/setTheme', 'light')
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  unsubscribe()
+  console.log('组合订阅收到:', received.join(', '))
+
+  rootStore.dispatch('settings/setTheme', 'dark')
+  console.log('退订后再次 dispatch，仍是:', received.join(', '))
+}
+
+void demoComposeSubscription()
 
 console.log('\n✅ Store 组合示例完成')

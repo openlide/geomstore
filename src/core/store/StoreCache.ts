@@ -156,6 +156,11 @@ export class StoreCacheManager<S extends State = State> {
       // 只在 TTL > 0 时记录时间戳
       if (this._ttl > 0) {
         this._timestamps.set(key, now)
+        // 摊还回收：LRU 静默淘汰留下的孤儿（见 _pruneOrphanTimestamps）。
+        // 阈值给到 2×容量 + 8，让一次 O(键数) 扫描摊到其后十几笔写入上
+        if (this._timestamps.size > this._cache.getCapacity() * 2 + 8) {
+          this._pruneOrphanTimestamps()
+        }
       }
     } else {
       // 值为 undefined：不缓存，并清理残留条目
@@ -170,11 +175,42 @@ export class StoreCacheManager<S extends State = State> {
    * 时间戳条目滞留（只能等 disable()/invalidate() 才释放），历史上门槛最低的
    * 写法就是散在各调用点各删各的。删除语义收在这一个方法里，调用点不再各写两行
    *
+   * 但「本类的删除路径」并不覆盖 `_cache` 自己收缩的那一侧：LRUCache 超限时在内部
+   * `evictLRU()` 直接摘条目，Store 构造它时不传 `onEvict`，本类收不到淘汰通知 ⇒
+   * 被淘汰键的时间戳成为孤儿，`_timestamps` 的上界于是从 capacity 变成「历史上出现过的
+   * 缓存键总数」（ttl > 0 时每笔写入都留一行，长期会话里的动态键让它单调增长）。
+   * 该滞留不影响功能（`get()` 对 `_cache` 未命中会回读状态源并重写时间戳），代价是内存
+   * 与 `refreshFromState` 每轮重建的键集合规模，故由 {@link _pruneOrphanTimestamps}
+   * 把「同步收缩」从注释承诺变成实现保证
+   *
    * @private
    */
   private _deleteEntry(key: keyof S): void {
     this._cache.delete(key)
     this._timestamps.delete(key)
+  }
+
+  /**
+   * 剔除「`_cache` 里已无对应条目」的 TTL 时间戳
+   *
+   * 判据只有一条：时间戳的唯一用途是给 `_cache` 里的条目算新鲜度，缓存侧已经不存的键
+   * 留着时间戳永远不会被读到（`get()` 走未命中分支时会重新写入）。因此删除时间戳
+   * 不改变任何可观测行为，纯粹是回收 LRU 静默淘汰留下的孤儿。
+   *
+   * 调用点两处，合起来把上界真正钉住：
+   * - `refreshFromState` 收尾（每次 dispatch 一轮，本来就是 O(键数) 的遍历）
+   * - `_writeEntry` 里按「超过 2×容量 + 8」触发（覆盖只写不 dispatch 的宿主，
+   *   摊还后每笔写入的分摊成本是 O(1) 而非 O(键数)）
+   *
+   * @private
+   */
+  private _pruneOrphanTimestamps(): void {
+    // Map 迭代中删除当前条目是安全的，无需先物化成数组
+    for (const key of this._timestamps.keys()) {
+      if (!this._cache.has(key)) {
+        this._timestamps.delete(key)
+      }
+    }
   }
 
   /**
@@ -227,6 +263,10 @@ export class StoreCacheManager<S extends State = State> {
     for (const key of keys) {
       this._writeEntry(key, getState(key), now)
     }
+    // 本轮已与状态源对齐，顺手把 LRU 静默淘汰留下的时间戳孤儿收掉：
+    // 上面的键集合只覆盖「缓存里还有」与「当前状态里还有」的键，两侧都没有的
+    // 历史键在这里之前没有任何回收点（动态顶层键场景下单调增长）
+    this._pruneOrphanTimestamps()
   }
 
   /**

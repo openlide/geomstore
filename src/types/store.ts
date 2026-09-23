@@ -91,6 +91,18 @@ export interface ActionContextBase<S extends State = State> {
  * 剔除只在 A 是**具体 action 集合**时进行：`Actions`（`Record<string, ...>`）的 `keyof A`
  * 是 `string | number`，无条件 `Omit<..., keyof A>` 会把基座整体清空（实测 action 内
  * `this.state` / `this.$patch` 全变 TS2339），故用 `ActionCollisionKeys` 放过索引签名。
+ *
+ * ⚠️ 该守卫是「全有或全无」，留下一处已知口子（#R6-109）：A **同时**带索引签名与显式同名成员时
+ * （`interface MyActions extends Actions { getState(): number }` —— 本仓推荐的写法，
+ * 见 `tests/types/action-decorator-result-types.typecheck.ts` 的「interface 声明 action 集合需 extends Actions」），
+ * `string extends keyof A` 仍成立 ⇒ 一个键都不剔除，基座的 `getState(): S` 与用户的 `getState(): number`
+ * 组成重载集、解析到先声明的基座签名。运行时却是用户 action 覆盖基座
+ * （`ActionManager.initialize` 的 context 代理 `get` 陷阱优先返回 `boundActions[prop]`），
+ * 于是 `const n: number = ctx.getState()` 报 TS2322、而 `this.getState()` 里实际拿到的是 action 的返回值。
+ * 类型层修不掉：索引签名会吸收显式键，还原不出 `'getState'` 这个键名；真要关只能让
+ * `StoreOptions` / `FactoryStoreConfig` 拒收带索引签名的 A，那是把上面那条推荐写法一并打破的收紧。
+ * 现状锁（形状反例）应落在 `tests/types/action-context-collision.typecheck.ts`，该文件不在本分片，已记 NEEDS-MAIN。
+ * 规避：action 名避开基座成员（`name` / `state` / `setState` / `$patch` / `$replaceState` / `getState` / `dispatch`）。
  */
 type ActionCollisionKeys<A extends Actions> = string extends keyof A ? never : keyof A
 
@@ -298,7 +310,17 @@ export interface StoreConfig<S = Record<string, unknown>, A = unknown, G = unkno
    */
   getters?: G & Record<string, (state: ConfigState<S>, ...args: unknown[]) => unknown>
   /**
-   * 需要缓存的state键（为空时缓存所有）
+   * 需要缓存的 state 键：**未提供（`undefined`）时缓存所有键；显式传空数组表示一个键都不缓存**
+   *
+   * 口径以实现为准（`StoreCache.enable`：`this._cacheKeys = keys ? new Set(keys) : undefined`，
+   * 见 `core/store/StoreCache.ts`）：空数组不是「全缓存」的另一种写法，它让 `get`/`set` 的键过滤
+   * 恒不命中，`enableCache` 形同关闭。实现为这个分歧专门加了告警
+   * （`cacheKeys 为空数组：缓存不会命中任何键，enableCache 形同关闭（需要缓存全部键请传 undefined）`），
+   * 但生产模式下 `isProduction()` 会把它吞掉，只剩「数据表现与配置不一致」。
+   * 由派生表达式给出本项时尤其注意（`Object.keys(state).filter((k) => PERSIST_KEYS.includes(k))`
+   * 白名单为空/改名失配即得 `[]`）：要「缓存全部键」请**不写这一项**，而不是写 `[]`。
+   * 该语义另有运行时锁：`tests/unit/regression/ocr-medium-wave.test.ts` 的
+   * 「#153 cacheKeys 为空数组时告警并保持「不缓存任何键」语义」用例。
    *
    * 退化输入（裸写 `StoreConfig`、不传类型参数）下 S 即 `Record<string, unknown>`，
    * 键集随之是 `string | number`，任何字符串键都接受（#R5-326）。
@@ -315,7 +337,12 @@ export interface StoreOptions<S extends State = State, A extends Actions = Actio
   actions?: ActionsWithThis<S, A>
   /** Getters */
   getters?: G
-  /** 需要缓存的state键（为空时缓存所有） */
+  /**
+   * 需要缓存的 state 键：**未提供（`undefined`）时缓存所有键；显式传空数组表示一个键都不缓存**
+   *
+   * 判据、告警文案与 `StoreConfig.cacheKeys` 上那段说明同一条（实现看 `core/store/StoreCache.ts`），
+   * 两处都不接受「空数组 = 全缓存」这一读法。
+   */
   cacheKeys?: Array<keyof S>
 }
 

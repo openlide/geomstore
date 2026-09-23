@@ -7,10 +7,17 @@
  * - trailing：窗口内被抑制的调用在窗口结束时以最新参数补发（fire-and-forget，
  *   返回值不回传——节流场景调用方不应依赖被抑制调用的返回值）
  *
- * 宿主生命周期收尾：窗口内挂起的补发由 `setTimeout` 驱动，宿主（小程序 Page /
- * Component 实例）卸载后它仍会到期执行，最坏情况写入已销毁的 store。为此本模块
- * 提供三个语义互斥的公开入口（`cancelThrottledCalls` / `flushThrottledCalls` /
- * `disposeThrottledState`，见各自 JSDoc），在 `onUnload` / `detached` 里按宿主调用。
+ * 宿主生命周期收尾：窗口内挂起的补发由 `setTimeout` 驱动，宿主（小程序 Page / Component
+ * 实例）卸载后它仍会到期执行，最坏情况写入已销毁的 store。为此本模块提供三个语义互斥的
+ * 公开入口（`cancelThrottledCalls` / `flushThrottledCalls` / `disposeThrottledState`，
+ * 见各自 JSDoc），在 `onUnload` / `detached` 里按宿主调用。
+ *
+ * 这三个入口定位的是**调用被装饰方法时的 `this`**（状态表 `throttleStates` 的键就是它），
+ * 因此只对「`this` 可被业务侧拿到」的宿主有效：Page / Component 实例、类实例、普通对象。
+ * **装饰 store action 时本组入口不可用**——限制与成因与 `withDebounce` 完全相同（同一套
+ * `WeakMap<宿主, …>` 结构：`this` 是 store 内部的 action 上下文代理，卸载点上传 Page 的
+ * `this` 定位不到任何槽位、静默 no-op），详见 `./debounce.js` 模块头。装饰 store action 时
+ * 请在业务侧自判存活标记。
  *
  */
 
@@ -217,7 +224,18 @@ export function withThrottle(interval: number = DEFAULT_INTERVAL, options: Throt
   // 且这个量的语义是间隔时长，不是时间窗口
   const intervalMs = Number.isFinite(interval) && interval > 0 ? interval : DEFAULT_INTERVAL
 
-  return function (_target: unknown, propertyKey: string | symbol, descriptor: PropertyDescriptor): PropertyDescriptor {
+  return function (_target: unknown, propertyKey: string | symbol, descriptor?: PropertyDescriptor): PropertyDescriptor {
+    // 与 withDebounce / withRetry / withTimeout / createDecorator 同族的装饰期判据。
+    // legacy 装饰器误用到**类字段**上时按 PropertyDecorator 调用，运行时只收到两个实参，
+    // 此处裸读 `descriptor.value` 抛的是 `Cannot read properties of undefined (reading 'value')`
+    // ——一条与装饰器无关的属性访问错误，会把真实原因（用错了地方）盖掉；用到 getter/setter
+    // 上时又会在稍后的 `Object.defineProperty` 抛「Cannot both specify accessors and a value」，
+    // 信息里连 withThrottle 的名字都没有。TS 用户被编译期挡住，JS 宿主（深路径直引 JS 产物）
+    // 挡不住，故两种误用统一在装饰阶段抛带前缀的 TypeError
+    if (descriptor === undefined || typeof descriptor.value !== 'function') {
+      throw new TypeError(`[withThrottle] can only decorate a method, but "${String(propertyKey)}" is not a function`)
+    }
+
     const originalMethod = descriptor.value as (this: unknown, ...args: unknown[]) => unknown
     // 该 (装饰器实例, 方法) 的槽位身份：宿主状态表按它分桶（隔离度见 `throttleStates` 注释），
     // 公开入口按 `methodKey` 反向筛选出它
@@ -317,7 +335,8 @@ export function withThrottle(interval: number = DEFAULT_INTERVAL, options: Throt
  * （若有）已在调用时刻以 `undefined` 结算，不受影响。
  *
  * @param host - 宿主（Page / Component 实例、类对象等）。基本类型 / null 时无从
- *        定位状态，静默返回（与装饰器本身的降级口径一致）
+ *        定位状态，静默返回（与装饰器本身的降级口径一致）。装饰 store action 时传 Page 的
+ *        `this` 同样定位不到状态，见模块头
  * @param method - 只取消该名字的被装饰方法；省略时取消该宿主上所有节流方法
  *
  * @example
@@ -348,7 +367,7 @@ export function cancelThrottledCalls(host: unknown, method?: string | symbol): v
  * - 补发是 fire-and-forget，其返回值不回传、失败就地 `console.error`，
  *   不会把 rejection 漏成 unhandledRejection。
  *
- * @param host - 宿主；基本类型 / null 时为 no-op
+ * @param host - 宿主；基本类型 / null 时为 no-op（装饰 store action 时同样定位不到状态，见模块头）
  * @param method - 只补发该名字的被装饰方法；省略时补发该宿主上所有挂起的节流调用
  */
 export function flushThrottledCalls(host: unknown, method?: string | symbol): void {
@@ -369,7 +388,8 @@ export function flushThrottledCalls(host: unknown, method?: string | symbol): vo
  * 与 `cancelThrottledCalls` 一样对任何入参安全：宿主为基本类型 / null、
  * 或本就没有节流状态时都是 no-op。
  *
- * @param host - 宿主
+ * @param host - 宿主；基本类型 / null、以及装饰 store action 时的 action 上下文代理都定位不到
+ *        状态（见模块头），此时本函数为 no-op
  */
 export function disposeThrottledState(host: unknown): void {
   if (!isTrackableHost(host)) {

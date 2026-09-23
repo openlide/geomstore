@@ -58,6 +58,19 @@ jobs:
       - name: Lint
         run: pnpm run lint:ci
 
+      # 格式门禁与 lint:ci 同口径（跑不过就是红，不设基线冻结/白名单）。
+      # glob 与 package.json 的 `format` 脚本逐字相同 → `pnpm format` 就是这一步的修复器，
+      # 补 glob 只会造成「门禁红、本地修复器不认」的分裂。
+      # 换行符侧的口径（第六轮定稿）：`.prettierrc.json` 维持 endOfLine=auto，本步只判格式不判 EOL。
+      # lf 方案实测过：index 侧 400 个文件确实全是 i/lf（`git ls-files --eol` 的 i/crlf = 0），
+      # Linux runner 判绿，但 Windows 工作树在 core.autocrlf=true 下有 198 个 w/crlf 文件，
+      # 本地 `prettier --check` 因此整批假红——在没有 .gitattributes 钉住检出侧之前不可用。
+      # 待办（单独一次提交做）：加 `* text=auto eol=lf` + `git add --renormalize .`，
+      # 把检出侧与工作树统一成 LF 之后再把 endOfLine 切到 lf（本轮工作树有大量未提交改动，
+      # 不适合做全库换行归一这种难回退的操作）。
+      - name: Format check
+        run: pnpm exec prettier --check "src/**/*.ts" "tests/**/*.ts"
+
       - name: Typecheck (src)
         run: pnpm run typecheck
 
@@ -106,8 +119,15 @@ jobs:
       - name: Test with coverage
         run: pnpm run test:ci
 
-      - name: Build
-        run: pnpm run build
+      # 冒烟加载的必须是要被发布的那份字节：真正 publish 走 prepublishOnly →
+      # `pnpm run build:release`（= build + scripts/minify-dist.mjs --strict 就地覆写 dist，
+      # terser `mangle.toplevel` + `compress`）。此前这一步只跑 `pnpm run build`，
+      # 于是「压缩是语义改写」这条风险全程无人加载验证——minify-dist 只校验
+      # 「返回字符串 / 非空 / dist 内无未压缩 js 残留」，不 import 产物；
+      # terser 升级或某个边界写法把某个模块压坏时，build 与 smoke 都会绿，只有包用户会撞到。
+      # dist-weapp 那条链路不受影响（build-weapp.mjs 独立从 src 转译，见下一步）。
+      - name: Build release artifact (tsc + minify --strict)
+        run: pnpm run build:release
 
       # 0.6.0 的事故里 test / build / pack 全绿，坏产物照样发出去了——因为没有任何一步
       # 真正加载过「要被微信构建 npm 拷走的那份文件」。这一步把该验证固化成门禁。
@@ -116,8 +136,9 @@ jobs:
           pnpm run build:weapp
           pnpm run verify:weapp
 
-      - name: Smoke test dist bundles (ESM + subpath)
+      - name: Smoke test release dist bundles (ESM + subpath, minified)
         run: |
+          # 此刻 dist/ 已经是上一步 build:release 覆写过的压缩产物 → 这段冒烟加载的就是发布面
           node --input-type=module -e '
             const { readFileSync } = await import("node:fs")
             const { name, exports: exp } = JSON.parse(readFileSync("package.json", "utf8"))
@@ -151,6 +172,18 @@ jobs:
             if (typeof integrations.bindMappings !== "function") throw new Error("integrations subpath failed")
             console.log("ESM SMOKE OK (exports map exercised by node resolver)")
           '
+
+      # scripts/generate-subpath-stubs.mjs 的四条前置校验（dist 目标产物存在、files 白名单
+      # 覆盖 11 个 stub 目录、同名目录冲突、miniprogram 目录非空且在白名单内）此前只由
+      # prepack 触发，也就是只有真正 publish 那一刻才第一次执行——CI 既不 pack 也不跑 stubs。
+      # 刻意不加 --ignore-scripts：那样 prepack 钩子根本不执行，等于只校验 tarball 清单、
+      # 四条判据一条都跑不到（同 .npmignore 头注与第五轮 R5-374 的结论）。
+      # --dry-run 只做「除写 tarball 之外」的全部动作：prepack 会跑，postpack 不会，
+      # 所以末尾显式 stubs:clean，不把 14 个 stub 目录留在工作树里（本地实测踩过一次）。
+      - name: Pack dry-run (exercise prepack checks)
+        run: |
+          pnpm pack --dry-run
+          pnpm run stubs:clean
 
       - name: Upload coverage report
         if: matrix.node-version == 22

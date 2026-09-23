@@ -215,7 +215,7 @@ export class StateProxyManager<S extends State = State> {
     const self = this
 
     const proxy = new Proxy(target, {
-      /** 读取拦截：对象子值统一交 _wrapChild 分流，函数按需要绑定原始接收者 */
+      /** 读取拦截：对象子值统一交 _readChild（先兑现 [[Get]] 不变量再走 _wrapChild 分流），函数按需要绑定原始接收者 */
       get(obj: T, key: string | symbol): unknown {
         const value = (obj as Record<string | symbol, unknown>)[key]
 
@@ -225,7 +225,7 @@ export class StateProxyManager<S extends State = State> {
         }
 
         // 点号路径与 _makeWriteTraps 的 set 侧同口径（根路径空串不产生前导点）
-        return self._wrapChild(value, path, key, false)
+        return self._readChild(obj, key, value, path, false)
       },
 
       // 写入/删除/描述符拦截：与浅/数组代理共用同一组陷阱，仅路径拼接格式不同（点号路径）
@@ -283,6 +283,29 @@ export class StateProxyManager<S extends State = State> {
     const proxy = Array.isArray(value) ? this._createArrayProxy(value as unknown[], childPath) : this._createDeepProxy(value, childPath)
     this._proxyCache.set(value, proxy)
     return proxy
+  }
+
+  /**
+   * 读陷阱的统一入口：先兑现 Proxy 的 [[Get]] 不变量，再交 `_wrapChild` 包装。
+   *
+   * 自有数据属性若「既不可配置也不可可变写」（`Object.freeze` 过的子树、
+   * `defineProperty({writable:false, configurable:false})` 的键），陷阱必须原样返回那个值；
+   * 返回包装出来的代理会直接抛
+   * `TypeError: 'get' on proxy: property 'x' is a read-only and non-configurable data property
+   * on the proxy target but the proxy did not return its actual value`——一次普通读取就崩，
+   * 且报错文本不指向「冻结」这个根因。dirtyTracking 的代理已有同一条守卫，此处是保护代理侧补齐。
+   *
+   * 代价与那边一致：命中该分支的子对象交出的是**裸引用**，对它的写入不经过任何陷阱，
+   * 既不被拦截也不被计数——这类属性因此只能承载「不再被改的值」。
+   */
+  private _readChild(target: object, key: string | symbol, value: unknown, path: string, bracket: boolean): unknown {
+    if (typeof value === 'object' && value !== null) {
+      const descriptor = Object.getOwnPropertyDescriptor(target, key)
+      if (descriptor && !descriptor.configurable && 'value' in descriptor && !descriptor.writable) {
+        return descriptor.value
+      }
+    }
+    return this._wrapChild(value, path, key, bracket)
   }
 
   /**
@@ -358,7 +381,7 @@ export class StateProxyManager<S extends State = State> {
         // 对象值必须走与索引键一致的包装逻辑——裸返回会让挂在 symbol 键上的
         // 对象绕过全部写保护
         if (typeof key === 'symbol') {
-          return self._wrapChild((arr as Record<string | symbol, unknown>)[key], path, key, true)
+          return self._readChild(arr, key, (arr as Record<string | symbol, unknown>)[key], path, true)
         }
 
         // 处理数字索引：严格规范十进制整数字符串判断（不允许前导零）。
@@ -366,7 +389,7 @@ export class StateProxyManager<S extends State = State> {
         // '/^\d+$/' 会误匹配 '01'，均会导致非规范数字字符串键被误当作索引返回错误元素
         if (typeof key === 'string' && /^(0|[1-9]\d*)$/.test(key)) {
           // 路径用键原样（上面的正则已保证是规范十进制串），取值才转数字
-          return self._wrapChild(arr[Number(key)], path, key, true)
+          return self._readChild(arr, key, arr[Number(key)], path, true)
         }
 
         // 数组方法特殊处理
@@ -387,7 +410,7 @@ export class StateProxyManager<S extends State = State> {
 
         // 其他属性（非索引/length/变异方法）：对象值同样需要包装保护，
         // 裸返回会让挂在数组自定义属性上的对象绕过写保护。自定义属性按对象口径拼路径
-        return self._wrapChild((arr as unknown as Record<string | symbol, unknown>)[key], path, key, false)
+        return self._readChild(arr, key, (arr as unknown as Record<string | symbol, unknown>)[key], path, false)
       },
 
       // 写入/删除/描述符拦截：与深/浅代理共用同一组陷阱（数组路径格式 path[key]）

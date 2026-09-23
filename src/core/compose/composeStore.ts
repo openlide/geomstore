@@ -12,6 +12,7 @@ import type { ComposeOptions, StoreTreeNode, StoreLike, ExtractStates, ExtractAc
 import { HookSystem } from '../hooks/index.js'
 import { isProduction } from '../store/utils.js'
 import { deepCloneState } from '../utils/clone.js'
+import { defineOwnProperty } from '../utils/helpers.js'
 import { getStateVersion } from '../store/stateVersion.js'
 import { ALL_HOOK_NAMES, dispatchByNamespace, findTargetStoreWithKey, parseActionName } from './helpers.js'
 import { mergeNamespaced, mergeStateMaps } from './merge.js'
@@ -62,6 +63,8 @@ class ComposedStore<S extends State = State> implements Store<S> {
   private _childSubscriptionsReady: boolean = false
   /** 已告警过的 state 键冲突组合（每个组合只告警一次，避免高频 getState 刷屏） */
   private _warnedStateKeyConflicts = new Set<string>()
+  /** 已按「空视图」读过的销毁子 store：每个子 store 只告警一次（WeakSet 不驻留死店） */
+  private _warnedDestroyedChildren = new WeakSet<object>()
   /** 子 Store 钩子桥接的退订函数（destroy 时统一移除，防止闭包残留） */
   private _hookUnsubscribers: Array<() => void> = []
   /** 自上次通知以来发生变更的子 store 名集合：命名空间模式下供 isStateKeyDirty 精确跳过 setData */
@@ -129,9 +132,52 @@ class ComposedStore<S extends State = State> implements Store<S> {
       }
     }
 
-    // 构建 stores 引用
+    // 路由键合法性校验：store.name 不只是个展示名，命名空间模式下它同时是
+    // '/' 分隔路径的第一段（helpers.ts 的 findTargetStoreWithKey / parseActionName 都按
+    // key.split('/') 取首段当 store 名）和普通对象键。Store.name 完全由用户传入
+    // （Store.ts 只兜了「空值 → 自增名」，没有字符集校验），于是两类取值会静默出错：
+    // - 含 '/'（如 createStore({ name: 'user/info' })）：路径 'user/info/count' 被解析成
+    //   store 'user' + 键 'info/count'，该子店在 setState/getCached/dispatch/getter 上
+    //   **永远路由不到**（非 strict 静默忽略、strict 抛「Cannot find store for key」），
+    //   而 mergeNamespaced 又把整名当键写进合并视图 ⟹ 读得到、写不进；
+    //   actions/getters 的映射键 `${store.name}/${actionName}` 同样解不开。
+    // - 空串：路由首段为空，同理解析不出归属。
+    // 判据与上面的重名校验同一条：命名空间模式下这属于「无法正确工作的配置错误」，直接抛；
+    // 平铺模式 name 只是 stores 映射的键与告警文案、不参与路由，按 _mergeStateMaps 的既有
+    // 口径在开发模式告警而非抛错。
+    // 刻意**不**拒绝 '__proto__'：本仓既定判例是「store 名可合法为 '__proto__'」
+    // （merge.ts 的 assignMerged 与 StoreRegistry.createSnapshot 都专门为此键写了
+    // DefineOwnProperty 守卫），下面两处映射改用同一语义承载，而不是把这个名字判成非法。
+    const unroutableNames: string[] = []
     for (const store of stores) {
-      this.stores[store.name] = store
+      const storeName = store.name
+      if (typeof storeName !== 'string' || storeName.length === 0 || storeName.includes('/')) {
+        unroutableNames.push(String(storeName))
+      }
+    }
+    if (unroutableNames.length > 0) {
+      if (this._namespace) {
+        throw new Error(
+          `[composeStore] 命名空间模式下子 store 名称必须是「非空且不含 '/'」的路由键段，否则该子店永远无法被路由到: ${unroutableNames.join(', ')}。` +
+            '请去掉名字里的斜杠（"storeName/key" 形式的路径按首段解析目标 store）',
+        )
+      }
+      if (!isProduction()) {
+        console.warn(
+          `[composeStore] 子 store 名称不适合作为命名空间路由键 (${unroutableNames.join(', ')})：当前为平铺模式，name 只用于 stores 映射；` +
+            '一旦启用 namespace，这些子 store 将无法被路由到',
+        )
+      }
+    }
+
+    // 构建 stores 引用。
+    // 以 DefineOwnProperty 语义写入：`this.stores[store.name] = store` 走 [[Set]]，
+    // name 为 '__proto__' 时触发 Object.prototype 的 setter —— 该条目不会成为自有键，
+    // 而 this.stores 的原型被换成那个 Store 实例，于是 composed.stores.getState/destroy/state
+    // 全部变成可调用（对外泄漏一整套 Store 方法），ownsNestedStore 的 hasOwnProperty 判定
+    // （helpers.ts）同时为 false，嵌套路由静默失效
+    for (const store of stores) {
+      defineOwnProperty(this.stores as Record<string, Store>, store.name, store)
     }
 
     // 嵌套组合的写路径提示：非命名空间外层包含命名空间内层时，内层子 store 的键
@@ -269,7 +315,7 @@ class ComposedStore<S extends State = State> implements Store<S> {
       return
     }
     for (let i = 0; i < this._stores.length; i++) {
-      const current = getStateVersion(this._stores[i].state)
+      const current = this._childVersion(this._stores[i])
       if (current === undefined || current !== this._cachedChildVersions[i]) {
         this._invalidateMergedCache()
         return
@@ -283,7 +329,45 @@ class ComposedStore<S extends State = State> implements Store<S> {
    * 合并策略已拆至 ./merge.js
    */
   private _mergeNamespaced(pick: (store: Store) => Record<string, unknown>, freeze: boolean = false): Record<string, unknown> {
-    return mergeNamespaced(this._stores, pick, freeze)
+    return mergeNamespaced(this._stores, this._readablePick(pick), freeze)
+  }
+
+  /**
+   * 「子 store 已被独立销毁」的统一判据：命中即按 store 去重告警一次，返回 true 表示调用方应跳过它。
+   *
+   * 读路径（`_readablePick`）与缓存 API（`enableCache` / `getCacheStats`）共用这一条，
+   * 避免各处再各写一份 `store.destroyed` + WeakSet 而漂移成不同文案、不同次数。
+   * 告警按 store 去重：这些调用点都在渲染 / setData 热线上被反复触发。
+   */
+  private _skipDestroyedChild(store: Store, note: string): boolean {
+    if (!store.destroyed) {
+      return false
+    }
+    if (!this._warnedDestroyedChildren.has(store)) {
+      this._warnedDestroyedChildren.add(store)
+      if (!isProduction()) {
+        console.warn(`[composeStore] 子 store "${store.name}" 已销毁，${note}（其余子 store 不受影响）`)
+      }
+    }
+    return true
+  }
+
+  /**
+   * 读路径取值前的容错包装：子 store 可在组合之外被独立销毁，此时它的 `getState()` 会抛，
+   * 于是**一个死店就让整棵组合读不出来**（集成层渲染/computed 热线直接崩），而同一时刻
+   * `$patch` 却按「已销毁 → 跳过」正常写入其余子店——读写一侧崩一侧静默通过。
+   *
+   * 读侧采取与写侧相同的判据：该子 store 记为**空视图**并一次性告警，其余子 store 照常可读。
+   * 三条读路径（`getState` 的裸引用 / `state` 的保护视图 / `$snapshot` 的深拷贝）都经此处，
+   * 消除此前「getState 抛、state 返回死店视图（Store.state 无守卫）、$snapshot 又抛」的三方分叉。
+   */
+  private _readablePick(pick: (store: Store) => Record<string, unknown>): (store: Store) => Record<string, unknown> {
+    return (store: Store) => {
+      if (this._skipDestroyedChild(store, '读取按空视图处理')) {
+        return {}
+      }
+      return pick(store)
+    }
   }
 
   getState(): S {
@@ -316,7 +400,7 @@ class ComposedStore<S extends State = State> implements Store<S> {
    * 合并策略与冲突告警已拆至 ./merge.js（warnedStateKeyConflicts 由实例持有以跨调用去重）
    */
   private _mergeStateMaps(pick: (store: Store) => Record<string, unknown>): Record<string, unknown> {
-    return mergeStateMaps(this._stores, pick, this._warnedStateKeyConflicts)
+    return mergeStateMaps(this._stores, this._readablePick(pick), this._warnedStateKeyConflicts)
   }
 
   get state(): S {
@@ -348,7 +432,21 @@ class ComposedStore<S extends State = State> implements Store<S> {
 
   /** 记录当前各子 store 的状态版本号，供读取时校验缓存新鲜度 */
   private _recordChildVersions(): void {
-    this._cachedChildVersions = this._stores.map((store) => getStateVersion(store.state))
+    this._cachedChildVersions = this._stores.map((store) => this._childVersion(store))
+  }
+
+  /**
+   * 子 store 的合并缓存新鲜度判据：状态版本号，外加「是否已被独立销毁」这一维度。
+   *
+   * 销毁本身不推进版本号，只比版本号会让死店此前合并进缓存的键一直被当作新鲜数据读出来。
+   * 哨兵取 -1：`getStateVersion` 返回的是单调非负计数，不会与它相等，故「活着 → 销毁」
+   * 必然失配并触发重算（重算后该店按空视图并入）。
+   */
+  private _childVersion(store: Store): number | undefined {
+    if (store.destroyed) {
+      return -1
+    }
+    return getStateVersion(store.state)
   }
 
   setState<K extends keyof S>(key: K, value: S[K]): void {
@@ -424,7 +522,16 @@ class ComposedStore<S extends State = State> implements Store<S> {
   get getters(): Getters<S> {
     const result: Record<string, (state: S) => unknown> = {}
     for (const store of this._stores) {
+      // 鸭子类型兜底：接口把 getters 声明为必选，但组合层接受桩 store / 未实现该成员的
+      // 同构 store（本文件 getter() 与 getGetterNames() 都按「无 getter」降级，构造期也用
+      // `store.actions ?? {}`、`if (!childHooks) continue` 容错）。
+      // 此前这里直接 Object.keys(store.getters) ⟹ getters 缺席时抛 TypeError，
+      // 而 composed.getters 是 devtools / analyzer 的只读反射面（plugins/builtin.ts 同口径读形状），
+      // 一条读取路径比写入路径更容易被一个桩 store 打崩
       const subGetters = store.getters
+      if (!subGetters) {
+        continue
+      }
       for (const key of Object.keys(subGetters)) {
         const mappedKey = this._namespace ? `${store.name}/${key}` : key
         // own property 判定：`in` 会命中 Object 原型链（'toString' 等），
@@ -770,17 +877,74 @@ class ComposedStore<S extends State = State> implements Store<S> {
     return targetStore.getCached(actualKey as never) as S[K]
   }
 
+  /**
+   * 为子 store 启用缓存：命名空间模式下按键前缀路由到归属 store
+   *
+   * 这组缓存 API 原先是组合层里唯一不做命名空间路由的一组，与同类方法自相矛盾：
+   * `setState` / `getCached` / `invalidateCache` 都先过 `findTargetStoreWithKey` 解析
+   * `storeName/key`，而 `enableCache` 把收到的键原样透传给**每一个**子 store，于是
+   * 命名空间模式下 `enableCache(['user/profile'])` 在子 store 上匹配不到任何键
+   * （子店只认裸键 `profile`）⟹ 缓存静默不生效；不写前缀的 `enableCache(['profile'])`
+   * 又会在所有含 `profile` 键的子 store 上同时开启 ⟹ 越权开启调用方从未点名的 store。
+   * 现在解析方向与读侧一致：带前缀的键只投递给归属 store，无归属键按 strict 口径处理。
+   * 平铺模式保持「广播给各子店」——子 store 只缓存自己拥有的键，多店同名键的歧义
+   * 由 `mergeStateMaps` / `findTargetStoreWithKey` 的既有开发模式告警覆盖。
+   */
   enableCache(keys?: Array<keyof S>): void {
     this._ensureAlive('enableCache')
-    for (const store of this._stores) {
-      // 子 store 的泛型与组合后的 S 不同构，键集合仅在运行时传递，此处断言安全
-      store.enableCache(keys as Array<keyof State> | undefined)
+
+    // 未指定键 = 「每个子 store 缓存它自己的全部顶层键」，没有需要路由的键
+    if (!this._namespace || keys === undefined) {
+      for (const store of this._stores) {
+        if (this._skipDestroyedChild(store, '跳过对它的缓存启用')) {
+          continue
+        }
+        // 子 store 的泛型与组合后的 S 不同构，键集合仅在运行时传递，此处断言安全
+        store.enableCache(keys as Array<keyof State> | undefined)
+      }
+      return
+    }
+
+    const grouped = new Map<Store, Array<keyof State>>()
+    const unowned: string[] = []
+    for (const key of keys) {
+      const keyStr = String(key)
+      const [targetStore, actualKey] = findTargetStoreWithKey(keyStr, this._stores, this._namespace)
+      if (!targetStore) {
+        unowned.push(keyStr)
+        continue
+      }
+      const bucket = grouped.get(targetStore)
+      if (bucket) {
+        bucket.push(actualKey as keyof State)
+      } else {
+        grouped.set(targetStore, [actualKey as keyof State])
+      }
+    }
+
+    if (unowned.length > 0) {
+      if (this._strict) {
+        throw new Error(`[composeStore] Cannot find store for key: ${unowned.join(', ')}`)
+      }
+      if (!isProduction()) {
+        console.warn(`[composeStore] enableCache 收到不属于任何子 store 的键 [${unowned.join(', ')}]（命名空间模式需要 "storeName/key" 形式），已忽略`)
+      }
+    }
+
+    for (const [store, storeKeys] of grouped) {
+      if (this._skipDestroyedChild(store, '跳过对它的缓存启用')) {
+        continue
+      }
+      store.enableCache(storeKeys)
     }
   }
 
   disableCache(): void {
     this._ensureAlive('disableCache')
     for (const store of this._stores) {
+      if (this._skipDestroyedChild(store, '跳过对它的缓存关闭')) {
+        continue
+      }
       store.disableCache()
     }
   }
@@ -791,17 +955,33 @@ class ComposedStore<S extends State = State> implements Store<S> {
       const keyStr = String(key)
       const [targetStore, actualKey] = findTargetStoreWithKey(keyStr, this._stores, this._namespace)
       if (targetStore) {
+        if (this._skipDestroyedChild(targetStore, '跳过对它的缓存失效')) {
+          return
+        }
         targetStore.invalidateCache(actualKey as never)
       } else if (this._strict) {
         throw new Error(`[composeStore] Cannot find store for key: ${keyStr}`)
       }
     } else {
       for (const store of this._stores) {
+        if (this._skipDestroyedChild(store, '跳过对它的缓存失效')) {
+          continue
+        }
         store.invalidateCache()
       }
     }
   }
 
+  /**
+   * 聚合各子 store 的缓存统计。
+   *
+   * `keys` 是**组合层可直接使用**的键列表（拿它去调 `getCached` / `invalidateCache` 必须能打中），
+   * 因此命名空间模式下回填 `storeName/key` 形式：此前这里把各子店的本地裸键原样拼进来，
+   * 与 `getCached` 的入参形状不同构，于是
+   * `composed.getCached(composed.getCacheStats().keys[0])` 在命名空间模式下恒为 undefined。
+   * 平铺模式下多店同名键会在子店列表里重复，而合并视图只有这一个键 ⟹ 按键去重
+   * （命中数属于哪个店仍看不出来，这是平铺模式歧义配置的既有代价，与 hits/misses 的累加口径一致）。
+   */
   getCacheStats(): CacheStats {
     this._ensureAlive('getCacheStats')
     const stats: CacheStats = {
@@ -811,12 +991,24 @@ class ComposedStore<S extends State = State> implements Store<S> {
       hits: 0,
       misses: 0,
     }
+    const seenKeys = new Set<string>()
 
     for (const store of this._stores) {
+      // 已销毁的子店 getCacheStats() 会抛：与三条读路径同口径跳过并告警一次
+      if (this._skipDestroyedChild(store, '跳过它的缓存统计')) {
+        continue
+      }
       const storeStats = store.getCacheStats()
       stats.enabled = stats.enabled || storeStats.enabled
       stats.size += storeStats.size
-      stats.keys.push(...storeStats.keys)
+      for (const key of storeStats.keys) {
+        const composedKey = this._namespace ? `${store.name}/${key}` : key
+        if (seenKeys.has(composedKey)) {
+          continue
+        }
+        seenKeys.add(composedKey)
+        stats.keys.push(composedKey)
+      }
       stats.hits += storeStats.hits
       stats.misses += storeStats.misses
     }
@@ -937,11 +1129,14 @@ export function createStoreTree(stores: Store[], options: ComposeOptions = {}): 
   }
 
   for (const store of stores) {
-    children[store.name] = {
+    // DefineOwnProperty 语义（与本文件 stores 映射、merge.ts 的 assignMerged 同一判据）：
+    // `children[store.name] = …` 走 [[Set]]，name 为 '__proto__' 时不会成为自有键，
+    // 却把 children 的原型换成那个 Store 实例 —— 树节点因此对外泄漏一整套 Store 方法
+    defineOwnProperty(children, store.name, {
       name: store.name,
       store,
       children: {},
-    }
+    })
   }
 
   return root

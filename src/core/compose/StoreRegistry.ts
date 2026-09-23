@@ -7,6 +7,7 @@
 
 import type { Store, State } from '../../types/store.js'
 import { deepCloneState } from '../utils/clone.js'
+import { isProduction } from '../store/utils.js'
 
 /**
  * 该实例是否需要（且能够）被销毁
@@ -93,14 +94,22 @@ export class StoreRegistry {
 
     if (existingStore === store) {
       // 幂等重注册：同一实例重复注册是合法操作（如初始化脚本重复执行），
-      // 不应销毁自身导致注册表持有已销毁实例；合法操作降级为 log 避免告警噪声
-      console.log(`[StoreRegistry] Store "${name}" is already registered with the same instance, ignoring`)
+      // 不应销毁自身导致注册表持有已销毁实例；合法操作降级为 debug 避免告警噪声，
+      // 且只在非生产构建里输出（口径同 composeStore/helpers 的歧义/配置类提示：
+      // 生产刷屏只会淹没真实日志，初始化脚本每次重注册都会打一条）
+      if (!isProduction()) {
+        console.debug(`[StoreRegistry] Store "${name}" is already registered with the same instance, ignoring`)
+      }
       return
     }
 
     const superseded: Store[] = []
     if (existingStore) {
-      console.warn(`[StoreRegistry] Store "${name}" already registered, ${isDestroyable(existingStore) ? 'destroying old store and ' : ''}overwriting`)
+      // 覆盖注册属于「配置歧义」级别（同名换了实例），与 composeStore 的重名告警同口径：
+      // 生产构建里旧实例照样被销毁、新实例照样登记，行为不变，只是不再刷屏
+      if (!isProduction()) {
+        console.warn(`[StoreRegistry] Store "${name}" already registered, ${isDestroyable(existingStore) ? 'destroying old store and ' : ''}overwriting`)
+      }
       this._detachInstance(name, existingStore)
       superseded.push(existingStore)
 
@@ -113,7 +122,9 @@ export class StoreRegistry {
       // 下面的 set 把一个已销毁的实例登记为在册 store
       const reentrant = this.stores.get(name)
       if (reentrant !== undefined && reentrant !== existingStore && reentrant !== store) {
-        console.warn(`[StoreRegistry] Store "${name}" 在旧实例 destroy() 期间被重新注册，本次注册覆盖该重入实例`)
+        if (!isProduction()) {
+          console.warn(`[StoreRegistry] Store "${name}" 在旧实例 destroy() 期间被重新注册，本次注册覆盖该重入实例`)
+        }
         this._detachInstance(name, reentrant)
         superseded.push(reentrant)
       }
@@ -542,9 +553,79 @@ export class StoreRegistry {
 }
 
 /**
+ * 全局注册表在 globalThis 上的槽位键。
+ *
+ * 与 `stateVersion.ts` 的 STATE_VERSION、`pluginSupport.ts` 的 GEOMSTORE_BRAND 同一取舍：
+ * 小程序构建产物里同一包常有重复副本（分包各自打包、宿主库把本库一起打进去），
+ * 裸的模块级常量会让每个副本各持一个注册表——A 副本 `register` 的 store 在 B 副本
+ * `get` 不到、`setDefault` 也不同步，而两侧都「成功」，属于静默丢引用。
+ * `Symbol.for` 的符号注册表按进程共享，故键名带包名命名空间但**不带版本号**
+ * （加版本就等于重新制造副本分裂）。
+ */
+const GLOBAL_REGISTRY_SLOT = Symbol.for('@openlide/geomstore:store-registry')
+
+/**
+ * 槽位里的值能否当作 StoreRegistry 复用
+ *
+ * 跨副本场景下 `instanceof StoreRegistry` 恒为 false（两个副本各有一份类对象），
+ * 用它判定会把副本 A 已建好的注册表覆盖掉——那正是本条要修的故障。
+ * 故按方法形状判定（与 `isGeomStore` 同为结构化守卫），且校验面覆盖注册表的
+ * 全部写入/读取入口：只挂一两个同名方法的仿冒对象不会因为漏了 `getAll` 而通过。
+ */
+function isStoreRegistryLike(value: unknown): value is StoreRegistry {
+  if (value === null || typeof value !== 'object') {
+    return false
+  }
+  const candidate = value as Record<string, unknown>
+  return (
+    typeof candidate.register === 'function' &&
+    typeof candidate.unregister === 'function' &&
+    typeof candidate.get === 'function' &&
+    typeof candidate.getAll === 'function' &&
+    typeof candidate.clear === 'function'
+  )
+}
+
+/**
+ * 取（并按需构造）进程级全局注册表
+ *
+ * 写入失败（globalThis 被冻结、同名键不可写）时退回「本模块副本私有的实例」并出声：
+ * 宁可退回单副本语义也不抛错，否则这条 API 在受限宿主里直接不可用；
+ * 但副本分裂的故障必须可见，否则又回到静默丢引用。
+ */
+function resolveGlobalRegistry(): StoreRegistry {
+  const holder = globalThis as unknown as Record<symbol, unknown>
+  const existing = holder[GLOBAL_REGISTRY_SLOT]
+  if (isStoreRegistryLike(existing)) {
+    return existing
+  }
+
+  const registry = new StoreRegistry()
+  try {
+    // defineProperty 而非直接赋值：键是 symbol，不会被 `Object.keys(globalThis)`
+    // 与调试器枚举出来（内部实例不对外面可见性负责）；不可枚举也避免宿主按枚举
+    // 复制 globalThis 时把整册 store 一起带走
+    Object.defineProperty(globalThis, GLOBAL_REGISTRY_SLOT, {
+      value: registry,
+      writable: true,
+      enumerable: false,
+      configurable: true,
+    })
+  } catch (error) {
+    if (!isProduction()) {
+      console.warn('[StoreRegistry] globalThis 上的全局注册表槽位不可写，本模块副本各自持有一份注册表：', error)
+    }
+  }
+  return registry
+}
+
+/**
  * 全局注册表实例
  *
- * 提供全局访问的注册表实例
+ * 提供全局访问的注册表实例。作用域是**进程内唯一**：实例挂在
+ * `globalThis[Symbol.for('@openlide/geomstore:store-registry')]` 上、首次取用时惰性构造，
+ * 因此同一进程内的多个包副本（分包各自打包、宿主库把本库一起打进去）共享同一册，
+ * 而不是各副本一份。宿主 globalThis 不可写时退化为「本副本一份」并告警。
  *
  * @type {StoreRegistry}
  *
@@ -557,4 +638,4 @@ export class StoreRegistry {
  * const store = globalRegistry.get('my-store')
  * ```
  */
-export const globalRegistry = new StoreRegistry()
+export const globalRegistry: StoreRegistry = resolveGlobalRegistry()

@@ -2,7 +2,7 @@
 
 > **本文件由 `scripts/generate-skill-api-reference.mjs` 从 `dist/**/*.d.ts` 生成，请勿手工编辑。**
 >
-> - 来源版本：`@openlide/geomstore@0.6.1`
+> - 来源版本：`@openlide/geomstore@0.7.0`
 > - 内容来源：构建产物类型声明（随 npm 包发布，与安装版本必然一致）
 > - 重新生成：`pnpm build && pnpm skill:api`
 > - 引入路径：`./extras/snapshot`
@@ -79,6 +79,16 @@ export interface SnapshotDiff {
     timestamp1: number;
     /** 第二个快照时间戳 */
     timestamp2: number;
+    /**
+     * 两份输入是否都可作为比对依据：任一来源 `success: false` 即为 false。
+     *
+     * 失败快照的 `data` 按 types.ts 的契约可能是 `undefined` 或部分构建的半成品，
+     * 而两份半成品之间的真实差异恰好落在「两侧都还没填上的键」上——逐路径比较会静默漏报。
+     * 故本值为 false 时 `changed` 恒为 true（宁多勿漏的整树报告），
+     * 它表达的是「输入不可信」而不是「内容确有差异」；要做回滚判定/去重，
+     * 先判本值再读 `changes`
+     */
+    inputTrusted: boolean;
 }
 ```
 
@@ -169,6 +179,9 @@ export declare class SnapshotManager {
      * 克隆按节点分片入队，每批次处理 batchSize 个节点，
      * 批间让出控制权，避免大对象同步递归阻塞主线程。
      *
+     * 超时口径：`timeout` 翻位时只有「队列仍有未处理任务」或「超时后丢掉过入队任务」
+     * 才使结果 `success: false` 并落一条 `timeout` 错误——完好克隆不因定时器晚到而判失败。
+     *
      * @param {T} data - 要快照的数据
      * @param {AsyncSnapshotOptions} options - 异步配置选项
      * @returns {Promise<SnapshotResult<T>>} 快照结果Promise
@@ -184,6 +197,10 @@ export declare class SnapshotManager {
     createSnapshotAsync<T>(data: T, options?: Partial<AsyncSnapshotOptions>): Promise<SnapshotResult<T>>;
     /**
      * 对比两个快照
+     *
+     * 契约同 diff.ts 的 `compareSnapshots`（实现已拆至 ./diff.js，纯函数，不依赖管理器实例状态）：
+     * 两侧 `success` 不必先判，但任一侧为 false 时结果里的 `inputTrusted` 会是 false，
+     * 此时 `changed: true` 只是「输入不可信 → 宁多勿漏」的报告形状，不代表两份 data 真有差异
      *
      * @param {SnapshotResult<T1>} snapshot1 - 第一个快照
      * @param {SnapshotResult<T2>} snapshot2 - 第二个快照（支持不同类型）
@@ -472,6 +489,9 @@ export declare class SnapshotManager {
      * 克隆按节点分片入队，每批次处理 batchSize 个节点，
      * 批间让出控制权，避免大对象同步递归阻塞主线程。
      *
+     * 超时口径：`timeout` 翻位时只有「队列仍有未处理任务」或「超时后丢掉过入队任务」
+     * 才使结果 `success: false` 并落一条 `timeout` 错误——完好克隆不因定时器晚到而判失败。
+     *
      * @param {T} data - 要快照的数据
      * @param {AsyncSnapshotOptions} options - 异步配置选项
      * @returns {Promise<SnapshotResult<T>>} 快照结果Promise
@@ -487,6 +507,10 @@ export declare class SnapshotManager {
     createSnapshotAsync<T>(data: T, options?: Partial<AsyncSnapshotOptions>): Promise<SnapshotResult<T>>;
     /**
      * 对比两个快照
+     *
+     * 契约同 diff.ts 的 `compareSnapshots`（实现已拆至 ./diff.js，纯函数，不依赖管理器实例状态）：
+     * 两侧 `success` 不必先判，但任一侧为 false 时结果里的 `inputTrusted` 会是 false，
+     * 此时 `changed: true` 只是「输入不可信 → 宁多勿漏」的报告形状，不代表两份 data 真有差异
      *
      * @param {SnapshotResult<T1>} snapshot1 - 第一个快照
      * @param {SnapshotResult<T2>} snapshot2 - 第二个快照（支持不同类型）

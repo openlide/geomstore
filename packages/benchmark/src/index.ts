@@ -37,12 +37,15 @@ export {
 export { benchmarkUtils, BenchmarkUtils } from './utils.js'
 
 // 辅助函数
+// 两个预热入口按回调形状分工：`executeWarmup` 只收同步回调（异步回调会当场 TypeError，
+// 见 helpers.ts 的注释），`executeWarmupAsync` 收 `void | Promise<void>` 并逐轮 await。
 export {
   ResultBuilder,
   calculateCacheHitRate,
   buildCacheResult,
   emptyCacheResult,
   executeWarmup,
+  executeWarmupAsync,
   warmupCache,
 } from './helpers.js'
 export type { TimeStats, MemoryStats, ResultBuilderOptions } from './helpers.js'
@@ -73,16 +76,26 @@ export function createBenchmarkAdapter<S extends object>(store: BenchmarkStore<S
     },
     dispatch: (name, ...args) => store.dispatch(name, ...args),
     subscribe: (listener) => store.subscribe(listener),
-    // getCached 每次调用现取：被适配的库常在 enableCache()/懒初始化之后才挂上它，
-    // 构造期做特性探测会把「当时没有」固化成永久 undefined，缓存读分支于是静默空转
-    getCached: (key) => store.getCached?.(key),
+    // getCached 用 getter 而不是恒存在的箭头函数：`BenchmarkStore.getCached` 是可选成员
+    // （types/store.ts：「无缓存的实现可省略」），runner 的 `readKey` 正是拿「这个成员在不在」
+    // 决定走缓存读还是退化成真实状态读。包成 `getCached: (key) => store.getCached?.(key)`
+    // 会把缺席的实现也伪装成「有缓存」，于是被计时的仍是一次什么都不做的调用，
+    // runner 那条退化路径在适配入口下整段失效（读档被人为压低耗时、吞吐虚高）。
+    // 与下面 getCacheStats 同一写法：存在性每次访问现解析——被适配的库常在 enableCache()/
+    // 懒初始化之后才挂上这两个成员，构造期做特性探测会把「当时没有」固化成永久 undefined。
+    get getCached(): ((key: string) => unknown) | undefined {
+      const fn = store.getCached
+      // fn.call(store, key)：把 this 绑回源对象，方法简写式的实现常靠 this 读自己的缓存容器
+      return fn ? (key: string) => fn.call(store, key) : undefined
+    },
     // getCacheStats 同理不能在设计期定死引用：库常在 enableCache()/懒初始化之后才挂上
     // 缓存统计，构造期解构出来的 undefined 会让 runner 永远按「缓存未启用」上报，
     // 产出一份错的缓存报告而不是报错。
-    // 与 getCached 的差别要保住：runner 拿「这个成员在不在」当「有没有缓存统计」的
-    // 三态契约信号（见 BenchmarkStore.getCacheStats 注释），所以不能像 getCached 那样
-    // 包一层恒存在的箭头函数；用 getter 每次访问时现解析，缺席时返回 undefined，
-    // 「有没有」与「实现是谁」都保持动态。
+    // 它与 getCached 共用同一套「按存在性动态暴露」的写法，但两个成员的存在性各管一件事：
+    // getCacheStats 缺席 = runner 上报「缓存未启用」的三态契约信号（见 BenchmarkStore
+    // .getCacheStats 注释），getCached 缺席 = readKey 走真实状态读的退化路径。把任一个
+    // 包成恒存在的箭头函数都会抹掉它那一侧的信号，故两者都必须用 getter 每次访问现解析，
+    // 缺席时返回 undefined（而不是一个返回 undefined 的函数）。
     get getCacheStats(): (() => CacheStats) | undefined {
       const fn = store.getCacheStats
       return fn ? () => fn.call(store) : undefined

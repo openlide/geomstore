@@ -132,13 +132,22 @@ export const persistencePlugin: Plugin & {
 /**
  * 持久化插件的安装实现。
  * 抽出为独立函数，便于工厂模式与直接安装模式复用同一份逻辑。
+ *
+ * 形参刻意写成 `| null` 并在入口一次性归一：形参默认值只挡 `undefined`，挡不住显式传进来的
+ * `null`（`persistencePlugin(null)` 经工厂闭包原样转发 options；JS 调用方直接
+ * `persistencePlugin.install(store, null)` 同样送到这里）。此前这里是矛盾口径：
+ * 下面的解构写成 `options || {}`（等于承认 null 可进来），而 `options.storage` 又直接解引用
+ * null，于是安装期抛 `Cannot read properties of null` 的裸 TypeError——错误信息不含
+ * persistence 归因，与本文件其余「安装期显式抛可读 TypeError」的后端形状校验不同口径
  */
-function installPersistence<S extends State>(store: Store<S>, options: PersistenceOptions<S> = {}): () => void {
+function installPersistence<S extends State>(store: Store<S>, rawOptions?: PersistenceOptions<S> | null): () => void {
+  const options: PersistenceOptions<S> = rawOptions ?? {}
+
   if (!isProduction()) {
     console.log(`[GeomStore] Plugin "persistence" installed`)
   }
 
-  const { key = `geomstore_${store.name}`, filter, validate, restore: shouldRestore = true, debounce: debounceMs = 0, clearOnUninstall = false } = options || {}
+  const { key = `geomstore_${store.name}`, filter, validate, restore: shouldRestore = true, debounce: debounceMs = 0, clearOnUninstall = false } = options
 
   const storageKey = typeof key === 'function' ? key(store.name) : key
 
@@ -421,8 +430,14 @@ export const devtoolsPlugin: Plugin = {
       // 下面三处的 `as never` 是必要的、而非偷懒（#373）：本插件的 `store` 形参类型是
       // 无泛型的 `Store`，即 S = State，而 `State = object` → `keyof S` 为 never，
       // 于是 setState/$patch/$replaceState 的形参在类型层面只接受 never。
-      // 调试入口按设计要能写任意键/值，只能在调用点收窄断言；键的合法性由核心
-      // （setState 的只读代理校验、$replaceState 的纯对象准入）在运行时兜住。
+      // 调试入口按设计要能写任意键/值，只能在调用点收窄断言；键的合法性与写入安全由核心
+      // 在运行时兜住，加固后的口径是三条（本注释按实现事实描述，不额外加校验）：
+      // - `setState` 对原型链敏感键（`__proto__` / `constructor` / `prototype`）改走
+      //   defineProperty 落**自有数据属性**，不触发 `Object.prototype` 上的 accessor，
+      //   相等性检查也按自有描述符读（`state.__proto__` 的 getter 返回的是原型，不是写入值）；
+      //   状态保护开启时另经保护代理的写陷阱拦截就地修改
+      // - `$patch` 经 deepMerge，同一份敏感键判据在 `core/utils/helpers.ts`
+      // - `$replaceState` 只做纯对象准入（null/undefined/数组/非对象一律 TypeError）
       // 若哪天 Store 把这些方法的非泛型重载补上，这些断言应随之删除
       setState: (key: string, value: unknown) => {
         store.setState(key as never, value as never)

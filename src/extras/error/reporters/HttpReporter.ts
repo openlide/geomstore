@@ -12,13 +12,18 @@ import type { ErrorContext, ErrorReporter } from '../../../types/error.js'
 /**
  * 上报请求体（品牌类型）。
  *
- * 唯一产出方是 `HttpReporter#buildRequestBody`，其入参恒是**本模块自己构造的对象字面量**
- * （`serializeContext` 的投影 + `{ errors: [...] }`），故 `JSON.stringify` 的结果至少为
- * `'{}'`——它只在顶层值为 undefined（含顶层自带 `toJSON` 返回 undefined）时才返回
- * undefined，而这里顶层永远是对象，所以「body 恒为非空合法 JSON 文本」这一前提由类型
- * 而非注释承载。嵌套层的 `toJSON` 返回 undefined 只会让那个键被丢掉（数组元素则写成
- * `null`），body 仍是合法 JSON；会真正抛错的层（BigInt / 循环引用）已由
- * `toSerializablePayload` 在投影阶段挡掉。
+ * 产出方只有两个，且都在本类内：
+ * - {@link HttpReporter.buildRequestBody}：单条投影（`report` 与批量条目共用同一条序列化）；
+ * - {@link HttpReporter.buildBatchBody}：批量体，把已序列化的条目片段拼成
+ *   `{"errors":[...]}`——每个片段都出自一次 `JSON.stringify`，故拼接结果必是合法 JSON。
+ *
+ * 两者的结果至少为 `'{}'`——`JSON.stringify` 只在顶层值为 undefined（含顶层自带 `toJSON`
+ * 返回 undefined）时才返回 undefined，而这里顶层永远是对象，所以「body 恒为非空合法 JSON
+ * 文本」这一前提由类型而非注释承载。嵌套层的 `toJSON` 返回 undefined 只会让那个键被丢掉
+ * （数组元素则写成 `null`），body 仍是合法 JSON；会真正抛错的层（BigInt / 循环引用）在投影
+ * 阶段就挡掉了（标量字段走 `toSerializableScalar`、payload 走 `toSerializablePayload`），
+ * 兜底则是一条上下文序列化失败时它自己被换成标记片段（`serializeContextItem`），
+ * 批次其余条目照常交付。
  * wx.request 分支直接把该 JSON 字符串作为 data 发送（wx 对字符串 data 原样发送），免去
  * parse→再序列化往返；content-type 由 `withJsonContentType` 兜底为 application/json。
  * HttpRequestImpl 保持 string 签名以便外部注入实现自行反序列化。
@@ -74,7 +79,9 @@ function withJsonContentType(headers: Record<string, string>): Record<string, st
  * `ErrorContext.payload` 是 `unknown`，而请求体由 `JSON.stringify` 产出：BigInt 与循环引用
  * 会让 stringify 抛 TypeError，该 rejection 与网络失败无从区分，监控层会按 maxFlushRetries
  * 把一份**永远发不出去**的批次反复重入队（重试风暴 + 长期占满队列，连带挤掉正常错误）。
- * 故在投影阶段就降级为字符串标记：坏载荷只影响它自己那一条上下文，不再让整个批次 reject
+ * 故在投影阶段就降级为字符串标记：坏载荷只影响它自己那一条上下文，不再让整个批次 reject。
+ * 「只影响它自己那一条」如今还有第二层兜底——每条上下文各自序列化一次（见 `serializeContextItem`），
+ * 这里挡不住的（例如只在第二次取值才抛的非幂等 getter）只会让那一条换成标记片段
  */
 function toSerializablePayload(payload: unknown): unknown {
   if (payload === undefined || payload === null) {
@@ -96,6 +103,75 @@ function toSerializablePayload(payload: unknown): unknown {
   } catch (error) {
     return `[Unserializable payload: ${error instanceof Error ? error.message : String(error)}]`
   }
+}
+
+/**
+ * 把「按契约是标量」的字段（storeName / operation / level / timestamp）收成 JSON 安全值
+ *
+ * 这四个字段此前原样透传，而 `ErrorContext` 可由调用方手搓（见 `serializeContext` 的注释）：
+ * `timestamp` 写成 BigInt（`process.hrtime.bigint()` / `wx.getPerformance` 一类计时器的返回值）、
+ * `level` 写成 Symbol 时，`toSerializablePayload` 管不到它们，外层 `JSON.stringify` 直接抛
+ * TypeError——而这一次抛错在**批次**层面，同批其余上下文一起陪葬。
+ *
+ * 与 payload 的分工：payload 可能带真实诊断结构，故「能串就原样保留」；这四个字段只用于展示，
+ * 对象值没有保留价值（还带 getter/toJSON 的不确定性），一律降级成类型标记。
+ */
+function toSerializableScalar(value: unknown): string | number | boolean | null | undefined {
+  if (value === undefined || value === null) {
+    return value
+  }
+  // 收窄判定必须直接落在 value 上（对预先存好的 typeof 结果做比较不会窄化值本身）
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+    return value
+  }
+  const type = typeof value
+  // bigint / symbol 直接进 JSON 会抛，String() 对两者都合法（`'' + symbol` 才会抛）
+  if (type === 'bigint' || type === 'symbol') {
+    return String(value)
+  }
+  return `[${type}]`
+}
+
+/**
+ * 把 wx.request `fail` 回调的载荷描述成一句原因
+ *
+ * 平台给的是 `{ errMsg, errno }` 普通对象（如 `request:fail url not in domain list`、
+ * `request:fail timeout`、`ERR_INTERNET_DISCONNECTED`），**永远不是** `Error` 实例。
+ * 属性读取保持保护式：调用方注入的假 wx、以及跨 realm 的异常对象都可能给出任意形状
+ */
+function describeWxFailure(err: unknown): string {
+  if (typeof err === 'string') {
+    return err
+  }
+  if (typeof err !== 'object' || err === null) {
+    return ''
+  }
+  const { errMsg, errno } = err as { errMsg?: unknown; errno?: unknown }
+  const message = typeof errMsg === 'string' ? errMsg : ''
+  const code = typeof errno === 'number' || typeof errno === 'string' ? String(errno) : ''
+  if (message && code) {
+    return `${message} (errno: ${code})`
+  }
+  return message || code
+}
+
+/**
+ * wx.request 失败 → Error
+ *
+ * 直接把非 Error 载荷换成常量 `'wx.request failed'` 会把最需要的分类信息（域名白名单未配置 /
+ * 无网络 / 超时）整笔丢掉，监控层只能把它当随机网络抖动按 maxFlushRetries 重入队。
+ * 这里把 `errMsg`/`errno` 拼进消息，并按本库既有口径把原始载荷挂到 `cause`
+ * （target/lib 为 ES2020，`Error` 构造器无 `cause` 选项签名，用属性赋值补，
+ * 与 `ErrorRecovery.ts` 的 `withCause` 同一做法）
+ */
+function toWxRequestError(err: unknown): Error {
+  if (err instanceof Error) {
+    return err
+  }
+  const detail = describeWxFailure(err)
+  const error = new Error(detail ? `wx.request failed: ${detail}` : 'wx.request failed')
+  ;(error as Error & { cause?: unknown }).cause = err
+  return error
 }
 
 /**
@@ -136,7 +212,9 @@ function createDefaultRequest(options: HttpReporterOptions): HttpRequestImpl {
               reject(new Error(`wx.request failed with HTTP ${res.statusCode}`))
             }
           },
-          fail: (err: unknown) => reject(err instanceof Error ? err : new Error('wx.request failed')),
+          // wx 的 fail 载荷是 `{errMsg, errno}` 而不是 Error，恒走 toWxRequestError：
+          // 域名未配置 / 超时 / 断网这些最需要分类的原因不能被换成常量字符串
+          fail: (err: unknown) => reject(toWxRequestError(err)),
         })
       })
   }
@@ -186,7 +264,7 @@ export class HttpReporter implements ErrorReporter {
   }
 
   async report(context: ErrorContext): Promise<void> {
-    await this.send(this.serializeErrorMessage(context))
+    await this.send(this.serializeContextItem(context))
   }
 
   async reportBatch(contexts: ErrorContext[]): Promise<void> {
@@ -207,20 +285,25 @@ export class HttpReporter implements ErrorReporter {
   }
 
   /**
-   * 构造上报请求体（唯一的 body 产出点）。
+   * 由**对象**产出一份请求体 JSON 文本
    *
    * `JSON.stringify` 作用于对象字面量时结果至少为 `'{}'`，据此把返回值收窄为
-   * {@link JsonBody}，使下游解析不必再做空串防御。
+   * {@link JsonBody}，使下游解析不必再做空串防御。批量体另有
+   * {@link buildBatchBody}（拼接已序列化片段，不重新序列化）
    */
   private buildRequestBody(payload: object): JsonBody {
     return JSON.stringify(payload) as JsonBody
   }
 
   /**
-   * 单个 ErrorContext 的上报投影
+   * 单个 ErrorContext 的上报投影（**未**序列化）
    *
    * 单条与批量两条路径共用：两处各写一份字段映射时，新增/改名字段只会落到其中一条，
    * 服务端收到的单条与批量负载就会静默漂移。
+   *
+   * 本方法**允许抛错**（例如某字段是只在第二次取值才失效的非幂等 getter），
+   * 兜底在 {@link serializeContextItem}；序列化口径见 {@link toSerializableScalar}
+   * 与 {@link toSerializablePayload}。
    *
    * @private
    */
@@ -238,20 +321,57 @@ export class HttpReporter implements ErrorReporter {
         stack: typeof error?.stack === 'string' ? error.stack : '',
         name: typeof error?.name === 'string' ? error.name : 'Error',
       },
-      storeName: context?.storeName,
-      operation: context?.operation,
-      level: context?.level,
+      storeName: toSerializableScalar(context?.storeName),
+      operation: toSerializableScalar(context?.operation),
+      level: toSerializableScalar(context?.level),
       payload: toSerializablePayload(context?.payload),
-      timestamp: context?.timestamp,
+      timestamp: toSerializableScalar(context?.timestamp),
     }
   }
 
-  private serializeErrorMessage(context: ErrorContext): JsonBody {
-    return this.buildRequestBody(this.serializeContext(context))
+  /**
+   * 一条上下文的完整序列化结果（单条上报的 body、批量上报的一个片段）
+   *
+   * 「不可序列化」的防线到这里才算闭合：投影阶段挡得住 BigInt / 循环引用，但挡不住
+   * 只在**第二次**取值才失效的非幂等 getter / `toJSON`（先验证串一遍、再把原值交给外层
+   * 重串，两次之间没有任何保证）。故每条上下文各自序列化**一次**，并单独兜底：
+   * 本条导致整体不可序列化时只把这一条换成标记片段，批次其余条目照常交付，
+   * `reportBatch` 不因单条畸形而 reject（那会被监控层判成网络失败并按 maxFlushRetries
+   * 重入队，最终把整批丢弃，且丢弃原因显示为「报告器恒失败」而非「这条上下文畸形」）
+   */
+  private serializeContextItem(context: ErrorContext): JsonBody {
+    try {
+      return this.buildRequestBody(this.serializeContext(context))
+    } catch (error) {
+      const reason = error instanceof Error && typeof error.message === 'string' ? error.message : ''
+      // 标记片段本身只含字符串字面量，不可能再抛；原始原因留在 message 里供排查
+      return this.buildRequestBody({
+        error: {
+          message: `[Unserializable error context${reason ? `: ${reason}` : ''}]`,
+          stack: '',
+          name: 'Error',
+        },
+      })
+    }
   }
 
   private serializeErrorBatch(contexts: ErrorContext[]): JsonBody {
-    return this.buildRequestBody({ errors: contexts.map((ctx) => this.serializeContext(ctx)) })
+    // 非数组兜底与 ConsoleReporter.reportBatch 同口径：`contexts.map` 抛 TypeError 同样是
+    // 「一整批失败」，而调用方（监控层重入队路径、手写调用）拿到的只是一个网络错
+    const list = Array.isArray(contexts) ? contexts : []
+    return this.buildBatchBody(list.map((ctx) => this.serializeContextItem(ctx)))
+  }
+
+  /**
+   * 由**已序列化的条目片段**拼出批量请求体
+   *
+   * 刻意不走 `JSON.stringify({ errors: [...] })`：那会把每个条目**再序列化一次**，
+   * 于是投影阶段「验证一遍 + 外层重串」之间的空档又回来了，一条畸形上下文就足以让
+   * 整个批次 reject。每个片段都出自一次成功的 `JSON.stringify`（失败者已被换成标记片段），
+   * 拼接结果因此必是合法 JSON
+   */
+  private buildBatchBody(items: string[]): JsonBody {
+    return `{"errors":[${items.join(',')}]}` as JsonBody
   }
 
   /**

@@ -36,7 +36,16 @@ export interface SubscriberEvictionInfo<S extends State = State> {
  * 默认 `State`，不带参数的既有写法（如 `const o: SubscriptionManagerOptions`）不变
  */
 export interface SubscriptionManagerOptions<S extends State = State> {
-  /** 最大订阅者数量 */
+  /**
+   * 最大订阅者数量（缺省 50）
+   *
+   * 非法值在构造期归一，与 LRUCache 的 capacity 守卫、StoreCacheManager 的 ttl 守卫同口径：
+   * 门禁写作 `_totalCount >= this._maxSubscribers`，`_maxSubscribers` 为 NaN/Infinity 时该
+   * 比较恒为 false ⇒ `_enforceLimit` 永不被调用，「泄漏护栏」在配置算错的那一刻静默消失
+   * （`parseInt(env.MAX)`、`Math.max(...[])`、storage/JSON 里缺失的键都会给出这类值）。
+   * 故非有限值回落默认 50 并留开发期告警；有限值取整（`2.5` → 2），0 与负数按原语义保留
+   * （见 {@link SubscriptionManager.add} 对 `maxSubscribers <= 0` 的说明）
+   */
   maxSubscribers?: number
   /** Store 名称（用于日志） */
   storeName: string
@@ -57,8 +66,10 @@ export interface SubscriptionManagerOptions<S extends State = State> {
    * 与 `onListenerError` 同一诉求：`evict-oldest` 是默认策略，而在库口径里生产环境必须
    * 静默（不得写控制台），于是被驱逐的那一份订阅从此收不到任何状态更新、且没有任何
    * 指标入口，线上表现为「订阅莫名失效」而无法定位。由宿主接入（与 `onListenerError`
-   * 同样走 Store 的 hooks.onError）即可同时保住静默与可观测性——该接线在 Store 侧尚未
-   * 落地，故不配置时行为与既有一致（仅开发模式打印，且已带上被驱逐监听器的标识）
+   * 同样走 Store 的 hooks.onError）即可同时保住静默与可观测性。Store 侧已接好该线
+   * （见 `Store.ts` 构造订阅管理器处把驱逐事件转成 `hooks.emit('onError', …, 'subscribe')`），
+   * 不经 Store 直接构造本类的消费方不配置时行为与既有一致（仅开发模式打印，且已带上
+   * 被驱逐监听器的标识）
    */
   onSubscriberEvicted?: (info: SubscriberEvictionInfo<S>) => void
 }
@@ -69,6 +80,9 @@ export interface SubscriptionManagerOptions<S extends State = State> {
  * 负责管理状态监听器的生命周期
  */
 export class SubscriptionManager<S extends State = State> implements SubscriptionManagerInterface<S> {
+  /** 缺省订阅者上限（`maxSubscribers` 非有限值时的回落值） */
+  static readonly DEFAULT_MAX_SUBSCRIBERS = 50
+
   /**
    * 监听器 → 各次注册的可写标记：同一函数注册 N 次通知 N 次，任一份退订只减一（Redux/Vuex 同语义）。
    *
@@ -88,8 +102,24 @@ export class SubscriptionManager<S extends State = State> implements Subscriptio
   private _totalCount = 0
 
   constructor(options: SubscriptionManagerOptions<S>) {
-    this._maxSubscribers = options.maxSubscribers ?? 50
     this._storeName = options.storeName
+    // 先归一上限再落字段：门禁 `>= _maxSubscribers` 一旦拿到 NaN/Infinity 就恒假，
+    // `_enforceLimit` 从此永不被调用——「配置算错 → 泄漏护栏静默消失」正是本类要挡的
+    // 事故形状，且没有任何信号。告警只在开发期出（与库内一致的静默口径），归一本身无条件
+    const requested = options.maxSubscribers ?? SubscriptionManager.DEFAULT_MAX_SUBSCRIBERS
+    if (!Number.isFinite(requested)) {
+      if (!isProduction()) {
+        console.warn(
+          `[GeomStore][${this._storeName}] maxSubscribers=${requested} 不是有效的订阅者上限（需为有限数），` +
+            `已回退默认 ${SubscriptionManager.DEFAULT_MAX_SUBSCRIBERS}：NaN/Infinity 会让上限比较恒为 false，驱逐逻辑永不触发`,
+        )
+      }
+      this._maxSubscribers = SubscriptionManager.DEFAULT_MAX_SUBSCRIBERS
+    } else {
+      // 取整：`2.5` 此前实际放行 3 份注册（`3 >= 2.5` 才触发驱逐），向下取整让上限
+      // 与文档承诺的 `size <= maxSubscribers` 对齐；0 与负数按 add() 里写明的既有语义保留
+      this._maxSubscribers = Math.floor(requested)
+    }
     this._onLimit = options.onLimit ?? 'evict-oldest'
     this._onListenerError = options.onListenerError
     this._onSubscriberEvicted = options.onSubscriberEvicted
@@ -252,8 +282,9 @@ export class SubscriptionManager<S extends State = State> implements Subscriptio
    *  ⇒ 监听器之间的引用隔离由**本方法**负责
    * - cloneOnNotify=false：本方法一次都不拷贝，全部回调共享调用方传入的那个对象
    *  ⇒ 隔离责任在**调用方**：仅当「先执行的可写回调改不动这个载荷」时才安全
-   *  （库内 `Store._notifyListeners` 目前一律传 false 并自备一份克隆，所以公开
-   *  `store.subscribe(fn)` 路径上的监听器互改仍可见，须由该调用点改传 true 才闭环）
+   *  （库内 `Store._notifyListeners` 已按在册订阅者的可写性传参——存在可写订阅者时传
+   *  true，由本方法给每份可写注册各拷一份载荷，故公开 `store.subscribe(fn)` 路径上
+   *  的监听器互改不可见，闭环已成立；只有自行传 false 的非 Store 调用方仍要自备隔离）
    *
    * @param cloneOnNotify 载荷的拷贝归属：true=由本方法按注册可写性拷贝；
    * false=调用方已处置载荷，本方法保持零拷贝
@@ -265,9 +296,10 @@ export class SubscriptionManager<S extends State = State> implements Subscriptio
     }
     // 零拷贝的前提是「没有可写订阅者」：此时载荷被所有回调共享，
     // 任一可写回调就地修改载荷即直接改到活状态，且其他监听器同时看到半成品。
-    // 本类做不到「既不拷贝又隔离」，故只对调用方发信号：`Store._notifyListeners`
-    // 自备克隆后同样传 false，因此「存在可写订阅者」的每一轮 dispatch 都会打出此行
-    // （dev-only），它指的正是上面那条未闭环的边界，改法见 notify 文档与台账 R5-122
+    // 本类做不到「既不拷贝又隔离」，故只对调用方发信号。Store 主路径不会命中此行：
+    // 它按在册订阅者的可写性传 `cloneOnNotify`（存在可写订阅者时传 true，见
+    // `Store._notifyListeners` 与台账 R5-122），因此剩下的命中方只有「自行传 false 的
+    // 非 Store 调用方」这一档——它指的正是那条未闭环的边界，改法见 notify 文档
     if (!cloneOnNotify && this._writableCount > 0 && !isProduction()) {
       console.warn(`[GeomStore][${this._storeName}] cloneOnNotify=false 与可写订阅者共存：监听器可修改共享载荷，存在数据污染风险`)
     }

@@ -45,16 +45,17 @@ store.$patch({ x: 1 })
 
 确实有性能或兼容需求时可用 `stateProtection: { deep: false }` 只保护顶层，但**不建议关闭保护**——就地变异是许多「数据不更新」问题的根源。
 
+例外要认得：自有属性**既不可配置也不可写**时（`Object.freeze` 过的子树、`defineProperty` 成 `writable: false, configurable: false` 的键——最省事的来路就是把 `$snapshot()` 的深冻结结果 `setState` 回状态），代理必须原样返回目标值，否则连**读取**都违反 Proxy `[[Get]]` 不变量。0.7.0 起这条被明确豁免：读取拿到**裸引用**、不再抛 `TypeError`，代价是这类子树不受写保护、写入也不计变更与脏键。想让集成层看见它的变化，就换一个新引用再 `setState`。
+
 ### 异步 action 的通知次数和我想的不一样
 
 统一规则（只有一条）：
 
-- 异步 action 的**同步段不单独通知**，其变更由完成时（fulfill 或 reject）的补发覆盖一次
-- `await` 之后的变更同样在结算时补发
-- **嵌套 dispatch 仅最外层通知**
-- 与 batch 交叉时由 batch 收尾统一通知
+- 异步 action 的**同步段在 `dispatch` 当场补发一次通知**（0.7.0 起），结算（fulfill 或 reject）时再发一次覆盖 `await` 之后的续段
+- **嵌套 dispatch 仅最外层通知**；与 batch 交叉时由 batch 收尾统一通知（batch 内不提前补发）
+- `notify.async` 会把同一 tick 内的这两次合成一次；`notify.onlyOnChange` 按写入计数去重——同步段没写入就不多刷
 
-因此「同步段改一次 + 续段改一次」只会看到一次通知，这是刻意去重的结果。若你希望中间态可见，请在 action 内显式 `startBatch` / `endBatch` 之外单独写入，或拆成两个 action。
+所以默认模式下「同步段改一次 + 续段改一次」现在看到 **2 次**（0.6.x 是 1 次）。这不是重复通知，而是把「Promise 永不 settle」这种悬挂场景下同步段的写入变得当场可见的代价：只想要一次就开 `notify.async` 或 `notify.onlyOnChange`，想显式合并请在 action 里用 `batch` 包住这两段。断言通知次数 / 依赖「一次 dispatch 一次回调」的测试需要按这条重算。
 
 ### `batch` 里 `await` 之后为什么不合并了？
 
@@ -62,33 +63,49 @@ store.$patch({ x: 1 })
 
 ### `isStateKeyDirty` 有什么用？
 
-供集成层判断「自上次通知以来某键是否变化」，据此跳过无意义的 `setData`（小程序视图层更新是主要开销）。键型是 `string | symbol`——脏键集合按 `Reflect.ownKeys` 收集，symbol 顶层键同样有脏位可查（只收 `string` 会让它对集成层静默失效）。默认与 `onlyOnChange` 模式都跟踪 Action 内对象 / 数组 / Map / Set 的直接变异，标记所有受影响的顶层键（含别名，异步段累积到通知时）。Date 等其他内建对象的内部变异不被跟踪，请显式替换值。`$replaceState` 会把**被这次替换删掉的旧键**也标脏（消失型变更），否则视图会一直留着已删键的值。通知回调内的重入写入归下一轮。组合 Store 的命名空间模式下它会精确判断**子 store** 是否变化。
+供集成层判断「自上次通知以来某键是否变化」，据此跳过无意义的 `setData`（小程序视图层更新是主要开销）。键型是 `string | symbol`——脏键集合按 `Reflect.ownKeys` 收集，symbol 顶层键同样有脏位可查（只收 `string` 会让它对集成层静默失效）。默认与 `onlyOnChange` 模式都跟踪 Action 内对象 / 数组 / Map / Set 的直接变异，标记所有受影响的顶层键（含别名）。0.7.0 起异步 action 的**同步段当场补发一次通知**，那一段的脏键也随之提前投递、不再一路攒到结算；`notify.async` 的合并窗口下因此可能多出一个脏键为空的通知批次（内容已在上一批投完，集成层据此跳过 `setData`）。Date 等其他内建对象的内部变异不被跟踪，请显式替换值。`$replaceState` 会把**被这次替换删掉的旧键**也标脏（消失型变更），否则视图会一直留着已删键的值。通知回调内的重入写入归下一轮。组合 Store 的命名空间模式下它会精确判断**子 store** 是否变化。
+
+### `setState('__proto__', …)` 之后为什么凭空多出一些键？
+
+0.6.x 及之前会：那次写入触发 `Object.prototype` 上的 `__proto__` setter，把**状态对象的原型整个换掉**（此后 `state.isAdmin` 这类缺失键会经被替换的链读到注入值，`deepEqual` 从此与克隆体恒不等 → 选择器持续失配）；传非对象值时更是什么都没写成、却照样推进变更计数与通知。0.7.0 起 `setState` 对 `__proto__` / `constructor` / `prototype` 改走 DefineOwnProperty 语义，与 `$patch` / `$replaceState` 同一份判据：值承载为状态对象上的**自有数据属性**，原型不动。要读回它请用 `Object.getOwnPropertyDescriptor(state, '__proto__')`——`state.__proto__` 这个表达式仍然命中原型访问器、返回的是原型。持久化侧对「载荷自带 `__proto__` 自有键」的拒收口径不变（见下文持久化一节）。
 
 ## 缓存与选择器
 
+### `store.getState()` 和 `store.getCached(key)` 有什么区别？
+
+只有第二条查缓存。内置缓存（`enableCache` / `cacheConfig`）的**唯一读取入口**是 `getCached(key)`（小程序集成层绑定映射键时走的也是它）：
+
+- `getState()` 直接返回内部状态的活引用，**完全不经过缓存**——用它读多少遍都不会产生命中，`getCacheStats()` 的 `hits` / `misses` 也因此恒为 0。用 `getState()` 读两遍然后指望 `hits: 2` 是排查方向错了
+- `setState(key, v)` 与 `$patch` 是**写穿**：把合并后的最终值同步回写进对应条目，条目不删除、不记未命中，下一次 `getCached` 直接拿到新值。指望「写入即失效」的读法要改
+- 真正清条目的是 `invalidateCache(key?)`（不传即整表清空）与 `$replaceState`（清空后按新状态回填）
+
 ### 缓存命中率很低 / 选择器返回了陈旧值
 
-- **命中率低**：只缓存热点键（`enableCache(['visibleRows'])`）；状态频繁整体替换（`$replaceState`）会让缓存反复失效
+- **命中率低**：先确认读的是 `getCached()`（见上一条，`getState()` 不查缓存）；只缓存热点键（`enableCache(['visibleRows'])`）；状态频繁整体替换（`$replaceState`）会让缓存整表清空。`setState` / `$patch` 不是原因——它们写穿，不制造未命中
 - **陈旧值**：选择器命中判定同时校验**状态对象身份与版本号**（O(1)，不同 Store 的同版本状态不会串值）；当状态不带版本号（例如你把普通对象直接传给选择器）时才回退 `equalityFn`（默认 `deepEqual`）比**输入状态**。此时失效凭证是写缓存时的一份**内容快照**（`snapshotState` 默认 `true`），所以就地变异能被看见；如果你自定义的 `equalityFn` 过于宽松（只比自有属性、或压根恒真），就会误命中——检查它是否真的能区分前后两版状态
 - **升级到 0.5.x 后突然「永不命中」**（每次重算、但结果没错）：你传的是引用相等的比较器 `equalityFn: (a, b) => a === b` 却没关快照。旧实现靠「`equalityFn` 是否恰好等于内置 `deepEqual`」推断要不要克隆，该判据对自定义深比较器是错的，已改为显式选项：这种写法要补 `snapshotState: false`（缓存活引用、只比身份）。带版本号的 Store 状态不走这条回退路径，也不克隆
 
+### `store.getter(name)` 会缓存结果吗？
+
+**不会**，一次都没有过。Store 侧不存在 getter 结果缓存：没有 memo 表、不比较依赖、`getter(name)` 每次调用都按当前状态重算函数体（内部版本号只服务于选择器与缓存失效判定，不作用于 getter）。文档或注释里写过「依赖未变时复用缓存」的地方都是假话，0.7.0 已按实现改正。要记忆化只有两条路：`extras/selector` 的 `createSelector`（按状态版本号做 O(1) 失效判定，这才是本库的记忆化入口），或把派生值算成一个真实状态键、由 action 显式写入。
+
 ### `enableCache` 的 stats 会影响性能吗？
 
-会带来少量开销（每次读写都要计数）。`cacheConfig.enableStats` 默认关闭，只在测量时开启。
+会带来少量开销（每次查缓存都要计数），但**它是默认开启的**：`cacheConfig.enableStats` 缺省即 `true`（`enableCache()` 里显式传 `true` 不打开任何东西）。真要省这点开销是反过来传 `false`——代价是 `getStats()` / `getCacheStats()` 的 `hits` / `misses` 恒为 0，命中率与 `missRate` 无从观测。测量完记得打开回来。
 
 ## 快照
 
 ### 快照里为什么少了字段 / 出现了 `undefined`？
 
-这是**隔离契约**的预期行为：无法安全克隆的节点一律**丢弃**，绝不把原始活引用兜底进结果。具体表现：
+这是**隔离契约**的预期行为：无法安全克隆的节点一律**丢弃**，绝不把原始活引用兜底进结果（注意「保留原引用」的那两类节点是另一码事，见下文「快照能克隆类实例 / Date / Map 吗？」——它们不是被丢弃，而是压根没被克隆）。具体表现：
 
-| 容器 | 丢弃时的表现 |
-| --- | --- |
-| 对象属性 | 该属性不写入 |
-| 数组 | 保留位置（留洞，`1 in arr === false`） |
-| `Set` | 不添加该元素 |
-| `Map` | 跳过整条 entry |
-| 根节点 | `data` 为 `undefined` |
+| 容器     | 丢弃时的表现                           |
+| -------- | -------------------------------------- |
+| 对象属性 | 该属性不写入                           |
+| 数组     | 保留位置（留洞，`1 in arr === false`） |
+| `Set`    | 不添加该元素                           |
+| `Map`    | 跳过整条 entry                         |
+| 根节点   | `data` 为 `undefined`                  |
 
 排查方式：读 `result.errors`（每项含 `path` / `type` / `message`），并按需用 `customCloner` 接管该节点。`errors` 是**完整账本**：循环引用也入账（`type: 'circular'`）、`maxDepth` 超限同样落一条，但只有 `cloneError` 参与 `success` 判定，故 `success: true` 且 `errors` 非空是合法状态。存在 `cloneError` 时 `success` 为 `false`——**先看成功标志，再信任数据**（类型面上 `SnapshotResult<T>.data` 就是 `T | undefined`，不判空取属性直接编译报错）。整次快照异常或被告警中止时 `data` 是 `undefined`（失败结果不会回传活引用），别直接 `result.data.x`；失败结果里的 `stats` 是引擎累计到中止点的真实值，而 `metadata` 的规模项按零处理。
 
@@ -96,12 +113,12 @@ store.$patch({ x: 1 })
 
 ### `$snapshot()` 和 `createSnapshot()` 有什么区别？
 
-| | `store.$snapshot()` | `createSnapshot(data)` |
-| --- | --- | --- |
-| 归属 | 核心 | `extras/snapshot` |
-| 结果 | 深克隆 + **部分冻结**（纯对象 / 数组链只读；Date/RegExp/Map/Set 与非纯对象触达的节点仍可变） | `{ data, success, errors, metadata, stats }` |
-| 错误处理 | 无账本（失败即抛） | 逐节点落账 + `onError` 降级策略 |
-| 适用 | 需要只读副本 / 回滚点 | 需要错误可见性、进度、大对象分片 |
+|          | `store.$snapshot()`                                                                          | `createSnapshot(data)`                       |
+| -------- | -------------------------------------------------------------------------------------------- | -------------------------------------------- |
+| 归属     | 核心                                                                                         | `extras/snapshot`                            |
+| 结果     | 深克隆 + **部分冻结**（纯对象 / 数组链只读；Date/RegExp/Map/Set 与非纯对象触达的节点仍可变） | `{ data, success, errors, metadata, stats }` |
+| 错误处理 | 无账本（失败即抛）                                                                           | 逐节点落账 + `onError` 降级策略              |
+| 适用     | 需要只读副本 / 回滚点                                                                        | 需要错误可见性、进度、大对象分片             |
 
 ### 什么时候该用异步快照？
 
@@ -109,9 +126,19 @@ store.$patch({ x: 1 })
 
 ### 快照能克隆类实例 / Date / Map 吗？
 
-- 类实例：保留原型（快照后仍可调用原型方法）
+- 类实例：重建为**同类实例**（保留原型与方法，不触发构造器）
 - 访问器属性：以 getter 求值结果克隆（**不会二次触发** getter）
-- `Date` / `Map` / `Set`：按类型正确克隆；循环引用检测始终生效（`detectCircular` 只控制是否**上报**）
+- `Date` / `RegExp` / `Map` / `Set`：按类型正确克隆；循环引用检测始终生效（`detectCircular` 只控制是否**上报**）
+- **两类节点保留原引用、不克隆**（0.7.0 起，核心 `$snapshot()` 与 `extras/snapshot` 同口径、同步与异步两条路径一致）：`Date`/`RegExp`/`Map`/`Set`/`Array` 的**子类实例**，以及值靠内部槽位承载的对象（`Promise`、`new Number(1)` 这类装箱原始值、`ArrayBuffer` / TypedArray / DataView、`WeakMap` / `WeakSet`、`Error`、生成器）。旧行为会重建或产出「`instanceof` 仍真但槽位是空的壳」——`await snap.data.p`、`Number(snap.data.n)` 当场抛 `TypeError`，`MyMap` 的自定义方法直接消失。现在它们原样穿过克隆，**所以快照不再是这些节点的隔离副本**：需要隔离请用 `customCloner` 自己接管该节点（这是本库留的出口）
+- 数组上的**附加自有键**（非下标、非 `length`）两条路径都跟着克隆，`length` 因不可配置而被排除
+
+### `compareSnapshots` 报 `changed: true`，但 `changes` 里只有一条根路径差异？
+
+看返回值的 `inputTrusted`（0.7.0 新增的**必填**字段）。只要有一侧快照 `success: false`（克隆出错、超时、被 `onError` 中止），比对就不再逐路径展开，而是交付一条 root 级整体差异并把 `changed` 置为 `true`——含义是「输入不可信，我不敢说没变」，不是「内容确有差异」。这是刻意反过来的口径：旧实现把两份失败快照报成 `changed: false`，把「快照没做成」伪装成「状态没变化」。所以顺序永远是：先判 `success`、再判 `inputTrusted`、最后才读 `changes`。
+
+### 差异路径 `changes[].path` 怎么读？
+
+与克隆账本 `errors[].path` 同一份方言：对象属性 `parent.child`、数组下标 `parent[3]`、`Map` 的**值差异** `parent.<String(key)>`、`Map` 的**键新增 / 删除** `parent.key.<String(key)>`（0.7.0 起按**键身份**生成，不再用两侧各自的迭代下标，所以同一条差异不随插入顺序漂移、双向比对给出同一条路径；`Symbol` 键走 `String()`，`toString` 抛错的键退回 `<unstringifiable key>`）。`Set` 的 `[removed:i]` / `[added:i]` 里的 `i` 是**报告序下标、不是条目身份**（集合元素没有可当身份的键，对象元素 `String()` 恒为 `[object Object]`）——跨快照配对 `Set` 变化请读 `oldValue` / `newValue`。还在按 `root[0]` 这类下标聚合 `Map` 条目的消费方需要改成按键身份，见 [MIGRATION](./MIGRATION.md)。
 
 ### 时间旅行的 `getSnapshots()` 返回值可以修改吗？
 
@@ -137,7 +164,7 @@ withCache({ ttl: 30_000, assumeAsync: true })
 ### `withThrottle` 的间隔参数写在哪里？
 
 ```ts
-withThrottle(100, { leading: true, trailing: true })   // 间隔是第一个位置参数
+withThrottle(100, { leading: true, trailing: true }) // 间隔是第一个位置参数
 ```
 
 默认 `leading` 与 `trailing` 均为 `true`：窗口结束时以**最新参数**补发被抑制的调用。
@@ -152,21 +179,30 @@ withThrottle(100, { leading: true, trailing: true })   // 间隔是第一个位�
 
 ```ts
 import {
-  withDebounce, withThrottle,                              // 装饰器本身
-  cancelDebouncedCalls, flushDebouncedCalls, disposeDebouncedState,
-  cancelThrottledCalls, flushThrottledCalls, disposeThrottledState,
+  withDebounce,
+  withThrottle, // 装饰器本身
+  cancelDebouncedCalls,
+  flushDebouncedCalls,
+  disposeDebouncedState,
+  cancelThrottledCalls,
+  flushThrottledCalls,
+  disposeThrottledState,
 } from '@openlide/geomstore/extras/action'
 
 class SearchPage {
   @withDebounce(300)
-  async search(keyword: string) { return fetchSearch(keyword) }
+  async search(keyword: string) {
+    return fetchSearch(keyword)
+  }
 
   @withThrottle(100)
-  onScroll(position: number) { this.store.dispatch('setScroll', position) }
+  onScroll(position: number) {
+    this.store.dispatch('setScroll', position)
+  }
 
   onUnload() {
-    disposeDebouncedState(this)   // 挂起的搜索：取消并释放该宿主的防抖状态
-    cancelThrottledCalls(this)    // 挂起的尾随补发：丢弃（不执行原方法）
+    disposeDebouncedState(this) // 挂起的搜索：取消并释放该宿主的防抖状态
+    cancelThrottledCalls(this) // 挂起的尾随补发：丢弃（不执行原方法）
   }
 }
 ```
@@ -174,7 +210,37 @@ class SearchPage {
 - `cancel*` **丢弃**挂起调用，`flush*` **立即执行且只执行一次**（还想把最后一次输入落盘就用它；没有挂起调用时它不凭空执行），`dispose*` = 取消 **+** 释放该宿主的整张状态表（节流连窗口计时一起归零）。三者都幂等，卸载点「一切从简」可以只调 `dispose*`
 - **被取消的 Promise 收到什么**：防抖挂起的每个 Promise 以 `Error('[withDebounce] pending call was cancelled')` 拒绝（`await` 方看得到；库只是先给它们补了个 `catch` 来消除全局未处理告警，没有替你吞掉）。节流的被抑制调用在**调用时刻**就已返回 `undefined`（异步方法或 `assumeAsync: true` 时是 `Promise<undefined>`），没有可取消的 Promise；尾随补发失败按既有口径就地 `console.error`
 - 入口参数是**宿主**（`this`），不是装饰期发的句柄：`@withDebounce(300)` 这个表达式在类定义完就被丢弃了，卸载点手里只有实例。`method` 可选，省略即覆盖该宿主上所有被装饰方法
+- **前提是那个 `this` 你拿得到**：装饰 **store action** 时六个入口一律静默 no-op，见下一条
 - `withCache` 与 `withRetry` **没有**对应入口：缓存表随装饰器实例存活、退避等待定时器无法取消（理由见 CHANGELOG 的「Wave E 未收口的四项」）。对这两者，请在业务侧自判存活标记
+
+### 我把 `withDebounce` 装饰在 store action 上，为什么 `cancel*` / `flush*` / `dispose*` 都不生效？
+
+因为它们按「被装饰方法**被调用时**的 `this`」定位状态槽位，而 store action 的 `this` 是 `ActionManager` 为一次 dispatch 现造的 action 上下文代理：它只被那批绑定闭包捕获，不挂在 `store.actions` / `store` 的任何一个公开成员上，调用方没有任何对象可以传进去（`cancelDebouncedCalls(store.actions)` 与 `cancelDebouncedCalls(this)` 都命中空槽位，**不抛错、也不清定时器**——挂起的调用照旧到点执行）。这是 0.7.0 定稿的口径而不是待修缺陷：把那个上下文暴露出来，等于把「装饰器内部槽位键」升成跨 core 与 extras 的公开契约，换来的只是这组收尾入口在 store action 上可用。改写法即可拿到可寻址的宿主：
+
+```ts
+// ① 装饰页面 / 组件上的方法，让它去 dispatch（推荐：卸载点手里就有 this）
+class CartPage {
+  @withDebounce(300)
+  submitDraft(draft: string) {
+    return this.store.dispatch('saveDraft', draft)
+  }
+  onUnload() {
+    disposeDebouncedState(this)
+  }
+}
+
+// ② 想在 store 侧复用同一段防抖：自己包一层，让那一层的实例当宿主
+class CartApi {
+  @withDebounce(300)
+  saveDraft(draft: string) {
+    return cartStore.dispatch('saveDraft', draft)
+  }
+}
+const cartApi = new CartApi()
+cancelDebouncedCalls(cartApi) // 宿主是 cartApi 本身，槽位找得到
+```
+
+判别口诀：被装饰的方法由 `store.dispatch(...)` 触发 → 收尾入口不可用；由 `this.someMethod(...)`（页面 / 组件实例）触发 → 可用。`GUIDE` 第 3 节末是同一条口径的完整版。
 
 ## 插件与持久化
 
@@ -264,6 +330,8 @@ onLaunch(options) { console.log(this.globalData.appName); this.markLaunched(Stri
 
 Store 已 `destroy()`。销毁后除只读统计（如 `getCacheStats`、`isStateProtectionEnabled`）外的所有**写接口**都会抛错（`setState` / `$patch` / `$replaceState` / `subscribe` / `use` / `cache` / `batch` / `setStateProtection`）；请在销毁前完成收尾，或在使用前判断生命周期。独立函数 `usePlugin(plugin, store)` 走的是同一条 `store.use`，在已销毁 Store 上**同样抛出该异常**（它的降级只罩住「插件自身 install 失败」那一类，不再把误用咽成一条 `console.error` + 空卸载函数）。注意销毁不会注销 getter 定义：`store.getters` 返回的仍是初始化时登记的那份（`getter(name)` 则抛错、`getGetterNames()` 返回 `[]`）。
 
+**组合 Store 是这条规则的唯一豁免，而且是 0.7.0 才有的**：组合之外的某个子 store 被单独 `destroy()` 后，`composed.getState()` / `composed.state` / `composed.$snapshot()` 不再抛 `Cannot call getState on a destroyed Store`——已销毁的那个被按**空视图**并入（它的命名空间变成空对象，不是缺失键），并按 store 去重**告警一次**，其余存活子店照常读写；0.6.x 的行为是「一个子店销毁 → 整个组合每次读取都抛错」，而同一时刻写路径（`$patch` / `$replaceState` / `startBatch` / `endBatch`）却早已在跳过死店，读写两侧口径不一致。0.7.0 把读侧并入写侧口径，因此：① 靠 try/catch 这个报错来发现子店被销毁的代码要改成看告警；② 别再把 `getState().child` 的存在性当存活判据（它在，只是空的）；③ 销毁整个组合仍然请走 `composed.destroy()`。
+
 ### 长期运行的进程内存持续增长 / 定时器不退出？
 
 - `ErrorMonitoring` 的队列有容量上限（`maxQueueSize`，默认 1000、最小 1，超容量按最旧优先淘汰），「全部 reporter 连续失败」的重入队也有上限（`maxFlushRetries`，默认 3、最小 0）——避免永久失败批次无限空转。**被丢弃的条数是有指标的**：`getDroppedErrors()` / `summary.droppedErrors`，别把它当「总数对得上」的报表看。入参写 `0` / 负数 / `NaN` 会被下限裁剪，不再把上报链做成近乎静默失效
@@ -271,7 +339,7 @@ Store 已 `destroy()`。销毁后除只读统计（如 `getCacheStats`、`isStat
 - 内部定时器做 `unref` 探测：小程序 / 浏览器无该 API 时自动跳过，不会阻止进程退出
 - `PerformanceMonitor` 清理超时未结束的在途计时条目（调用方遗漏 `end()` 时的兜底）：`record()` 与 `start()` 都会顺手清扫，「反复 start、从不 end、也不再 record」的调用形状下在途条目同样不会永久堆积
 - `PerformanceMonitor.record(metric)` **不持有你传入的那个对象**：入参先被拷一份再入缓冲区，之后你改它（或复用同一个对象连续 record）都不会改写已记录的历史指标；`getMetrics()` / `exportJSON()` 交出的也是副本
-- 防抖 / 节流的**挂起定时器会拖住宿主**：排程中的回调持有宿主引用直到窗口 / 延迟到期。宿主状态表本身是 `WeakMap`（宿主回收即消失），但没人清定时器时宿主就回收不了——请在卸载点调 `cancel*` / `dispose*`（见「装饰器」一节）
+- 防抖 / 节流的**挂起定时器会拖住宿主**：排程中的回调持有宿主引用直到窗口 / 延迟到期。宿主状态表本身是 `WeakMap`（宿主回收即消失），但没人清定时器时宿主就回收不了——请在卸载点调 `cancel*` / `dispose*`（见「装饰器」一节）。前提是被装饰的方法有可寻址宿主：装饰 **store action** 时这六个入口定位不到槽位、静默 no-op（同节「为什么 `cancel*` / `flush*` / `dispose*` 都不生效？」给了替代写法），那种挂起定时器只能等窗口 / 延迟自然到期
 
 ### 为什么同一个功能在同步和异步路径行为不同？
 

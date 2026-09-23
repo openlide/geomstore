@@ -237,6 +237,16 @@ export interface MonitoringConfig {
   /** 是否启用错误聚合 */
   enableAggregation?: boolean
 
+  /**
+   * 聚合组数量上限（`ErrorAggregator` 的存活组上限，缺省 100）
+   *
+   * 只约束「同时存活多少组」：被驱逐的组不再出现在 `getGroups()` / `summary.totalGroups`
+   * 里，但其错误条数已按条累计，不会从 `totalErrors`/`byCode`/`byStore` 里消失，
+   * 驱逐量单独记在 `getAggregationStats()` 的 `evictedGroups` / `evictedErrors`。
+   * 非有限值 / 小于 1 归回缺省值。
+   */
+  maxGroups?: number
+
   /** 是否在控制台输出日志 */
   enableConsoleLog?: boolean
 

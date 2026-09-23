@@ -20,9 +20,11 @@
  * @remarks 下方每一段都从**同一能力的已发布子入口**（`./plugins.js` / `./performance.js` /
  * `./snapshot.js` / `./action.js` / `./enterprise.js`）按名再导出，而不是各自指向叶子模块：
  * 同一公开面若被两处独立指向叶子，两处清单会静默漂移（此前即已出现
- * `ActionStats`/`LogDecoratorOptions` 只在本入口可取的情况），名字漏项则由编译期
- * 「导出项不存在」直接报错。清单一致性由
- * `tests/unit/r5-extras-action-p2-entry-parity.test.ts` 逐项比对兜底。
+ * `ActionStats`/`LogDecoratorOptions` 只在本入口可取的情况），名字写错则由编译期
+ * 「导出项不存在」直接报错。**值导出**的一致性由
+ * `tests/unit/r5-extras-action-p2-entry-parity.test.ts` 逐项比对兜底；该测试用
+ * `Object.keys()` 枚举，拿不到 `export type`，所以**类型清单仍需人工与子入口对齐**
+ * （R6-096 就是这类漂移：子入口已导出 `LogSink`/`LogPhase`，本入口漏写）。
  * 仍写显式清单而不用 `export *`：wildcard 会把上游新增符号未经评审地并入本入口，
  * 且同名冲突在编译期不报错（静默丢失）。
  */
@@ -80,6 +82,10 @@ export type {
   ThrottleDecoratorOptions,
   LogDecoratorOptions,
 } from './action.js'
+// LogDecoratorOptions 的 `sink?: LogSink` 与 `redact?: (value, phase: LogPhase) => unknown`
+// 引用了这两个类型：本入口若只转发 LogDecoratorOptions，调用方仍要深链才能写出带类型的 sink
+// （子入口 ./action.js 早已导出它们，此前是这一段的名字漏项——见 R6-096）
+export type { LogSink, LogPhase } from './action.js'
 export type { AsyncActions, ActionResult, ActionLoaderOptions, ActionDecorator, ActionExecutionContext } from './action.js'
 export type { ActionErrorData, RetryOptions, TimeoutError } from './action.js'
 

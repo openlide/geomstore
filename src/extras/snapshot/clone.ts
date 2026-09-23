@@ -9,6 +9,10 @@
  */
 
 import type { CloneContext, SnapshotError, SnapshotOptions, SnapshotStats } from './types.js'
+// `isIndexKey` 的收敛（第六轮 f2-13）：三份同名私有谓词各写一遍，改一处就会漂移成
+// 「同一份数组在克隆引擎与快照引擎里的附加键归属不同」。`extras/action/decorators/cache.ts`
+// 那份属参数序列化域、与克隆键集无关，维持现状。
+import { isExactly, isIndexKey, isSlotBearingBuiltin } from '../../core/utils/clone.js'
 
 /**
  * 快照中止信号：onError 回调返回 false 时抛出。
@@ -193,6 +197,15 @@ export function invokeCustomCloner(
  * （`ToPropertyDescriptor` 已把三个标志转成布尔）二者等价，但同一份数据在两条路径下
  * 可能产出不同描述符，故统一到此处消除歧义。
  *
+ * `enumerable` 是唯一**故意改写**的一位：`false` 一律提升为 `true`。能走到这里的不可枚举
+ * 描述符只可能来自 `includeNonEnumerable: true` —— 该选项关闭时键集取自 `Object.keys`
+ * （Proxy 的 ownKeys 陷阱也要过同一层可枚举过滤），不可枚举键根本不会被枚举到。保持原样
+ * 会让这个选项名不副实：克隆品里的这类属性既不进 `Object.keys`、不进 `JSON.stringify`，
+ * 也不进 `diff.ts` 的键集比对（它两侧都按 `Object.keys` 取键），于是「把状态上的不可枚举
+ * 版本号/计数标记带进快照」这件事没有任何下游读者——两次快照之间只有该标记变了，
+ * `compareSnapshots().changed` 仍是 false。该选项的语义因此定为「带进来并且读得到」，
+ * writable / configurable 继续按源还原。
+ *
  * @param descriptor 源属性描述符
  * @param isAccessor 是否为访问器属性（访问器不还原 get/set，一律落为可写数据属性）
  */
@@ -202,7 +215,9 @@ export function normalizeDescriptorFlags(
 ): { writable: boolean; enumerable: boolean; configurable: boolean } {
   return {
     writable: isAccessor ? true : Boolean(descriptor.writable),
-    enumerable: Boolean(descriptor.enumerable),
+    // 唯一被故意改写的一位：见上方 enumerable 段。不可枚举只可能是 includeNonEnumerable
+    // 拉进来的那一路，而它对下游唯一的读者就是可枚举键集，故一律落为可枚举
+    enumerable: true,
     configurable: Boolean(descriptor.configurable),
   }
 }
@@ -312,6 +327,87 @@ export function clonePrelude(
 }
 
 /**
+ * 克隆源对象的一个自有键并写入克隆品（对象分支与数组的附加键补趟共用）。
+ *
+ * 三条口径都在这一处：
+ * - 访问器属性以描述符里捕获的 getter 求值，落成数据属性（回读 `value[key]` 在 Proxy 上
+ *   会重跑 `get` 陷阱，取值可与刚拿到的描述符不是同一件事）；
+ * - 标志位经 {@link normalizeDescriptorFlags} 归一化；
+ * - 子值被丢弃（{@link SKIP_CLONE_NODE}）时该位置不写入，与异步路径 processQueue 删除
+ *   prop 占位同语义；本键范围内的抛错按 `cloneError` 落账并咨询 onError，不外溢成整棵子树丢失。
+ */
+function copyOwnKey(
+  value: object,
+  cloned: object,
+  key: string,
+  context: CloneContext,
+  options: Required<SnapshotOptions>,
+  errors: SnapshotError[],
+  stats: SnapshotStats,
+  counters: { nodeCount: number; maxDepthReached: number; estimatedSize: number; hasCircular: boolean },
+): void {
+  let descriptor: PropertyDescriptor | undefined
+  try {
+    descriptor = Object.getOwnPropertyDescriptor(value, key)
+    if (!descriptor) {
+      return
+    }
+
+    // 访问器属性（getter/setter）：descriptor.value 恒为 undefined，
+    // 直接取值会静默丢失数据——以 getter 求值结果克隆为数据属性
+    // （getter 抛错由下方 catch 走 onError 路径）
+    //
+    // 只有 setter 的访问器无值可读，落为 undefined，并经 normalizeDescriptorFlags
+    // 还原成可写数据属性—— setter 本身不进快照（克隆品与活状态隔离，写回原对象既不可能也不应发生）
+    const isAccessor = descriptor.get !== undefined || descriptor.set !== undefined
+    const sourceValue = isAccessor ? (descriptor.get ? descriptor.get.call(value) : undefined) : descriptor.value
+
+    const clonedValue = cloneDeep(
+      sourceValue,
+      {
+        ...context,
+        path: `${context.path}.${key}`,
+        depth: context.depth + 1,
+        parent: value,
+        key,
+      },
+      options,
+      errors,
+      stats,
+      counters,
+    )
+
+    if (clonedValue === SKIP_CLONE_NODE) {
+      return
+    }
+
+    // defineProperty 而非赋值：`cloned.__proto__ = …` 走 [[Set]] 会触发 Object.prototype 的
+    // __proto__ setter，键被丢弃且克隆品原型被换掉；定义自有数据属性才承载得住这个键名
+    Object.defineProperty(cloned, key, {
+      value: clonedValue,
+      ...normalizeDescriptorFlags(descriptor, isAccessor),
+    })
+  } catch (error) {
+    // 中止信号在 handleCloneError 内原样上抛：这是用户在更深层做出的决定，
+    // 二次咨询 onError 会把「中止」被中途改答降级为静默丢子树且快照仍标记成功
+    handleCloneError(
+      error,
+      {
+        path: `${context.path}.${key}`,
+        depth: context.depth,
+        // 描述符可用时直接取 value：访问器描述符没有 value 字段、恒为 undefined，
+        // 故无需再区分描述符种类；访问器 getter 已证明会抛错，不经 safeReadProperty
+        // 二次触发；仅当描述符不可得（查询本身抛错）时才兜底读取
+        value: descriptor ? descriptor.value : safeReadProperty(value as Record<string, unknown>, key),
+      },
+      options,
+      errors,
+      stats,
+    )
+  }
+}
+
+/**
  * 深度克隆（递归实现）
  *
  * 每遇到一个子容器就递归调用自身，故调用栈深度 = 数据深度。上限由
@@ -365,21 +461,37 @@ export function cloneDeep<T>(
   // → 继续则丢该节点
   let objectShell: Record<string, unknown>
   try {
+    // 与 core 的 deepCloneState 合流的三道门槛（缺一就会「同一份 state 在 deepCloneState
+    // 与 createSnapshot 下口径分叉」）：
+    // 1) 状态住在内部槽位的内建值一律保留原引用——重建出来的空壳 instanceof 仍为真，
+    //    但 await / Number() / 交给宿主 API 的第一次消费就抛 TypeError，且 diff 侧两副
+    //    空壳原型相同、Object.keys 同为空，恒报「无差异」；
+    // 2) 内建容器只重建「恰好是该类型本身」的实例，子类保留原引用——`new Map()` 式的
+    //    重建会丢掉子类的构造参数、自有字段与子类方法（`m.first()` 直接 TypeError）；
+    // 3) 类实例仍按下方通用分支重建（快照的既有契约：类实例快照后仍是该类实例）。
+    // 异步引擎 clone-async.ts 是同一段代码的第二份，三条要一起改。
+    if (isSlotBearingBuiltin(value)) {
+      return value
+    }
+
     // 处理特殊类型
     // Date/RegExp 同样产出了一个新对象，故与下面的容器分支一样计一次克隆操作：
     // 只在容器处累加会让 stats.cloneOperations 按 Date/RegExp 节点数系统性偏小
     // （异步路径 clone-async 同口径，两条路径不要各自改）
     if (value instanceof Date) {
+      if (!isExactly(value, Date.prototype)) return value
       stats.cloneOperations++
       return new Date(value.getTime())
     }
 
     if (value instanceof RegExp) {
+      if (!isExactly(value, RegExp.prototype)) return value
       stats.cloneOperations++
       return new RegExp(value.source, value.flags)
     }
 
     if (value instanceof Map) {
+      if (!isExactly(value, Map.prototype)) return value
       const cloned = new Map()
       context.visited.set(value as object, cloned)
 
@@ -431,6 +543,7 @@ export function cloneDeep<T>(
     }
 
     if (value instanceof Set) {
+      if (!isExactly(value, Set.prototype)) return value
       const cloned = new Set()
       context.visited.set(value as object, cloned)
 
@@ -460,6 +573,7 @@ export function cloneDeep<T>(
 
     // 处理数组
     if (Array.isArray(value)) {
+      if (!isExactly(value, Array.prototype)) return value
       const cloned: unknown[] = []
       context.visited.set(value as object, cloned)
 
@@ -484,6 +598,24 @@ export function cloneDeep<T>(
         if (clonedItem !== SKIP_CLONE_NODE) {
           cloned[i] = clonedItem
         }
+      }
+
+      // 补一趟非下标的自有键（`arr.meta = 'v2'`、`arr.version = 3`）：只按下标克隆会让这类键
+      // 整体丢失，而它们正是 deepEqual 数组分支比对的键集（length + Object.keys），后果是
+      // 「副本与源恒不等」——把快照喂选择器缓存就是持续失配，回滚/回放则少字段；下方对象分支
+      // 那句「仅复制自有可枚举属性」的口径本就涵盖这类键，数组分支却只按下标走，两边自相矛盾。
+      // 判据与
+      // core/utils/clone.ts 的 deepCloneState 合流（那边 R5-189 补的就是这一趟）。
+      // 'length' 必须排除：它是每个数组的自有键，且**不可配置**——在克隆品上重新定义它会
+      // 直接抛 TypeError。键集口径与对象分支一致（includeNonEnumerable 决定取哪一套键）；
+      // 取键本身抛错（Proxy 的 ownKeys 陷阱）由包住本分支的外层 try 收尾，与对象分支的
+      // keys catch 同样落到「丢该节点」。异步引擎 clone-async.ts 的数组分支是同一段代码的
+      // 第二份，这一趟要一并补上（见 .ocr-fix/verdicts6/f2-13.md 的 NEEDS-MAIN）
+      const extraKeys = (options.includeNonEnumerable ? Object.getOwnPropertyNames(value) : Object.keys(value)).filter(
+        (key) => key !== 'length' && !isIndexKey(key),
+      )
+      for (const key of extraKeys) {
+        copyOwnKey(value as object, cloned, key, context, options, errors, stats, counters)
       }
 
       stats.cloneOperations++
@@ -521,70 +653,9 @@ export function cloneDeep<T>(
   }
 
   for (const key of keys) {
-    let descriptor: PropertyDescriptor | undefined
-    try {
-      descriptor = Object.getOwnPropertyDescriptor(value, key)
-      if (!descriptor) {
-        continue
-      }
-
-      // 访问器属性（getter/setter）：descriptor.value 恒为 undefined，
-      // 直接取值会静默丢失数据——以 getter 求值结果克隆为数据属性
-      // （getter 抛错由下方 catch 走 onError 路径）
-      //
-      // 取 descriptor 里捕获到的 getter 本身调用，而不是回读 `value[key]`：后者走的是
-      // 普通 [[Get]]，在 Proxy 上会重跑 `get` 陷阱，可能给出与刚才那份
-      // （来自 getOwnPropertyDescriptor 陷阱的）描述符毫不相关的值，克隆结果与被检查的
-      // 属性于是各说各话
-      //
-      // 只有 setter 的访问器无值可读，落为 undefined，并经 normalizeDescriptorFlags
-      // 还原成可写数据属性—— setter 本身不进快照（克隆品与活状态隔离，写回原对象既不可能也不应发生）
-      const isAccessor = descriptor.get !== undefined || descriptor.set !== undefined
-      const sourceValue = isAccessor ? (descriptor.get ? descriptor.get.call(value) : undefined) : descriptor.value
-
-      const clonedValue = cloneDeep(
-        sourceValue,
-        {
-          ...context,
-          path: `${context.path}.${key}`,
-          depth: context.depth + 1,
-          parent: value,
-          key,
-        },
-        options,
-        errors,
-        stats,
-        counters,
-      )
-
-      // 自定义克隆器在该属性上失败且 onError 允许继续：不写入该属性，
-      // 与异步路径 processQueue 删除 prop 占位保持同一语义
-      if (clonedValue === SKIP_CLONE_NODE) {
-        continue
-      }
-
-      Object.defineProperty(cloned, key, {
-        value: clonedValue,
-        ...normalizeDescriptorFlags(descriptor, isAccessor),
-      })
-    } catch (error) {
-      // 中止信号在 handleCloneError 内原样上抛（见上方 keys catch 的说明）
-      handleCloneError(
-        error,
-        {
-          path: `${context.path}.${key}`,
-          depth: context.depth,
-          // 描述符可用时直接取 value：访问器描述符没有 value 字段、恒为 undefined，
-          // 与原「识别访问器后显式返回 undefined」等价，故无需再区分描述符种类；
-          // 访问器 getter 已证明会抛错，不经 safeReadProperty 二次触发；
-          // 仅当描述符不可得（查询本身抛错）时才兜底读取
-          value: descriptor ? descriptor.value : safeReadProperty(value as Record<string, unknown>, key),
-        },
-        options,
-        errors,
-        stats,
-      )
-    }
+    // 单键的取描述符 / 求访问器值 / 深克隆子值 / 还原标志位 / 失败落账都在 copyOwnKey 一处，
+    // 与数组的附加键补趟共用同一份判据（数组分支那条注释里写清了为什么要走同一套）
+    copyOwnKey(value as object, cloned, key, context, options, errors, stats, counters)
   }
 
   stats.cloneOperations++

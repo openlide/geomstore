@@ -9,7 +9,7 @@
  * - 后台/前台状态同步（App.prototype 仅包装一次，多实例共享注册表）
  */
 
-import type { Store } from '../../types/store.js'
+import type { Store, State } from '../../types/store.js'
 import { storage, logger, CURRENT_USER_KEY, type WxApi } from './env.js'
 import { OfflineManager } from './offline.js'
 import { isValidUserId, type UserState } from './user-store.js'
@@ -49,6 +49,44 @@ export { initBackgroundSync, unregisterBackgroundSync } from './background-sync.
 // ==================== 6. 完整示例：App.ts 集成 ====================
 
 /**
+ * 带「同步是否在途」信号的 OfflineManager
+ *
+ * 为什么需要它：基类的 `syncing` 互斥是私有字段，对调用方不可见，而 `getQueueLength()`
+ * 刻意只数 `actionQueue`（同步在途期间整批已被快照移走，恒为 0，见 #352 口径）——
+ * 于是 `App.onShow` 无法区分「本轮会同步」与「本轮被 syncing 空跑挡回」，
+ * 据队列长度弹出的 loading 会在网络恢复回调那一轮仍在跑时被提前收起，
+ * 两次 showLoading/hideLoading 抢同一个全局 toast（用户看到「转圈一闪就没、队列还在」）。
+ *
+ * 做法：覆写 `syncQueue()` 把基类的私有状态转成可查询信号。基类 344 行的网络恢复回调
+ * 调的同样是实例方法（动态派发），所以那一轮也计入本计数；对基类「已释放/队列为空」的
+ * 早退分支，本计数只在一个宏任务内为真，不会让 onShow 误跳过真正需要的同步。
+ *
+ * 一旦 `OfflineManager` 自己暴露 `isSyncing()`（当前 offline.ts 属另一分片），
+ * 本类应整体删除、改读基类实现，保持单一事实来源
+ */
+class SyncAwareOfflineManager<S extends State> extends OfflineManager<S> {
+  /** 在途轮次标记：>0 表示有一轮 syncQueue 正在跑（含基类网络恢复回调自行发起的那轮） */
+  private roundsInFlight = 0
+
+  /** 是否有一轮同步正在进行：onShow 据此决定是否接管加载提示 */
+  isSyncing(): boolean {
+    return this.roundsInFlight > 0
+  }
+
+  override async syncQueue(): Promise<void> {
+    // 已有在途轮次时基类会立刻 resolve 一次空跑：此处既不再计数，也不能在返回时
+    // 把那一轮的标记收掉，否则 loading 照样被提前收起
+    const startsRound = this.roundsInFlight === 0
+    if (startsRound) this.roundsInFlight += 1
+    try {
+      await super.syncQueue()
+    } finally {
+      if (startsRound) this.roundsInFlight -= 1
+    }
+  }
+}
+
+/**
  * `createEnterpriseApp` 的配置项
  */
 export interface EnterpriseAppConfig {
@@ -58,7 +96,9 @@ export interface EnterpriseAppConfig {
 
 /**
  * 示例：在 App.ts 中使用以上所有功能
- * 账号切换/登出时自动 dispose 旧的 OfflineManager，避免监听泄漏
+ * 账号切换/登出时自动 dispose 旧的 OfflineManager，避免监听泄漏；
+ * 登出还会清空该账号的离线队列与死信队列（键按 store name 派生，与账号一一对应），
+ * 既不把载荷留在设备存储里，也不让下次登录重放登出前的操作
  */
 export function createEnterpriseApp(config: EnterpriseAppConfig = {}) {
   const { maxInactiveTime = 10 * 60 * 1000 } = config
@@ -97,8 +137,9 @@ export function createEnterpriseApp(config: EnterpriseAppConfig = {}) {
     }
   }
 
-  // 离线管理器实例（延迟初始化）
-  let offlineManager: OfflineManager<UserState> | null = null
+  // 离线管理器实例（延迟初始化）。类型用 SyncAwareOfflineManager：onShow 需要它的
+  // isSyncing() 信号；对外（globalData / getOfflineManager()）仍按基类 OfflineManager 暴露
+  let offlineManager: SyncAwareOfflineManager<UserState> | null = null
   // 本轮 onShow 发起的同步是否仍在进行：OfflineManager.syncQueue 自带 syncing 互斥，
   // 同步期间再次调用只会立刻 resolve 一个空跑的 promise。若据此再走一遍
   // showLoading/hideLoading，第二次的 finally 会在首次同步仍在跑时提前收起转圈，
@@ -151,13 +192,21 @@ export function createEnterpriseApp(config: EnterpriseAppConfig = {}) {
 
       // 4. 初始化离线管理
       initStep('离线管理器', () => {
-        offlineManager = new OfflineManager(currentStore)
+        offlineManager = new SyncAwareOfflineManager(currentStore)
         this.globalData.offlineManager = offlineManager
       })
     },
 
     onShow() {
       if (syncInFlight) return
+      // 已有同步在途（多为 offline.ts 网络恢复回调自行发起的那轮）：本轮 syncQueue 会被
+      // syncing 互斥空跑挡回，随即 hideLoading 就把那一轮的转圈收掉，而队列里可能还剩
+      // 一整批未跑完的操作。判据必须是「是否有一轮在跑」，不能是 getQueueLength()——
+      // 它在同步期间刻意归 0（#352 口径），既不表明「本轮会同步」也不表明「本轮没人在同步」
+      if (offlineManager && offlineManager.isSyncing()) {
+        logger.log('App', '已有离线队列同步在进行中，本次切前台不接管加载提示')
+        return
+      }
       if (offlineManager && offlineManager.getQueueLength() > 0) {
         syncInFlight = true
         // 加载提示与同步本体分开兜底：showLoading 抛错（部分宿主/测试环境的 wx UI API 会抛）
@@ -206,7 +255,7 @@ export function createEnterpriseApp(config: EnterpriseAppConfig = {}) {
 
       // 重新初始化离线管理器：先释放旧实例的网络监听，防止泄漏
       offlineManager?.dispose()
-      offlineManager = new OfflineManager(newStore)
+      offlineManager = new SyncAwareOfflineManager(newStore)
       this.globalData.offlineManager = offlineManager
 
       return newStore
@@ -219,6 +268,16 @@ export function createEnterpriseApp(config: EnterpriseAppConfig = {}) {
         unregisterBackgroundSync(currentStore)
       }
 
+      // 登出必须连离线队列一起清：队列键与死信键按 store name 派生（与账号一一对应），
+      // 只 dispose 不删键会留下两层后果——
+      // (1) 队列条目携带 payload（下单/表单内容，可能含个人信息与凭证字段），用户已登出
+      //     却仍在设备本地存储里明文留存；
+      // (2) 同账号再次 login() 时新实例的构造期 loadQueue() 把它们读回，
+      //     App.onShow 随即 dispatch 进刚重建的 store：登出前的操作被再次提交（非幂等即重复下单）
+      // 顺序要求：clearQueue/clearDeadLetters 对已释放实例一律拒绝（存储键已由接管实例
+      // 持有），故必须在 dispose() 之前调用
+      offlineManager?.clearQueue()
+      offlineManager?.clearDeadLetters()
       offlineManager?.dispose()
       storeManager.logout()
       this.globalData.store = null

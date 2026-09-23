@@ -21,7 +21,7 @@ declare const wx: WxApi
  * 在收口之前请勿把它当作可信的版本门禁。
  * **发版时必须与 `package.json` 一起改**——清单见 CONTRIBUTING 的「构建与发布」
  */
-const LIBRARY_VERSION = '0.6.1'
+const LIBRARY_VERSION = '0.7.0'
 
 /**
  * 热更新前保存的状态备份
@@ -29,10 +29,200 @@ const LIBRARY_VERSION = '0.6.1'
 export interface BackupData {
   /** 备份生成时间戳，用于过期判定（超过 `BACKUP_EXPIRY_MS` 即作废） */
   timestamp: number
-  /** `store.$snapshot()` 产出的状态快照 */
+  /** `store.$snapshot()` 经 {@link encodeForBackup} 编码后的状态（JSON 往返无损的中间形态） */
   state: unknown
   /** 备份时的库版本（`LIBRARY_VERSION`）；与当前不一致时仅告警，仍按合并语义恢复 */
   version: string
+  /**
+   * 本次备份中**无法完整还原**的成员路径与原因（类实例的原型、函数/symbol 成员）。
+   * 容器（Date/RegExp/Map/Set）与 NaN/±Infinity/BigInt 已由编解码无损往返，不在此列。
+   * 恢复侧读到非空列表时打一条「有损恢复」告警，让排障者不必去猜状态为什么缺了指纹
+   */
+  lossy?: string[]
+}
+
+// ==================== 备份编解码 ====================
+
+/**
+ * 类型标记键。解码只认下表列出的标记值，其余含该键的对象一律按用户数据原样处理，
+ * 因此状态里恰好出现 `'#gs'` 键名的概率与后果都被压到最低（用户数据自身带该键时
+ * 由 encode 的 `'raw'` 信封再套一层，见 needsEnvelope 分支——编码是单射的）
+ */
+const GS_TYPE = '#gs'
+
+/**
+ * 把 `store.$snapshot()` 的产物编码成「经 JSON 往返无损」的中间形态。
+ *
+ * 为什么必须有这一层：`storage.set` 用 `JSON.stringify` 落盘，而状态里允许出现
+ * Date/RegExp/Map/Set 与类实例（`$snapshot` 的口径，core/utils/clone.ts 同口径支持）。
+ * 直接 stringify 会把 `new Map([['a',1]])` / `new Set([1,2])` 折叠成 `{}`、
+ * Date 变成 ISO 字符串、BigInt 直接抛错。恢复时那个 `{}` 是纯对象，而状态原位置是
+ * Set/Map（非纯对象）→ deepMerge 走「整体替换为克隆副本」，容器被换成**空壳对象**；
+ * Date 字段被换成字符串。之后 `state.selectedIds.has(x)` / `state.createdAt.getTime()`
+ * 当场 TypeError，而 `$patch` 不抛错就会被记成「状态已从备份恢复」并删掉唯一数据源。
+ *
+ * 标记形态：`u`＝undefined、`n`＝非有限数字与 -0、`bi`＝BigInt、`d`＝Date、
+ * `re`＝RegExp（[source, flags]）、`m`＝Map（[[k, v], …]）、`s`＝Set、
+ * `raw`＝用户数据自带 `'#gs'` 键时的信封。symbol 键与非枚举属性本就不进 JSON，
+ * 与 `clone` 的 json 模式同口径地不参与往返
+ *
+ * @param path 当前路径，只用于 lossy 列表里的人话定位
+ * @param lossy 出参：本层及其下无法完整还原的成员
+ * @param stack 当前递归路径上的对象集（不是「已编码集」：共享的 DAG 节点要各自编码一份）
+ */
+function encodeForBackup(value: unknown, path: string, lossy: string[], stack: WeakSet<object>): unknown {
+  if (value === null) return null
+  switch (typeof value) {
+    case 'string':
+    case 'boolean':
+      return value
+    case 'number':
+      // -0 与 0 的 String() 相同，必须用 Object.is 分流；非有限值经 stringify 会变 null
+      if (Number.isFinite(value) && !Object.is(value, -0)) return value
+      return { [GS_TYPE]: 'n', v: Object.is(value, -0) ? '-0' : String(value) }
+    case 'bigint':
+      return { [GS_TYPE]: 'bi', v: value.toString() }
+    case 'undefined':
+      return { [GS_TYPE]: 'u' }
+    case 'function':
+    case 'symbol':
+      lossy.push(`${path}（${typeof value} 成员无法序列化，恢复后为 undefined）`)
+      return { [GS_TYPE]: 'u' }
+    default:
+      break
+  }
+
+  const object = value as object
+  if (stack.has(object)) {
+    // $snapshot 已把循环折成 '[Circular Reference]' 占位串，正常到不了这里；
+    // 走到时按 undefined 收，换一次 JSON.stringify 不抛错（而不是无限递归爆栈）
+    lossy.push(`${path}（循环引用，恢复后为 undefined）`)
+    return { [GS_TYPE]: 'u' }
+  }
+  stack.add(object)
+  try {
+    if (object instanceof Date) {
+      const time = object.getTime()
+      return { [GS_TYPE]: 'd', v: Number.isFinite(time) ? time : null }
+    }
+    if (object instanceof RegExp) {
+      return { [GS_TYPE]: 're', v: [object.source, object.flags] }
+    }
+    if (object instanceof Map) {
+      const entries: unknown[] = []
+      for (const [k, v] of object) {
+        // 键路径标 `.key[...]`：与快照 diff / 克隆引擎的键路径方言同形，便于人工对账
+        entries.push([encodeForBackup(k, `${path}.key`, lossy, stack), encodeForBackup(v, `${path}[key]`, lossy, stack)])
+      }
+      return { [GS_TYPE]: 'm', v: entries }
+    }
+    if (object instanceof Set) {
+      const items: unknown[] = []
+      let i = 0
+      for (const item of object) {
+        items.push(encodeForBackup(item, `${path}[${i}]`, lossy, stack))
+        i++
+      }
+      return { [GS_TYPE]: 's', v: items }
+    }
+    if (Array.isArray(object)) {
+      return object.map((item, i) => encodeForBackup(item, `${path}[${i}]`, lossy, stack))
+    }
+    if (!isPlainObject(object)) {
+      // 类实例：字段可往返，原型跨进程无法安全重建（构造器可能已随版本改变），
+      // 按「有损但可用」处理——恢复成结构等价的普通对象
+      lossy.push(`${path}（类实例 ${(object.constructor && object.constructor.name) || 'unknown'}，恢复后原型丢失）`)
+    }
+    const record = object as Record<string, unknown>
+    const encoded: Record<string, unknown> = {}
+    for (const key of Object.keys(record)) {
+      encoded[key] = encodeForBackup(record[key], `${path}.${key}`, lossy, stack)
+    }
+    // 用户数据自带标记键：整层套信封，解码时对信封内容不再做标记判定，编码因此是单射
+    return Object.prototype.hasOwnProperty.call(record, GS_TYPE) ? { [GS_TYPE]: 'raw', v: encoded } : encoded
+  } finally {
+    stack.delete(object)
+  }
+}
+
+/** 已知的类型标记（解码只认这几个，其余含 `'#gs'` 的对象按用户数据处理） */
+const GS_TAGS = new Set(['u', 'n', 'bi', 'd', 're', 'm', 's', 'raw'])
+
+/**
+ * encodeForBackup 的对称解码。
+ *
+ * 旧格式备份（本层编解码之前写下的、被 `JSON.stringify` 改写过的状态）里没有这些标记，
+ * 因此原样透传——读到的是当年那副空壳，行为与改造前一致，不会额外丢数据
+ *
+ * @param skipTag 该层已是用户数据（`'raw'` 信封的内容），不做标记判定
+ */
+function decodeFromBackup(value: unknown, path: string, skipTag = false): unknown {
+  if (value === null || typeof value !== 'object') return value
+  if (Array.isArray(value)) return value.map((item, i) => decodeFromBackup(item, `${path}[${i}]`))
+
+  const record = value as Record<string, unknown>
+  if (!skipTag) {
+    const tag = record[GS_TYPE]
+    if (typeof tag === 'string' && GS_TAGS.has(tag) && Object.keys(record).every((k) => k === GS_TYPE || k === 'v')) {
+      const payload = record.v
+      switch (tag) {
+        case 'u':
+          return undefined
+        case 'n':
+          // encode 写的是 String(value)：'NaN' / 'Infinity' / '-Infinity' / '-0'
+          // 都能被 Number() 原样读回（Number('-0') 保留负零）
+          return Number(payload)
+        case 'bi':
+          try {
+            return BigInt(String(payload))
+          } catch {
+            return undefined
+          }
+        case 'd':
+          return new Date(payload === null ? Number.NaN : Number(payload))
+        case 're': {
+          const [source, flags] = Array.isArray(payload) ? (payload as [unknown, unknown]) : []
+          try {
+            return new RegExp(String(source), String(flags))
+          } catch {
+            return undefined
+          }
+        }
+        case 'm': {
+          const map = new Map<unknown, unknown>()
+          if (Array.isArray(payload)) {
+            for (const entry of payload) {
+              if (!Array.isArray(entry) || entry.length !== 2) continue
+              map.set(decodeFromBackup(entry[0], `${path}.key`), decodeFromBackup(entry[1], `${path}[key]`))
+            }
+          }
+          return map
+        }
+        case 's': {
+          const set = new Set<unknown>()
+          if (Array.isArray(payload)) {
+            let i = 0
+            for (const item of payload) {
+              set.add(decodeFromBackup(item, `${path}[${i}]`))
+              i++
+            }
+          }
+          return set
+        }
+        case 'raw':
+          // 信封内容按用户数据处理：自身不再做标记判定，其下各层照常解码
+          return decodeFromBackup(payload, path, true)
+        default:
+          break
+      }
+    }
+  }
+
+  const restored: Record<string, unknown> = {}
+  for (const key of Object.keys(record)) {
+    restored[key] = decodeFromBackup(record[key], `${path}.${key}`)
+  }
+  return restored
 }
 
 /**
@@ -80,10 +270,19 @@ function clearBackup(backupKey: string): void {
  * 备份当前状态
  */
 function backupState<S extends State = State>(store: Store<S>, backupKey: string): void {
+  const lossy: string[] = []
   const backupData: BackupData = {
     timestamp: Date.now(),
-    state: store.$snapshot(),
+    // 编解码往返：状态里的 Date/RegExp/Map/Set/undefined/非有限数字/BigInt 都能无损落盘
+    // （见 encodeForBackup 的理由说明）
+    state: encodeForBackup(store.$snapshot(), 'state', lossy, new WeakSet<object>()),
     version: LIBRARY_VERSION,
+  }
+  if (lossy.length > 0) {
+    // 备份时刻就要说清丢了什么：重启后再没有第二个观测点，
+    // 恢复侧只能照着这个列表复述一遍（它存在 backup.lossy 里随备份一起落盘）
+    logger.warn('HotUpdate', `备份中有 ${lossy.length} 处成员无法完整还原（类实例原型/函数/symbol/循环引用）`, lossy)
+    backupData.lossy = lossy
   }
   // 写入失败（配额满等）必须抛错：调用方据此跳过标记写入，
   // 避免重启后凭空执行一次无源恢复（更新本身仍继续，损失的只是状态恢复）
@@ -247,11 +446,20 @@ export function restoreFromHotUpdate<S extends State = State>(store: Store<S>, b
   }
 
   try {
+    // 与备份侧 encodeForBackup 对称解码：容器（Map/Set/Date/RegExp）在这里变回实例，
+    // 才会被 deepMerge 的「非纯对象整体替换」分支正确落进状态，而不是留下一副
+    // 由 `{}` 扮演的空壳（业务侧下一次 `.has()` / `.getTime()` 就是 TypeError）
+    const restoredState = decodeFromBackup(backup.state, 'state')
     // 用 $patch 合并语义而非 $restore（= $replaceState 整树替换）：热更新备份取自
     // 更新前的旧版本，整树替换会把新版本新增的 state 键整体抹掉，新代码读这些键
     // 即得 undefined。plugins/builtin.ts 的持久化恢复也为此特意选用 $patch
-    store.$patch(backup.state as Partial<S>)
+    store.$patch(restoredState as Partial<S>)
     clearBackup(resolvedBackupKey)
+    // 有损恢复必须留痕：备份侧已列出无法还原的成员，这里复述一遍，
+    // 让「状态看起来缺了指纹」的排障者不必从头猜
+    if (Array.isArray(backup.lossy) && backup.lossy.length > 0) {
+      logger.warn('HotUpdate', `本次为有损恢复：${backup.lossy.length} 处成员未能完整还原`, backup.lossy)
+    }
     logger.log('HotUpdate', '状态已从备份恢复')
     return true
   } catch (error) {

@@ -22,11 +22,14 @@
  * 3. 同名目标目录要么不存在，要么已经是本脚本自己的 stub。mkdirSync(recursive) 对
  *    已存在的目录是 no-op，紧接着的 writeFileSync 就会把一个同名真实目录的
  *    package.json（真包的 manifest）覆盖掉。
- * 4. package.json 若有 `miniprogram` 字段（微信「构建 npm」的构建文件生成目录），
- *    该目录必须存在、是目录、内含 .js 且在 files 白名单内。npm 对 files 里不存在的项
- *    是静默跳过（实测目录缺失时 `npm pack --dry-run` 零告警出包），不拦就能发出
- *    「字段指向空目录」的包；而 pnpm pack / --ignore-scripts / 复用旧 dist 的 CI
- *    都绕过 prepublishOnly，所以这道判据只能放在每次打包都跑的 prepack 里。
+ * 4. package.json 的 `miniprogram` 字段（微信「构建 npm」的构建文件生成目录）必须**存在**、
+ *    就是微信产物门禁所验的那份目录（`dist-weapp`），并且该目录存在、是目录、内含 .js
+ *    且在 files 白名单内。npm 对 files 里不存在的项是静默跳过（实测目录缺失时
+ *    `npm pack --dry-run` 零告警出包），不拦就能发出「字段指向空目录」的包；而字段被误写成
+ *    `dist` 之类的目录时（它同样存在、含 .js、在白名单里），四条判据会全过、
+ *    `verify:weapp` 却仍在验 dist-weapp，于是 0.6.0 的坏 ESM 产物照样能发布成功。
+ *    而 pnpm pack / --ignore-scripts / 复用旧 dist 的 CI 都绕过 prepublishOnly，
+ *    所以这道判据只能放在每次打包都跑的 prepack 里。
  *
  * 落盘失败：逐目录记账后回滚（本次新建的整目录删掉、原本就是 stub 的写回原 manifest），
  * 再以退出码 1 + 可读原因结束。半途留下的转发目录同样在 files 白名单里，
@@ -46,6 +49,16 @@ import { fileURLToPath } from 'node:url'
 
 const pkgRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
 const distDir = path.join(pkgRoot, 'dist')
+
+/**
+ * 微信产物目录（`miniprogram` 字段唯一允许的值）。
+ *
+ * 与 `scripts/build-weapp.mjs` 的 `OUT_DIR`、`scripts/verify-weapp-bundle.mjs` 的
+ * `OUT_DIR` 是同一个值的三处表述——本脚本只能按字面核对（见 checkPreconditions 里的
+ * 「字段与被验目录同源」那条）。把三处收敛成 `weapp-entries.mjs` 的导出常量需要动
+ * build-weapp.mjs / weapp-entries.mjs，已在第六轮台账里记为 NEEDS-MAIN。
+ */
+const WEAPP_ARTIFACT_DIR = 'dist-weapp'
 
 const reasonOf = (error) => (error instanceof Error ? error.message : String(error))
 
@@ -82,8 +95,7 @@ const subpathEntries = {
 }
 
 /** 由深到浅排序，清理时先删子目录再删父目录（plugins/devtools 先于 plugins） */
-const subpathsSorted = () =>
-  Object.keys(subpathEntries).sort((a, b) => b.split('/').length - a.split('/').length)
+const subpathsSorted = () => Object.keys(subpathEntries).sort((a, b) => b.split('/').length - a.split('/').length)
 
 /** 本脚本产出的 stub 目录最多嵌套几层（subpathEntries 目前最深 2 段，留 1 层余量） */
 const MAX_STUB_DEPTH = 3
@@ -131,9 +143,7 @@ function isGeneratedStubTree(dir, depth = 0) {
   const manifest = readManifest(dir)
   if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) return false
   if (Object.keys(manifest).sort().join(',') !== 'main,types') return false
-  const forwards = [manifest.main, manifest.types].every(
-    (value) => typeof value === 'string' && value !== '' && isInsideDir(distDir, path.resolve(dir, value)),
-  )
+  const forwards = [manifest.main, manifest.types].every((value) => typeof value === 'string' && value !== '' && isInsideDir(distDir, path.resolve(dir, value)))
   if (!forwards) return false
   let entries
   try {
@@ -142,9 +152,7 @@ function isGeneratedStubTree(dir, depth = 0) {
     return false
   }
   return entries.every((entry) =>
-    entry.name === 'package.json'
-      ? entry.isFile()
-      : entry.isDirectory() && isGeneratedStubTree(path.join(dir, entry.name), depth + 1),
+    entry.name === 'package.json' ? entry.isFile() : entry.isDirectory() && isGeneratedStubTree(path.join(dir, entry.name), depth + 1),
   )
 }
 
@@ -212,9 +220,7 @@ function checkPreconditions() {
   if (filesList) {
     const unshipped = Object.keys(subpathEntries).filter((sub) => !coveredByFiles(sub, filesList))
     if (unshipped.length > 0) {
-      problems.push(
-        `以下 stub 目录未列入 package.json 的 files 白名单，打包时不会随包发布：${unshipped.join(', ')}`,
-      )
+      problems.push(`以下 stub 目录未列入 package.json 的 files 白名单，打包时不会随包发布：${unshipped.join(', ')}`)
     }
   }
 
@@ -230,6 +236,18 @@ function checkPreconditions() {
     } else if (path.isAbsolute(mp) || mp.split(/[\\/]/).includes('..')) {
       problems.push(`miniprogram 必须是包内相对目录（当前 ${JSON.stringify(pkg.miniprogram)}）`)
     } else {
+      // 字段必须指向**被 `verify:weapp` 验过的那份产物目录**：门禁的 8 项断言（以及
+      // build-weapp.mjs 的 outDir）都硬编码作用在 WEAPP_ARTIFACT_DIR 上，而微信只认这个字段。
+      // 少了这条，把字段写成 `dist`（存在、含 .js、也在 files 白名单里）时本脚本四条判据全过、
+      // `verify:weapp` 照样验 dist-weapp 全绿、prepublishOnly 全绿出包，发出去的却是
+      // terser 压缩后的多文件 ESM —— 0.6.0 的两种坏形态原样回来。
+      // 不改为「校验目录内容是不是 CJS」：那种判据脆，而且仍留下字段与门禁两份真值。
+      if (mp !== WEAPP_ARTIFACT_DIR) {
+        problems.push(
+          `miniprogram 字段指向 ${mp}/，但微信产物门禁（pnpm run verify:weapp）验的是 ${WEAPP_ARTIFACT_DIR}/：` +
+            '被发出去的产物必须就是被验过的那一份。请改回字段，或把 build-weapp / verify-weapp 的产物目录一并改成同一个值',
+        )
+      }
       const dir = path.join(pkgRoot, mp)
       let stat = null
       try {
@@ -245,6 +263,10 @@ function checkPreconditions() {
         }
       }
     }
+  } else if (pkg) {
+    // 字段整体缺失同样是「发出去就坏」的形态：没有它时「构建 npm」会退回
+    // 「从 main 起做依赖分析并把整张图拼成一个文件」，正是 0.6.0 事故的触发条件
+    problems.push(`package.json 没有 miniprogram 字段：微信会退回拼接 main 那条 0.6.0 事故路径，需指向 ${WEAPP_ARTIFACT_DIR}/`)
   }
 
   return problems

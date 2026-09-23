@@ -33,6 +33,9 @@ type EdgeChange = typeof EDGE_STABLE | typeof EDGE_ADDED | typeof EDGE_REMOVED
  *   已含全部这些键时，它的子树在上一次同样操作里就已含这些键，可以剪枝（增量，O(新增子树)）。
  * - 删掉一条边：旧子树可能仍从别的顶层键可达，也可能整棵脱落，正向索引无法判定，只能整体重建
  *   （全量，O(整图)）。判错的代价是漏报，而漏报等于变更对页面永久不可见，故宁可多花一次重建。
+ *   唯一的例外是「对象换对象且新值的归属已覆盖容器键」的同容器内置换（sort / reverse /
+ *   splice 移动元素）：那条边对索引什么都没改，按 STABLE 处理，否则一次 O(n log n) 的
+ *   原地排序要付 O(n² log n) 的重建代价。判定条件与安全性见 classifyWrite 的 isCoveredSwap。
  * 另外，Store 侧（setState / $patch / $replaceState）与 action 内的写入都会推进状态版本号，
  * 版本与索引记录的不一致时同样退化为全量重建。
  *
@@ -144,11 +147,47 @@ export function createDirtyTrackingProxy(root: object, cache: DirtyTrackingCache
   }
 
   /**
+   * 「对象换对象」的写入能否免掉全量重建
+   *
+   * 旧值与新值都是对象时默认判 EDGE_REMOVED（删边 ⇒ 全量重建），但这一档里最常见的一种
+   * 写入其实什么都没改：**同一容器内的置换**。`this.state.todos.sort(...)` / `reverse()` /
+   * 中段 `splice` 移动元素时，被写进来的对象早已从该容器的顶层键可达，归属集合与容器一致
+   * ⇒ 新增这条边不改索引；被写走的那个对象即便整棵脱落，留在索引里的旧归属只会让它此后
+   * 的写入被**多报**（其真实归属是新指向它的容器键，而那条边同样是 STABLE 报的键），
+   * 不会漏报。反之「新子树还没有这些键」时必须走重建，否则新增边漏登记 ⇒ 新子树此后
+   * 的写入按旧键上报、真正的键被漏掉。
+   *
+   * 不这么做付的代价是数量级的：Array.prototype.sort 以数组代理为 this 运行，n 个元素
+   * 是 O(n log n) 次 [[Set]]，每次一次 O(整图) 重建 ⇒ 整体 O(n² log n)。
+   *
+   * @param container - 被写入的容器（原始对象）
+   * @param incoming - 写进来的那个对象（已解包）
+   */
+  const isCoveredSwap = (container: object, incoming: object): boolean => {
+    const index = owners
+    // 索引还没建（本次写入就要触发首次重建）时无从判断覆盖关系
+    if (!index) return false
+    const required = index.get(container)
+    // 容器自身解析不出归属（挂在访问器取出的对象上、函数值上等索引刻意不覆盖的位置）：
+    // 它连自己的键都给不出，新增这条边要靠 report 的「全部顶层键」兜底，不在本优化范围内。
+    // root 也走这一档——report 对 root 会额外带上本次写入的键，那份覆盖这里判不出来
+    if (required === undefined || required.size === 0) return false
+    const incomingKeys = index.get(incoming)
+    if (incomingKeys === undefined) return false
+    for (const key of required) {
+      if (!incomingKeys.has(key)) return false
+    }
+    return true
+  }
+
+  /**
    * 判定一次数据属性写入（set / defineProperty）对图的影响，必须在 Reflect 写入之前求值。
    *
    * 「旧值是对象」等于删掉一条被索引的边 → EDGE_REMOVED（无法廉价判断旧子树是否仍可达，
    * 猜错就是漏报）。旧值不是对象而新值是 → 纯新增边 → EDGE_ADDED。
    * 同对象自赋值、标量改写、数组 length 变长（只造空洞）→ 图不变 → EDGE_STABLE。
+   * 对象换对象且新值的归属已覆盖容器键（同容器内置换：sort / reverse / splice 移动）
+   * → EDGE_STABLE，理由见 {@link isCoveredSwap}。
    * 访问器写入一律 EDGE_REMOVED：它的 setter 会改哪些边不可知。自有访问器看 `previous`，
    * 原型链上的访问器由调用方经 `inherited` 补进来（set 陷阱传，见其注释；
    * defineProperty 走 [[DefineOwnProperty]]，不调用任何 setter，故不传）。
@@ -167,7 +206,11 @@ export function createDirtyTrackingProxy(root: object, cache: DirtyTrackingCache
     const effective = previous ?? inherited
     if (effective && !('value' in effective)) return EDGE_REMOVED
     const previousValue = previous && 'value' in previous ? indexedObjectOf(previous.value) : undefined
-    if (previousValue && previousValue !== value) return EDGE_REMOVED
+    if (previousValue && previousValue !== value) {
+      const incoming = indexedObjectOf(value)
+      if (incoming && isCoveredSwap(obj, incoming)) return EDGE_STABLE
+      return EDGE_REMOVED
+    }
     return isObject(value) && value !== previousValue ? EDGE_ADDED : EDGE_STABLE
   }
 
@@ -248,6 +291,22 @@ export function createDirtyTrackingProxy(root: object, cache: DirtyTrackingCache
           }
         }
         const raw = Reflect.get(obj, key, obj)
+        // 集合的白名单外成员（collectionMethod 覆盖 set/add/delete/clear/has/get/forEach/
+        // Symbol.iterator/entries/keys/values 之外的函数值）以**原始集合**为接收者返回：
+        // 裸函数经代理调用时 this 是代理而不是原始 Map/Set，内部槽位取不到 ⇒ 直接抛
+        // TypeError（`Method Set.prototype.union called on incompatible receiver`）。
+        // ES2025 给 Set 新增的 union / intersection / difference / symmetricDifference /
+        // isSubsetOf / isSupersetOf / isDisjointFrom 全在这一档里，Map/Set 子类自定义方法
+        // 读 #private 字段同样走这里——与下方 bindMethods 是同一个坑、同一手法。
+        // 取舍与 bindMethods 一致：这类调用不计入追踪（白名单外的内置方法都不改图，
+        // 子类自定义方法若改图则属本文件声明的契约外写入，其新增子树由 report 的
+        // 「解析不出归属即标记全部顶层键」兜底），故不额外 report 一次，免得纯读方法
+        // （union 一类）在渲染路径上被调用一次就把所属顶层键标脏、白刷一次 setData
+        if (collection && typeof raw === 'function' && key !== 'constructor') {
+          const bound = raw.bind(obj)
+          methods.set(key, bound)
+          return bound
+        }
         // 有意以原始 target 作为接收者（而非 receiver/代理）：类实例的访问器与方法
         // 常读 #private 字段、类型化数组内部槽位，代理接收者会让它们直接抛错
         // （与下方 bindMethods 同一取舍）。代价是访问器内部对裸对象的写入不被归因，

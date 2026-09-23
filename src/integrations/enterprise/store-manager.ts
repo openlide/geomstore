@@ -5,7 +5,7 @@
  */
 
 import type { Store } from '../../types/store.js'
-import { createUserStore, userStoreKey, type UserState } from './user-store.js'
+import { createUserStore, isValidUserId, userStoreKey, type UserState } from './user-store.js'
 import { storage, logger, CURRENT_USER_KEY, DEFAULT_MAX_STORES } from './env.js'
 
 /**
@@ -42,8 +42,20 @@ export class StoreManager {
    * 副作用取决于 LRU 淘汰状态这一调用方不可见的实现细节；只读预览另一账号
    * （getUserStore('B')）会静默把身份切成 B，随后 logout() 清的是 B 的数据。
    * 身份切换与冷启动恢复一律走 switchUser 显式表达。
+   *
+   * userId 的合法性在**触碰注册表之前**判定：未命中分支会先做 LRU 淘汰再创建 store，
+   * 校验晚于淘汰时，一次非法 userId（空/纯空白）的调用会在 createUserStore 抛错前
+   * 销毁一个无关账号的活跃 store（其页面订阅与组合 store 的失效回调被静默解除），
+   * 而抛错后注册表里也没有任何新条目——非法输入白换一个合法账号的实例，
+   * 调用方只看到一句「userId 不能为空」，看不出代价落在别人身上
    */
   getUserStore(userId: string): Store<UserState> {
+    // 与 createUserStore 同源判定（isValidUserId），错误文案保留 `userId 不能为空` 子串：
+    // 调用方与既有用例按该子串匹配，改措辞等于改异常契约
+    if (!isValidUserId(userId)) {
+      throw new Error('[StoreManager] userId 不能为空')
+    }
+
     const existingStore = this.stores.get(userId)
     if (existingStore) {
       // 命中即刷新插入顺序：Map 迭代序即淘汰顺序，不刷新则高频使用的账号
@@ -79,6 +91,12 @@ export class StoreManager {
   /**
    * 登出当前用户
    * 持久化键经 userStoreKey 派生，与 createUserStore 写入的键同源
+   *
+   * 清理范围**只到本账号的 Store 持久化键与身份键**：该账号的离线队列键与死信键由
+   * `OfflineManager` 持有（键按其 store name 派生），在 `createEnterpriseApp` 的
+   * `logout()` 里随 `clearQueue()` / `clearDeadLetters()` 一并清除。这里不去删它们：
+   * 本类不持有 OfflineManager 引用，硬编码 `offline_action_queue_` 前缀就等于把
+   * 「两处各自硬编码字面量、任一侧改动清不掉数据」的老风险再复制一遍
    */
   logout(): void {
     // currentUserId 只有两种取值：null（未登录）或 createUserStore 入口校验过的非空串
@@ -126,8 +144,11 @@ export class StoreManager {
    * 与 logout 的差别是刻意的：本方法面向「测试重置 / 宿主整体换号」这类
    * 需要立刻回收全部实例的场景，而调用方无法指定「哪些账号的数据该被删除」；
    * 在这里连带删除所有 `user-store-*` 键会把无法归零的数据一次抹掉，
-   * 风险远高于收益。需要真正清除某账号持久化数据请显式走 `logout()`（当前用户）
-   * 或按 `userStoreKey(userId)` 自行清理。
+   * 风险远高于收益。需要真正清除某账号持久化数据请显式走 `logout()`（当前用户），
+   * 或按该账号 store 的 `name` 自行删键：持久化键即 store name，而 `user-store-` 前缀
+   * 是对外契约（见 user-store.ts 的 `USER_STORE_PREFIX` 与 `createUserStore` 的 name/key
+   * 同源写法）。派生函数 `userStoreKey()` **不在公开导出面上**（`enterprise/index.ts`
+   * 与 `integrations/index.ts` 的具名清单都没带它），照它写代码的宿主只能硬编码前缀
    *
    * `CURRENT_USER_KEY` 则一并移除：它是身份/会话标记而非账号数据，与
    * `currentUserId = null` 属于同一次「清理」。留着它会让内存报「无当前用户」

@@ -145,7 +145,16 @@ function classifyEntry(full) {
   } catch {
     return 'link'
   }
-  return samePath(real, path.resolve(full)) ? 'dir' : 'link'
+  // 参照系必须同源（第六轮 R6-031 的同一条缺陷移植，正本见 clean-dist.mjs 的 classifyEntry）：
+  // `path.resolve(full)` 只把路径规范化、不解析重解析点，Windows 下 dist 自身经由 junction
+  // 抵达时两侧永不相等，扫描会静默跳过整个目录树，压缩「成功」而产物原样未动
+  let realParent
+  try {
+    realParent = fs.realpathSync(path.dirname(full))
+  } catch {
+    return 'link'
+  }
+  return samePath(real, path.join(realParent, path.basename(full))) ? 'dir' : 'link'
 }
 
 /**

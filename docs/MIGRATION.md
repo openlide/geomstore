@@ -4,6 +4,32 @@
 
 > 版本约定：`0.x` 阶段的行为契约变更会显式标注「Breaking」并给出迁移代码；仅「新增可选项」之类的纯增量不在此列。
 
+## 升级到 0.7.0
+
+0.6.x → 0.7.0 收录第六轮全库复审（`ocrreview6.md`，180 个文件 / 114 条，逐条判定 FIXED 112 / 明确不修 2）的修复。对外语义的变化以 `CHANGELOG.md` 的 0.7.0 一节为准，计数口径写死在这里以免两份文档各说各话：**Breaking 3 条（类型面与对外契约）+ Changed 19 条（行为变更）+ Added 3 条（纯增量）+ Fixed 4 条 + Docs 4 条 + Tooling 9 条 + 明确不修与待拍板 6 条**。本节只挑其中**需要改代码的 5 条**与**无需改代码但断言 / 监控要复核的 5 条**展开，剩下的属于「原本就该如此」的缺陷修正与文档纠偏。0.6.1 那一档只动微信产物链（`dist-weapp/` 的编译与 `verify:weapp` 门禁），对调用方无影响，所以本节从 0.6.0 的行为差异整体算起。
+
+> **同样不会自动发生**：本版含破坏性变更，按 0.x 的语义升的是 **minor**（0.6.1 → 0.7.0）。`^0.6.1` 展开为 `>=0.6.1 <0.7.0`，要拿到这一轮修复请把依赖显式改成 `^0.7.0`。
+
+### 需要改代码
+
+- **`setState('__proto__', …)` 不再换原型**（R6-007）：`__proto__` / `constructor` / `prototype` 这三个键现在与 `$patch` / `$replaceState` 同口径，走 DefineOwnProperty 语义——值成为状态对象上的**自有数据属性**，`Object.getPrototypeOf(state)` 不变。仍然依赖旧行为（用 `setState('__proto__', obj)` 给状态树挂原型、或指望 `state.someMissingKey` 经那条链取到值）的代码要改成显式建模；反过来，指望「非对象值时那次写入什么也没发生」的分支也没了：现在它会真的落下一个自有键并照常推进变更计数。读回自己写进去的值请用 `Object.getOwnPropertyDescriptor(state, '__proto__')`，`state.__proto__` 这个表达式返回的仍是原型。
+- **不要再靠组合层的抛错发现子 store 被销毁**（R6-005）：子 store 在组合之外被 `destroy()` 后，`composed.getState()` / `composed.state` / `composed.$snapshot()` 与平铺模式的归属判定都不再抛 `Cannot call getState on a destroyed Store`——该子店按**空视图**并入、按 store 去重告警一次，其余子店照常读写。三处要检查：① `try { composed.getState() } catch {}` 这类「抛错＝子店没了」的探测逻辑，改成看告警或自己持有引用；② 把 `composed.getState().child === undefined` 当「子店不在」的判断——现在它是一个**空对象**而不是缺失键；③ 依赖「合并状态里键数不变」的深比较断言。销毁整个组合仍是 `composed.destroy()`，语义未变。
+- **手工构造 `SnapshotDiff` 的代码要补 `inputTrusted`**（R6-050）：该字段是**新增必填**（`SnapshotDiff.inputTrusted: boolean`，库产出的对象一定带它）。写测试夹具 / 自造 diff 对象的地方直接补 `inputTrusted: true`，否则编译报错。同时注意判读顺序：任一侧快照 `success: false` 时 `compareSnapshots` 不再逐路径比对，而是交付一条 root 级整体差异并把 `changed` 置为 `true`——那表示「输入不可信」，不表示「确有差异」，先判 `success`、再判 `inputTrusted`、最后才读 `changes`。旧实现会把两份失败快照报成 `changed: false`（把「快照没做成」伪装成「状态没变」）。
+- **按 `root[0]` 这类下标聚合 `Map` 条目路径的消费方要改成按键身份**（R6-101）：`compareSnapshots` 的 `changes[].path` 现在与克隆账本 `errors[].path` 同一份方言——`Map` **值差异**记 `parent.<String(key)>`、**键新增 / 删除**记 `parent.key.<String(key)>`（旧写法是 `root.key[0]` 这种「两侧各自的迭代下标」，会随插入顺序漂移、双向比对给出不同路径）。正则按 `\.key\[\d+\]` 解析的请改按 `\.key\.<键串>`；`Symbol` 键串是 `String(key)`、`toString` 抛错的键退回 `<unstringifiable key>`。`Set` 的 `[removed:i]` / `[added:i]` 里的 `i` 仍是**报告序下标、不是条目身份**（集合元素没有可当身份的键），跨快照配对 `Set` 变化请读 `oldValue` / `newValue` 而不是按下标配。
+- **别指望快照把子类与「内部槽位承载值」克隆成独立副本**（R6-008 / R6-099 / R6-100 + 主会话 B14/B15）：`Date` / `RegExp` / `Map` / `Set` / `Array` 的**子类实例**，以及 `Promise`、装箱原始值（`new Number(1)` / `new String('x')`）、`ArrayBuffer` / TypedArray / DataView、`WeakMap` / `WeakSet`、`Error`、生成器，现在一律**保留原引用**（与核心 `deepCloneState` 同口径，同步与异步两条路径一致）。此前它们分别被 `new X()` 重建（子类字段与方法丢失）或被拷成「`instanceof` 仍真、内部槽位为空」的壳（`await snap.data.p`、`Number(snap.data.n)` 当场抛 `TypeError`；`compareSnapshots` 对 `new Number(1)` vs `new Number(2)` 恒判无差异）。如果你的代码依赖「快照之后改原对象不影响快照」，对这两类节点请改用 `customCloner` 自己接管；类实例仍按既有契约重建为同类实例。另两条同批口径：数组上的**附加自有键**（非下标、非 `length`）现在同步与异步两条路径都跟着克隆；`includeNonEnumerable: true` 拷进来的键一律落为可枚举（`Object.keys` / `JSON.stringify` / diff 键集比对从此看得见它们，若你的断言按「不可枚举」写需要复核）。
+
+### 行为变更（无需改代码，但断言 / 监控需复核）
+
+- **异步 action 的同步段现在会当场补发一次通知**（R6-037）：默认模式下「同步段有写入且最终 settle」的一次异步 action，通知数由 **1 变 2**（结算那一轮保留，覆盖 `await` 之后的续段）。`notify.async`（同 tick 微任务合并）与 `notify.onlyOnChange`（按写入计数去重，同步段无写入就不多刷）都会把它吸收回 1 次；`batch` 内不提前补发。动机是 Promise 永不 settle 时同步段的写入此前要等「下一个不相干通知」才浮出来。按「一次 dispatch 一次回调」写断言的测试、以及靠通知次数做上报去重的插件需要重算；`notify.async` 合并窗口下可能多出一个**脏键为空**的投递批次（内容已在上一批投完，集成层据此跳过 `setData`）。
+- **状态保护不再对冻结 / 不可写属性抛错，读取拿到裸引用**（R6-006）：自有属性「既不可配置也不可写」时（`Object.freeze` 过的子树、`defineProperty` 成 `writable:false + configurable:false` 的键；最省事的来路就是把 `$snapshot()` 的深冻结结果 `setState` 回状态），深代理与数组代理都原样返回目标值——这是 Proxy `[[Get]]` 不变量的硬要求，修复前连**读取**都会抛 `TypeError: 'get' on proxy: property 'x' is a read-only and non-configurable data property…`。代价写在文档里：这类子树不受写保护、不计变更与脏键，`state.frozen.x = 1` 在严格模式下仍按 JS 自身规则抛 `TypeError`（那不是本库的守卫，报错文本与可捕获性都变了口径）。要复核的用例形状是「读冻结子树会抛 Proxy invariant 错」——那种读取现在不再抛。
+- **`withDebounce` / `withThrottle` 的 `cancel*` / `flush*` / `dispose*` 在 store action 上不可用**（R6-046，文档纠正而非新增限制）：这六个入口按「被装饰方法被调用时的 `this`」定位状态槽位，而 store action 的 `this` 是 `ActionManager` 每次 dispatch 现造的 action 上下文代理、不挂在任何公开成员上，于是 `cancelDebouncedCalls(this)` 之类调用命中空槽位、**静默 no-op**（不抛错、也不清定时器）。本库刻意不暴露那个宿主（否则「装饰器内部槽位键」升为跨 core 与 extras 的公开契约）。改写法即可：① 装饰 Page / Component 上的方法、让它去 `dispatch`；② 在 store 外面自己包一层并把那一层当宿主传进去。此前文档（`docs/GUIDE.md` §3、`docs/FAQ.md` 装饰器一节）按「对 store action 同样成立」写过，已改正——照旧抄写的代码不会崩，但以为「已收尾」的挂起定时器会照旧到点执行。
+- **文档层面的两条口径纠偏（库行为未变）**：① Store 侧**从来没有 getter 结果缓存**，`store.getter(name)` 每次按当前状态重算；「依赖未变时复用结果、判定基于内部状态版本号」这句在 GUIDE / API / 示例里都是假话，已删，记忆化请走 `extras/selector` 的 `createSelector`。② 内置缓存的**唯一读取入口是 `getCached(key)`**——`getState()` 不查缓存也不计未命中（用它演示命中是白演示），`setState` / `$patch` 是**写穿**（回写条目、不删条目、不计失效），显式失效只有 `invalidateCache()` 与 `$replaceState`（整表清空）。另外 `cacheConfig.enableStats` **默认就是 `true`**（示例与文档里「按需开启」的措辞把方向说反了，性能敏感时该传 `false`，代价是 hits/misses 恒为 0）。
+- **异步快照的超时判定**：只有「仍有未处理任务、或超时后丢掉过入队任务」才让 `success: false`；收尾竞态下交付的完好克隆不再被判为失败（此前会出现 `success: false` 但 `data` 是完整副本的自相矛盾结果）。
+
+### 版本号与文档同步
+
+版本号散在四处（`package.json` 的 `version`、`src/integrations/enterprise/hot-update.ts` 的 `LIBRARY_VERSION`、`SKILL.md` 三处手写行、`pnpm skill:api` 生成物的「来源版本」行），本轮由维护侧一次性 bump 到 **0.7.0** 并重跑生成器；发版清单见 [CONTRIBUTING](../CONTRIBUTING.md#构建与发布)。
+
 ## 升级到 0.6.0
 
 0.5.1 → 0.6.0 一并收录第四轮（454 条）与第五轮（376 条）两次复审的修复。多数为「原本就该如此」的缺陷修复，本节只列**需要动调用方**或**会改变可观测行为**的点；完整清单见 [CHANGELOG](../CHANGELOG.md)，第五轮条目见本节末尾的「第五轮复审追加」。
@@ -130,11 +156,11 @@
 
 公开子路径与各入口的导出集合**均未变化**；仅当代码**深链了内部源码路径**时才需要调整：
 
-| 能力 | 源码路径 | 对外引入方式（不变） |
-| --- | --- | --- |
-| 快照 | `src/extras/snapshot` | `@openlide/geomstore/extras/snapshot` |
-| 选择器 | `src/extras/selector` | `@openlide/geomstore/extras/selector` |
-| Action 增强 | `src/extras/action` | `@openlide/geomstore/extras/action` |
+| 能力        | 源码路径              | 对外引入方式（不变）                  |
+| ----------- | --------------------- | ------------------------------------- |
+| 快照        | `src/extras/snapshot` | `@openlide/geomstore/extras/snapshot` |
+| 选择器      | `src/extras/selector` | `@openlide/geomstore/extras/selector` |
+| Action 增强 | `src/extras/action`   | `@openlide/geomstore/extras/action`   |
 
 `cache` / `hooks` / `performance` 的实现仍在 `src/core`（被 `core/store` 直接依赖），仅入口在 `extras/*`。
 
@@ -166,7 +192,9 @@
 `Selector` / `ParametricSelector` / `SelectorComposerInput`、选择器各创建函数与 `composeStore` 的 `StoreLike` 由 `Record<string, unknown>` 放宽为 `State`：**未声明索引签名的业务 `interface`** 现在可直接作为状态类型。
 
 ```ts
-interface OrderState { rate: number }        // 此前会被拒之门外
+interface OrderState {
+  rate: number
+} // 此前会被拒之门外
 createSelector((state: OrderState) => state.rate)
 composeStore([userStore, cartStore])
 ```
@@ -186,18 +214,18 @@ composeStore([userStore, cartStore])
 
 ## 升级到 0.3.0
 
-| 变更 | 迁移方式 |
-| --- | --- |
-| 可选能力改由 `extras/*` 子路径引入（瘦核心拆分） | `import { createSnapshot } from '@openlide/geomstore/extras/snapshot'` |
-| 构建产物目录扁平化：`dist/cjs/**` → `dist/**` | 复制安装时引用 `dist/cjs/...` 的改为 `dist/...`（NPM 安装不受影响） |
-| 转发 stub 目录改由 `prepack` 生成 / `postpack` 清理 | 需要时用 `pnpm stubs` / `pnpm stubs:clean` |
-| `withPageStore` / `withComponentStore` **只识别 `lifetimes` 写法** | 组件顶层 `attached` / `detached` 改为写在 `lifetimes: { attached, detached }` 内 |
-| `SubscriptionManager` 内部 API 重命名（`subscribe`→`add`、`unsubscribe`→`delete`、`size` 改为 getter、移除 `has`） | 使用 `store.subscribe` 公共 API 的代码不受影响 |
-| `persistencePlugin` 直接安装不再透传第二参数 | 需要 `storage` / `key` / `filter` / `validate` 时改用工厂形式 `persistencePlugin(options)` |
-| 热更新备份新增 `version` 字段 | 备份版本与库版本不一致时仅告警，仍按 `$patch` 合并语义恢复（不因版本不符丢弃用户数据） |
-| 零拷贝通知语义收紧（`notify.clone: false`） | 存在可读写订阅者时仍会克隆以保证内部状态安全 |
-| `withCache` 命中日志 `console.log` → `console.debug` | 依赖日志做断言的测试需同步 |
-| 组合 Store 订阅复用单路合并订阅 | 外部直连子 Store 的订阅不再被组合层订阅静默驱逐 |
+| 变更                                                                                                               | 迁移方式                                                                                   |
+| ------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------ |
+| 可选能力改由 `extras/*` 子路径引入（瘦核心拆分）                                                                   | `import { createSnapshot } from '@openlide/geomstore/extras/snapshot'`                     |
+| 构建产物目录扁平化：`dist/cjs/**` → `dist/**`                                                                      | 复制安装时引用 `dist/cjs/...` 的改为 `dist/...`（NPM 安装不受影响）                        |
+| 转发 stub 目录改由 `prepack` 生成 / `postpack` 清理                                                                | 需要时用 `pnpm stubs` / `pnpm stubs:clean`                                                 |
+| `withPageStore` / `withComponentStore` **只识别 `lifetimes` 写法**                                                 | 组件顶层 `attached` / `detached` 改为写在 `lifetimes: { attached, detached }` 内           |
+| `SubscriptionManager` 内部 API 重命名（`subscribe`→`add`、`unsubscribe`→`delete`、`size` 改为 getter、移除 `has`） | 使用 `store.subscribe` 公共 API 的代码不受影响                                             |
+| `persistencePlugin` 直接安装不再透传第二参数                                                                       | 需要 `storage` / `key` / `filter` / `validate` 时改用工厂形式 `persistencePlugin(options)` |
+| 热更新备份新增 `version` 字段                                                                                      | 备份版本与库版本不一致时仅告警，仍按 `$patch` 合并语义恢复（不因版本不符丢弃用户数据）     |
+| 零拷贝通知语义收紧（`notify.clone: false`）                                                                        | 存在可读写订阅者时仍会克隆以保证内部状态安全                                               |
+| `withCache` 命中日志 `console.log` → `console.debug`                                                               | 依赖日志做断言的测试需同步                                                                 |
+| 组合 Store 订阅复用单路合并订阅                                                                                    | 外部直连子 Store 的订阅不再被组合层订阅静默驱逐                                            |
 
 ## 升级到 0.2.x
 

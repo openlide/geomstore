@@ -287,7 +287,11 @@ describe('#322 异步克隆的原语分支使用归一化后的描述符标志',
     const cloned = asyncResult.data as Record<string, unknown>
 
     expect(cloned.hidden).toBe(2)
-    expect(flagsOf(cloned, 'hidden')).toEqual({ writable: false, enumerable: false, configurable: false })
+    // R6-099 起的口径：快照产物里的键一律 enumerable:true——「不可枚举」只可能是
+    // includeNonEnumerable 主动拉进来的，把它还原成不可枚举会让这份快照在自己的
+    // Object.keys / JSON 里隐形。writable/configurable 仍按源还原（两路径共用
+    // normalizeDescriptorFlags，此处同时锁住一致性）
+    expect(flagsOf(cloned, 'hidden')).toEqual({ writable: false, enumerable: true, configurable: false })
     expect(flagsOf(sync, 'hidden')).toEqual(flagsOf(cloned, 'hidden'))
   })
 })
@@ -297,7 +301,8 @@ describe('#289 / #306 / #307 快照入口的类型面与 visited 契约', () => 
     const options: AsyncSnapshotOptions = { async: true, batchSize: 2, batchInterval: 0, maxDepth: 5 }
     const visited = new WeakMap<object, object>()
     const context: CloneContext = { path: 'root', depth: 0, parent: null, key: 'root', visited }
-    const diff: SnapshotDiff = { changed: false, changes: [], timestamp1: 0, timestamp2: 0 }
+    // 无差异场景：inputTrusted 是 f1-08 起的必填字段（两份输入都可信才允许报「没变」）
+    const diff: SnapshotDiff = { changed: false, changes: [], timestamp1: 0, timestamp2: 0, inputTrusted: true }
 
     expect(options.batchSize).toBe(2)
     // visited 的值可读回为 object（无需再断言），循环引用因此共享同一实例
@@ -308,5 +313,6 @@ describe('#289 / #306 / #307 快照入口的类型面与 visited 契约', () => 
     expect(cloned.self).toBe(cloned)
     expect(typeof context.path).toBe('string')
     expect(diff.changed).toBe(false)
+    expect(diff.inputTrusted).toBe(true)
   })
 })

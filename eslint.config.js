@@ -28,12 +28,15 @@ export default [
       ...tseslint.configs.recommended.rules,
 
       // 自定义规则
-      '@typescript-eslint/no-unused-vars': ['warn', { 
-        argsIgnorePattern: '^_',
-        varsIgnorePattern: '^_',
-        caughtErrorsIgnorePattern: '^_',
-        caughtErrors: 'none'
-      }],
+      '@typescript-eslint/no-unused-vars': [
+        'warn',
+        {
+          argsIgnorePattern: '^_',
+          varsIgnorePattern: '^_',
+          caughtErrorsIgnorePattern: '^_',
+          caughtErrors: 'none',
+        },
+      ],
       '@typescript-eslint/no-explicit-any': 'warn',
       '@typescript-eslint/explicit-function-return-type': 'off',
       '@typescript-eslint/explicit-module-boundary-types': 'off',
@@ -48,7 +51,7 @@ export default [
       // 关闭 JS 规则，使用 TS 规则替代
       'no-unused-vars': 'off',
       'no-undef': 'off',
-      'no-redeclare': 'off',  // 使用 TypeScript 的函数重载
+      'no-redeclare': 'off', // 使用 TypeScript 的函数重载
 
       // 通用规则
       'no-console': 'off',
@@ -80,13 +83,29 @@ export default [
   },
 
   // 忽略文件
+  // 名单要覆盖**全部产物与非工作区目录**：`pnpm lint` 显式传 `src tests` 碰不到它们，
+  // 但 flat config 下 `npx eslint .` 是常规调用方式，漏一个就把构建产物当源码送进规则里
+  // （dist-weapp/ 是 build-weapp.mjs 用 esbuild 产出的 105 个一比一 CJS 转译物，
+  //  每个文件都会因 `module`/`require` 触发 no-undef error，看起来像仓库真的坏了）。
+  // dist-weapp / miniprogram_npm 与 .prettierignore、.gitignore 的产物清单同一组名字。
   {
     ignores: [
       'dist/**',
+      'dist-weapp/**',
+      'miniprogram_npm/**',
       'node_modules/**',
       'coverage/**',
       'scripts/**',
       'jest.config.js',
+      // benchmark 子包刻意不在 pnpm-workspace.yaml 的拓扑里（见该文件注释），
+      // 未安装自己的 devDependencies，且有自己的 tsconfig；CI 单独用
+      // `npx tsc -p packages/benchmark/tsconfig.json` 编译它，不走根 eslint 配置
+      'packages/**',
+      // 外部审查工具的中间产物与本地缓存（.gitignore 同样忽略它们）：
+      // 一次性脚本不是仓库源码，`.ocr-fix/*.mjs` 在裸命令下会贡献 60 条
+      // `'process'/'console' is not defined` 级别的 no-undef error
+      '.ocr-fix/**',
+      '.cache/**',
     ],
   },
 ]

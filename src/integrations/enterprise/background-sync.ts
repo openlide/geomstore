@@ -31,6 +31,8 @@ interface BackgroundSyncHandler {
   onForeground?: () => void
   onBackground?: () => void
   lastActiveTime: number
+  /** 缺失 `refreshData` 的告警只发一次：切前台每次都刷同一条告警会淹没真实日志 */
+  refreshActionMissingWarned: boolean
 }
 
 /** 模块级注册表：多次 initBackgroundSync 共享同一份生命周期包装 */
@@ -86,12 +88,14 @@ function installAppLifecycleHooks(): void {
 
       const inactiveDuration = now - handler.lastActiveTime
       if (inactiveDuration > handler.maxInactiveTime) {
-        logger.log('BackgroundSync', `非活跃时间过长(${inactiveDuration}ms)，刷新状态`)
         // 自有属性判定而非 `in`（#358）：`in` 沿原型链查找，原型上挂着同名成员时
         // 守卫会为它放行，而核心 dispatch 只认自有 action（否则 ACTION_NOT_FOUND），
         // 结果是一次注定失败的 dispatch 被记成「刷新状态失败」；
         // 与 core dispatch、offline.executeAction 的校验口径对齐
         if (Object.prototype.hasOwnProperty.call(handler.store.actions, REFRESH_DATA_ACTION)) {
+          // 日志在守卫之后按实际结果打印：写在守卫前会让「缺 refreshData」的 store
+          // 每次切前台都留下一条「刷新状态」记录，排障时读到的是与事实相反的账
+          logger.log('BackgroundSync', `非活跃时间过长(${inactiveDuration}ms)，刷新状态`)
           try {
             // 异步 action 的 rejection 不会被同步 try/catch 捕获，
             // 显式接住避免 unhandled rejection
@@ -103,6 +107,14 @@ function installAppLifecycleHooks(): void {
             // 否则后续 handler 被跳过、用户自己的 onShow 回调不再执行
             logger.error('BackgroundSync', '刷新状态失败:', error)
           }
+        } else if (!handler.refreshActionMissingWarned) {
+          // `refreshData` 是本模块的隐式契约：全库没有任何地方定义它，缺失时前台刷新
+          // 整体是空操作。静默会让「切前台自动刷新」在自带示例里悄悄失效，故显式告警一次。
+          handler.refreshActionMissingWarned = true
+          logger.warn(
+            'BackgroundSync',
+            `store "${handler.store.name}" 未定义 action "${REFRESH_DATA_ACTION}"，切前台不会自动刷新数据；请在该 store 内提供此 action（如委托给自身的同步 action），或不要为它注册后台同步`,
+          )
         }
       }
       handler.lastActiveTime = now
@@ -261,5 +273,6 @@ export function initBackgroundSync<S extends State = State>(config: BackgroundSy
     onForeground,
     onBackground,
     lastActiveTime: Date.now(),
+    refreshActionMissingWarned: false,
   })
 }

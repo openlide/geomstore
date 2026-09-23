@@ -2,7 +2,7 @@
 
 > **本文件由 `scripts/generate-skill-api-reference.mjs` 从 `dist/**/*.d.ts` 生成，请勿手工编辑。**
 >
-> - 来源版本：`@openlide/geomstore@0.6.1`
+> - 来源版本：`@openlide/geomstore@0.7.0`
 > - 内容来源：构建产物类型声明（随 npm 包发布，与安装版本必然一致）
 > - 重新生成：`pnpm build && pnpm skill:api`
 > - 引入路径：`./extras/selector`
@@ -887,7 +887,18 @@ export declare function createRetrySelectorAsync<S extends State, R>(selector: S
  * 不可克隆对象（类实例、Promise、WeakMap/WeakSet 等）保留原引用而非拷贝。因此若
  * state 里放了类实例并就地修改其字段，快照与活状态共享同一实例，比较会因引用相等
  * 判定「未变化」，TTL 内返回陈旧值。规避：用 setState/$patch 整体替换该字段，
- * 让状态树产生新的纯对象。纯对象/数组/Date/RegExp/Map/Set 会被正确深拷贝，不受影响。
+ * 让状态树产生新的纯对象。
+ *
+ * 会被克隆的类型要分两种看法看（口径与 `core/utils/clone.ts`、`core/utils/equality.ts` 一致）：
+ * - 纯对象 / 数组 / Date / RegExp：克隆出的副本在 `deepEqual` 下与源可分辨，快照路径正常。
+ * - **Map / Set**：实例本身会被重建，但**键也被深克隆**，键的引用身份随之改变；
+ *   而 `deepEqual` 的 Map 分支按键的 SameValueZero（引用）匹配。于是状态里存在
+ *   **对象键 Map** 时 `deepEqual(clone(state), state)` 恒为 false——风险方向与上面那条相反，
+ *   不是返回陈旧值，而是无版本号的快照路径上**每次调用都判 miss**：每次都付一次整树克隆
+ *   + 一次整树深比较（比 `cache: false` 更贵），且没有任何诊断信息。
+ *   规避：Map/Set 只用原始值、或跨比较保持同一引用的值作键；做不到就传带版本号的
+ *   Store 状态（命中判定走 O(1) 整数比较，压根不克隆）或 `snapshotState: false`
+ *   （须同时把 `equalityFn` 换成引用相等，见下方性能口径）。
  *
  * 性能口径：Store 状态自带版本号，命中判定走 O(1) 整数比较，不克隆状态；上述快照
  * 只在「状态无版本标记（直接传入普通对象）+ `snapshotState` 为真（默认）」的回退路径上

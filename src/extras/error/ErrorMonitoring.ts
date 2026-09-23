@@ -9,7 +9,7 @@
  */
 
 import type { ErrorContext, ErrorReporter, ErrorGroup, ErrorReport, MonitoringConfig } from '../../types/error.js'
-import { ErrorAggregator } from './ErrorAggregator.js'
+import { DEFAULT_MAX_GROUPS, ErrorAggregator } from './ErrorAggregator.js'
 import { ConsoleReporter } from './reporters/ConsoleReporter.js'
 
 // 上报器与聚合器已拆至子模块；此处再导出以保持既有导入路径（extras/error/ErrorMonitoring.js）不变
@@ -44,6 +44,32 @@ function normalizeCapacity(value: number | undefined, fallback: number, min: num
 }
 
 /**
+ * 报告器列表归一化：非数组退回空数组并出声，数组则收一份**私有副本**
+ *
+ * 两点各挡一类事故：
+ *
+ * - **缺失/非数组**。`Partial<MonitoringConfig>` 允许显式写 `reporters: undefined`
+ *   （本库未开 `exactOptionalPropertyTypes`），于是 `{ ...defaults, ...config }` 会用一个
+ *   值为 undefined 的 own 键把默认的 `[new ConsoleReporter()]` 顶掉。不归一化的后果链是
+ *   `doFlushReports` 里 `this.reporters.map(...)` 同步抛 TypeError：阈值触发的
+ *   `await this.flushReports()` 让 `report()` 自身 reject（而它的典型调用点是 catch 块里
+ *   不 await 的调用，直接成 unhandledRejection）、周期调度器每个 batchInterval 重复报错、
+ *   队列永远排不空并涨到 maxQueueSize 后开始丢包。按「配置错不抛错但出声」的既有口径
+ *   退回空数组（只留聚合与告警，不启动投递）并 warn 留痕。
+ * - **别名**。直接把调用方的数组存下来，`addReporter()` 就是往**那个数组**里 push：同一份
+ *   config 复用给两个实例时，一处注册会跨实例生效；调用方保留的那份数组也被库偷偷改了。
+ *   而 `removeReporter()` 又重新赋值成新数组——同一个 API 在两种调用历史下有不同的可观察
+ *   副作用。构造期复制一次，「谁持有报告器列表」从此固定为本模块。
+ */
+function normalizeReporters(reporters: ErrorReporter[] | undefined): ErrorReporter[] {
+  if (Array.isArray(reporters)) {
+    return [...reporters]
+  }
+  console.warn('[ErrorMonitoring] config.reporters 不是数组，已按「无报告器」处理：错误仍会聚合与告警，但不会投递到任何端')
+  return []
+}
+
+/**
  * 错误监控系统
  *
  * @class ErrorMonitoring
@@ -72,6 +98,7 @@ function normalizeCapacity(value: number | undefined, fallback: number, min: num
  * ```
  */
 export class ErrorMonitoring {
+  /** 本模块私有的一份报告器列表（构造期复制，见 `normalizeReporters`） */
   private reporters: ErrorReporter[]
   private batchInterval: number
   private batchThreshold: number
@@ -104,7 +131,9 @@ export class ErrorMonitoring {
   private droppedErrors = 0
 
   constructor(config: MonitoringConfig) {
-    this.reporters = config.reporters
+    // 归一化 + 收私有副本：见 `normalizeReporters`（它同时堵上「显式 undefined 顶掉默认值」
+    // 与「与调用方共享同一个数组」两个缺口）
+    this.reporters = normalizeReporters(config.reporters)
     // 用 ?? 而非 ||：batchInterval / batchThreshold / reportTimeout 的 0 是合法语义
     // （立即/无延迟、立即上报、不超时），|| 会把显式传入的 0 静默替换为默认值
     this.batchInterval = config.batchInterval ?? 5000
@@ -116,7 +145,9 @@ export class ErrorMonitoring {
     this.maxQueueSize = normalizeCapacity(config.maxQueueSize, DEFAULT_MAX_QUEUE_SIZE, 1)
     this.maxFlushRetries = normalizeCapacity(config.maxFlushRetries, DEFAULT_MAX_FLUSH_RETRIES, 0)
 
-    this.aggregator = new ErrorAggregator()
+    // 聚合组上限同样走归一化：`maxGroups` 是「存活组数」的唯一约束（驱逐即丢组本体），
+    // 传 0/负数/NaN 会让每次 record 都把刚建的组踢掉，账面变成「收得到错误但永远没有组」
+    this.aggregator = new ErrorAggregator(normalizeCapacity(config.maxGroups, DEFAULT_MAX_GROUPS, 1))
 
     // 批量调度器延迟到首次 report 时启动：
     // 避免仅 import 本模块（或 re-export 它的入口）就产生常驻定时器
@@ -319,13 +350,20 @@ export class ErrorMonitoring {
   /**
    * 生成错误报告
    *
-   * `summary.totalErrors` 的口径是「**观测到的**错误数」（聚合启用时取各组 count 之和，
-   * 禁用时取 nonAggregatedErrorCount），其中因队列溢出被丢弃的部分从未投递给任何 reporter
-   * 却仍然计入——它们是真实发生过的错误。被丢弃的量直接随报告给出（`summary.droppedErrors`），
-   * 不必再取 {@link ErrorMonitoring.getDroppedErrors}；`summary.queuedErrors` 只表示仍在队列里的。
+   * `summary.totalErrors` 的口径是「**观测到的**错误数」（聚合启用时取
+   * `ErrorAggregator.getStats().totalErrors`，禁用时取 nonAggregatedErrorCount），其中：
+   * - 因队列溢出被丢弃的部分从未投递给任何 reporter 却仍然计入——它们是真实发生过的错误；
+   *   被丢弃的量随报告给出（`summary.droppedErrors`），不必再取
+   *   {@link ErrorMonitoring.getDroppedErrors}；`summary.queuedErrors` 只表示仍在队列里的。
+   * - 聚合组被 `maxGroups` 驱逐**不会**让它倒退：账目按条独立累计，驱逐量见
+   *   `getAggregationStats()` 的 `evictedErrors` / `evictedGroups`。
+   *
    * 三个字段是三个互不重叠的口径，**不能相加核对**：`droppedErrors` 记的是「被从队列里挤出去」
    * 的次数（被挤掉的那条在它自己那次 `report()` 里已经计入 `totalErrors`），
    * 而成功投递过的错误既不在 `queuedErrors` 里也不在 `droppedErrors` 里。
+   *
+   * 注意 `summary.totalGroups` / `topErrors` / `recentErrors` 只反映**当前存活**的组，
+   * 与 `totalErrors` 不是同一口径（前者会随驱逐变小）。
    *
    * @returns {ErrorReport} 错误报告
    *
@@ -362,6 +400,9 @@ export class ErrorMonitoring {
 
   /**
    * 获取聚合统计
+   *
+   * 透传 `ErrorAggregator.getStats()`：除 `totalGroups`（存活组数）外的各项都是
+   * 「自上次 clear() 以来观测到的」口径，另含驱逐留痕 `evictedGroups` / `evictedErrors`。
    *
    * @returns {object} 聚合统计
    */
@@ -423,6 +464,9 @@ export class ErrorMonitoring {
   /**
    * 添加报告器
    *
+   * 写的是本实例自己的那份数组（构造期已复制，见 `normalizeReporters`）：
+   * 直接 push 进调用方传进来的数组会让同一份 config 复用给两个实例时一处注册跨实例生效
+   *
    * @param {ErrorReporter} reporter - 错误报告器
    */
   addReporter(reporter: ErrorReporter): void {
@@ -431,6 +475,9 @@ export class ErrorMonitoring {
 
   /**
    * 移除报告器
+   *
+   * 与 {@link addReporter} 一样只作用于构造期收下的私有副本，不再出现
+   * 「add 改到调用方数组、remove 另起新数组」的方向差异
    *
    * @param {string} name - 报告器名称
    */
@@ -515,6 +562,10 @@ export class ErrorMonitoring {
 /**
  * 创建默认的错误监控系统
  *
+ * `reporters` 只在调用方真给出数组时才覆盖默认值：`config` 是 `Partial<MonitoringConfig>`，
+ * 显式写成 undefined 的 `reporters` 键（本库未开 `exactOptionalPropertyTypes`）会把默认的
+ * {@link ConsoleReporter} 顶掉，故这里按「缺省 === 未配置」处理而不是无条件展开。
+ *
  * @param {Partial<MonitoringConfig>} [config] - 配置选项
  * @returns {ErrorMonitoring} 错误监控系统实例
  *
@@ -527,14 +578,21 @@ export class ErrorMonitoring {
  * ```
  */
 export function createDefaultMonitoring(config?: Partial<MonitoringConfig>): ErrorMonitoring {
+  const givenReporters = config?.reporters
   const defaultConfig: MonitoringConfig = {
-    reporters: [new ConsoleReporter()],
     batchInterval: 5000,
     batchThreshold: 10,
     enableAggregation: true,
     enableConsoleLog: true,
     reportTimeout: 10000,
     ...config,
+    // reporters 这一项必须落在展开**之后**：`Partial<MonitoringConfig>` 允许显式写
+    // `reporters: undefined`（本库未开 exactOptionalPropertyTypes，「从应用配置拼装」时很常见），
+    // 让 config 无条件覆盖就会把它顶成 undefined，于是每次 flush 在 `this.reporters.map`
+    // 处同步抛 TypeError、整条投递链失效。缺省与显式 undefined 同义（回到默认 ConsoleReporter），
+    // 真给了数组才尊重调用方的列表（`[]` 是「确实要不投递」的合法表达）；
+    // 给了非数组的值原样透传，由构造器的 `normalizeReporters` 出声，与直接 new 同口径
+    reporters: givenReporters === undefined ? [new ConsoleReporter()] : givenReporters,
   }
 
   return new ErrorMonitoring(defaultConfig)

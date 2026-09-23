@@ -59,11 +59,27 @@ export interface UserStoreConfig {
    * 用户信息同步接口地址：必须是 `wx.request` 接受的绝对 URL（域名还需在小程序后台白名单内）。
    * 缺省即「本 Store 不具备服务端同步能力」——`syncWithServer` 会在发起请求前直接 reject
    * （库内不内置业务端点：相对路径在小程序端注定失败，内置一个「看起来像默认值」的地址
-   * 只会把配置缺失变成一次无法归因的网络错误）
+   * 只会把配置缺失变成一次无法归因的网络错误）。
+   *
+   * 注意落盘后果：响应体的 `userInfo` 会被**整体**写进本地存储（键 `user-store-${userId}`，
+   * 小程序 storage 不加密），该接口顺带下发的 session/token/手机号这类字段因此长期驻留设备。
+   * 要收窄请显式配置 `persistUserInfoKeys`
    */
   syncUrl?: string
   /** 初始状态覆盖项（可选） */
   initialState?: Partial<UserState>
+  /**
+   * `userInfo` 的持久化字段允许列表（可选）：列出的**自有**键才会落本地存储，
+   * 其余键只在内存里存活。用于把 `syncUrl` 响应里顺带下发的敏感字段（token/session/
+   * 手机号等）挡在设备存储之外——小程序 storage 明文且同主体的调试/备份通道可读。
+   *
+   * 缺省即「整个 `userInfo` 原样落盘」，刻意不作保守白名单：`UserInfo` 是带
+   * `[key: string]: unknown` 的开放形状（业务自行扩展字段），内置白名单会让未列出的
+   * 业务字段在重启后凭空消失，属破坏性变更。要收窄必须显式声明。
+   * 该选项只管 `userInfo`：`preferences` 由宿主自己的 `updatePreferences` 写入，
+   * 本就不来自服务端响应
+   */
+  persistUserInfoKeys?: readonly string[]
 }
 
 /** 用户隔离 Store 名称 / 持久化键的前缀 */
@@ -118,13 +134,40 @@ function requestUserInfo(url: string): Promise<UserInfo> {
 }
 
 /**
+ * userInfo 落盘前的字段投影（见 `UserStoreConfig.persistUserInfoKeys`）
+ *
+ * 未配置允许列表时原样交出（保持既有行为）。逐键用 defineProperty 写入：
+ * 允许列表由宿主配置，`'__proto__'` 用普通赋值会命中 Object.prototype 的 setter
+ * 而改坏投影对象的原型链（与 integrations/utils 的 setOwnEntry 同口径）
+ */
+function projectUserInfo(userInfo: UserInfo | null, allowedKeys?: readonly string[]): UserInfo | null {
+  if (userInfo === null || !allowedKeys) return userInfo
+  const projected: UserInfo = {}
+  for (const key of allowedKeys) {
+    // 只投影自有键：不沿原型链取值，否则宿主允许列表里的 `toString` 这类键
+    // 会把继承来的方法一并落盘
+    if (Object.prototype.hasOwnProperty.call(userInfo, key)) {
+      Object.defineProperty(projected, key, {
+        value: userInfo[key],
+        writable: true,
+        enumerable: true,
+        configurable: true,
+      })
+    }
+  }
+  return projected
+}
+
+/**
  * 创建用户隔离的 Store
  *
  * 每个用户拥有独立的 Store 实例与持久化键（store name 即 `user-store-${userId}`），
- * 登出时 StoreManager 按同一键清理持久化数据，保证键的写入与删除一致
+ * 登出时 StoreManager 按同一键清理持久化数据，保证键的写入与删除一致。
+ * 落盘内容默认为 `userInfo` + `preferences` 全量，敏感字段用
+ * `persistUserInfoKeys` 收窄（见该选项说明）
  */
 export function createUserStore(config: UserStoreConfig): Store<UserState> {
-  const { userId, syncUrl, initialState = {} } = config
+  const { userId, syncUrl, initialState = {}, persistUserInfoKeys } = config
 
   // 空/纯空白 userId 会生成 `user-store-` 这类畸形键：不同账号在 storage 与
   // StoreManager 的 Map 上碰撞同一键，即跨账号数据泄漏，必须在入口拒绝
@@ -189,6 +232,17 @@ export function createUserStore(config: UserStoreConfig): Store<UserState> {
           throw error
         }
       },
+      /**
+       * 前台刷新入口：`background-sync` 在切前台且非活跃超阈值时按名字 dispatch 它
+       * （`REFRESH_DATA_ACTION`，见同目录 background-sync.ts）。
+       *
+       * 该 action 名是后台同步的隐式契约，工厂不提供它，`createEnterpriseApp` 注册的
+       * 两个 handler 就永远进不了刷新分支——「切前台自动刷新数据」在库自带的示例组合里
+       * 整体失效（后台同步侧现在会为此显式告警一次）。
+       */
+      refreshData(): Promise<void> {
+        return this.dispatch('syncWithServer')
+      },
     },
     enableCache: true,
     cacheKeys: ['userInfo', 'preferences'],
@@ -203,8 +257,10 @@ export function createUserStore(config: UserStoreConfig): Store<UserState> {
       // 跨进程重启沿用上一次的同步时间会让「上次同步于何时」指向一个本次进程
       // 并未发生过的网络往返，依赖它做 re-sync 判定的调用方会被误导；
       // 恢复后由 syncWithServer 重新写入（#338）
+      // userInfo 先按 persistUserInfoKeys 投影，宿主据此把服务端顺带下发的敏感字段
+      // 挡在设备存储之外（缺省不投影，见该选项的兼容性说明）
       filter: (state: UserState) => ({
-        userInfo: state.userInfo,
+        userInfo: projectUserInfo(state.userInfo, persistUserInfoKeys),
         preferences: state.preferences,
       }),
       debounce: DEFAULT_DEBOUNCE_MS,

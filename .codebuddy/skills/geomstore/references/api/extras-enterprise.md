@@ -2,7 +2,7 @@
 
 > **本文件由 `scripts/generate-skill-api-reference.mjs` 从 `dist/**/*.d.ts` 生成，请勿手工编辑。**
 >
-> - 来源版本：`@openlide/geomstore@0.6.1`
+> - 来源版本：`@openlide/geomstore@0.7.0`
 > - 内容来源：构建产物类型声明（随 npm 包发布，与安装版本必然一致）
 > - 重新生成：`pnpm build && pnpm skill:api`
 > - 引入路径：`./extras/enterprise`
@@ -36,10 +36,16 @@ export interface BackgroundSyncConfig<S extends State = State> {
 export interface BackupData {
     /** 备份生成时间戳，用于过期判定（超过 `BACKUP_EXPIRY_MS` 即作废） */
     timestamp: number;
-    /** `store.$snapshot()` 产出的状态快照 */
+    /** `store.$snapshot()` 经 {@link encodeForBackup} 编码后的状态（JSON 往返无损的中间形态） */
     state: unknown;
     /** 备份时的库版本（`LIBRARY_VERSION`）；与当前不一致时仅告警，仍按合并语义恢复 */
     version: string;
+    /**
+     * 本次备份中**无法完整还原**的成员路径与原因（类实例的原型、函数/symbol 成员）。
+     * 容器（Date/RegExp/Map/Set）与 NaN/±Infinity/BigInt 已由编解码无损往返，不在此列。
+     * 恢复侧读到非空列表时打一条「有损恢复」告警，让排障者不必去猜状态为什么缺了指纹
+     */
+    lossy?: string[];
 }
 ```
 
@@ -107,6 +113,13 @@ export declare class OfflineManager<S extends State = State> {
     private isOnline;
     /** 同步互斥标志：防止网络恢复回调与手动 syncQueue 并发重复执行队列 */
     private syncing;
+    /** 本轮同步进行中是否有新操作入队：syncQueue 的 finally 据此补跑下一轮
+     *  （新项入队时本轮 syncing 为真，scheduleResync 的互斥守卫会直接返回，
+     *   不记这个标记的话它只能等外部事件才会被再碰） */
+    private enqueuedWhileSyncing;
+    /** 自驱动重放的待跑定时器（null = 没排）：dispose 时要撤销，
+     *  否则已释放实例会在下一个宏任务里再跑一轮并往新实例接管的存储键上落盘 */
+    private resyncTimer;
     /** 同步进行中的队列中间状态：saveQueue 落盘时据此拼接完整联合视图。
      *  同步期间 enqueue 会触发 saveQueue，若只写 this.actionQueue，
      *  磁盘会被「仅剩新项」的队列覆写——进程恰在此窗口被杀时，
@@ -133,6 +146,12 @@ export declare class OfflineManager<S extends State = State> {
      * rejection 自行重试、队列稍后又会重放同一操作，非幂等操作（下单/提交表单）
      * 会被执行两次，故把重放职责收敛给队列这一个入口。
      *
+     * 重放的触发点（入队**不**等于「等外部事件」）：① 入队后立即安排一轮（仅在线时；
+     * 本轮同步在途则记一次标记，由该轮收尾补跑）；② 一轮收尾仍有存货且本轮有推进；
+     * ③ 网络状态恢复；④ App 切前台（wechat-enterprise 的 onShow）。
+     * 「全失败且都未到重试上限、又没有新入队」时不自驱（止损点见 scheduleResync），
+     * 此时操作仍留在队列里，等 ③/④ 或调用方手动 `syncQueue()`
+     *
      * 重放按 `(type, payload)` 经 `store.dispatch` 组装（见 executeAction），
      * 传入的 `action` 闭包本身不会被重放：payload 必须完整描述该 action 的参数
      */
@@ -142,6 +161,19 @@ export declare class OfflineManager<S extends State = State> {
      * syncing 互斥保证并发触发时队列不会被重复执行
      */
     syncQueue(): Promise<void>;
+    /**
+     * 安排一次自驱动重放（入队后、以及一轮同步收尾仍有存货时）
+     *
+     * 在微任务里跑，且**不**接进当前这条 promise 链：调用方 `await syncQueue()` 只应等到
+     * 本轮结束，不该被顺带跑完的下一轮拖着。异常一律就地记日志（与网络恢复回调同一口径），
+     * 否则会成为 unhandled rejection
+     *
+     * @param hasWorkSignal 本轮是否存在「值得再跑一轮」的信号：有操作永久离开队列
+     *   （成功 / 落死信 / 丢弃损坏条目），或同步期间有新操作入队。全失败且都未到重试上限、
+     *   又没有新项时传 false —— 否则「服务端持续 5xx + 网络状态不变」会让 syncQueue 变成
+     *   不等任何外部信号的紧循环，把重试压力打满
+     */
+    private scheduleResync;
     /**
      * 清空队列
      *
@@ -252,6 +284,12 @@ export declare class StoreManager {
      * 副作用取决于 LRU 淘汰状态这一调用方不可见的实现细节；只读预览另一账号
      * （getUserStore('B')）会静默把身份切成 B，随后 logout() 清的是 B 的数据。
      * 身份切换与冷启动恢复一律走 switchUser 显式表达。
+     *
+     * userId 的合法性在**触碰注册表之前**判定：未命中分支会先做 LRU 淘汰再创建 store，
+     * 校验晚于淘汰时，一次非法 userId（空/纯空白）的调用会在 createUserStore 抛错前
+     * 销毁一个无关账号的活跃 store（其页面订阅与组合 store 的失效回调被静默解除），
+     * 而抛错后注册表里也没有任何新条目——非法输入白换一个合法账号的实例，
+     * 调用方只看到一句「userId 不能为空」，看不出代价落在别人身上
      */
     getUserStore(userId: string): Store<UserState>;
     /**
@@ -261,6 +299,12 @@ export declare class StoreManager {
     /**
      * 登出当前用户
      * 持久化键经 userStoreKey 派生，与 createUserStore 写入的键同源
+     *
+     * 清理范围**只到本账号的 Store 持久化键与身份键**：该账号的离线队列键与死信键由
+     * `OfflineManager` 持有（键按其 store name 派生），在 `createEnterpriseApp` 的
+     * `logout()` 里随 `clearQueue()` / `clearDeadLetters()` 一并清除。这里不去删它们：
+     * 本类不持有 OfflineManager 引用，硬编码 `offline_action_queue_` 前缀就等于把
+     * 「两处各自硬编码字面量、任一侧改动清不掉数据」的老风险再复制一遍
      */
     logout(): void;
     /**
@@ -275,8 +319,11 @@ export declare class StoreManager {
      * 与 logout 的差别是刻意的：本方法面向「测试重置 / 宿主整体换号」这类
      * 需要立刻回收全部实例的场景，而调用方无法指定「哪些账号的数据该被删除」；
      * 在这里连带删除所有 `user-store-*` 键会把无法归零的数据一次抹掉，
-     * 风险远高于收益。需要真正清除某账号持久化数据请显式走 `logout()`（当前用户）
-     * 或按 `userStoreKey(userId)` 自行清理。
+     * 风险远高于收益。需要真正清除某账号持久化数据请显式走 `logout()`（当前用户），
+     * 或按该账号 store 的 `name` 自行删键：持久化键即 store name，而 `user-store-` 前缀
+     * 是对外契约（见 user-store.ts 的 `USER_STORE_PREFIX` 与 `createUserStore` 的 name/key
+     * 同源写法）。派生函数 `userStoreKey()` **不在公开导出面上**（`enterprise/index.ts`
+     * 与 `integrations/index.ts` 的具名清单都没带它），照它写代码的宿主只能硬编码前缀
      *
      * `CURRENT_USER_KEY` 则一并移除：它是身份/会话标记而非账号数据，与
      * `currentUserId = null` 属于同一次「清理」。留着它会让内存报「无当前用户」
@@ -353,11 +400,27 @@ export interface UserStoreConfig {
      * 用户信息同步接口地址：必须是 `wx.request` 接受的绝对 URL（域名还需在小程序后台白名单内）。
      * 缺省即「本 Store 不具备服务端同步能力」——`syncWithServer` 会在发起请求前直接 reject
      * （库内不内置业务端点：相对路径在小程序端注定失败，内置一个「看起来像默认值」的地址
-     * 只会把配置缺失变成一次无法归因的网络错误）
+     * 只会把配置缺失变成一次无法归因的网络错误）。
+     *
+     * 注意落盘后果：响应体的 `userInfo` 会被**整体**写进本地存储（键 `user-store-${userId}`，
+     * 小程序 storage 不加密），该接口顺带下发的 session/token/手机号这类字段因此长期驻留设备。
+     * 要收窄请显式配置 `persistUserInfoKeys`
      */
     syncUrl?: string;
     /** 初始状态覆盖项（可选） */
     initialState?: Partial<UserState>;
+    /**
+     * `userInfo` 的持久化字段允许列表（可选）：列出的**自有**键才会落本地存储，
+     * 其余键只在内存里存活。用于把 `syncUrl` 响应里顺带下发的敏感字段（token/session/
+     * 手机号等）挡在设备存储之外——小程序 storage 明文且同主体的调试/备份通道可读。
+     *
+     * 缺省即「整个 `userInfo` 原样落盘」，刻意不作保守白名单：`UserInfo` 是带
+     * `[key: string]: unknown` 的开放形状（业务自行扩展字段），内置白名单会让未列出的
+     * 业务字段在重启后凭空消失，属破坏性变更。要收窄必须显式声明。
+     * 该选项只管 `userInfo`：`preferences` 由宿主自己的 `updatePreferences` 写入，
+     * 本就不来自服务端响应
+     */
+    persistUserInfoKeys?: readonly string[];
 }
 ```
 
@@ -366,7 +429,9 @@ export interface UserStoreConfig {
 ```ts
 /**
  * 示例：在 App.ts 中使用以上所有功能
- * 账号切换/登出时自动 dispose 旧的 OfflineManager，避免监听泄漏
+ * 账号切换/登出时自动 dispose 旧的 OfflineManager，避免监听泄漏；
+ * 登出还会清空该账号的离线队列与死信队列（键按 store name 派生，与账号一一对应），
+ * 既不把载荷留在设备存储里，也不让下次登录重放登出前的操作
  */
 export declare function createEnterpriseApp(config?: EnterpriseAppConfig): {
     globalData: {
@@ -390,7 +455,9 @@ export declare function createEnterpriseApp(config?: EnterpriseAppConfig): {
  * 创建用户隔离的 Store
  *
  * 每个用户拥有独立的 Store 实例与持久化键（store name 即 `user-store-${userId}`），
- * 登出时 StoreManager 按同一键清理持久化数据，保证键的写入与删除一致
+ * 登出时 StoreManager 按同一键清理持久化数据，保证键的写入与删除一致。
+ * 落盘内容默认为 `userInfo` + `preferences` 全量，敏感字段用
+ * `persistUserInfoKeys` 收窄（见该选项说明）
  */
 export declare function createUserStore(config: UserStoreConfig): Store<UserState>;
 ```

@@ -40,42 +40,48 @@ const appStore = createStore({
 })
 
 // 写法一：数组简写（状态键与 action 名同名注入）
-Page(
-  withPageStore(appStore, {
-    mapState: ['userInfo', 'isLoggedIn', 'theme'],
-    mapActions: ['login', 'logout', 'setTheme'],
-  })({
-    data: {
-      localData: 'page local data',
-    },
-    // 页面方法的 this 由集成层注入（入参类型带 ThisType<PageThis<…>>），
-    // 因此 this.data 与注入的 action 都有类型，无需手写 this 标注
-    onLoad() {
-      if (!this.data.isLoggedIn) {
-        this.login({ name: 'Ada', avatar: 'avatar.png' })
-      }
-    },
-    onUnload() {
-      // 订阅由集成层在 onUnload 自动清理，无需手动退订
-      console.log('页面卸载，订阅已自动清理')
-    },
-  }),
-)
+export const simplePageOptions = withPageStore(appStore, {
+  mapState: ['userInfo', 'isLoggedIn', 'theme'],
+  mapActions: ['login', 'logout', 'setTheme'],
+})({
+  data: {
+    localData: 'page local data',
+  },
+  // 页面方法的 this 由集成层注入（入参类型带 ThisType<PageThis<…>>），
+  // 因此 this.data 与注入的 action 都有类型，无需手写 this 标注
+  onLoad() {
+    if (!this.data.isLoggedIn) {
+      this.login({ name: 'Ada', avatar: 'avatar.png' })
+    }
+  },
+  onUnload() {
+    // 订阅由集成层在 onUnload 自动清理，无需手动退订
+    console.log('页面卸载，订阅已自动清理')
+  },
+})
 
-// 写法二：对象别名映射（避免与页面本地字段重名）
-Page(
-  withPageStore(appStore, {
-    mapState: { currentUser: 'userInfo', loggedIn: 'isLoggedIn' },
-    mapActions: { changeTheme: 'setTheme' },
-  })({
-    data: {
-      pageTitle: 'User Profile',
-    },
-    onLoad() {
-      console.log('登录状态:', this.data.loggedIn)
-      this.changeTheme('dark')
-    },
-  }),
-)
+// 写法二：对象别名映射（避免与页面本地字段重名）。
+// 真实工程里两种写法各占一个页面文件；本示例为对照起见把两份配置放在同一文件，
+// 因此只在下面的守卫里注册写法一，写法二作为可直接 import 的对照导出。
+export const aliasedPageOptions = withPageStore(appStore, {
+  mapState: { currentUser: 'userInfo', loggedIn: 'isLoggedIn' },
+  mapActions: { changeTheme: 'setTheme' },
+})({
+  data: {
+    pageTitle: 'User Profile',
+  },
+  onLoad() {
+    console.log('登录状态:', this.data.loggedIn)
+    this.changeTheme('dark')
+  },
+})
+
+// 宿主守卫：`Page` 只存在于微信小程序运行时，examples/global.d.ts 里那条
+// `declare function Page` 是纯编译期声明、不产出任何运行时代码。写在模块顶层裸调用，
+// 会让本文件在 Node（脚本、jest、文档生成器）里一被 import 就抛
+// `ReferenceError: Page is not defined`，故与 app/component 两个示例同口径包守卫
+if (typeof Page === 'function') {
+  Page(simplePageOptions)
+}
 
 console.log('✅ Page 集成示例已定义（需在微信小程序环境中运行）')

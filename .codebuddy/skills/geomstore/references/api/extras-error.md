@@ -2,7 +2,7 @@
 
 > **本文件由 `scripts/generate-skill-api-reference.mjs` 从 `dist/**/*.d.ts` 生成，请勿手工编辑。**
 >
-> - 来源版本：`@openlide/geomstore@0.6.1`
+> - 来源版本：`@openlide/geomstore@0.7.0`
 > - 内容来源：构建产物类型声明（随 npm 包发布，与安装版本必然一致）
 > - 重新生成：`pnpm build && pnpm skill:api`
 > - 引入路径：`./extras/error`
@@ -142,6 +142,12 @@ export declare class ConsoleReporter implements ErrorReporter {
  * 错误聚合器
  *
  * 将相似的错误聚合成组，便于分析和报告
+ *
+ * 两套口径要分清（`getStats` 里同时给出）：
+ * - **账目**（`totalErrors` / `byCode` / `byStore`）按条累计，自 `clear()` 起单调不减，
+ *   与组是否被 `maxGroups` 驱逐无关；
+ * - **分组视图**（`totalGroups` / `getGroups()` / `getGroupsByStore()`）只反映当前存活的组，
+ *   会随驱逐变小，差额记在 `evictedGroups` / `evictedErrors` 里。
  */
 export declare class ErrorAggregator {
     /** groupId → 组及其记账数据 */
@@ -160,7 +166,26 @@ export declare class ErrorAggregator {
      * 故规模同样被 maxGroups 约束，不会单独增长。
      */
     private readonly groupIdByFingerprint;
+    /** 存活组数量上限（只约束「组本体驻留多少组」，不约束账目，见 `getStats`） */
     private readonly maxGroups;
+    /**
+     * 自上次 `clear()` 以来观测到的错误条数（每次 `addError` 加一，驱逐不减）
+     *
+     * 这是 `totalErrors` 的唯一来源。此前它由「存活组的 count 求和」现算，于是 maxGroups
+     * 驱逐会把已发生过的错误整笔抹掉：两次 `generateReport()` 之间 totalErrors 会**变小**，
+     * 与它在 `ErrorMonitoring` 里被钉下的口径（「观测到的错误数」）相反。
+     */
+    private observedErrors;
+    /** 按错误码的累计账目（键集合有限，无需上限） */
+    private readonly observedByCode;
+    /** 按 Store 的累计账目，Store 基数超上限后并入 `OTHER_STORES_BUCKET` */
+    private readonly observedByStore;
+    /** 因 maxGroups 驱逐而消失的组数（账目已转入 `observedByCode`/`observedByStore`，此处只是留痕） */
+    private evictedGroups;
+    /** 因 maxGroups 驱逐而消失的组内错误条数 */
+    private evictedErrors;
+    /** 首次驱逐时出声一次：之后再驱逐只累计计数，不在错误高发路径上重复刷屏 */
+    private evictionWarned;
     constructor(maxGroups?: number);
     /**
      * 添加错误到聚合器
@@ -180,21 +205,38 @@ export declare class ErrorAggregator {
     /**
      * 获取指定Store的组
      *
+     * 口径限制：某组波及的 Store 数超过 `MAX_STORES_PER_GROUP` 后，后到的 Store 只以
+     * `__others__` 桶计入该组的 `affectedStores`（计数照常累计，见 {@link getStats}），
+     * 故对本方法而言「没返回某组」**不等于**该 Store 没在那组里报错。
+     * 要按 Store 拿准确的错误条数请用 `getStats().byStore`。
+     *
      * @param {string} storeName - Store名称
      * @returns {ErrorGroup[]} 错误组数组
      */
     getGroupsByStore(storeName: string): ErrorGroup[];
     /**
-     * 记录一次「组内某 Store」的错误计数
+     * 记一条错误的账：总数、按错误码、按 Store 三张表同时推进
      *
-     * 单独按次计数而非按组求和：错误组会把同一站点在不同 Store 的报错合并为一条，
-     * 若把组 count 累加给每个受影响 Store，跨 Store 的组会重复计入，byStore 之和超过 totalErrors。
-     * 计数随组一起存放，组被 maxGroups 驱逐时同步消失，因此
-     * `sum(byStore) === totalErrors` 在驱逐后依旧成立（此前独立累计的口径会永久偏离）。
+     * 三处必须一起改，否则 `sum(byCode) === sum(byStore) === totalErrors` 的账目不变量就会破。
+     * 单独按条计数而非「把存活组的 count 求和」：错误组会把同一站点在不同 Store 的报错合并为一条，
+     * 若把整组 count 记给每个受影响 Store，跨 Store 的组会重复计入（那正是此前
+     * `sum(byStore) > totalErrors` 的来源）；而按组求和还会让 maxGroups 驱逐把已发生过的
+     * 错误整笔抹掉（totalErrors 倒退）。求和口径与驱逐留痕由此分开。
      *
      * @private
      */
-    private _countStoreHit;
+    private _account;
+    /**
+     * 把一个 Store 逐个登记进某个组的 `affectedStores`
+     *
+     * 去重走 `entry.storeNames`（Set），不再是 `affectedStores.includes` 的线性扫描——
+     * 本方法在 `report()` 的错误高发路径上，数组越长每次聚合越贵。
+     * 达到 `MAX_STORES_PER_GROUP` 后只留一个 `__others__` 桶标记并出声一次：
+     * 截断的是「列得全不全」这份诊断视图，条数账目由 `_account` 独立负责，不受影响。
+     *
+     * @private
+     */
+    private _recordGroupStore;
     /**
      * 清理旧的错误组
      *
@@ -202,6 +244,9 @@ export declare class ErrorAggregator {
      * 再排序（O(n log n) + n 个临时对象），而本方法在组数达到上限后的**每次** addError
      * 都会进入，属于错误高发期的热路径。线性扫描取最小 lastSeen 即可，不分配临时数组。
      * 新增一组最多越界一组，while 只是对 maxGroups 被改小等异常情形的兜底。
+     *
+     * 驱逐同时留痕（`evictedGroups` / `evictedErrors`）：组本体的 count 随组消失，
+     * 但条数账目早在 `addError` 里按条落定，故 totalErrors 不因此倒退。
      *
      * @private
      */
@@ -242,26 +287,37 @@ export declare class ErrorAggregator {
      */
     private copySample;
     /**
-     * 清空所有错误组
+     * 清空所有错误组与全部账目
+     *
+     * 驱逐留痕一并归零：`evictedErrors`/`evictedGroups` 与 `getStats()` 各项的口径都是
+     * 「自上次 `clear()` 以来」（与 `ErrorMonitoring.getDroppedErrors()` 同一约定）
      */
     clear(): void;
     /**
      * 获取统计信息
+     *
+     * 口径：`totalErrors` / `byCode` / `byStore` 是**自上次 `clear()` 以来观测到的全部错误**，
+     * 与组是否被 maxGroups 驱逐无关，因此三者随时间单调不减，且恒有
+     * `sum(byCode) === sum(byStore) === totalErrors`。
+     * `totalGroups` 与 `getGroups()` 则只反映**当前存活**的组（驱逐后必然变小），
+     * 两者的差额由 `evictedGroups` / `evictedErrors` 说明——聚合丢过数据在这里看得见。
+     *
+     * 返回的是新建对象，调用方改写不影响内部账目。
      *
      * @returns {object} 统计信息
      */
     getStats(): {
         totalGroups: number;
         totalErrors: number;
-        byCode: Record<string, number>;
-        byStore: Record<string, number>;
+        byCode: {
+            [k: string]: number;
+        };
+        byStore: {
+            [k: string]: number;
+        };
+        evictedGroups: number;
+        evictedErrors: number;
     };
-    /**
-     * 汇总现存各组的按 Store 计数
-     *
-     * @private
-     */
-    private _byStoreCounts;
 }
 ```
 
@@ -937,6 +993,7 @@ export type ErrorLevel = 'error' | 'warning' | 'critical' | 'info' | /** @deprec
  * ```
  */
 export declare class ErrorMonitoring {
+    /** 本模块私有的一份报告器列表（构造期复制，见 `normalizeReporters`） */
     private reporters;
     private batchInterval;
     private batchThreshold;
@@ -999,13 +1056,20 @@ export declare class ErrorMonitoring {
     /**
      * 生成错误报告
      *
-     * `summary.totalErrors` 的口径是「**观测到的**错误数」（聚合启用时取各组 count 之和，
-     * 禁用时取 nonAggregatedErrorCount），其中因队列溢出被丢弃的部分从未投递给任何 reporter
-     * 却仍然计入——它们是真实发生过的错误。被丢弃的量直接随报告给出（`summary.droppedErrors`），
-     * 不必再取 {@link ErrorMonitoring.getDroppedErrors}；`summary.queuedErrors` 只表示仍在队列里的。
+     * `summary.totalErrors` 的口径是「**观测到的**错误数」（聚合启用时取
+     * `ErrorAggregator.getStats().totalErrors`，禁用时取 nonAggregatedErrorCount），其中：
+     * - 因队列溢出被丢弃的部分从未投递给任何 reporter 却仍然计入——它们是真实发生过的错误；
+     *   被丢弃的量随报告给出（`summary.droppedErrors`），不必再取
+     *   {@link ErrorMonitoring.getDroppedErrors}；`summary.queuedErrors` 只表示仍在队列里的。
+     * - 聚合组被 `maxGroups` 驱逐**不会**让它倒退：账目按条独立累计，驱逐量见
+     *   `getAggregationStats()` 的 `evictedErrors` / `evictedGroups`。
+     *
      * 三个字段是三个互不重叠的口径，**不能相加核对**：`droppedErrors` 记的是「被从队列里挤出去」
      * 的次数（被挤掉的那条在它自己那次 `report()` 里已经计入 `totalErrors`），
      * 而成功投递过的错误既不在 `queuedErrors` 里也不在 `droppedErrors` 里。
+     *
+     * 注意 `summary.totalGroups` / `topErrors` / `recentErrors` 只反映**当前存活**的组，
+     * 与 `totalErrors` 不是同一口径（前者会随驱逐变小）。
      *
      * @returns {ErrorReport} 错误报告
      *
@@ -1020,13 +1084,22 @@ export declare class ErrorMonitoring {
     /**
      * 获取聚合统计
      *
+     * 透传 `ErrorAggregator.getStats()`：除 `totalGroups`（存活组数）外的各项都是
+     * 「自上次 clear() 以来观测到的」口径，另含驱逐留痕 `evictedGroups` / `evictedErrors`。
+     *
      * @returns {object} 聚合统计
      */
     getAggregationStats(): {
         totalGroups: number;
         totalErrors: number;
-        byCode: Record<string, number>;
-        byStore: Record<string, number>;
+        byCode: {
+            [k: string]: number;
+        };
+        byStore: {
+            [k: string]: number;
+        };
+        evictedGroups: number;
+        evictedErrors: number;
     };
     /**
      * 获取错误组
@@ -1066,11 +1139,17 @@ export declare class ErrorMonitoring {
     /**
      * 添加报告器
      *
+     * 写的是本实例自己的那份数组（构造期已复制，见 `normalizeReporters`）：
+     * 直接 push 进调用方传进来的数组会让同一份 config 复用给两个实例时一处注册跨实例生效
+     *
      * @param {ErrorReporter} reporter - 错误报告器
      */
     addReporter(reporter: ErrorReporter): void;
     /**
      * 移除报告器
+     *
+     * 与 {@link addReporter} 一样只作用于构造期收下的私有副本，不再出现
+     * 「add 改到调用方数组、remove 另起新数组」的方向差异
      *
      * @param {string} name - 报告器名称
      */
@@ -1457,12 +1536,15 @@ export declare class GeomStoreError extends Error {
      *
      * @remarks `context` 在此处过一遍 `toSerializableValue`：环路/BigInt/取值即抛的访问器
      * 会被换成字符串标记，因此 `JSON.stringify(error)`（它会调用本方法）不会因这些值抛错，
-     * 错误上报通道不会变成第二次故障。带 `toJSON` 的对象按其自身序列化器处理，
-     * 该序列化器抛错不在本方法的兜底范围内。
+     * 错误上报通道不会变成第二次故障。带 `toJSON` 的对象：序列化器给出原始值（Date 等）时
+     * 按其自身序列化器处理（本方法返回值里仍是那个 Date 对象）；给出对象/数组时其结果继续
+     * 走同一套深度/环路归一，序列化器自身抛错则换成 `'[Unreadable]'`——即本方法对 context
+     * 的兜底**覆盖**自定义序列化器，深树与抛错的序列化器都不会再把故障升级成 RangeError/TypeError。
      *
      * @remarks `cause` 仅在构造期提供时才带上（未包装底层错误时输出形状不变，ERROR-008
      * 锁定的仍是 name/message/code/context/stack 五个键），并过同一套归一，
-     * 使「是谁被包装掉了」在日志里可见。
+     * 使「是谁被包装掉了」在日志里可见。cause 带 `toJSON`（本库错误系即在此）时取其
+     * `toJSON()` 的结果，故被包装者的 `code`/`context`/内层 cause 不丢。
      *
      * @returns {Record<string, unknown>} 序列化的错误信息
      *
@@ -1533,23 +1615,47 @@ export declare class HttpReporter implements ErrorReporter {
      */
     private send;
     /**
-     * 构造上报请求体（唯一的 body 产出点）。
+     * 由**对象**产出一份请求体 JSON 文本
      *
      * `JSON.stringify` 作用于对象字面量时结果至少为 `'{}'`，据此把返回值收窄为
-     * {@link JsonBody}，使下游解析不必再做空串防御。
+     * {@link JsonBody}，使下游解析不必再做空串防御。批量体另有
+     * {@link buildBatchBody}（拼接已序列化片段，不重新序列化）
      */
     private buildRequestBody;
     /**
-     * 单个 ErrorContext 的上报投影
+     * 单个 ErrorContext 的上报投影（**未**序列化）
      *
      * 单条与批量两条路径共用：两处各写一份字段映射时，新增/改名字段只会落到其中一条，
      * 服务端收到的单条与批量负载就会静默漂移。
      *
+     * 本方法**允许抛错**（例如某字段是只在第二次取值才失效的非幂等 getter），
+     * 兜底在 {@link serializeContextItem}；序列化口径见 {@link toSerializableScalar}
+     * 与 {@link toSerializablePayload}。
+     *
      * @private
      */
     private serializeContext;
-    private serializeErrorMessage;
+    /**
+     * 一条上下文的完整序列化结果（单条上报的 body、批量上报的一个片段）
+     *
+     * 「不可序列化」的防线到这里才算闭合：投影阶段挡得住 BigInt / 循环引用，但挡不住
+     * 只在**第二次**取值才失效的非幂等 getter / `toJSON`（先验证串一遍、再把原值交给外层
+     * 重串，两次之间没有任何保证）。故每条上下文各自序列化**一次**，并单独兜底：
+     * 本条导致整体不可序列化时只把这一条换成标记片段，批次其余条目照常交付，
+     * `reportBatch` 不因单条畸形而 reject（那会被监控层判成网络失败并按 maxFlushRetries
+     * 重入队，最终把整批丢弃，且丢弃原因显示为「报告器恒失败」而非「这条上下文畸形」）
+     */
+    private serializeContextItem;
     private serializeErrorBatch;
+    /**
+     * 由**已序列化的条目片段**拼出批量请求体
+     *
+     * 刻意不走 `JSON.stringify({ errors: [...] })`：那会把每个条目**再序列化一次**，
+     * 于是投影阶段「验证一遍 + 外层重串」之间的空档又回来了，一条畸形上下文就足以让
+     * 整个批次 reject。每个片段都出自一次成功的 `JSON.stringify`（失败者已被换成标记片段），
+     * 拼接结果因此必是合法 JSON
+     */
+    private buildBatchBody;
     /**
      * 将 RequestInit.headers 归一化为普通键值对象，
      * 兼容 Headers / string[][] / Record 三种形式
@@ -1577,6 +1683,15 @@ export interface MonitoringConfig {
     batchThreshold?: number;
     /** 是否启用错误聚合 */
     enableAggregation?: boolean;
+    /**
+     * 聚合组数量上限（`ErrorAggregator` 的存活组上限，缺省 100）
+     *
+     * 只约束「同时存活多少组」：被驱逐的组不再出现在 `getGroups()` / `summary.totalGroups`
+     * 里，但其错误条数已按条累计，不会从 `totalErrors`/`byCode`/`byStore` 里消失，
+     * 驱逐量单独记在 `getAggregationStats()` 的 `evictedGroups` / `evictedErrors`。
+     * 非有限值 / 小于 1 归回缺省值。
+     */
+    maxGroups?: number;
     /** 是否在控制台输出日志 */
     enableConsoleLog?: boolean;
     /** 错误上报超时（毫秒） */
@@ -1904,6 +2019,10 @@ export declare function createDefaultErrorRecovery(strategies?: RecoveryStrategy
 /**
  * 创建默认的错误监控系统
  *
+ * `reporters` 只在调用方真给出数组时才覆盖默认值：`config` 是 `Partial<MonitoringConfig>`，
+ * 显式写成 undefined 的 `reporters` 键（本库未开 `exactOptionalPropertyTypes`）会把默认的
+ * {@link ConsoleReporter} 顶掉，故这里按「缺省 === 未配置」处理而不是无条件展开。
+ *
  * @param {Partial<MonitoringConfig>} [config] - 配置选项
  * @returns {ErrorMonitoring} 错误监控系统实例
  *
@@ -2008,12 +2127,6 @@ export declare function isComposeError(error: unknown): error is ComposeError;
 ### `isGeomStoreError`
 
 ```ts
-/**
- * 错误类型守卫
- *
- * @description
- * 提供类型安全的错误检查函数，用于错误处理逻辑。
- */
 /**
  * 检查是否为GeomStoreError
  *

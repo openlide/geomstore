@@ -14,6 +14,22 @@ const DEPTH_MARKER = '[Truncated]'
 const UNREADABLE_MARKER = '[Unreadable]'
 
 /**
+ * 错误品牌标识：供本文件的类型守卫在「同一包多副本」下识别本库错误。
+ *
+ * 与 `store/stateVersion.ts` 的 STATE_VERSION、`store/pluginSupport.ts` 的
+ * GEOMSTORE_BRAND 同一取舍：小程序构建产物里同一包常有重复副本（分包各自打包、
+ * 宿主库把本库一起打进去），此时副本 A 抛出的错误在副本 B 里 `instanceof` 恒为 false，
+ * `isGeomStoreError(e)` 一律漏判，用户按 README 推荐写法就会静默走兜底分支，
+ * 错误码分级/上报策略整块失效。`Symbol.for` 的符号注册表按进程共享，故键名带包名
+ * 命名空间但**不带版本号**（加版本就重新制造了副本分裂）。
+ *
+ * 可伪造性：全局符号注册表公开，任何人 `Symbol.for('@openlide/geomstore:error-brand')`
+ * 都能贴出同样的键。本标识**不是安全边界**，只服务下面这七个类型守卫；
+ * 伪造它换不到任何内部访问通道（真正的写入保护在 StateProxy 陷阱与代际令牌里）。
+ */
+const GEOMSTORE_ERROR_BRAND: unique symbol = Symbol.for('@openlide/geomstore:error-brand')
+
+/**
  * 把 context 里的任意值归一成「JSON.stringify 不会抛」的结构
  *
  * 错误上报是故障发生后才走的通道，`JSON.stringify(error)` 一旦二次抛错，
@@ -23,16 +39,57 @@ const UNREADABLE_MARKER = '[Unreadable]'
  * - BigInt（JSON 无此类型）→ `'123n'` 形式
  * - 取值即抛的访问器（包装了已销毁 Store 的 getter）→ `'[Unreadable]'`
  *
- * 带 `toJSON` 的对象（Date 等）原样交给 JSON 引擎按其自身的序列化器处理；
+ * 带 `toJSON` 的对象分两类处理（见函数体内的分支注释）：序列化器给出**原始值**时
+ * （Date 等）原样交回 JSON 引擎按其自身的序列化器处理；给出**对象/数组**时，
+ * 其返回值仍要过一遍带深度与祖先链的归一，否则本函数的两道保护在这条分支上整体作废。
  * 其余对象/数组按自有可枚举键展开成普通结构（与 stringify 的取值口径一致）。
  */
 function toSerializableValue(value: unknown, ancestors: WeakSet<object>, depth: number): unknown {
   if (value === null || typeof value !== 'object') {
     return typeof value === 'bigint' ? `${value}n` : value
   }
-  if (typeof (value as { toJSON?: unknown }).toJSON === 'function') {
-    return value
+
+  // 探测与调用序列化器都圈在 try 内：`toJSON` 可以是「取值即抛的访问器」，
+  // 而把属性读取留在 try 之外等于让下方 52-56 行为子键建立的那道保护在此失效
+  let serializerResult: unknown
+  let hasSerializer = false
+  try {
+    const serializer = (value as { toJSON?: unknown }).toJSON
+    if (typeof serializer === 'function') {
+      hasSerializer = true
+      serializerResult = (serializer as () => unknown).call(value)
+    }
+  } catch {
+    return UNREADABLE_MARKER
   }
+
+  if (hasSerializer) {
+    // 序列化器给出原始值（Date/Number/String 等）：stringify 按其结果收尾、不会再回到
+    // 本函数，既无深度也无环路风险，故原样交回 value（`toJSON()` 的返回值里 Date 仍是
+    // Date，序列化后的字面量仍是它的 ISO 串——与 R5-079 锁定的形状一致）
+    if (serializerResult === null || typeof serializerResult !== 'object') {
+      return value
+    }
+    // 序列化器给出对象/数组：交回 value 就是「把本函数仅有的两道保护整体旁路」——
+    // 递归交回 JSON 引擎自由进行，而每次 toJSON() 都构造新身份的图/树节点
+    // （`{ parent: this }` 这类写法）会让 stringify 的环路检测认不出引用，
+    // 结局是 RangeError: Maximum call stack size exceeded，即「二次抛错把原始故障一起丢掉」。
+    // 这里改为把返回结果续走同一套归一：value 自身入祖先链（拦住「toJSON 返回自己」），
+    // 深度照常下调，超限时以 [Truncated] 收尾。
+    if (depth >= MAX_CONTEXT_DEPTH) {
+      return DEPTH_MARKER
+    }
+    if (ancestors.has(value)) {
+      return CIRCULAR_MARKER
+    }
+    ancestors.add(value)
+    try {
+      return toSerializableValue(serializerResult, ancestors, depth + 1)
+    } finally {
+      ancestors.delete(value)
+    }
+  }
+
   if (depth >= MAX_CONTEXT_DEPTH) {
     return DEPTH_MARKER
   }
@@ -72,14 +129,38 @@ function toSerializableValue(value: unknown, ancestors: WeakSet<object>, depth: 
 /**
  * `cause` 的日志形状
  *
- * 通用归一会把 Error 摊成 `{}`（`message`/`stack` 都是不可枚举自有属性），
- * 而 cause 的全部价值就是「被包装掉的原始故障是什么」，故 Error 显式取 name/message；
- * 其余值（字符串、状态片段、自定义抛出值）走与 context 同一套环路/BigInt 安全通道
+ * 通用归一会把原生 Error 摊成 `{}`（`message`/`stack` 都是不可枚举自有属性），
+ * 而 cause 的全部价值就是「被包装掉的原始故障是什么」，故：
+ * - 带 `toJSON` 的抛出值（GeomStoreError 系即在此）取其 `toJSON()` 的结果再过同一套归一：
+ *   本库错误的 `code` 是上报侧唯一的分类依据，`cause` 链是两层以上包装的根因，
+ *   只取 name/message 等于把这两样最需要的信息削掉；
+ * - 其余原生 Error 显式取 name/message；
+ * - 再其余的值（字符串、状态片段、自定义抛出值）走与 context 同一套环路/BigInt 安全通道。
+ *
+ * 序列化器自身抛错不向上冒（与「打印错误不得变成第二次故障」的口径一致），
+ * 退回该 Error 的 name/message；非 Error 的抛出值退回 `[Unreadable]` 标记。
  */
 function toSerializableCause(value: unknown): unknown {
+  if (value !== null && (typeof value === 'object' || typeof value === 'function')) {
+    let serializer: unknown
+    try {
+      serializer = (value as { toJSON?: unknown }).toJSON
+    } catch {
+      serializer = undefined
+    }
+    if (typeof serializer === 'function') {
+      try {
+        return toSerializableValue((serializer as () => unknown).call(value), new WeakSet<object>(), 0)
+      } catch {
+        // 序列化器抛错：不中断打印，落到下面的兜底形状
+      }
+    }
+  }
+
   if (value instanceof Error) {
     return { name: value.name, message: value.message }
   }
+
   return toSerializableValue(value, new WeakSet<object>(), 0)
 }
 
@@ -191,6 +272,16 @@ export class GeomStoreError extends Error {
     // 故此处不需要任何分支：ES2020 下原生 class extends Error 本已挂对原型，
     // 这句只为兜住把构造器当函数转译/手工 call 的构建产物，无条件执行才是正确写法）
     Object.setPrototypeOf(this, new.target.prototype)
+
+    // 品牌键以**非可枚举自有属性**挂载：`Object.keys` / `JSON.stringify` / 深比较都看不到它，
+    // 故 toJSON() 的输出形状与实例的可枚举形状保持不变；副本无关的识别靠它，
+    // 因为跨副本时 `instanceof` 一定为 false（见 GEOMSTORE_ERROR_BRAND）
+    Object.defineProperty(this, GEOMSTORE_ERROR_BRAND, {
+      value: true,
+      enumerable: false,
+      writable: false,
+      configurable: false,
+    })
   }
 
   /**
@@ -203,12 +294,15 @@ export class GeomStoreError extends Error {
    *
    * @remarks `context` 在此处过一遍 `toSerializableValue`：环路/BigInt/取值即抛的访问器
    * 会被换成字符串标记，因此 `JSON.stringify(error)`（它会调用本方法）不会因这些值抛错，
-   * 错误上报通道不会变成第二次故障。带 `toJSON` 的对象按其自身序列化器处理，
-   * 该序列化器抛错不在本方法的兜底范围内。
+   * 错误上报通道不会变成第二次故障。带 `toJSON` 的对象：序列化器给出原始值（Date 等）时
+   * 按其自身序列化器处理（本方法返回值里仍是那个 Date 对象）；给出对象/数组时其结果继续
+   * 走同一套深度/环路归一，序列化器自身抛错则换成 `'[Unreadable]'`——即本方法对 context
+   * 的兜底**覆盖**自定义序列化器，深树与抛错的序列化器都不会再把故障升级成 RangeError/TypeError。
    *
    * @remarks `cause` 仅在构造期提供时才带上（未包装底层错误时输出形状不变，ERROR-008
    * 锁定的仍是 name/message/code/context/stack 五个键），并过同一套归一，
-   * 使「是谁被包装掉了」在日志里可见。
+   * 使「是谁被包装掉了」在日志里可见。cause 带 `toJSON`（本库错误系即在此）时取其
+   * `toJSON()` 的结果，故被包装者的 `code`/`context`/内层 cause 不丢。
    *
    * @returns {Record<string, unknown>} 序列化的错误信息
    *
@@ -509,7 +603,40 @@ export enum ErrorCode {
  *
  * @description
  * 提供类型安全的错误检查函数，用于错误处理逻辑。
+ *
+ * 判定口径（两条一起用）：
+ * 1. `instanceof` —— 单副本部署下的精确判定；
+ * 2. 品牌键 + `name` —— 副本无关的兜底判定：同一包的多个副本各有一份类对象，
+ *    跨副本 `instanceof` 恒为 false，只看它会让主包抛出的错误在分包里被判成
+ *    「不是 GeomStore 错误」，用户的 `switch (e.code)` 分级静默失效。
+ *
+ * 派生守卫在基类判定上比 `name`：`name` 由构造器按字面量显式赋值（产物经
+ * esbuild/terser 压缩后 `constructor.name` 不可信，故它才是设计上的类型判别字段），
+ * 与品牌键组合同样副本无关。
  */
+
+/**
+ * 基类判定：instanceof ∥（Error 实例 + 本库品牌键 + string code）
+ *
+ * 要求 `error instanceof Error`：品牌键只可能由本库构造器写在 Error 实例上，加上这条
+ * 让「只贴了品牌键的普通对象」不会被当成可分级的错误。
+ * 要求 `typeof code === 'string'`：守卫的输出会被调用方直接用于 `switch (error.code)`，
+ * 形状不完整比漏判更难排查。
+ */
+function matchesGeomStoreErrorShape(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false
+  }
+  const candidate = error as { [GEOMSTORE_ERROR_BRAND]?: unknown; code?: unknown }
+  return candidate[GEOMSTORE_ERROR_BRAND] === true && typeof candidate.code === 'string'
+}
+
+/**
+ * 派生类判定：先过基类判定，再比构造器写入的 name 字面量
+ */
+function matchesDerivedErrorShape(error: unknown, name: string): boolean {
+  return isGeomStoreError(error) && error.name === name
+}
 
 /**
  * 检查是否为GeomStoreError
@@ -531,7 +658,7 @@ export enum ErrorCode {
  * ```
  */
 export function isGeomStoreError(error: unknown): error is GeomStoreError {
-  return error instanceof GeomStoreError
+  return error instanceof GeomStoreError || matchesGeomStoreErrorShape(error)
 }
 
 /**
@@ -541,7 +668,7 @@ export function isGeomStoreError(error: unknown): error is GeomStoreError {
  * @returns {error is ActionError} 是否为ActionError
  */
 export function isActionError(error: unknown): error is ActionError {
-  return error instanceof ActionError
+  return matchesDerivedErrorShape(error, 'ActionError')
 }
 
 /**
@@ -551,7 +678,7 @@ export function isActionError(error: unknown): error is ActionError {
  * @returns {error is StateError} 是否为StateError
  */
 export function isStateError(error: unknown): error is StateError {
-  return error instanceof StateError
+  return matchesDerivedErrorShape(error, 'StateError')
 }
 
 /**
@@ -561,7 +688,7 @@ export function isStateError(error: unknown): error is StateError {
  * @returns {error is SelectorError} 是否为SelectorError
  */
 export function isSelectorError(error: unknown): error is SelectorError {
-  return error instanceof SelectorError
+  return matchesDerivedErrorShape(error, 'SelectorError')
 }
 
 /**
@@ -571,7 +698,7 @@ export function isSelectorError(error: unknown): error is SelectorError {
  * @returns {error is PluginError} 是否为PluginError
  */
 export function isPluginError(error: unknown): error is PluginError {
-  return error instanceof PluginError
+  return matchesDerivedErrorShape(error, 'PluginError')
 }
 
 /**
@@ -581,7 +708,7 @@ export function isPluginError(error: unknown): error is PluginError {
  * @returns {error is ComposeError} 是否为ComposeError
  */
 export function isComposeError(error: unknown): error is ComposeError {
-  return error instanceof ComposeError
+  return matchesDerivedErrorShape(error, 'ComposeError')
 }
 
 /**
@@ -591,7 +718,7 @@ export function isComposeError(error: unknown): error is ComposeError {
  * @returns {error is ValidationError} 是否为ValidationError
  */
 export function isValidationError(error: unknown): error is ValidationError {
-  return error instanceof ValidationError
+  return matchesDerivedErrorShape(error, 'ValidationError')
 }
 
 /**

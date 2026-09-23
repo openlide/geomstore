@@ -137,9 +137,11 @@ describe('R5-251/R5-252 克隆失败的节点一律丢弃并从 visited 除名',
   })
 
   it('同步：容器登记后才抛错时，半成品容器从 visited 上撤销', () => {
-    class HostileMap extends Map<unknown, unknown> {}
-    const source = new HostileMap([['k', 1]])
-    // Map 分支先 `visited.set(value, cloned)` 再迭代；迭代器抛错即落在登记之后
+    // 夹具用**内建 Map 本身**而非子类：第六轮 R6-008 之后，`Map` 子类不再被重建
+    // （`isExactly` 门槛让它整体保留原引用、根本不进克隆分支），旧的 `class HostileMap
+    // extends Map` 写法会让这条 R5 锁静默走不到登记路径。被锁的语义不变：
+    // Map 分支先 `visited.set(value, cloned)` 再迭代，迭代器抛错即落在登记之后
+    const source = new Map<unknown, unknown>([['k', 1]])
     Object.defineProperty(source, Symbol.iterator, {
       get() {
         throw new Error('iterator boom')
@@ -507,7 +509,10 @@ describe('R5-243/R5-244/R5-245 无序配对共用一套护栏', () => {
 
     const diff = compareSnapshots(snap(new Map([[key1, 1]])), snap(new Map([[key2, 2]])))
 
-    expect(diff.changes).toEqual([{ path: 'root.key[0]', oldValue: 1, newValue: 2 }])
+    // 第六轮 R6-101 起，Map 条目路径按**键身份**生成并与克隆引擎同方言：
+    // 值节点是 `parent[String(key)]`（键节点才是 `parent.key[String(key)]`），
+    // 不再是随插入顺序漂移的下标 `root.key[0]`
+    expect(diff.changes).toEqual([{ path: 'root[A]', oldValue: 1, newValue: 2 }])
   })
 
   it('结构匹配受比较次数预算约束：超预算退化为一条整体差异而非逐项增删', () => {

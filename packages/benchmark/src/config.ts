@@ -46,11 +46,17 @@ export const defaultBenchmarkConfig: BenchmarkConfig = {
   },
 
   scenarios: [
+    // 场景集的约束：只列 runner 真正会执行测量的档位。此前这里的 `concurrent-access`
+    // 声明了 `concurrency: 10` 并自称「并发访问测试」，但 runner 的测量循环始终是
+    // `for (let i = 0; i < iterations; i++)` 的串行轮转、全包没有任何一处读取
+    // `scenario.concurrency`（`benchmarkUtils.parallel` 也从未被 runner 调用），
+    // 于是它与同为 medium 档、跑同一套 setState/$patch/read/dispatch 轮转的
+    // `medium-workload` 测的是同一件事，却以「并发」名义进报告，还会把这个无效值
+    // 随 `report.config` 一并写出去。要恢复这一档，得先把 parallel 接进 runScenario。
     { name: 'basic-read', description: '基本读取操作', datasetSize: 'small', iterations: 10000, warmup: true, warmupIterations: 1000 },
     { name: 'basic-write', description: '基本写入操作', datasetSize: 'small', iterations: 10000, warmup: true, warmupIterations: 1000 },
     { name: 'medium-workload', description: '中等规模混合负载', datasetSize: 'medium', iterations: 5000, warmup: true, warmupIterations: 500 },
     { name: 'large-workload', description: '大规模负载测试', datasetSize: 'large', iterations: 1000, warmup: true, warmupIterations: 100 },
-    { name: 'concurrent-access', description: '并发访问测试', datasetSize: 'medium', iterations: 2000, concurrency: 10, warmup: true, warmupIterations: 200 },
     { name: 'cache-efficiency', description: '缓存效率测试', datasetSize: 'large', iterations: 5000, warmup: true, warmupIterations: 500, cacheConfig: { capacity: 50, keySpaceMultiplier: 3, readWriteRatio: 0.7 } },
     { name: 'stress-test', description: '压力测试', datasetSize: 'xlarge', iterations: 100, warmup: true, warmupIterations: 10 },
   ],

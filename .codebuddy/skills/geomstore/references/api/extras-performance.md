@@ -2,7 +2,7 @@
 
 > **本文件由 `scripts/generate-skill-api-reference.mjs` 从 `dist/**/*.d.ts` 生成，请勿手工编辑。**
 >
-> - 来源版本：`@openlide/geomstore@0.6.1`
+> - 来源版本：`@openlide/geomstore@0.7.0`
 > - 内容来源：构建产物类型声明（随 npm 包发布，与安装版本必然一致）
 > - 重新生成：`pnpm build && pnpm skill:api`
 > - 引入路径：`./extras/performance`
@@ -197,7 +197,8 @@ export declare class PerformanceAnalyzer {
      *
      * @param {PerformanceMetrics[]} metrics - 性能指标数组
      * @param {number} [threshold=16] - 性能阈值（毫秒）：avgDuration > 2×threshold 记 medium、
-     *   > 3×threshold 记 high，否则 low（threshold 本身不是过滤门槛）
+     *   > 3×threshold 记 high，否则 low（threshold 本身不是过滤门槛）。
+     *   非有限值（NaN/Infinity）回落默认 16、负值夹到 0，见 {@link normalizeThreshold}
      * @returns {Array<{operation: string, count: number, avgDuration: number, maxDuration: number, severity: 'low' | 'medium' | 'high'}>} 全部操作的分组列表（按 avgDuration 降序），含未超阈值项
      */
     static analyzeBottlenecks(metrics: PerformanceMetrics[], threshold?: number): Array<{
@@ -214,7 +215,8 @@ export declare class PerformanceAnalyzer {
      *
      * @param {PerformanceMetrics[]} currentMetrics - 当前性能指标
      * @param {PerformanceMetrics[]} baselineMetrics - 基准性能指标
-     * @param {number} [threshold=0.2] - 退化阈值（比例，0.2 表示 20%）
+     * @param {number} [threshold=0.2] - 退化阈值（比例，0.2 表示 20%）。
+     *   非有限值回落默认 0.2、负值夹到 0，见 {@link normalizeThreshold}
      * @returns {Array<{operation: string, baselineDuration: number, currentDuration: number, change: number, changePercent: number}>} 退化列表。
      *   基线为 0 而当前有耗时时无比例可算，changePercent 取 Infinity 哨兵（幅度按无限恶化处理）
      */

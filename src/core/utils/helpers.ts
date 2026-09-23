@@ -126,8 +126,11 @@ export { deepEqual } from './equality.js'
 /**
  * 原型链敏感键：作为普通自有属性覆盖写入，禁止递归合并进原型对象，
  * 防止 JSON.parse('{"__proto__": {...}}') 之类的输入污染 Object.prototype
+ *
+ * 导出：`Store.setState` 是核心侧唯一自行落键的公开写入路径，必须与这里同一份判据
+ * （两处各写一遍就会漂移成「$patch 挡住了、setState 没挡」）。
  */
-const PROTO_SENSITIVE_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
+export const PROTO_SENSITIVE_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
 
 /**
  * 以 DefineOwnProperty 语义写入自有属性。
@@ -135,7 +138,7 @@ const PROTO_SENSITIVE_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
  * Object.assign 走 [[Set]] 语义，键为 `__proto__` 时会触发原型 setter 改写对象原型；
  * defineProperty 只定义自有数据属性，不触发任何 setter，可安全承载任意键名。
  */
-function defineOwnProperty(target: Record<string, unknown>, key: string, value: unknown): void {
+export function defineOwnProperty(target: Record<string, unknown>, key: string, value: unknown): void {
   Object.defineProperty(target, key, {
     value,
     writable: true,
@@ -328,6 +331,18 @@ export function uniqueId(prefix?: string): string {
 export type CloneMode = 'deep' | 'shallow' | 'safe' | 'json'
 
 /**
+ * 内建容器的准入门槛：只重建「恰好是该内建类型本身」的实例。
+ *
+ * 与 `clone.ts` 的 `isExactly` 是同一条判据——那份是 clone.ts 的模块私有函数（未导出），
+ * 本模块因此各自复述一行，而不是把它做成 utils 间的隐式契约。两处必须一起漂移：
+ * 想收敛就导出 `isExactly` 后删掉这里（改动跨 clone.ts，本轮分片未含该文件）。
+ * 子类实例走「返回原引用」的降级路径，理由见 {@link clone} 与 deepCloneState 的文档。
+ */
+function isExactlyBuiltin(value: object, proto: object): boolean {
+  return Object.getPrototypeOf(value) === proto
+}
+
+/**
  * 统一的克隆函数
  *
  * @param obj 要克隆的对象
@@ -341,6 +356,15 @@ export type CloneMode = 'deep' | 'shallow' | 'safe' | 'json'
  *   （Date 变字符串、Map/Set 变 `{}`、丢 undefined/函数）已移至显式命名的 `json` 模式
  * - `json`：JSON 序列化往返，产出可结构化克隆的纯数据副本（有损），
  *   序列化失败（循环引用等）时返回原引用
+ *
+ * @remarks 内建容器的**子类实例**（`class MyMap extends Map`、`class MyDate extends Date`……）
+ * 在 deep/shallow/safe 下都按原引用返回，不会被重建为基类副本：子类的构造参数、内部槽位与
+ * 自有字段都不可知，重建只会得到丢方法与字段的基类副本（调用子类方法直接 TypeError）。
+ * 该准入门槛与 clone.ts 的 `isExactly` 同口径，故五种内建容器（Date/RegExp/Map/Set/Array）
+ * 在「顶层输入」与「嵌在对象里」两处得到同一结果——`clone(x, {mode:'deep'})` 与
+ * `deepCloneState(x)` 对同一个顶层输入不再有两套口径，shallow 也不会把子类降级成基类副本。
+ * `json` 模式不受影响：它的契约本就是有损的 JSON 往返（子类实例也只剩可枚举自有键）。
+ *
  * @returns 克隆后的对象
  */
 export function clone<T>(obj: T, options?: { mode?: CloneMode }): T {
@@ -361,24 +385,28 @@ export function clone<T>(obj: T, options?: { mode?: CloneMode }): T {
     }
   }
 
-  // 处理特殊对象类型
-  if (obj instanceof Date) {
+  // 处理特殊对象类型：与 clone.ts 的 `isExactly` 同门槛——只重建「恰好是该内建类型本身」
+  // 的实例。子类实例（`class MyDate extends Date`）不在这里截走，交给下方的降级口径：
+  // deep/safe 走 deepCloneState（它自己也带同一道门槛，返回原引用），shallow 走
+  // 「非纯对象返回原引用」分支。此前这里无条件 `new Date(obj.getTime())`，会让同一个
+  // Date 子类在顶层被降级成基类副本、嵌在对象里却保留原引用（注释与实现相反）
+  if (obj instanceof Date && isExactlyBuiltin(obj, Date.prototype)) {
     return new Date(obj.getTime()) as T
   }
-  if (obj instanceof RegExp) {
+  if (obj instanceof RegExp && isExactlyBuiltin(obj, RegExp.prototype)) {
     return new RegExp(obj.source, obj.flags) as T
   }
 
   if (mode === 'shallow') {
     // 浅克隆：只复制一层，且只对有「保类型的一层展开」办法的容器做展开
-    // （Date/RegExp 已在上方按类型新建）
-    if (Array.isArray(obj)) {
+    // （Date/RegExp 已在上方按类型新建；内建类型的子类一律走下方的原引用降级）
+    if (Array.isArray(obj) && isExactlyBuiltin(obj, Array.prototype)) {
       return [...obj] as T
     }
-    if (obj instanceof Map) {
+    if (obj instanceof Map && isExactlyBuiltin(obj, Map.prototype)) {
       return new Map(obj) as T
     }
-    if (obj instanceof Set) {
+    if (obj instanceof Set && isExactlyBuiltin(obj, Set.prototype)) {
       return new Set(obj) as T
     }
     // 其余对象只有纯对象可以展开：类实例/Error/WeakMap/Promise 的自有可枚举键一般为空，

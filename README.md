@@ -1,12 +1,12 @@
 # GeomStore
 
-面向**原生微信小程序优先**的 TypeScript 状态管理库：核心极简、可选能力下沉 extras，按需引入只为把真正用到的代码带进包里（体积上的收益取决于宿主有没有打包器，直接用「构建 npm」的宿主见「环境适配要点」）。
+面向**原生微信小程序优先**的状态管理库：核心极简、可选能力下沉 extras，按需引入只为把真正用到的代码带进包里（体积上的收益取决于宿主有没有打包器，直接用「构建 npm」的宿主见「环境适配要点」）。
 
 - **核心 / extras 分层**：主入口与 `core` 只含运行必需 API；快照、选择器、Action 增强、性能监控、错误处理、企业集成等全部通过 `extras/*` 子路径按需引入
 - **小程序原生友好**：内置 `withPageStore` / `withComponentStore` / `withAppStore` 集成，页面卸载自动退订；环境差异（`wx.request`、同步存储、基础库缺失的 `console.group`）均已适配
 - **类型完备**：全量 `.d.ts` 随包发布，泛型化的 state / actions / getters 推导
 - **行为可观测**：统一的错误账本（`errors` + `onError` 降级策略）、性能指标采集、快照隔离与差异对比
-- **工程可信**：覆盖率门禁由 `jest.config.js` 的 `coverageThreshold` 定义并全绿（global 语句 / 函数 / 行 98%、分支 95%，`core` 与 snapshot / selector / action 另设单文件分支 85% 下限）；全部 tsconfig（源码 / Jest / 测试 / 构建 / 类型检查 / 示例）零错误
+- **工程可信**：覆盖率门禁由 `jest.config.js` 的 `coverageThreshold` 定义（global 语句 / 函数 / 行 98%、分支 95%，`core` 与 snapshot / selector / action 另设单文件分支 85% 下限），未达标即非零退出；全部 tsconfig（源码 / Jest / 测试 / 构建 / 类型检查 / 示例）零错误
 
 ## 安装
 
@@ -71,20 +71,20 @@ Page(
 
 ## 核心能力
 
-| 能力 | 引入位置 | 说明 |
-| --- | --- | --- |
-| 状态读写 | 核心 | `getState` / `setState` / `$patch` / `$replaceState` |
-| 快照与还原 | 核心 | `$snapshot` / `$restore`（深克隆 + 冻结纯对象 / 数组链） |
-| Action | 核心 | `dispatch`、同步/异步、action 上下文、失败传播 |
-| Getter | 核心 | `store.getter(name)`、依赖未变时复用 |
-| 订阅 | 核心 | `subscribe` 返回退订函数；`maxSubscribers` 是**硬上界**（达限按策略驱逐或抛错） |
-| 钩子系统 | 核心 | `store.hooks.on/emit`，供插件与监控接入 |
-| 批量更新 | 核心 | `batch` / `startBatch` / `endBatch`，合并通知 |
-| 内置缓存 | 核心 | `enableCache(keys?)` / `disableCache` / `invalidateCache` / `getCached` / `getCacheStats` |
-| 插件系统 | 核心 | `use(plugin)` / `usePlugin(plugin, store)` |
-| 小程序集成 | 核心 | `withPageStore` / `withComponentStore` / `withAppStore` |
-| Store 组合 | 核心 | `composeStore`（命名空间 + 斜杠路径）/ `StoreRegistry` |
-| LRU 缓存 | 核心 | `LRUCache`（容量淘汰 + TTL） |
+| 能力       | 引入位置 | 说明                                                                                                                                                                                                       |
+| ---------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 状态读写   | 核心     | `getState` / `setState` / `$patch` / `$replaceState`                                                                                                                                                       |
+| 快照与还原 | 核心     | `$snapshot` / `$restore`（深克隆 + 冻结纯对象 / 数组链；内建容器与「内部槽位承载值」的**子类保留原引用**，不重建）                                                                                         |
+| Action     | 核心     | `dispatch`、同步/异步、action 上下文、失败传播                                                                                                                                                             |
+| Getter     | 核心     | `store.getter(name)`：每次读取按当前状态重算，**Store 侧没有 getter 结果缓存**；要「依赖未变则复用」请用 `extras/selector` 的 `createSelector`                                                             |
+| 订阅       | 核心     | `subscribe` 返回退订函数；`maxSubscribers` 是**硬上界**（达限按策略驱逐或抛错）                                                                                                                            |
+| 钩子系统   | 核心     | `store.hooks.on/emit`，供插件与监控接入                                                                                                                                                                    |
+| 批量更新   | 核心     | `batch` / `startBatch` / `endBatch`，合并通知                                                                                                                                                              |
+| 内置缓存   | 核心     | `enableCache(keys?)` / `disableCache` / `invalidateCache` / `getCached` / `getCacheStats`；**读取只认 `getCached()`**（`getState()` 不查缓存），`setState` / `$patch` 写穿、显式失效走 `invalidateCache()` |
+| 插件系统   | 核心     | `use(plugin)` / `usePlugin(plugin, store)`                                                                                                                                                                 |
+| 小程序集成 | 核心     | `withPageStore` / `withComponentStore` / `withAppStore`                                                                                                                                                    |
+| Store 组合 | 核心     | `composeStore`（命名空间 + 斜杠路径）/ `StoreRegistry`                                                                                                                                                     |
+| LRU 缓存   | 核心     | `LRUCache`（容量淘汰 + TTL）                                                                                                                                                                               |
 
 以下能力**不在**主入口，需按需引入（见下节）：快照引擎、选择器、Action 装饰器、性能监控、内置插件实现、错误处理、企业集成。
 
@@ -111,7 +111,7 @@ import { createEnterpriseApp } from '@openlide/geomstore/extras/enterprise'
 
 ## 环境适配要点
 
-- **小程序包体与「按需」的边界**：`extras/*` 分层的体积收益**取决于宿主有没有打包器**。走 webpack / vite / esbuild 的宿主会把没 import 的子入口摇掉，主包确实只带用到的代码；而**直接用 npm + 开发者工具「构建 npm」** 的宿主走的是另一条路——包里的 `miniprogram` 目录（`dist-weapp/`，按模块一比一转译的 CJS）被**整目录拷贝**进 `miniprogram_npm` 并**全部计入小程序包体积**（压缩后合计 228.3 KB），与用到几个子路径无关；运行时仍是按需的（只有被 `require` 的文件才加载执行）。主包额度紧张的宿主可以只引主入口并自行裁剪该目录，或改走自带打包器的方案
+- **小程序包体与「按需」的边界**：`extras/*` 分层的体积收益**取决于宿主有没有打包器**。走 webpack / vite / esbuild 的宿主会把没 import 的子入口摇掉，主包确实只带用到的代码；而**直接用 npm + 开发者工具「构建 npm」** 的宿主走的是另一条路——包里的 `miniprogram` 目录（`dist-weapp/`，按模块一比一转译的 CJS）被**整目录拷贝**进 `miniprogram_npm` 并**全部计入小程序包体积**（0.7.0 实测压缩后合计 245.5 KB / 105 个模块），与用到几个子路径无关；运行时仍是按需的（只有被 `require` 的文件才加载执行）。主包额度紧张的宿主可以只引主入口并自行裁剪该目录，或改走自带打包器的方案
 - **定时器**：内部对 `setInterval`/`setTimeout` 做 `unref` 探测，浏览器 / 小程序无该 API 时自动跳过，不会阻止进程退出
 - **网络**：错误上报自动选择 `wx.request`（校验 `statusCode`）或 `fetch`（校验 `ok`），均可注入自定义实现
 - **控制台**：基础库缺少 `console.group` 时错误报告自动降级为平铺输出
@@ -120,27 +120,30 @@ import { createEnterpriseApp } from '@openlide/geomstore/extras/enterprise'
 
 ## 工程脚本
 
-| 脚本 | 用途 |
-| --- | --- |
-| `pnpm test` / `test:unit` / `test:integration` | 运行测试 |
-| `pnpm test:coverage` | 覆盖率报告（阈值见 `jest.config.js` 的 `coverageThreshold`，未达标即非零退出） |
-| `pnpm typecheck` / `typecheck:tests` / `typecheck:examples` | 源码 / 测试 / 示例类型检查 |
-| `pnpm lint` / `lint:fix` | ESLint（`lint:ci` 为 `--max-warnings 0`，零告警门禁） |
-| `pnpm build` | `clean-dist` → `tsc -p tsconfig.build.json` → 生成 module-type 标记并移除 sourcemap |
-| `pnpm build:release` | 构建并**强制压缩**（无压缩器时以退出码 1 中止，杜绝静默发出未压缩包） |
-| `pnpm stubs` / `stubs:clean` | 生成 / 清理转发子目录（`prepack`/`postpack` 自动执行） |
+| 脚本                                                        | 用途                                                                                                                  |
+| ----------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `pnpm test` / `test:unit` / `test:integration`              | 运行测试                                                                                                              |
+| `pnpm test:coverage`                                        | 覆盖率报告（阈值见 `jest.config.js` 的 `coverageThreshold`，未达标即非零退出）                                        |
+| `pnpm typecheck` / `typecheck:tests` / `typecheck:examples` | 源码 / 测试 / 示例类型检查                                                                                            |
+| `pnpm lint` / `lint:fix`                                    | ESLint（`lint:ci` 为 `--max-warnings 0`，零告警门禁）                                                                 |
+| `pnpm build`                                                | `clean-dist` → `tsc -p tsconfig.build.json` → 生成 module-type 标记并移除 sourcemap                                   |
+| `pnpm build:release`                                        | 构建并**强制压缩**（无压缩器时以退出码 1 中止，杜绝静默发出未压缩包）                                                 |
+| `pnpm build:weapp` / `verify:weapp`                         | 生成并校验微信产物 `dist-weapp/`（105 模块与 `dist` 镜像、11 个入口导出面一致、跨入口单例同一、真实用例可加载）       |
+| `pnpm skill:api`                                            | 从 `dist/**/*.d.ts` 重新生成 skill 的 API 参考（`SKILL.md` 手写的版本行需与 `package.json` 同步，有用例钉住四处一致） |
+| `pnpm stubs` / `stubs:clean`                                | 生成 / 清理转发子目录（`prepack`/`postpack` 自动执行）                                                                |
+| `pnpm format`                                               | Prettier 写回；CI 的 `Format check` 用同一组 glob 做只读校验                                                          |
 
 ## 文档
 
-| 文档 | 内容 |
-| --- | --- |
-| [docs/GUIDE.md](./docs/GUIDE.md) | 使用指南：从零接入到进阶用法 |
-| [docs/API.md](./docs/API.md) | API 参考（核心 / extras 标注） |
-| [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) | 分层架构、目录结构、模块职责与设计取舍 |
-| [docs/CONCEPTS.md](./docs/CONCEPTS.md) | 概念模型：状态、通知、快照隔离、缓存与版本号 |
-| [docs/BEST_PRACTICES.md](./docs/BEST_PRACTICES.md) | 最佳实践与常见坑 |
-| [docs/FAQ.md](./docs/FAQ.md) | 常见问题 |
-| [docs/MIGRATION.md](./docs/MIGRATION.md) | 版本迁移与行为变更对照 |
+| 文档                                               | 内容                                         |
+| -------------------------------------------------- | -------------------------------------------- |
+| [docs/GUIDE.md](./docs/GUIDE.md)                   | 使用指南：从零接入到进阶用法                 |
+| [docs/API.md](./docs/API.md)                       | API 参考（核心 / extras 标注）               |
+| [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md)     | 分层架构、目录结构、模块职责与设计取舍       |
+| [docs/CONCEPTS.md](./docs/CONCEPTS.md)             | 概念模型：状态、通知、快照隔离、缓存与版本号 |
+| [docs/BEST_PRACTICES.md](./docs/BEST_PRACTICES.md) | 最佳实践与常见坑                             |
+| [docs/FAQ.md](./docs/FAQ.md)                       | 常见问题                                     |
+| [docs/MIGRATION.md](./docs/MIGRATION.md)           | 版本迁移与行为变更对照                       |
 
 ## 许可
 

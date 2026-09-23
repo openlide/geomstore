@@ -32,9 +32,13 @@ const OPERATION_TIME = defaultBenchmarkConfig.thresholds.operationTime
 /**
  * 时间阈值配置（毫秒）
  *
- * 组织维度是「操作」，不是「场景」：`SCENARIO_NAMES` 里的 cache-* / *-memory 系列场景
- * 不在此表逐条设阈，它们分别由 CACHE_THRESHOLDS（命中率）、MEMORY_THRESHOLDS
- * （每 Store / 每状态项 / 每订阅 / 每缓存项的字节数）与下面的 CACHE_AVG 覆盖。
+ * 组织维度是「操作」，不是「场景」：键取自 `config.thresholds.operationTime` 那几个公开操作。
+ * 默认场景集（`basic-read` … `stress-test`，config.ts）每轮跑的就是 setState / $patch /
+ * 读档 / dispatch 四类操作（见 runner 的 `runBenchmarkIteration`），因此每类操作都有档位可比；
+ * 缓存读的耗时由下面的 CACHE_AVG 单列，命中率与常驻字节数另属 CACHE_THRESHOLDS /
+ * MEMORY_THRESHOLDS 两张表。
+ * 注意本表与 `SCENARIO_NAMES` **没有关系**：那份清单是纯对外命名参考、包内无读取方，
+ * 既不进 runner 也没有对应的场景集，按它来解释这张表的覆盖范围会指向一批不存在的键。
  * 每个进入 runner 的操作都必须有 AVG 档，缺档即「该操作没有任何东西可校验」。
  *
  * P99 档写成「AVG × 余量倍数」而非独立字面量：倍数就是各条注释陈述的口径（4/5/10 倍），
@@ -170,9 +174,12 @@ export const CACHE_THRESHOLDS = {
 /**
  * 数据集规模阈值
  *
- * 唯一的读取方是 `ResultBuilder.inferDatasetSize`：它只在结果自己不带 datasetSize 时
- * （createErrorResult / mergeResults）按迭代数兜底推断档位。runner 正常产出的结果直接取
- * `scenario.datasetSize`，不经过这张表，所以「默认跑正好压在 large/xlarge 边界」不成立。
+ * 唯一的读取方是 `ResultBuilder.inferDatasetSize`：它只在调用方**没有**给出档位时
+ * （createResult / createErrorResult / mergeResults 的可选 `datasetSize` 未传，且合并各方的
+ * 档位互不一致）按迭代数兜底推断。runner 正常产出的结果直接取 `scenario.datasetSize`，
+ * 不经过这张表，所以「默认跑正好压在 large/xlarge 边界」不成立。
+ * 反推只是最后一级兜底：迭代数与档位本是两回事（large 档可以只跑 1000 轮），
+ * 有真档位就显式传，别让它替你做决定。
  */
 export const DATASET_SIZE_THRESHOLDS = {
   /** 小型数据集最大迭代数 */
@@ -213,7 +220,18 @@ export const SAMPLING_CONFIG = {
 } as const
 
 /**
- * 场景名称常量
+ * 场景名称常量 —— 纯对外命名参考，包内没有任何读取方
+ *
+ * 与 `DATASET_SIZE_THRESHOLDS` 那张表不同，这里列的 21 个名字**不是**本包交付的场景集：
+ * `defaultBenchmarkConfig.scenarios` / `relaxedBenchmarkConfig.scenarios` 用的是
+ * `basic-read` / `basic-write` / `medium-workload` / `large-workload` / `concurrent-access` /
+ * `cache-efficiency` / `stress-test`（config.ts），与本表零交集，runner 也只按配置里的
+ * `scenario.name` 驱动。除 index.ts 再导出外，本表在包内无读取方。
+ *
+ * 因此它的定位与本文件其余「包内无读取方」的表相同：给自行编排场景的外部 harness 一套
+ * 统一的命名拼写（避免各家写成 `setState` / `set_state` / `setstate` 三种），
+ * 不构成任何阈值或判定的指向。按本表建场景时也要自己配门限——本表的档位由配置里的
+ * 操作名决定，不会按场景名匹配（`TIME_THRESHOLDS` 的注释同一口径）。
  */
 export const SCENARIO_NAMES = {
   // Execution benchmarks

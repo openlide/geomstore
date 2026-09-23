@@ -56,16 +56,20 @@ export interface AppOptions {
 // ==================== App 集成 ====================
 
 /**
- * 映射键与宿主 `globalData` 已有成员同名时告警。
+ * 将写入 `globalData` 的键与宿主已有成员同名时告警。
  *
- * 覆盖是设计行为（store 是映射键的唯一事实来源），但静默覆盖会让
+ * 覆盖是设计行为（store 是这些键的唯一事实来源），但静默覆盖会让
  * 「globalData 里写的初始值为什么没生效」无从排查，口径与 bindActions 的覆盖告警一致。
- * 只在首次 onLaunch 检查：此后 globalData 里的映射键是本函数自己写入的
+ *
+ * 传入的是**键集合**而非映射表：state/getters 落进 globalData 的是映射的键，
+ * 而 `injectMapping` 是「源键 → 目标键」，落进去的是值——两者都写同一个 globalData，
+ * 必须一起检查（此前只查 state/getters 的本地键，注入路径的覆盖一次告警都没有）。
+ * 只在首次 onLaunch 检查：此后 globalData 里的这些键是本函数自己写入的
  */
-function warnOnGlobalDataCollision(globalData: Record<string, unknown>, ...mappings: Array<Record<string, string>>): void {
+function warnOnGlobalDataCollision(globalData: Record<string, unknown>, ...keyGroups: Array<Iterable<string>>): void {
   const collided: string[] = []
-  for (const mapping of mappings) {
-    for (const localKey of Object.keys(mapping)) {
+  for (const keys of keyGroups) {
+    for (const localKey of keys) {
       if (!collided.includes(localKey) && Object.prototype.hasOwnProperty.call(globalData, localKey)) {
         collided.push(localKey)
       }
@@ -91,7 +95,8 @@ function warnOnGlobalDataCollision(globalData: Record<string, unknown>, ...mappi
  * 运行期行为（与 withPageStore / withComponentStore 同口径）：
  * - `autoInject` + `injectMapping` 在 onLaunch 注入一次；再开 `autoUpdateOnShow` 时
  *   每次 App `onShow` 重新注入，异步 action 之后才进缓存的键因此有补偿路径
- * - 映射键与宿主 `globalData` 已有成员同名时告警后覆盖（store 是唯一事实来源）
+ * - 映射键、`injectMapping` 的目标键与宿主 `globalData` 已有成员同名时告警后覆盖
+ *   （store 是唯一事实来源）
  * - 绑定阶段抛错：回滚本次已登记的订阅、告警并把错误原样抛给框架，
  *   不在映射未就绪的实例上转发用户 `onLaunch`
  *
@@ -204,7 +209,11 @@ export function withAppStore<S extends State, A extends Actions, G extends Gette
 
       if (!collisionWarned) {
         collisionWarned = true
-        warnOnGlobalDataCollision(this.globalData, stateMapping, gettersMapping)
+        // 三类键都会写进 globalData：state/getters 映射的本地键，以及 autoInject 打开时
+        // injectMapping 的**目标键**（映射是源键→目标键，落盘的是值）。
+        // 未开 autoInject 时注入不会发生，不能提前报覆盖
+        const injectedKeys = options.autoInject && hasInjectMapping ? Object.values(injectMapping) : []
+        warnOnGlobalDataCollision(this.globalData, Object.keys(stateMapping), Object.keys(gettersMapping), injectedKeys)
       }
 
       // 辅助函数：订阅 store 变化（共用 createStoreSubscriber）

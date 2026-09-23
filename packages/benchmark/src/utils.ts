@@ -274,7 +274,20 @@ export class BenchmarkUtils implements BenchmarkUtilsContract {
     return `${sign}${minutes}m ${seconds}s`
   }
 
+  /**
+   * 格式化计数值（吞吐量等「无量纲 + 单位」的数）
+   *
+   * 与 `formatBytes` / `formatTime` 同一口径先夹一次非有限值：那两位都显式把 NaN/Infinity
+   * 收敛成 `N/A`，唯独这里原先直接把值交给 `toLocaleString`，实测
+   * `Number(Infinity).toLocaleString('en-US', { maximumFractionDigits: 2 })` 得 `'∞'`、
+   * `NaN` 得 `'NaN'`。本方法的两个调用点都在打门限（`reporter` 的「吞吐量 X ops/s」、
+   * `runner` 的「低于门限 Y ops/s」建议文案），门限一旦被算成 NaN（例如自定义 config 的
+   * `datasets` 多出一档、`SIZE_MULTIPLIERS[scenario.datasetSize]` 取不到值）就会产出
+   * 「低于门限 ∞ ops/s」这种既读不出量纲、也认不出是配置错误的行。
+   * 负值无需特殊处理：`toLocaleString` 自身保号（-1500 → `-1,500`）。
+   */
   formatNumber(num: number): string {
+    if (!Number.isFinite(num)) return 'N/A'
     return num.toLocaleString('en-US', { maximumFractionDigits: 2 })
   }
 

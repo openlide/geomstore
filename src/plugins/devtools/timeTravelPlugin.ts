@@ -325,7 +325,14 @@ export const timeTravelPlugin = <S extends State = State>(options: TimeTravelOpt
 
         // 跳转到指定快照
         goTo: (index: number): void => {
-          if (index < 0 || index >= snapshots.length) {
+          // 整数是取到快照的前提，而裸的 `< 0 / >= length` 两个比较对 NaN 恒为 false、
+          // 对小数也放行：snapshots[NaN] / snapshots[1.5] 得 undefined，下一行的
+          // `snapshot.state` 抛裸 TypeError『Cannot read properties of undefined』，
+          // 而不是本方法设计的清洁越界错误。devtools 消费方常自行换算索引
+          // （goTo(Number(用户输入))、goTo(getCurrentIndex() + 0.5)），触发条件确定。
+          // 与 importHistory 的口径分工明确：那边是「导入的不可信数据」→ floor 后钳制，
+          // 这里是「调用方直传的索引」→ 一律按非法值送进同一条 out-of-bounds 错误路径
+          if (!Number.isInteger(index) || index < 0 || index >= snapshots.length) {
             throw new Error(`[timeTravel] Index ${index} out of bounds [0, ${snapshots.length})`)
           }
 

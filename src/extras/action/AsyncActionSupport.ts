@@ -381,7 +381,14 @@ export class ActionExecutor<A extends Actions = AsyncActions> {
    * 返回指定Action或所有Action的执行历史
    *
    * @param {string} [actionName] - Action名称，如果未指定则返回所有Action的历史
-   * @returns {ActionResult[]} 执行历史数组（按时间倒序）
+   * @returns {ActionResult[]} 执行历史数组的副本。传入 actionName 时按时间**正序**（最早在前，
+   *   保持插入顺序）；未传时聚合所有 Action 并按 startTime **倒序**（最新在前）
+   *
+   * @remarks 本方法是 `ActionHistoryTracker.getHistory` 的转发，排序口径与它一致：
+   * 「按时间倒序」只适用于不带参数的聚合调用，`getHistory('fetchData')[0]` 拿到的是该
+   * Action **最早**的一条，取最新一条请用 `[length - 1]`。
+   * 与转发目标同口径的还有副本粒度：只有**数组容器**是副本（外部 push/splice 不会污染内部
+   * 桶），数组里的 `ActionResult` 条目仍与内部桶共享同一对象，请按只读值消费。
    */
   getHistory(actionName?: string): ActionResult[] {
     return this.history.getHistory(actionName)

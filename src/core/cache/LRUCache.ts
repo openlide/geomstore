@@ -515,17 +515,24 @@ export class LRUCache<K, V> {
   /**
    * 遍历缓存（按最近使用顺序）
    *
+   * @remarks 迭代口径与 `clear()` 一致：进入时先按当前链序取一份**键快照**，
+   * 再逐个按键从缓存取「回调时刻的当前值」。因此回调内对缓存的改动只影响快照：
+   * - 删除非当前键：该键从迭代中消失（不会把已删条目再回调一次），其余条目不丢；
+   * - 读取其他键（`get`/`getOrSet` 命中会 moveToHead 重排）：每个快照键恰好访问一次；
+   * - 遍历期间新写入的键：本次不访问（它们不在快照里），下次遍历可见。
+   * 值不取快照：读到的是当前值，故回调内改过的条目以改动后的值参与回调。
+   *
    * @param {(value: V, key: K) => void} callback - 回调函数
    */
   forEach(callback: (value: V, key: K) => void): void {
-    let node = this.head.next
-
-    while (node && node !== this.tail) {
-      // 先取后继再回调：回调内删除当前节点会经 removeFromList 把 next 置空，
-      // 活指针遍历会在下一步中断，剩余条目被静默跳过
-      const next = node.next
-      callback(node.value, node.key)
-      node = next
+    // 活指针遍历有两类静默失真：removeFromList 会把被摘链节点的 prev/next 置 null，
+    // 于是「预取的后继」可能指向已摘链节点（多访问一条已删数据），
+    // 且该节点的 next === null 会提前终止循环（剩余条目整体被跳过）
+    for (const key of this.keys()) {
+      const node = this.cache.get(key)
+      if (node) {
+        callback(node.value, key)
+      }
     }
   }
 

@@ -2,7 +2,7 @@
 
 > **本文件由 `scripts/generate-skill-api-reference.mjs` 从 `dist/**/*.d.ts` 生成，请勿手工编辑。**
 >
-> - 来源版本：`@openlide/geomstore@0.6.1`
+> - 来源版本：`@openlide/geomstore@0.7.0`
 > - 内容来源：构建产物类型声明（随 npm 包发布，与安装版本必然一致）
 > - 重新生成：`pnpm build && pnpm skill:api`
 > - 使用规则与快速上手见 [`../../SKILL.md`](../../SKILL.md)
@@ -16,7 +16,7 @@
 | --- | --- | --- | --- |
 | `.` | 完整声明 | 60 | [`main.md`](./main.md) |
 | `./core` | 仅符号名 | 60 | [`core.md`](./core.md) |
-| `./extras` | 仅符号名 | 80 | [`extras.md`](./extras.md) |
+| `./extras` | 仅符号名 | 82 | [`extras.md`](./extras.md) |
 | `./extras/action` | 完整声明 | 35 | [`extras-action.md`](./extras-action.md) |
 | `./extras/enterprise` | 完整声明 | 18 | [`extras-enterprise.md`](./extras-enterprise.md) |
 | `./extras/error` | 完整声明 | 44 | [`extras-error.md`](./extras-error.md) |

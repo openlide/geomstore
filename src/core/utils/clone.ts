@@ -59,12 +59,65 @@ export function deepCloneState<T>(state: T): T {
  * 内建容器的准入门槛：只重建「恰好是该内建类型本身」的实例。
  * 子类实例走保留原引用的降级路径，理由见 deepCloneState 的文档。
  */
-function isExactly(value: object, proto: object): boolean {
+export function isExactly(value: object, proto: object): boolean {
   return Object.getPrototypeOf(value) === proto
 }
 
+/**
+ * 「状态不住在自有可枚举属性上」的内建类型标签。
+ *
+ * 这类值若按 `Object.create(原型)` + 拷贝自有可枚举键的方式重建，产出的是一副
+ * `instanceof` 仍为真、内部槽位却缺失的空壳：`await` 一个空壳 Promise（没有 then）、
+ * `Number(new Number(1))`（valueOf 要求 [[NumberData]]）、把空壳字节缓冲交给宿主 API，
+ * 都会在消费方第一次使用时抛 TypeError；`Error` 的 `message` 是不可枚举自有属性，
+ * 空壳会连错误消息一起丢掉。克隆引擎对它们一律保留原引用。
+ *
+ * 判据用 `Object.prototype.toString` 的 tag 而非 `instanceof Promise`：前者跨 realm
+ * （分包/多运行时下的 Promise 不是同一份构造器）仍然成立，后者会漏。
+ *
+ * 残留边界：状态不住在自有可枚举属性上、又没有内建 tag 的宿主对象（自定义 native 包装、
+ * 部分 wx 宿主返回对象）识别不到，仍会被重建为空壳。这类值请用 `customCloner` 提前接管。
+ */
+const SLOT_BEARING_TAGS = new Set([
+  'Promise',
+  'WeakMap',
+  'WeakSet',
+  'ArrayBuffer',
+  'SharedArrayBuffer',
+  'DataView',
+  'Int8Array',
+  'Uint8Array',
+  'Uint8ClampedArray',
+  'Int16Array',
+  'Uint16Array',
+  'Int32Array',
+  'Uint32Array',
+  'Float32Array',
+  'Float64Array',
+  'BigInt64Array',
+  'BigUint64Array',
+  'Number',
+  'String',
+  'Boolean',
+  'Symbol',
+  'Error',
+  'Function',
+  'Generator',
+])
+
+export function isSlotBearingBuiltin(value: unknown): boolean {
+  if (value === null || typeof value !== 'object') {
+    return false
+  }
+  // ArrayBuffer.isView 覆盖全部 TypedArray 与 DataView，且不依赖 realm 一致的构造器
+  if (typeof ArrayBuffer !== 'undefined' && ArrayBuffer.isView && ArrayBuffer.isView(value)) {
+    return true
+  }
+  return SLOT_BEARING_TAGS.has(Object.prototype.toString.call(value).slice(8, -1))
+}
+
 /** 数组的规范下标键（'0'、'1'…）：这类键由下标循环负责，附加属性循环需跳过 */
-function isIndexKey(key: string): boolean {
+export function isIndexKey(key: string): boolean {
   const index = Number(key)
   return Number.isInteger(index) && index >= 0 && String(index) === key
 }

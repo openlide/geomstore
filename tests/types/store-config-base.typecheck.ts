@@ -11,11 +11,20 @@
  * - `ResolvedState<S>` 即此前逐字复制三遍的归一化表达式：对象字面量与工厂函数两种
  *   `state` 写法都归一到同一个 S
  * - 两个配置接口的差异成员（actions / getters / cacheKeys）保持原语义
+ * - 免泛型裸写法取的是 `S` 的**默认值** `Record<string, unknown>`，而 `ConfigState` 的
+ *   退化兜底要显式写 `StoreConfig<unknown>` 才走得到（两条分别锁，见文件末尾两节，#R6-112）
  *
  * @file tests/types/store-config-base.typecheck.ts
  */
 
 import type { ResolvedState, StoreConfig, StoreOptions, StoreOptionsBase } from '@/types/store.js'
+
+/**
+ * 双向精确类型相等断言（与 `tests/types/integration-types.typecheck.ts` 同口径）：
+ * 「可赋值」式断言在结果被漂成 `any`、或形状塌成 `object` 时都会被白送，需要
+ * 「就是这个类型」时用本 helper。
+ */
+type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false
 
 interface CounterState {
   count: number
@@ -86,10 +95,16 @@ void _cacheBad
 const _cacheFromFactory: StoreConfig<() => CounterState>['cacheKeys'] = ['count']
 void _cacheFromFactory
 
-// ==================== 免泛型裸写法（S 取默认 unknown）====================
+// ==================== 免泛型裸写法（S 取默认 Record<string, unknown>）====================
 // 头部宣称锁定的是 StoreConfig 的「免泛型推断」，上面各条都显式写了类型参数，
-// 裸写法（零类型参数）此前无人覆盖。顺带钉死注释里的另一侧兜底：S 归一失败时
-// getter 的 state 形参取 Record<string, unknown>（可按键读），与 ResolvedState 的 object 兜底刻意不同
+// 裸写法（零类型参数）此前无人覆盖。本节钉的是 `StoreConfig` 的 **S 默认值**本身：
+// 默认值即 `Record<string, unknown>`（#R5-326 特意从 `unknown` 改过来），裸写法的
+// `cacheKeys` 因此接受任意字符串键（见下面的 `_bareAllowsCacheKeys`）。
+// ⚠️ 旧注释在这里多 claim 了一件事，而它其实没被本节覆盖：`bareForm` **不**经过
+// `ConfigState` 的退化兜底分支——`satisfies StoreConfig` 用的是 S 的默认值，
+// `ConfigState<Record<string, unknown>>` 归一**成功**，压根不走 `types/store.ts` 里
+// `: Record<string, unknown>` 那一支。要走兜底得显式写退化输入，见本节末尾的
+// `_degenerateGetterReadsByKey` / `_degenerateGetterArgExact`（#R6-112 补上）。
 const bareForm = {
   ...sharedOnly,
   state: { count: 1 },
@@ -106,5 +121,24 @@ void bareForm
 // 记录的是「退化输入拒绝一切键」的旧行为，已被更可用的归一化取代）。
 const _bareAllowsCacheKeys: StoreConfig = { state: { count: 1 }, cacheKeys: ['count'] }
 void _bareAllowsCacheKeys
+
+// ==================== ConfigState 的退化兜底（S 真的归一失败时）====================
+// 上面 `bareForm` 走的是默认值、不是兜底，故这里以显式退化输入 `StoreConfig<unknown>` 钉住
+// `ConfigState` 与 `ResolvedState` 刻意分叉的那一处：归一失败时 getter 的 state 形参退回
+// `Record<string, unknown>`（**可按键读**），而 `ResolvedState` 那一侧退回 `State`（= `object`，
+// 见上文 `_unresolvedNotIndexable` 的反例）。兜底若被漂成 `object`，下面那条按键读值立即报错。
+const _degenerateGetterReadsByKey: StoreConfig<unknown>['getters'] = {
+  double: (state) => Number(state.count) * 2,
+}
+void _degenerateGetterReadsByKey
+// 形状精确断言：可赋值写法在 `any` / 索引签名漂成 `unknown` 时都会白过，故逐字取 Equal。
+// 先取 `StoreConfig<unknown>['getters']` 的值类型再摘第 0 个形参，即 `ConfigState<unknown>`
+type DegenerateGetters = StoreConfig<unknown>['getters']
+type GetterArg = Parameters<NonNullable<DegenerateGetters>[string]>[0]
+const _degenerateGetterArgExact: Equal<GetterArg, Record<string, unknown>> = true
+void _degenerateGetterArgExact
+// 反例：兜底漂成 `State`（= `object`）时，上面那条按键读值与下面这条精确断言同时报错
+const _getterArgNotBareObject: Equal<GetterArg, object> = false
+void _getterArgNotBareObject
 
 export {}

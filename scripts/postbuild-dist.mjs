@@ -12,13 +12,19 @@
  * 子路径转发 stub 不在此生成：见 scripts/generate-subpath-stubs.mjs，
  * 由 prepack / postpack 钩子在打包发布时生成与清理，避免污染仓库根目录。
  *
- * 失败分级：产物缺失、type 标记无法安全合并、dist 存在却读不动（权限 / IO / dist 实为文件）
- * → 退出码 1 中止（宁可不发布，也不发布一个语义不明的半成品）；单个 map 删不掉、
+ * 失败分级：产物缺失、**dist 不是仓库内的真实目录**（符号链接 / junction）、
+ * **dist/package.json 不是普通文件**、type 标记无法安全合并、
+ * dist 存在却读不动（权限 / IO / dist 实为文件）→ 退出码 1 中止
+ * （宁可不发布，也不发布一个语义不明的半成品）；单个 map 删不掉、
  * 某个子目录扫不到、dist 内有链接条目未被扫描 → 只告警并在汇总里点名，产物仍可用。
  *
  * dist 内部的链接一律不跟随：本脚本原地删除文件，跟随进 junction/符号链接的目标
  * 等于把删除落到 dist 之外（不可回滚，与 clean-dist.mjs 面对同一类风险），
  * 代价是「链接目录里的 map 删不到」——这必须上报，不能让汇总行装作清理干净。
+ * 「不跟随」要覆盖到**写**这一侧才算成立：type 标记的 existsSync / readFileSync /
+ * writeFileSync 三步都跟随重解析点，故写之前先过同一套 classifyEntry 判据；
+ * 目录级的「dist 必须是真实目录」断言也前置到这里——本脚本才是构建链里第一个
+ * 原地写 dist 的步骤，minify-dist.mjs 的同名断言在 `pnpm build` 之后才跑。
  */
 
 import fs from 'node:fs'
@@ -30,10 +36,70 @@ const distDir = path.join(projectRoot, 'dist')
 
 const reasonOf = (error) => (error instanceof Error ? error.message : String(error))
 
+/** lstat 版存在性判定：不存在返回 null，其余错误照抛（调用方按「状态不可确认」处理） */
+function lstatOrNull(target) {
+  try {
+    return fs.lstatSync(target)
+  } catch (error) {
+    if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') return null
+    throw error
+  }
+}
+
+/** 路径等价判定：Windows 大小写不敏感，盘符 D: / d: 都可能出现（与 clean-dist.mjs 同规则） */
+function samePath(a, b) {
+  return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b
+}
+
+/**
+ * dist 必须是「仓库内那个真实目录」，返回 null 或人可读的拒绝理由。
+ *
+ * 本脚本是构建链里**第一个原地写 dist** 的步骤（type 标记、删 map），所以这道守卫必须
+ * 前置到这里：minify-dist.mjs 里的同名断言要等 `pnpm build` 之后才跑，等它中止时
+ * 「写穿链接目标」已经发生且不可回滚。判据与 clean-dist.mjs 一致——realpath 全等而非
+ * 「仍在项目根之内」：指向仓库内别处（例如被误链到 src）的重解析点同样必须拒绝。
+ */
+function rejectUntrustedDist() {
+  try {
+    const realDist = fs.realpathSync(distDir)
+    const expected = path.join(fs.realpathSync(projectRoot), 'dist')
+    if (!samePath(realDist, expected)) {
+      const via = fs.lstatSync(distDir).isSymbolicLink() ? '符号链接' : '链接或 junction'
+      return `dist 是${via}，真实落点为 ${realDist}（期望 ${expected}）`
+    }
+    if (!fs.statSync(realDist).isDirectory()) {
+      return `dist 不是目录，而是文件：${realDist}`
+    }
+    return null
+  } catch (error) {
+    return `dist 的真实路径无法确认（${reasonOf(error)}），可能是断链或已被并发删除`
+  }
+}
+
 // 不再 mkdirSync(recursive)：上游 tsc 没产出时静默建一个空 dist，
 // 等于把「构建成功」的假象连同 dist/package.json 一起发布出去
-if (!fs.existsSync(distDir)) {
+// 存在性用 lstat 判定（与 clean-dist.mjs 配套规则①同因）：existsSync 会跟随链接，
+// dist 是断链时它报「不存在」，本脚本就会跳过可信校验、把链接留给后面的步骤去跟随
+let distExists = false
+try {
+  distExists = lstatOrNull(distDir) !== null
+} catch (error) {
+  console.error(`[postbuild] 中止：dist 的状态无法确认（${reasonOf(error)}）`)
+  process.exit(1)
+}
+if (!distExists) {
   console.error('[postbuild] 中止：dist 不存在，上游构建未产出任何文件')
+  process.exit(1)
+}
+// 在任何一次原地写入之前先确认目标可信：本脚本要写 dist/package.json、要删 dist 下的 map，
+// 每一步都可能跟随重解析点写到 dist 之外（不可回滚）
+const untrustedDist = rejectUntrustedDist()
+if (untrustedDist) {
+  console.error(
+    `[postbuild] 已中止：${untrustedDist}。\n` +
+      '            本步骤会原地写 dist（type 标记 / 剔除 sourcemap），链接目标可能在仓库之外，写穿不可回滚。\n' +
+      '            请让 dist 恢复为仓库内的真实目录后再构建。',
+  )
   process.exit(1)
 }
 // 存在但读不动（EACCES / EIO / dist 实为文件 → ENOTDIR）同样是「上游没产出可用产物」，
@@ -57,7 +123,32 @@ const markerPath = path.join(distDir, 'package.json')
 // 合并而非整体覆写：dist/package.json 可能已由 tsc 之外的步骤（copy / bundle）写入
 // name / exports / main / sideEffects 等字段，覆写会把它们静默销毁
 let marker = {}
-if (fs.existsSync(markerPath)) {
+let markerStat = null
+try {
+  markerStat = lstatOrNull(markerPath)
+} catch (error) {
+  console.error(`[postbuild] 中止：dist/package.json 的状态无法确认（${reasonOf(error)}）`)
+  process.exit(1)
+}
+if (markerStat) {
+  // existsSync / readFileSync / writeFileSync 全部跟随重解析点：dist/package.json 若是
+  // 指向仓库根 package.json（或 dist 外任意文件）的链接，下面那次「合并 type 标记」
+  // 就把 {"type":"module"} 写进了链接目标——合并而非覆写在这里恰好变成销毁别人的文件。
+  // 判据与扫描侧同源（classifyEntry）：非普通文件一律以退出码 1 中止。
+  let markerKind = 'unreadable'
+  try {
+    markerKind = classifyEntry(markerPath)
+  } catch (error) {
+    console.error(`[postbuild] 中止：dist/package.json 无法分类（${reasonOf(error)}）`)
+    process.exit(1)
+  }
+  if (markerKind !== 'file') {
+    console.error(
+      `[postbuild] 已中止：dist/package.json 不是普通文件（判定为 ${markerKind}），` +
+        '写 type 标记会跟随链接落到 dist 之外，不可回滚。请删掉该链接后重新构建。',
+    )
+    process.exit(1)
+  }
   try {
     const existing = JSON.parse(fs.readFileSync(markerPath, 'utf8'))
     if (!existing || typeof existing !== 'object' || Array.isArray(existing)) {
@@ -80,12 +171,8 @@ fs.writeFileSync(markerPath, JSON.stringify({ ...marker, type: 'module' }, null,
  */
 const MAP_PATTERN = /\.(?:js|d\.ts)\.map$/
 
-/** 路径等价判定：Windows 大小写不敏感，盘符 D: / d: 都可能出现（与 clean-dist.mjs 同规则） */
-function samePath(a, b) {
-  return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b
-}
-
-/** 条目的三个类别，语义与 clean-dist.mjs 的 classifyEntry 一致 */
+/** 条目的三个类别，语义与 clean-dist.mjs 的 classifyEntry 一致（含「参照系两侧同源」那条：
+ * 仓库根经由符号链接到达时，用 path.resolve 当参照系会把每个真实目录都判成 link） */
 function classifyEntry(full) {
   const stat = fs.lstatSync(full)
   if (stat.isSymbolicLink()) return 'link'
@@ -98,7 +185,13 @@ function classifyEntry(full) {
   } catch {
     return 'link'
   }
-  return samePath(real, path.resolve(full)) ? 'dir' : 'link'
+  let realParent
+  try {
+    realParent = fs.realpathSync(path.dirname(full))
+  } catch {
+    return 'link'
+  }
+  return samePath(real, path.join(realParent, path.basename(full))) ? 'dir' : 'link'
 }
 
 /** 扫描结果：maps=可安全删除的 map，links=未跟随的链接条目，blocked=名字撞了 map 后缀的真实目录 */

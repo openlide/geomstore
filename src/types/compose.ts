@@ -6,15 +6,32 @@ import type { Actions, State, Store } from './store.js'
 
 /**
  * 组合选项
+ *
+ * ⚠️ 本接口有三个成员，但运行时只消费两个：`namespace` 与 `strict`
+ * （`core/compose/composeStore.ts` 的构造函数仅读这两项，`createStoreTree` 只读 `namespace`）。
+ * `lazy` / `tree` 是**已声明未实现**的历史遗留项，见各自注释（#R6-061）。
+ * 未实现项刻意保留在公开类型面上：`ComposeOptions` 已随 0.x 发布，删成员属破坏性变更，
+ * 需走主版本窗口，故本轮只把「写了也不生效」写在明面上，不做静默删除。
  */
 export interface ComposeOptions {
   /** 命名空间模式：true 启用（默认分隔符 /），或指定前缀字符串 */
   namespace?: string | boolean
-  /** 延迟初始化 */
+  /**
+   * 延迟初始化
+   *
+   * **未实现**（#R6-061）：全库没有任何读取方（`grep lazy src/` 只命中本文件），
+   * `composeStore(stores, { lazy: true })` 编译通过、静默无效，且 `docs/API.md` 无对应条目。
+   * 需要「按访问才建组合 Store」请另提实现，勿依赖本项。
+   */
   lazy?: boolean
   /** 严格模式（访问不存在的Store报错） */
   strict?: boolean
-  /** Store树结构 */
+  /**
+   * Store树结构
+   *
+   * **未实现**（#R6-061）：与 `lazy` 同判据——`ComposedStore` 从不读它，
+   * 树结构由独立入口 `createStoreTree`（同样只读 `namespace`）提供，本项不构成开关。
+   */
   tree?: boolean
 }
 
@@ -32,6 +49,13 @@ export interface StoreTreeNode {
 
 /**
  * 命名空间配置
+ *
+ * **未接线**（#R6-061）：本库没有任何 API 接受该配置对象——命名空间分隔符在
+ * `core/compose/helpers.ts`（`key.indexOf('/')`）里是**硬编码**的 `/`，
+ * `ComposeOptions.namespace` 只接受「布尔 / 前缀字符串」两档，`autoPrefix` 亦无读取方。
+ * 它经 `core/index.ts:80`、`core/compose/index.ts:7`、`core/compose/composeStore.ts:958`
+ * 三处再导出对外发布，但按本类型书写配置只会得到无声的空操作。
+ * 删除导出属破坏性变更（需主版本窗口 + 上述三处再导出同步收口，均不在本分片），故本轮只做标注。
  */
 export interface NamespaceConfig {
   /** 命名空间分隔符 */

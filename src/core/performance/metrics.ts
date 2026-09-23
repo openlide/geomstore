@@ -9,9 +9,42 @@ import type { PerformanceMetrics, PerformanceStats } from '../../types/performan
 
 /** 单个操作的耗时汇总：所有按操作分组的统计都从 summarizeByOperation 的这份结果派生 */
 interface OperationSummary {
+  /** 样本条数（含耗时不可测量的样本） */
   count: number
+  /** 耗时为有限数的样本条数：平均/最大耗时的分母，0 表示该组没有任何可测量样本 */
+  durationCount: number
+  /** 有限样本的耗时之和 */
   totalDuration: number
+  /** 有限样本中的最大耗时；无有限样本时为 -Infinity，由投影层归一为 0 */
   maxDuration: number
+}
+
+/**
+ * 耗时是否可入统计。
+ *
+ * `PerformanceMetrics.duration` 的类型是 `number`，因而合法包含 NaN/Infinity：宿主自己算
+ * 耗时（两侧时钟读数缺失、跨基准相减）或调用方漏传 duration 都会落进这里。非有限值一旦
+ * 参与累加就污染整份结果（`totalDuration += NaN` 让 avgDuration 恒为 NaN），而
+ * `NaN > max` / `NaN < min` 恒假又把这些样本从 max/min 里静默剔除——同一份数据 avg 是
+ * NaN、max 却是个正常毫秒数，自相矛盾。故统一把它们排除在耗时聚合之外（仍计入 count，
+ * 因为「这次操作确实发生过」），与本文件 getPercentile 的 Number.isFinite 早失败、
+ * PerformanceMonitor.normalizeThreshold / getCurrentTime 的非有限读数降级同口径。
+ */
+const isMeasurableDuration = (duration: number): boolean => Number.isFinite(duration)
+
+/**
+ * 规范化阈值：非有限值（NaN/Infinity）回退默认、负值夹到 0。
+ *
+ * 与 PerformanceMonitor.normalizeThreshold 同一口径——那里的注释写的就是本处的失败模式
+ * （「NaN 阈值会让 duration > NaN 恒为 false，超阈值预警静默失效」）。threshold 常见来路是
+ * 从配置/环境变量取数（`Number(cfg.threshold)` 取不到即 NaN），恰好最容易静默失效；
+ * 负阈值则反向失效（`avgDuration > 负数` 对所有非负耗时恒真 ⇒ 全部标成最严重程度）。
+ * 本文件是同一算法的另外两个门（analyzeBottlenecks / detectRegression），故在此复刻一份
+ * 而不是去 import 那个 private static：跨类调用私有成员要么放宽 PerformanceMonitor 的
+ * 可见性（改动落在本分片之外）要么绕，都不如把口径写清楚。
+ */
+function normalizeThreshold(value: number, fallback: number): number {
+  return Number.isFinite(value) ? Math.max(0, value) : fallback
 }
 
 /**
@@ -32,10 +65,13 @@ function summarizeByOperation(metrics: PerformanceMetrics[]): Map<string, Operat
   for (const metric of metrics) {
     let entry = byOperation.get(metric.operation)
     if (!entry) {
-      entry = { count: 0, totalDuration: 0, maxDuration: -Infinity }
+      entry = { count: 0, durationCount: 0, totalDuration: 0, maxDuration: -Infinity }
       byOperation.set(metric.operation, entry)
     }
     entry.count++
+    // 非有限耗时只进 count，不进任何耗时聚合（见 isMeasurableDuration）
+    if (!isMeasurableDuration(metric.duration)) continue
+    entry.durationCount++
     entry.totalDuration += metric.duration
     if (metric.duration > entry.maxDuration) entry.maxDuration = metric.duration
   }
@@ -43,11 +79,21 @@ function summarizeByOperation(metrics: PerformanceMetrics[]): Map<string, Operat
   return byOperation
 }
 
+/** 无有限样本时的平均耗时（0 而非 NaN：NaN 会顺着报表一路传到 JSON 导出变成 null） */
+const averageOf = (summary: OperationSummary): number => (summary.durationCount > 0 ? summary.totalDuration / summary.durationCount : 0)
+
+/** 无有限样本时的最大耗时（把 -Infinity 初值挡在对外结果之外） */
+const maxOf = (summary: OperationSummary): number => (summary.durationCount > 0 ? summary.maxDuration : 0)
+
 /**
  * 由指标数组计算性能统计（平均/最大/最小耗时、总次数、超阈值次数、按操作分组）。
  *
  * 抽为纯函数以消除 PerformanceMonitor.getStats 与 MetricsCollector.calculateStats
  * 的重复实现（同一算法的两份拷贝）。
+ *
+ * @remarks 耗时为非有限数（NaN/Infinity）的样本**不入耗时聚合**：`totalCount` 仍计入该次
+ * 调用（操作确实发生过），但 avg/max/min 只在可测量的样本上计算；一组样本全非有限时
+ * avg/max/min 均为 0。理由见 {@link isMeasurableDuration}。
  *
  * @param metrics - 性能指标数组
  * @returns {PerformanceStats} 性能统计对象
@@ -71,18 +117,24 @@ export function computePerformanceStats(metrics: PerformanceMetrics[]): Performa
   let minDuration = Infinity
   let totalDuration = 0
   let thresholdExceeded = 0
+  // 有限样本数：avg 的分母，也是「全组耗时都不可测量」时 max/min 的归一判据
+  let durationCount = 0
   for (const m of metrics) {
+    if (m.exceedThreshold) thresholdExceeded++
+    if (!isMeasurableDuration(m.duration)) continue
+    durationCount++
     totalDuration += m.duration
     if (m.duration > maxDuration) maxDuration = m.duration
     if (m.duration < minDuration) minDuration = m.duration
-    if (m.exceedThreshold) thresholdExceeded++
   }
-  const avgDuration = totalDuration / metrics.length
+  const avgDuration = durationCount > 0 ? totalDuration / durationCount : 0
 
   return {
     avgDuration,
-    maxDuration,
-    minDuration,
+    // 一条有限耗时都没有时（样本全是 NaN/Infinity）返回 0 而非 ±Infinity：
+    // 后者会被 JSON.stringify 序列化成 null，对外看成像「缺字段」的统计结果
+    maxDuration: durationCount > 0 ? maxDuration : 0,
+    minDuration: durationCount > 0 ? minDuration : 0,
     totalCount: metrics.length,
     thresholdExceeded,
     byOperation: Object.fromEntries(
@@ -93,8 +145,8 @@ export function computePerformanceStats(metrics: PerformanceMetrics[]): Performa
             operation,
             {
               count: summary.count,
-              avgDuration: summary.totalDuration / summary.count,
-              maxDuration: summary.maxDuration,
+              avgDuration: averageOf(summary),
+              maxDuration: maxOf(summary),
             },
           ] as [string, PerformanceStats['byOperation'][string]],
       ),
@@ -322,7 +374,7 @@ export class MetricsCollector {
     return Array.from(summarizeByOperation(this._ordered()), ([operation, summary]) => ({
       operation,
       count: summary.count,
-      avgDuration: summary.totalDuration / summary.count,
+      avgDuration: averageOf(summary),
     }))
       .sort((a, b) => b.count - a.count)
       .slice(0, take)
@@ -347,7 +399,8 @@ export class PerformanceAnalyzer {
    *
    * @param {PerformanceMetrics[]} metrics - 性能指标数组
    * @param {number} [threshold=16] - 性能阈值（毫秒）：avgDuration > 2×threshold 记 medium、
-   *   > 3×threshold 记 high，否则 low（threshold 本身不是过滤门槛）
+   *   > 3×threshold 记 high，否则 low（threshold 本身不是过滤门槛）。
+   *   非有限值（NaN/Infinity）回落默认 16、负值夹到 0，见 {@link normalizeThreshold}
    * @returns {Array<{operation: string, count: number, avgDuration: number, maxDuration: number, severity: 'low' | 'medium' | 'high'}>} 全部操作的分组列表（按 avgDuration 降序），含未超阈值项
    */
   static analyzeBottlenecks(
@@ -362,14 +415,17 @@ export class PerformanceAnalyzer {
   }> {
     // 分组走共享累加器：本函数只需要次数/平均/最大三项，无须先攒出每组的消息数组再重算
     const groups = summarizeByOperation(metrics)
+    // 未规范化的 NaN 阈值会让两条 `avgDuration > NaN` 判定恒假 ⇒ 所有操作一律 'low'，
+    // 瓶颈面板显示「一切正常」；负阈值反向让全部操作标成 'high'
+    const effectiveThreshold = normalizeThreshold(threshold, 16)
 
     return Array.from(groups, ([operation, summary]) => {
-      const avgDuration = summary.totalDuration / summary.count
+      const avgDuration = averageOf(summary)
 
       let severity: 'low' | 'medium' | 'high' = 'low'
-      if (avgDuration > threshold * 3) {
+      if (avgDuration > effectiveThreshold * 3) {
         severity = 'high'
-      } else if (avgDuration > threshold * 2) {
+      } else if (avgDuration > effectiveThreshold * 2) {
         severity = 'medium'
       }
 
@@ -377,7 +433,7 @@ export class PerformanceAnalyzer {
         operation,
         count: summary.count,
         avgDuration,
-        maxDuration: summary.maxDuration,
+        maxDuration: maxOf(summary),
         severity,
       }
     }).sort((a, b) => b.avgDuration - a.avgDuration)
@@ -390,7 +446,8 @@ export class PerformanceAnalyzer {
    *
    * @param {PerformanceMetrics[]} currentMetrics - 当前性能指标
    * @param {PerformanceMetrics[]} baselineMetrics - 基准性能指标
-   * @param {number} [threshold=0.2] - 退化阈值（比例，0.2 表示 20%）
+   * @param {number} [threshold=0.2] - 退化阈值（比例，0.2 表示 20%）。
+   *   非有限值回落默认 0.2、负值夹到 0，见 {@link normalizeThreshold}
    * @returns {Array<{operation: string, baselineDuration: number, currentDuration: number, change: number, changePercent: number}>} 退化列表。
    *   基线为 0 而当前有耗时时无比例可算，changePercent 取 Infinity 哨兵（幅度按无限恶化处理）
    */
@@ -407,6 +464,9 @@ export class PerformanceAnalyzer {
   }> {
     const currentStats = this.calculateAvgDurations(currentMetrics)
     const baselineStats = this.calculateAvgDurations(baselineMetrics)
+    // 与 analyzeBottlenecks 同一个门：`changePercent > NaN` 恒假 ⇒ 一条回归都不报，
+    // `changePercent > -0.5` 恒真 ⇒ 明显改善也被报成退化
+    const effectiveThreshold = normalizeThreshold(threshold, 0.2)
     const regressions: Array<{
       operation: string
       baselineDuration: number
@@ -434,7 +494,7 @@ export class PerformanceAnalyzer {
           changePercent = currentDuration > 0 ? Infinity : 0
         }
 
-        if (changePercent > threshold) {
+        if (changePercent > effectiveThreshold) {
           regressions.push({
             operation,
             baselineDuration,
@@ -463,7 +523,7 @@ export class PerformanceAnalyzer {
     // 调用方（detectRegression）因此无需自备 own-property 守卫
     const averages = new Map<string, number>()
     for (const [operation, summary] of summarizeByOperation(metrics)) {
-      averages.set(operation, summary.totalDuration / summary.count)
+      averages.set(operation, averageOf(summary))
     }
 
     return averages

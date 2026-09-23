@@ -207,6 +207,9 @@ export class SnapshotManager {
    * 克隆按节点分片入队，每批次处理 batchSize 个节点，
    * 批间让出控制权，避免大对象同步递归阻塞主线程。
    *
+   * 超时口径：`timeout` 翻位时只有「队列仍有未处理任务」或「超时后丢掉过入队任务」
+   * 才使结果 `success: false` 并落一条 `timeout` 错误——完好克隆不因定时器晚到而判失败。
+   *
    * @param {T} data - 要快照的数据
    * @param {AsyncSnapshotOptions} options - 异步配置选项
    * @returns {Promise<SnapshotResult<T>>} 快照结果Promise
@@ -237,9 +240,13 @@ export class SnapshotManager {
     const errors: SnapshotError[] = []
 
     // 创建任务队列：容器字段按节点入队，每批处理 batchSize 个节点。
-    // 以 queueHead 游标消费而非 Array#shift（后者 O(n)，大批量入队下整体退化为 O(n²)）
+    // 以 queueHead 游标消费而非 Array#shift（后者每次搬移整个尾部，大批量入队下整体退化为
+    // O(n²)）。游标只解决「消费侧 O(1)」，底层数组的回收另见 shouldCompactQueue 的压缩条件——
+    // 每批都裁剪会把这个洞原样搬回压缩那一步
     const queue: AsyncCloneTask[] = []
     let queueHead = 0
+    /** 超时后入队守卫丢掉的任务数：>0 即证明交付的 data 缺少对应子树（见 deliveryIncomplete） */
+    let droppedTasks = 0
     const visited = new WeakMap<object, object>()
 
     let processedCount = 0
@@ -360,6 +367,10 @@ export class SnapshotManager {
       // 因此下面的 ignore 只声明「当前测试覆盖不到 else 单侧」，不是「else 是死代码」
       /* istanbul ignore else -- 依赖「批内无 await」的调用形状，见上；未来批内让出即生效 */
       if (!hasTimedOut) queue.push(task)
+      // 丢掉一个任务 = 它的整棵子树不会出现在交付的 data 里。这个计数是「交付不完整」的
+      // 直接证据：超时翻位但一个任务都没丢、队列也已排空时，交付的就是一份完好克隆，
+      // 不能因为定时器恰好在收尾那次让出期间翻位就判为失败（见结果组装处的 deliveryIncomplete）
+      else droppedTasks++
     }
 
     // prop 占位的统一清理
@@ -377,12 +388,19 @@ export class SnapshotManager {
       }
     }
 
+    // 队列压缩：已消费前缀不少于剩余长度时才裁一次底层数组。
+    // 每批都 `splice(0, queueHead)` 的搬移量是 O(queue.length)（删头部要把全部尾部元素前移），
+    // n 个任务、批大小 b 时总计 ΣO(Lᵢ) ≈ O(n²/b)，与被它替换掉的 Array#shift 同一个量级
+    // （只是常数小 b 倍），且搬移每批都发生在让出控制权之后、直接计入批耗时；
+    // 按「消费/剩余 ≥ 1」压缩则是摊还 O(1)/任务：每次搬移的元素数不超过触发它的那段已消费任务数
+    const shouldCompactQueue = (): boolean => queueHead > 0 && queueHead >= queue.length - queueHead
+
     // 处理队列：每批处理 batchSize 个节点，批间让出控制权
     const processQueue = async (): Promise<void> => {
       try {
         while (queueHead < queue.length && !hasTimedOut) {
-          // 裁剪已消费前缀：保持底层数组紧凑，splice 的搬移量受批大小约束
-          if (queueHead > 0) {
+          // 回收已消费前缀（见 shouldCompactQueue：不是每批一次）
+          if (shouldCompactQueue()) {
             queue.splice(0, queueHead)
             queueHead = 0
           }
@@ -515,7 +533,10 @@ export class SnapshotManager {
       const clonedData = await resultPromise
       await queuePromise
 
-      if (timeoutId) clearTimeout(timeoutId)
+      // 与 null 比，不判真值：宿主/注入式时钟可以返回 0 作定时器句柄（selectorComposer.ts
+      // 的同族口径），真值判定会让这条 clearTimeout 永不执行——超时定时器在快照已交付后
+      // 仍存活整个窗口，闭包连同 errors/queue/整棵克隆产物被多留一次超时周期
+      if (timeoutId !== null) clearTimeout(timeoutId)
 
       // 更新共享 stats 的持续时间
       stats.duration = Date.now() - startTime
@@ -533,18 +554,26 @@ export class SnapshotManager {
         hasCircular: counters.hasCircular,
       }
 
+      // 超时只在「本轮确有未交付的工作」时成立：定时器在最后一个批次之后翻位时（例如 timeout
+      // 给得接近实际耗时），队列已排空、一个任务都没被入队守卫丢掉，交付的是**完整**克隆，
+      // 而占位清理循环（上方 for 循环）一次也没跑。把它判为失败会让按 types.ts「先判 success」
+      // 契约消费快照的调用方整份丢掉可用数据
+      const deliveryIncomplete = queueHead < queue.length || droppedTasks > 0
+      const timedOut = hasTimedOut && deliveryIncomplete
+
       return {
         // rootResult 只在根任务产出非哨兵值时才不是 undefined：超时/根节点被丢弃时它是
         // undefined 或半成品，故断言只到 `T | undefined`，不冒充完整的 T
         data: clonedData as T | undefined,
         metadata,
         // 与同步路径同口径：仅 cloneError 视为失败，circular/maxDepth 属可恢复降级
-        success: !hasTimedOut && !errors.some((e) => e.type === 'cloneError'),
-        errors: hasTimedOut ? [...errors, { type: 'timeout', message: 'Snapshot creation timed out', path: 'root' }] : errors,
+        success: !timedOut && !errors.some((e) => e.type === 'cloneError'),
+        errors: timedOut ? [...errors, { type: 'timeout', message: 'Snapshot creation timed out', path: 'root' }] : errors,
         stats,
       }
     } catch (error) {
-      if (timeoutId) clearTimeout(timeoutId)
+      // 同成功路径：与 null 比而非判真值，句柄为 0 时也要撤销定时器
+      if (timeoutId !== null) clearTimeout(timeoutId)
 
       errors.push({
         type: 'unknown',
@@ -559,6 +588,10 @@ export class SnapshotManager {
 
   /**
    * 对比两个快照
+   *
+   * 契约同 diff.ts 的 `compareSnapshots`（实现已拆至 ./diff.js，纯函数，不依赖管理器实例状态）：
+   * 两侧 `success` 不必先判，但任一侧为 false 时结果里的 `inputTrusted` 会是 false，
+   * 此时 `changed: true` 只是「输入不可信 → 宁多勿漏」的报告形状，不代表两份 data 真有差异
    *
    * @param {SnapshotResult<T1>} snapshot1 - 第一个快照
    * @param {SnapshotResult<T2>} snapshot2 - 第二个快照（支持不同类型）

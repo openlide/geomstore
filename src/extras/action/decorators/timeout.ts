@@ -33,6 +33,8 @@ import { raceWithTimeout, normalizeTimeout } from '../async-core.js'
  *
  * @example
  * ```typescript
+ * import { TIMEOUT_ERROR_CODE, withTimeout } from '@openlide/geomstore/extras/action'
+ *
  * class NetworkComponent {
  *   @withTimeout(5000) // 5秒超时
  *   async fetchData(url: string) {
@@ -43,13 +45,18 @@ import { raceWithTimeout, normalizeTimeout } from '../async-core.js'
  * try {
  *   const data = await networkComponent.fetchData('/api/data')
  * } catch (error) {
- *   // 先收窄再取 message：strict + useUnknownInCatchVariables 下 catch 形参是 unknown
- *   if (error instanceof Error && error.message.includes('Timeout after')) {
+ *   // 按 code 判定，且先收窄（strict + useUnknownInCatchVariables 下 catch 形参是 unknown）：
+ *   // 两个入口都经 raceWithTimeout 拿到同一个 code，而消息文本彼此不同
+ *   if ((error as { code?: unknown }).code === TIMEOUT_ERROR_CODE) {
  *     console.error('Request timed out')
  *     showTimeoutMessage()
  *   }
  * }
  * ```
+ *
+ * 历史注记：早先这里的示例是 `error.message.includes('Timeout after')`，**不要照此写**——
+ * 底层 action 自己抛一条含该文本的错误就会误判成超时，而 `ActionExecutor.executeWithTimeout`
+ * 的文案是 `Action timeout after <n>ms`（小写 t），按文本匹配又会漏判它的真实超时。
  */
 export function withTimeout(timeout: number = 5000): MethodDecorator {
   // 装饰阶段即校验：0/负数会让被装饰方法必然超时，NaN 被 setTimeout 当作 0、

@@ -2,7 +2,7 @@
 
 > **本文件由 `scripts/generate-skill-api-reference.mjs` 从 `dist/**/*.d.ts` 生成，请勿手工编辑。**
 >
-> - 来源版本：`@openlide/geomstore@0.6.1`
+> - 来源版本：`@openlide/geomstore@0.7.0`
 > - 内容来源：构建产物类型声明（随 npm 包发布，与安装版本必然一致）
 > - 重新生成：`pnpm build && pnpm skill:api`
 > - 引入路径：`./extras/action`
@@ -338,7 +338,14 @@ export declare class ActionExecutor<A extends Actions = AsyncActions> {
      * 返回指定Action或所有Action的执行历史
      *
      * @param {string} [actionName] - Action名称，如果未指定则返回所有Action的历史
-     * @returns {ActionResult[]} 执行历史数组（按时间倒序）
+     * @returns {ActionResult[]} 执行历史数组的副本。传入 actionName 时按时间**正序**（最早在前，
+     *   保持插入顺序）；未传时聚合所有 Action 并按 startTime **倒序**（最新在前）
+     *
+     * @remarks 本方法是 `ActionHistoryTracker.getHistory` 的转发，排序口径与它一致：
+     * 「按时间倒序」只适用于不带参数的聚合调用，`getHistory('fetchData')[0]` 拿到的是该
+     * Action **最早**的一条，取最新一条请用 `[length - 1]`。
+     * 与转发目标同口径的还有副本粒度：只有**数组容器**是副本（外部 push/splice 不会污染内部
+     * 桶），数组里的 `ActionResult` 条目仍与内部桶共享同一对象，请按只读值消费。
      */
     getHistory(actionName?: string): ActionResult[];
     /**
@@ -444,11 +451,16 @@ export declare class ActionLoader {
      */
     private stateGeneration;
     /**
-     * 最近一次 `wrap` 注入的 setState
+     * 最近一次**实际调用**用到的 setState
      *
      * `clear()` 与换键的 `setOptions()` 据此给旧键补写复位值：内部记账被清空后已无
      * 在途调用来纠正 store，`loading: true` 会永久卡住。
      * 需要复位的键直接取自下面的几张表（键即状态键），无需另设登记表。
+     *
+     * 赋值点在 wrapper 内部（每次调用登记一次），而不是只在 `wrap()` 当时：本类的常见
+     * 用法是 wrap 一次、复用同一个 wrapper 反复调用，而 `clear()` 会把本字段清成
+     * undefined。只在 wrap 时赋值的话，「wrap → clear → 继续用同一个 wrapper」之后
+     * 下一次 clear()/setOptions() 就拿不到写入函数，复位值一个也写不出去。
      * @private
      */
     private lastSetState;
@@ -689,7 +701,7 @@ export declare class ActionLoader {
      * 因此失去计数（与 `setOptions` 换选项时的处理口径一致）。
      *
      * @param {(key: string, value: unknown) => void} [setState] - 复位写入用的 setState，
-     *   缺省复用最近一次 `wrap` 注入的那个
+     *   缺省复用最近一次调用（wrapper 实际执行时）登记的那个
      *
      * @example
      * ```typescript
@@ -1108,10 +1120,17 @@ TIMEOUT_ERROR_CODE: "ACTION_TIMEOUT"
  * - trailing：窗口内被抑制的调用在窗口结束时以最新参数补发（fire-and-forget，
  *   返回值不回传——节流场景调用方不应依赖被抑制调用的返回值）
  *
- * 宿主生命周期收尾：窗口内挂起的补发由 `setTimeout` 驱动，宿主（小程序 Page /
- * Component 实例）卸载后它仍会到期执行，最坏情况写入已销毁的 store。为此本模块
- * 提供三个语义互斥的公开入口（`cancelThrottledCalls` / `flushThrottledCalls` /
- * `disposeThrottledState`，见各自 JSDoc），在 `onUnload` / `detached` 里按宿主调用。
+ * 宿主生命周期收尾：窗口内挂起的补发由 `setTimeout` 驱动，宿主（小程序 Page / Component
+ * 实例）卸载后它仍会到期执行，最坏情况写入已销毁的 store。为此本模块提供三个语义互斥的
+ * 公开入口（`cancelThrottledCalls` / `flushThrottledCalls` / `disposeThrottledState`，
+ * 见各自 JSDoc），在 `onUnload` / `detached` 里按宿主调用。
+ *
+ * 这三个入口定位的是**调用被装饰方法时的 `this`**（状态表 `throttleStates` 的键就是它），
+ * 因此只对「`this` 可被业务侧拿到」的宿主有效：Page / Component 实例、类实例、普通对象。
+ * **装饰 store action 时本组入口不可用**——限制与成因与 `withDebounce` 完全相同（同一套
+ * `WeakMap<宿主, …>` 结构：`this` 是 store 内部的 action 上下文代理，卸载点上传 Page 的
+ * `this` 定位不到任何槽位、静默 no-op），详见 `./debounce.js` 模块头。装饰 store action 时
+ * 请在业务侧自判存活标记。
  *
  */
 /**
@@ -1153,7 +1172,9 @@ export interface TimeoutError extends Error {
  * 对没有挂起调用的宿主调用都是 no-op。
  *
  * @param host - 宿主（Page / Component 实例、类对象等）。基本类型 / null 时无从定位
- *        状态，静默返回（与装饰器自身的降级口径一致）
+ *        状态，静默返回（与装饰器自身的降级口径一致）。装饰 store action 时传 Page 的
+ *        `this` 同样定位不到状态（`this` 是 store 内部的 action 上下文代理），
+ *        见模块头的「本组入口不可用于 store action」
  * @param method - 只取消该名字的被装饰方法；省略时取消该宿主上所有防抖方法
  *
  * @example
@@ -1182,7 +1203,8 @@ export declare function cancelDebouncedCalls(host: unknown, method?: string | sy
  * （若有）已在调用时刻以 `undefined` 结算，不受影响。
  *
  * @param host - 宿主（Page / Component 实例、类对象等）。基本类型 / null 时无从
- *        定位状态，静默返回（与装饰器本身的降级口径一致）
+ *        定位状态，静默返回（与装饰器本身的降级口径一致）。装饰 store action 时传 Page 的
+ *        `this` 同样定位不到状态，见模块头
  * @param method - 只取消该名字的被装饰方法；省略时取消该宿主上所有节流方法
  *
  * @example
@@ -1256,7 +1278,8 @@ export declare function createDecorator(options?: DecoratorOptions): MethodDecor
  * 与 `cancelDebouncedCalls` 一样对任何入参安全：宿主为基本类型 / null、
  * 或本就没有防抖状态时都是 no-op（被取消的 Promise 同样以「已取消」拒绝）。
  *
- * @param host - 宿主
+ * @param host - 宿主；基本类型 / null、以及装饰 store action 时的 action 上下文代理都定位不到
+ *        状态（见模块头），此时本函数为 no-op
  */
 export declare function disposeDebouncedState(host: unknown): void;
 ```
@@ -1275,7 +1298,8 @@ export declare function disposeDebouncedState(host: unknown): void;
  * 与 `cancelThrottledCalls` 一样对任何入参安全：宿主为基本类型 / null、
  * 或本就没有节流状态时都是 no-op。
  *
- * @param host - 宿主
+ * @param host - 宿主；基本类型 / null、以及装饰 store action 时的 action 上下文代理都定位不到
+ *        状态（见模块头），此时本函数为 no-op
  */
 export declare function disposeThrottledState(host: unknown): void;
 ```
@@ -1294,7 +1318,8 @@ export declare function disposeThrottledState(host: unknown): void;
  *   fire-and-forget 的调用方也不会漏出 unhandledRejection（`runPendingCalls` 在 reject
  *   前给每个挂起 promise 补了 catch，与延迟自然到期完全同构）。
  *
- * @param host - 宿主；基本类型 / null 时为 no-op
+ * @param host - 宿主；基本类型 / null 时为 no-op（装饰 store action 时同样定位不到状态，
+ *        见模块头）
  * @param method - 只立即执行该名字的被装饰方法；省略时覆盖该宿主上所有防抖方法
  */
 export declare function flushDebouncedCalls(host: unknown, method?: string | symbol): void;
@@ -1313,7 +1338,7 @@ export declare function flushDebouncedCalls(host: unknown, method?: string | sym
  * - 补发是 fire-and-forget，其返回值不回传、失败就地 `console.error`，
  *   不会把 rejection 漏成 unhandledRejection。
  *
- * @param host - 宿主；基本类型 / null 时为 no-op
+ * @param host - 宿主；基本类型 / null 时为 no-op（装饰 store action 时同样定位不到状态，见模块头）
  * @param method - 只补发该名字的被装饰方法；省略时补发该宿主上所有挂起的节流调用
  */
 export declare function flushThrottledCalls(host: unknown, method?: string | symbol): void;
@@ -1379,6 +1404,16 @@ export declare function withCache(options?: CacheDecoratorOptions): MethodDecora
  * 卸载后它仍会到期执行被装饰方法。为此本模块提供三个语义互斥的公开入口
  * （`cancelDebouncedCalls` / `flushDebouncedCalls` / `disposeDebouncedState`），
  * 在 `onUnload` / `detached` 里按宿主调用。
+ *
+ * 这三个入口定位的是**调用被装饰方法时的 `this`**（状态表 `debounceStates` 的键就是它），
+ * 因此只对「`this` 可被业务侧拿到」的宿主有效：Page / Component 实例、类实例、普通对象。
+ * **装饰 store action 时本组入口不可用**——`ActionManager` 把每个 action 包成
+ * `originalAction.call(actionContext, ...)`，运行时的 `this` 是 store 内部的 action 上下文
+ * 代理（只被那批箭头闭包捕获，不挂在任何公开成员上；`store.actions` 拿到的是另一个对象），
+ * 在 Page/Component 的卸载点上传 `this` 会拿到空数组并**静默 no-op**，挂起的防抖 action
+ * 照样到点执行并往（可能已销毁的）store 里写。装饰 store action 时请在业务侧自判存活标记
+ * （action 体内先确认页面/store 仍存活再落状态），与「`withCache` / `withRetry` 没有对应的
+ * 收尾入口」同一口径。`withThrottle` 的三个同名入口受同一条限制，见其模块头。
  *
  */
 /**
@@ -1619,6 +1654,8 @@ export declare function withThrottle(interval?: number, options?: ThrottleDecora
  *
  * @example
  * ```typescript
+ * import { TIMEOUT_ERROR_CODE, withTimeout } from '@openlide/geomstore/extras/action'
+ *
  * class NetworkComponent {
  *   @withTimeout(5000) // 5秒超时
  *   async fetchData(url: string) {
@@ -1629,13 +1666,18 @@ export declare function withThrottle(interval?: number, options?: ThrottleDecora
  * try {
  *   const data = await networkComponent.fetchData('/api/data')
  * } catch (error) {
- *   // 先收窄再取 message：strict + useUnknownInCatchVariables 下 catch 形参是 unknown
- *   if (error instanceof Error && error.message.includes('Timeout after')) {
+ *   // 按 code 判定，且先收窄（strict + useUnknownInCatchVariables 下 catch 形参是 unknown）：
+ *   // 两个入口都经 raceWithTimeout 拿到同一个 code，而消息文本彼此不同
+ *   if ((error as { code?: unknown }).code === TIMEOUT_ERROR_CODE) {
  *     console.error('Request timed out')
  *     showTimeoutMessage()
  *   }
  * }
  * ```
+ *
+ * 历史注记：早先这里的示例是 `error.message.includes('Timeout after')`，**不要照此写**——
+ * 底层 action 自己抛一条含该文本的错误就会误判成超时，而 `ActionExecutor.executeWithTimeout`
+ * 的文案是 `Action timeout after <n>ms`（小写 t），按文本匹配又会漏判它的真实超时。
  */
 export declare function withTimeout(timeout?: number): MethodDecorator;
 ```
