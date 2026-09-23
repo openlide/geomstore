@@ -25,6 +25,53 @@ export const ALL_HOOK_NAMES: HookName[] = [
 ]
 
 /**
+ * 「对已销毁 Store 调用公开方法」的固定文案判据
+ *
+ * Store 与 ComposedStore 的每个公开方法守卫都按这个模板抛出
+ * （`[GeomStore] Cannot call <method> on a destroyed Store`，组合层是 `destroyed ComposedStore`），
+ * 写入竞态只吞这一类异常。其余异常（订阅者回调抛错、状态保护拦截、
+ * 嵌套组合的 strict 校验失败）与销毁无关，必须照常冒泡
+ */
+const DESTROYED_STORE_MESSAGE = /Cannot call .+ on a destroyed (?:Composed)?Store$/
+
+function isDestroyedStoreError(error: unknown): boolean {
+  return error instanceof Error && DESTROYED_STORE_MESSAGE.test(error.message)
+}
+
+/**
+ * 判定 store 是否为「持有名为 head 的内层子 store」的嵌套组合
+ *
+ * `dispatchByNamespace` 的嵌套分组与 `findTargetStoreWithKey` 的斜杠回退查找必须
+ * 共用同一判据：两处各写一遍就会漂移成「dispatch 能按 'leaf/n' 路由、setState 却把它
+ * 当扁平键找不到归属」的读写不对称
+ */
+function ownsNestedStore(store: Store, head: string): boolean {
+  // `stores` 在 Store 接口上不存在，只可能由嵌套组合挂上：鸭子类型的 store 会把它
+  // 置成 null，而 hasOwnProperty.call(null, …) 直接抛 TypeError，故显式排除空值。
+  // 只看自有键：原型链上的同名属性不代表它持有内层 store
+  const nested = (store as { stores?: Record<string, unknown> | null }).stores
+  return typeof nested === 'object' && nested !== null && Object.prototype.hasOwnProperty.call(nested, head)
+}
+
+/**
+ * 「子 store 已销毁」告警的去重表：按 store 实例记，同一死店只报一次。
+ *
+ * 归属判定与读路径合并都在渲染/setData 热路径上被反复调用，不去重会刷屏；
+ * WeakSet 不驻留已销毁实例，不会因为告警而留内存。
+ */
+const destroyedChildrenWarned = new WeakSet<object>()
+
+function warnDestroyedChildOnce(store: Store): void {
+  if (destroyedChildrenWarned.has(store)) {
+    return
+  }
+  destroyedChildrenWarned.add(store)
+  if (!isProduction()) {
+    console.warn(`[composeStore] 子 store "${store.name}" 已销毁，跳过（其余子 store 不受影响）`)
+  }
+}
+
+/**
  * 对子 store 应用写入，跳过已被独立销毁的子 store
  *
  * 子 store 可在组合之外被独立销毁，此时 $patch/$replaceState 会抛
@@ -47,8 +94,10 @@ function applyToStore<T>(store: Store, value: T, handler: (store: Store, value: 
   try {
     handler(store, value)
   } catch (error) {
-    // 只吞「判断之后才被销毁」的竞态；其他异常照常冒泡，不掩盖真实故障
-    if (store.destroyed) {
+    // 只吞「判断之后才被销毁」的竞态，且异常本身必须是销毁守卫抛的那一类：
+    // 仅凭 store.destroyed 判定会把真实故障（同一 tick 内恰好被销毁的订阅者回调抛错、
+    // 状态保护拦截）静默丢弃，还会给出与原因不符的文案
+    if (store.destroyed && isDestroyedStoreError(error)) {
       if (!isProduction()) {
         console.warn(`[composeStore] 子 store "${store.name}" 在写入期间被销毁，已跳过`)
       }
@@ -70,15 +119,25 @@ export function dispatchByNamespace<T>(
   options?: { warnMissingKeys?: boolean },
 ): void {
   if (namespace) {
-    // 命名空间模式：每个顶层键是一个 store
-    for (const key in data) {
-      const value = data[key]
+    // 两段式：先完成全部 store 查找与 strict 校验，再统一写入。
+    // 校验期内抛错则一个 store 都没被写入，避免「前面的 store 已落库、后面的永不写入」
+    // 这种调用方无法回滚的半更新状态（与非命名空间分支同口径）
+    //
+    // Object.keys 而非 for…in：后者会枚举调用方 payload 原型链上的可枚举属性，
+    // 被污染的原型即被当作要写入的 store 名（本文件其余处一律按自有键判定）
+    const pending: Array<[Store, T]> = []
+    for (const key of Object.keys(data)) {
       const targetStore = stores.find((s) => s.name === key)
-      if (targetStore) {
-        applyToStore(targetStore, value as T, handler)
-      } else if (strict) {
-        throw new Error(`[composeStore] Cannot find store for key: ${key}`)
+      if (!targetStore) {
+        if (strict) {
+          throw new Error(`[composeStore] Cannot find store for key: ${key}`)
+        }
+        continue
       }
+      pending.push([targetStore, data[key] as T])
+    }
+    for (const [store, value] of pending) {
+      applyToStore(store, value, handler)
     }
   } else {
     // 非命名空间模式：需要先分组
@@ -87,34 +146,31 @@ export function dispatchByNamespace<T>(
     // 不能按原样透传——内层的命名空间查找以顶层键为 store 名
     const nestedGroups = new Map<Store, Record<string, Record<string, T>>>()
 
-    for (const key in data) {
+    for (const key of Object.keys(data)) {
       const value = data[key]
       const targetStore = findTargetStore(key, stores, namespace)
-      if (targetStore && !options?.warnMissingKeys) {
-        const nested = (targetStore as { stores?: Record<string, unknown> }).stores
-        const separator = key.indexOf('/')
-        if (nested && separator > 0) {
-          const head = key.slice(0, separator)
-          if (Object.prototype.hasOwnProperty.call(nested, head)) {
-            let payload = nestedGroups.get(targetStore)
-            if (!payload) {
-              payload = {}
-              nestedGroups.set(targetStore, payload)
-            }
-            const bucket = (payload[head] ?? {}) as Record<string, T>
-            bucket[key.slice(separator + 1)] = value
-            payload[head] = bucket
-            continue
-          }
-        }
-      }
+      // 嵌套归属判断只看数据形状，不看 options：warnMissingKeys 是开发模式下
+      // $replaceState 的告警开关，把它当作路由开关会让同一份写入在开发/生产走不同分支
       if (targetStore) {
-        let group = storeGroups.get(targetStore)
-        if (!group) {
-          group = {}
-          storeGroups.set(targetStore, group)
+        const separator = key.indexOf('/')
+        const head = separator > 0 ? key.slice(0, separator) : ''
+        if (head !== '' && ownsNestedStore(targetStore, head)) {
+          let payload = nestedGroups.get(targetStore)
+          if (!payload) {
+            payload = {}
+            nestedGroups.set(targetStore, payload)
+          }
+          const bucket = (payload[head] ?? {}) as Record<string, T>
+          bucket[key.slice(separator + 1)] = value
+          payload[head] = bucket
+        } else {
+          let group = storeGroups.get(targetStore)
+          if (!group) {
+            group = {}
+            storeGroups.set(targetStore, group)
+          }
+          group[key] = value
         }
-        group[key] = value
       } else if (strict) {
         throw new Error(`[composeStore] Cannot find store for key: ${key}`)
       }
@@ -146,8 +202,10 @@ export function dispatchByNamespace<T>(
 /**
  * 查找目标store并提取实际的键
  *
- * 修复：非命名空间模式下，如果多个 store 包含相同的 key，
- * 抛出错误以避免非确定性行为
+ * 非命名空间模式下多个 store 含同名键属歧义配置：此处按「取第一个匹配 store +
+ * 开发模式告警」处理（与 merge.ts 的同名键覆盖告警同口径），不抛错——
+ * 歧义本身不破坏正确性（合并视图同样取后者覆盖），抛错会让只读路径
+ * （getState / 渲染）在既有工程上直接崩。需要确定性路由请用命名空间模式。
  */
 export function findTargetStoreWithKey(key: string, stores: Store[], namespace?: string | boolean): [Store | undefined, string] {
   if (namespace) {
@@ -164,15 +222,23 @@ export function findTargetStoreWithKey(key: string, stores: Store[], namespace?:
     return [targetStore, actualKey]
   } else {
     // 非命名空间模式：直接查找
-    // 修复：检查是否有多个 store 包含相同的 key，避免非确定性行为
     const matchingStores = stores.filter((s) => {
+      // 已销毁的子 store 不参与归属判定：它的 getState() 会抛，把整条读路径带着一起崩。
+      // 判据与写侧 applyToStore 的「已销毁 → 跳过并告警」同口径，故这里也要告警——
+      // 否则键的归属被死店吃掉后，$patch/setState 会静默什么都不做（R5-277/285 已否决过静默）
+      if (s.destroyed) {
+        warnDestroyedChildOnce(s)
+        return false
+      }
       const state = s.getState()
       // own property 判定：`in` 会命中 Object 原型链（'toString'/'constructor' 等），
       // 导致原型链属性名被误判为所有 store 都匹配并写入第一个 store
       return Object.prototype.hasOwnProperty.call(state, key)
     })
 
-    if (matchingStores.length > 1) {
+    if (matchingStores.length > 1 && !isProduction()) {
+      // 歧义属配置问题：该函数在 setState/getCached/渲染路径上被反复调用，
+      // 生产刷屏只会淹没真实日志，取值行为（取第一个）两种模式一致
       console.warn(
         `[composeStore] Ambiguous key "${key}" found in multiple stores: ${matchingStores.map((s) => s.name).join(', ')}. ` +
           `Consider using namespaced mode for disambiguation.`,
@@ -183,13 +249,13 @@ export function findTargetStoreWithKey(key: string, stores: Store[], namespace?:
       // 嵌套组合：非命名空间外层可包含命名空间内层，此时内层的子 store 以
       // 「子 store 名/键」的形式出现在合并状态里（如 'leaf/n'）。整串键在此
       // 匹配不到顶层键，交给持有该子 store 的内层组合按其自身模式继续解析，
-      // 避免「dispatch 能用、setState 静默失败」的读写能力不对称
+      // 避免「dispatch 能用、setState 静默失败」的读写能力不对称。
+      // 判据与 dispatchByNamespace 的嵌套分组共用 ownsNestedStore，两处不会漂移
       const separator = key.indexOf('/')
       if (separator > 0) {
         const head = key.slice(0, separator)
         for (const store of stores) {
-          const nested = (store as { stores?: Record<string, unknown> }).stores
-          if (nested && Object.prototype.hasOwnProperty.call(nested, head)) {
+          if (ownsNestedStore(store, head)) {
             return [store, key]
           }
         }
@@ -220,6 +286,7 @@ export function parseActionName(fullName: string, namespace?: string | boolean):
       return [parts[0], parts.slice(1).join('/')]
     }
   }
-  // 如果没有命名空间，尝试从stores中查找
+  // 无命名空间（或名称中不含 '/'）时返回空 store 名：本函数不做任何 store 查找，
+  // 由调用方按裸名（fullName）在全部子 store 中继续解析
   return ['', fullName]
 }

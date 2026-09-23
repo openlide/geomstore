@@ -16,9 +16,40 @@ export type State = object
  * 解析 State 类型
  * 将 `() => S` 工厂函数形式解析为返回的对象类型 `S`；
  * 普通对象字面量原样返回。用于支持 `state: () => ({...})` 工厂写法。
+ *
+ * `any[]` 是必要写法（不是偷懒）：这里的 `(...args: any[]) => infer R` 只做**形状匹配**，
+ * 需要同时命中 0..n 元、任意形参类型的工厂，且不参与任何调用点的形参检查。
+ * 换成 `unknown[]` 会因参数逆变而漏掉带形参的工厂（实测 `(seed: number) => { count: number }`
+ * 不匹配 `(...args: unknown[]) => infer R`，`ResolveState` 于是原样返回函数类型，
+ * `StoreConfig.getters` 等下游拿到的 state 形状整体走偏）。
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type ResolveState<T> = T extends (...args: any[]) => infer R ? R : T
+
+/**
+ * 解析后的状态类型（`ResolveState` + 归一化）
+ *
+ * `state: () => ({...})` 工厂写法下 `S` 会被推断成函数类型，`ResolveState` 取其返回值；
+ * 归一不到 `State`（显式写了 `StoreConfig<unknown>` 这类退化输入）时退回 `State`。
+ * 该表达式此前在 actions / getters / cacheKeys 三处逐字复制（#421），任一处调整都要改三遍。
+ * `StoreConfig.getters` 用的是同一条表达式的另一兜底口径 {@link ConfigState}。
+ */
+export type ResolvedState<S> = ResolveState<S> extends State ? ResolveState<S> : State
+
+/**
+ * `StoreConfig.getters` 的 state 形参形状（#R5-326 把它从内联表达式提成命名口径）
+ *
+ * 与 {@link ResolvedState} 只差归一失败的兜底：这里退回 `Record<string, unknown>` 而不是
+ * `State`（= `object`）——getter 拿到的即使是没有键信息的退化状态，也仍要能按
+ * `state.count` 读值，`object` 会让每个 getter 的第一行都编译不过。
+ *
+ * 刻意**不**把它接到 `cacheKeys`（即报告建议的「两处共用」写法）：`Array<keyof ConfigState<S>>`
+ * 会让 `keyof <未展开的条件类型>` 参与 `factory.ts` 里 `new Store(options)` 的反向推断，
+ * S 的候选被污染成 `ConfigState<S | (() => S)>`，报 TS2322（实测；显式类型实参同样救不回，
+ * 因为 `Array<keyof ConfigState<…>>` 也无法赋给 `StoreOptions<S, …>` 的 `Array<keyof S>`）。
+ * 退化输入的 `cacheKeys` 改由 `StoreConfig` 的 S 默认值解决，见该接口文档。
+ */
+export type ConfigState<S> = ResolveState<S> extends State ? ResolveState<S> : Record<string, unknown>
 
 /**
  * Action 上下文运行时基础结构 - 包含 Store 核心方法
@@ -53,8 +84,29 @@ export interface ActionContextBase<S extends State = State> {
  *
  * `dispatch` 仅提供类型安全泛型重载（编译期校验 action 名与参数），
  * 不提供字符串兜底；动态 dispatch 场景请改用外部 `store.dispatch(actionName, ...)`。
+ *
+ * 与用户 action 同名的基础成员要**先从基座里剔掉**再交叉（#423）：交叉不会「覆盖」，
+ * 同名成员会变成 `state: S & Fn` / `setState: BaseSig & UserSig` 这种重载/交叉体，
+ * `this.state`、`this.setState` 解析到哪一个不确定，且会盖掉类型安全的 `dispatch` 重载。
+ * 剔除只在 A 是**具体 action 集合**时进行：`Actions`（`Record<string, ...>`）的 `keyof A`
+ * 是 `string | number`，无条件 `Omit<..., keyof A>` 会把基座整体清空（实测 action 内
+ * `this.state` / `this.$patch` 全变 TS2339），故用 `ActionCollisionKeys` 放过索引签名。
+ *
+ * ⚠️ 该守卫是「全有或全无」，留下一处已知口子（#R6-109）：A **同时**带索引签名与显式同名成员时
+ * （`interface MyActions extends Actions { getState(): number }` —— 本仓推荐的写法，
+ * 见 `tests/types/action-decorator-result-types.typecheck.ts` 的「interface 声明 action 集合需 extends Actions」），
+ * `string extends keyof A` 仍成立 ⇒ 一个键都不剔除，基座的 `getState(): S` 与用户的 `getState(): number`
+ * 组成重载集、解析到先声明的基座签名。运行时却是用户 action 覆盖基座
+ * （`ActionManager.initialize` 的 context 代理 `get` 陷阱优先返回 `boundActions[prop]`），
+ * 于是 `const n: number = ctx.getState()` 报 TS2322、而 `this.getState()` 里实际拿到的是 action 的返回值。
+ * 类型层修不掉：索引签名会吸收显式键，还原不出 `'getState'` 这个键名；真要关只能让
+ * `StoreOptions` / `FactoryStoreConfig` 拒收带索引签名的 A，那是把上面那条推荐写法一并打破的收紧。
+ * 现状锁（形状反例）应落在 `tests/types/action-context-collision.typecheck.ts`，该文件不在本分片，已记 NEEDS-MAIN。
+ * 规避：action 名避开基座成员（`name` / `state` / `setState` / `$patch` / `$replaceState` / `getState` / `dispatch`）。
  */
-export type ActionContext<S extends State = State, A extends Actions = Actions> = Omit<ActionContextBase<S>, 'dispatch'> &
+type ActionCollisionKeys<A extends Actions> = string extends keyof A ? never : keyof A
+
+export type ActionContext<S extends State = State, A extends Actions = Actions> = Omit<ActionContextBase<S>, 'dispatch' | ActionCollisionKeys<A>> &
   A & {
     /** 类型安全的跨 action 调用（action 内 this.dispatch），仅接受已声明的 action 名称 */
     dispatch<K extends keyof A>(actionName: K, ...args: InferActionArgs<A, K>): InferActionReturn<A, K>
@@ -63,6 +115,11 @@ export type ActionContext<S extends State = State, A extends Actions = Actions> 
 /**
  * Actions 类型约束
  * 用于约束 actions 参数类型
+ *
+ * 两个 `any` 都是必要的（实测改 `unknown` 即破功）：本类型是「任意 action 集合」的**约束位点**，
+ * 参数逆变会让 `(id: string) => void` 这类具体 action 不再满足 `(...args: unknown[]) => unknown`，
+ * 返回值逆变会拒掉返回具体值的 async action；协变/逆变两侧都要放行，只能是 `any`。
+ * 精确签名由 `InferActionArgs` / `InferActionReturn` 在具体 A 上恢复，`Actions` 从不出现在调用点。
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type Actions = Record<string, (...args: any[]) => any>
@@ -71,7 +128,13 @@ export type Actions = Record<string, (...args: any[]) => any>
  * 创建带 ThisType 的 Actions 类型
  * 这是方案3的核心：通过 ThisType 注入 this 类型
  */
-type ActionsWithThis<S extends State, A extends Actions> = A & ThisType<ActionContext<S, A>>
+/**
+ * Actions + `ThisType` 注入
+ *
+ * 导出原因：`StoreOptions.actions` 的类型就是它，消费者要写「带 this 上下文的一组 action」
+ * 的公共默认值/包装器时得能命名这个形状（此前只有 `StoreOptions` 可见，成员类型不可命名）。
+ */
+export type ActionsWithThis<S extends State, A extends Actions> = A & ThisType<ActionContext<S, A>>
 
 /**
  * Getters类型 - 支持类型推断
@@ -94,6 +157,10 @@ export type InferActionReturn<A extends Actions, K extends keyof A> = A[K] exten
 
 /**
  * 推断Getter返回类型
+ *
+ * 约束里的 `any` 必要：getter 以**具体状态类型**声明形参（`(state: UserState) => number`），
+ * 参数逆变下 `state: State` / `state: unknown` 的约束会直接拒掉这类 getter；
+ * 返回值同理需放行任意形状。此处只做提取，精确返回类型仍由 `infer R` 从具体 G 得到。
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type InferGetterReturn<G extends Record<string, (state: any) => any>, K extends keyof G> = G[K] extends (...args: never[]) => infer R ? R : never
@@ -145,8 +212,11 @@ export type SubscriberLimitPolicy = 'evict-oldest' | 'throw'
 
 /**
  * 订阅配置选项
+ *
+ * 随 `StoreOptionsBase.subscription` 发布给消费者：需要集中管理默认订阅配置
+ * （共享 defaults 对象、包装 createStore 转发 `subscription`）时必须能命名它。
  */
-interface SubscriptionOptions {
+export interface SubscriptionOptions {
   /** 最大订阅者数量（默认 50） */
   maxSubscribers?: number
   /** 订阅者达到上限时的策略（默认 'evict-oldest'） */
@@ -155,8 +225,11 @@ interface SubscriptionOptions {
 
 /**
  * 通知行为配置选项
+ *
+ * 与 `SubscriptionOptions` 同理：`StoreOptionsBase.notify` 的成员类型，导出后消费者
+ * 才能显式声明/复用一份通知策略。
  */
-interface NotifyOptions {
+export interface NotifyOptions {
   /**
    * 通知监听器前是否深拷贝状态（默认 true）。
    * 设为 false 进入零拷贝模式：监听器收到只读保护 Proxy（状态保护关闭时为原始引用，
@@ -177,37 +250,29 @@ interface NotifyOptions {
 }
 
 /**
- * Store 自动推导配置类型（免泛型推导专用）
+ * Store 配置接口的共享部分（#421）
  *
- * 类型参数默认 `unknown`，使 TS 能从对象字面量**精确反推** S/A/G，
- * 不被泛型约束吸收为 `any`。`actions` 通过 `ThisType` 注入 `this` 上下文
- * （基于推断出的 S/A）。
+ * `StoreConfig`（免泛型推断）与 `StoreOptions`（显式泛型）真正的差别只有
+ * `actions` / `getters` / `cacheKeys` 三个成员的写法；其余 7 个选项此前各写一遍，
+ * 新增一个选项必须记得改两处，否则静默漂移，故收敛到这里声明一次。
+ *
+ * `S` 刻意不加 `extends State` 约束：`StoreConfig` 的类型参数默认是 `unknown`
+ * （推断位点，见其文档），带约束会让它无法满足本基接口。
  */
-export interface StoreConfig<S = unknown, A = unknown, G = unknown> {
+export interface StoreOptionsBase<S> {
   /** Store名称 */
   name?: string
   /**
-   * 初始状态（字面量直接推断）
-   * 支持两种写法：
+   * 初始状态，支持两种写法：
    * - 对象字面量：`state: { count: 0 }`
    * - 工厂函数（Pinia 同款，避免共享引用 / 需惰性初始化时推荐）：`state: () => ({ count: 0 })`
    *
-   * 工厂函数写法下 `S` 会被推断为函数类型，内部已通过 `ResolveState<S>` 归一化，
-   * actions/getters/cacheKeys 使用的 state 类型不受影响。
+   * 工厂写法下 `S` 会被推断为函数类型，下游一律用 `ResolvedState<S>` 归一化，
+   * actions/getters/cacheKeys 拿到的 state 类型不受影响。
    */
   state?: S | (() => S)
-  /** Actions（注入 this 上下文，字面量直接推断；action 内 this.dispatch 走类型安全泛型重载） */
-  actions?: A & ThisType<ActionContext<ResolveState<S> extends State ? ResolveState<S> : State, A extends Actions ? A : Actions>>
-  /**
-   * Getters（字面量直接推断）
-   * 每个 getter 接收 `state` 作为首个参数，其类型由推断出的 State 提供上下文，
-   * 支持对象或工厂函数形式的 `state`（`ResolveState` 归一化），避免隐式 any。
-   */
-  getters?: G & Record<string, (state: ResolveState<S> extends State ? ResolveState<S> : Record<string, unknown>, ...args: unknown[]) => unknown>
   /** 是否启用缓存 */
   enableCache?: boolean
-  /** 需要缓存的state键（为空时缓存所有） */
-  cacheKeys?: Array<keyof (ResolveState<S> extends State ? ResolveState<S> : State)>
   /** 缓存配置（容量、TTL等） */
   cacheConfig?: CacheConfig
   /** 状态保护配置 */
@@ -219,33 +284,66 @@ export interface StoreConfig<S = unknown, A = unknown, G = unknown> {
 }
 
 /**
- * Store 构造配置（显式泛型场景）
- * actions 使用 `ActionsWithThis<S, A>` 注入 `this` 类型。
+ * Store 自动推导配置类型（免泛型推导专用）
+ *
+ * `A` / `G` 的类型参数默认 `unknown`，使 TS 能从对象字面量**精确反推**，
+ * 不被泛型约束吸收为 `any`。`actions` 通过 `ThisType` 注入 `this` 上下文
+ * （基于推断出的 S/A）。共享选项见 `StoreOptionsBase`。
+ *
+ * `S` 的默认值是「没有状态类型可言」时的形状 `Record<string, unknown>`，与 {@link ConfigState}
+ * 的退化兜底同一口径（#R5-326）：默认值为 `unknown` 时 `state?: unknown` 什么都能装，
+ * 但 `cacheKeys?: Array<keyof ResolvedState<S>>` 退化成 `never[]`——裸写 `StoreConfig`
+ * 的人连 `cacheKeys: ['count']` 都写不出来，而同一份配置里的 `getters` 却能正常按键读状态。
+ * 走 `createStore` 的调用不受影响：它的 S 由重载签名显式传入本接口，默认值不参与推断。
  */
-export interface StoreOptions<S extends State = State, A extends Actions = Actions, G extends Getters<S> = Getters<S>> {
-  /** Store名称 */
-  name?: string
+export interface StoreConfig<S = Record<string, unknown>, A = unknown, G = unknown> extends StoreOptionsBase<S> {
+  /** Actions（注入 this 上下文，字面量直接推断；action 内 this.dispatch 走类型安全泛型重载） */
+  actions?: A & ThisType<ActionContext<ResolvedState<S>, A extends Actions ? A : Actions>>
   /**
-   * 初始状态
-   * 支持对象字面量或工厂函数：`state: () => ({...})`
+   * Getters（字面量直接推断）
+   * 每个 getter 接收 `state` 作为首个参数，其类型由推断出的 State 提供上下文，
+   * 支持对象或工厂函数形式的 `state`（`ResolveState` 归一化），避免隐式 any。
+   *
+   * 归一失败时的兜底与 {@link ResolvedState} 不同：这里退化成 `Record<string, unknown>`
+   * 而不是 `State`（= `object`），使退化输入下 getter 仍能按键读状态
+   * （同一口径也是 `StoreConfig` 的 `S` 默认值，见该接口文档）。
    */
-  state?: S | (() => S)
+  getters?: G & Record<string, (state: ConfigState<S>, ...args: unknown[]) => unknown>
+  /**
+   * 需要缓存的 state 键：**未提供（`undefined`）时缓存所有键；显式传空数组表示一个键都不缓存**
+   *
+   * 口径以实现为准（`StoreCache.enable`：`this._cacheKeys = keys ? new Set(keys) : undefined`，
+   * 见 `core/store/StoreCache.ts`）：空数组不是「全缓存」的另一种写法，它让 `get`/`set` 的键过滤
+   * 恒不命中，`enableCache` 形同关闭。实现为这个分歧专门加了告警
+   * （`cacheKeys 为空数组：缓存不会命中任何键，enableCache 形同关闭（需要缓存全部键请传 undefined）`），
+   * 但生产模式下 `isProduction()` 会把它吞掉，只剩「数据表现与配置不一致」。
+   * 由派生表达式给出本项时尤其注意（`Object.keys(state).filter((k) => PERSIST_KEYS.includes(k))`
+   * 白名单为空/改名失配即得 `[]`）：要「缓存全部键」请**不写这一项**，而不是写 `[]`。
+   * 该语义另有运行时锁：`tests/unit/regression/ocr-medium-wave.test.ts` 的
+   * 「#153 cacheKeys 为空数组时告警并保持「不缓存任何键」语义」用例。
+   *
+   * 退化输入（裸写 `StoreConfig`、不传类型参数）下 S 即 `Record<string, unknown>`，
+   * 键集随之是 `string | number`，任何字符串键都接受（#R5-326）。
+   */
+  cacheKeys?: Array<keyof ResolvedState<S>>
+}
+
+/**
+ * Store 构造配置（显式泛型场景）
+ * actions 使用 `ActionsWithThis<S, A>` 注入 `this` 类型。共享选项见 `StoreOptionsBase`。
+ */
+export interface StoreOptions<S extends State = State, A extends Actions = Actions, G extends Getters<S> = Getters<S>> extends StoreOptionsBase<S> {
   /** Actions - 使用 ThisType 注入 this 类型 */
   actions?: ActionsWithThis<S, A>
   /** Getters */
   getters?: G
-  /** 是否启用缓存 */
-  enableCache?: boolean
-  /** 需要缓存的state键（为空时缓存所有） */
+  /**
+   * 需要缓存的 state 键：**未提供（`undefined`）时缓存所有键；显式传空数组表示一个键都不缓存**
+   *
+   * 判据、告警文案与 `StoreConfig.cacheKeys` 上那段说明同一条（实现看 `core/store/StoreCache.ts`），
+   * 两处都不接受「空数组 = 全缓存」这一读法。
+   */
   cacheKeys?: Array<keyof S>
-  /** 缓存配置（容量、TTL等） */
-  cacheConfig?: CacheConfig
-  /** 状态保护配置 */
-  stateProtection?: StateProtectionOptions
-  /** 订阅配置（上限数量、超限策略） */
-  subscription?: SubscriptionOptions
-  /** 通知行为配置（深拷贝开关、仅变更时通知） */
-  notify?: NotifyOptions
 }
 
 /**
@@ -313,7 +411,7 @@ export interface Store<S extends State = State, A extends Actions = Actions, G e
   subscribe(listener: StateListener<S>, options?: { readOnly?: boolean }): () => void
 
   /** 判断指定状态键自上次通知以来是否发生变更（供集成层精确跳过未变化的映射） */
-  isStateKeyDirty(key: string): boolean
+  isStateKeyDirty(key: string | symbol): boolean
 
   /** 开始批量更新 */
   startBatch(): void

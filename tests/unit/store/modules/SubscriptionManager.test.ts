@@ -186,6 +186,7 @@ describe('SubscriptionManager', () => {
       const mockMap = {
         forEach: (cb: (count: number) => void) => cb(2),
         get: () => undefined,
+        has: () => false,
         keys: () => ({ next: () => ({ value: undefined, done: true }) }),
         set: () => mockMap,
         delete: () => true,
@@ -306,25 +307,44 @@ describe('SubscriptionManager 引用计数语义', () => {
     expect(manager.delete(jest.fn())).toBe(false)
   })
 
-  it('引用计数不影响上限驱逐语义：新监听器仍按最旧驱逐', () => {
+  it('上限对每一次注册生效：重复注册不再越界，新监听器仍按全局最旧驱逐', () => {
     const manager = createManager(2)
     const listenerA = jest.fn()
     const listenerB = jest.fn()
     const listenerC = jest.fn()
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation()
 
     manager.add(listenerA)
     manager.add(listenerB)
-    // 重复注册已有监听器：仅递增计数，不参与上限判定与驱逐
+    // 已达上限的重复注册：让位的是 B 自己最早的一份注册，A 不受牵连
     manager.add(listenerB)
-    expect(manager.size).toBe(3)
+    expect(manager.size).toBe(2)
 
-    // 新监听器达到上限：驱逐最早的 A
+    // 新监听器达到上限：驱逐全局最早的 A
     manager.add(listenerC)
     manager.notify({} as State)
 
     expect(listenerA).not.toHaveBeenCalled()
-    expect(listenerB).toHaveBeenCalledTimes(2)
+    expect(listenerB).toHaveBeenCalledTimes(1)
     expect(listenerC).toHaveBeenCalledTimes(1)
+    warnSpy.mockRestore()
+  })
+
+  it('循环订阅同一监听器不会让注册总数无界增长（泄漏护栏）', () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation()
+    const manager = createManager(4)
+    const subscribe = createSubscribeFunction(manager)
+    const shared = jest.fn()
+
+    // 每次 subscribe 都产出一个新句柄且从不退订：修复前 registrations 子 Map
+    // 与 _totalCount 会一路涨到 200，maxSubscribers 在这条路径上完全失效
+    for (let i = 0; i < 200; i++) {
+      subscribe(shared)
+    }
+
+    expect(manager.size).toBe(4)
+    expect((manager as unknown as { _listeners: Map<unknown, { registrations: Map<object, boolean> }> })._listeners.get(shared)!.registrations.size).toBe(4)
+    warnSpy.mockRestore()
   })
 
   it('readOnly 按注册判定：仅存的注册可写时必须报告存在可写订阅者', () => {
@@ -350,5 +370,167 @@ describe('SubscriptionManager 引用计数语义', () => {
     expect(manager.hasWritableListeners()).toBe(false)
     manager.delete(listener)
     expect(manager.hasWritableListeners()).toBe(false)
+  })
+})
+
+// ==================== R5-122：监听器之间的载荷隔离 ====================
+describe('SubscriptionManager 通知载荷隔离', () => {
+  const createManager = (maxSubscribers = 50) => new SubscriptionManager({ storeName: 'test-store', maxSubscribers })
+
+  it('可写监听器各得一份独立克隆，先执行者的就地改动不被后面的监听器看到', () => {
+    const manager = createManager()
+    const state = { nested: { n: 1 } }
+    const received: Array<{ nested: { n: number } }> = []
+
+    manager.add((s) => {
+      const payload = s as typeof state
+      received.push(payload)
+      payload.nested.n = 999
+    })
+    manager.add((s) => received.push(s as typeof state))
+
+    manager.notify(state)
+
+    expect(received).toHaveLength(2)
+    expect(received[0]).not.toBe(received[1])
+    // 修复前两个回调共享同一份克隆，第二个读到的是被改过的中间态
+    expect(received[1].nested.n).toBe(1)
+    // 载荷与活状态同样隔离
+    expect(state.nested.n).toBe(1)
+  })
+
+  it('只读注册之间共享同一份克隆（不为不会改载荷的订阅放大深拷贝开销）', () => {
+    const manager = createManager()
+    const received: unknown[] = []
+
+    manager.add((s) => received.push(s), { readOnly: true })
+    manager.add((s) => received.push(s), { readOnly: true })
+    manager.notify({ a: 1 })
+
+    expect(received).toHaveLength(2)
+    expect(received[0]).toBe(received[1])
+  })
+
+  it('只读订阅与可写订阅混排时各自拿到独立载荷', () => {
+    const manager = createManager()
+    const received: Array<{ nested: { n: number } }> = []
+
+    manager.add((s) => {
+      const payload = s as { nested: { n: number } }
+      received.push(payload)
+      payload.nested.n = 42
+    })
+    manager.add((s) => received.push(s as { nested: { n: number } }), { readOnly: true })
+
+    manager.notify({ nested: { n: 1 } })
+
+    expect(received).toHaveLength(2)
+    expect(received[0]).not.toBe(received[1])
+    expect(received[1].nested.n).toBe(1)
+  })
+
+  it('cloneOnNotify=false 时全部回调共享调用方载荷（零拷贝快路径不变）', () => {
+    const manager = createManager()
+    const state = { a: 1 }
+    const received: unknown[] = []
+
+    manager.add((s) => received.push(s), { readOnly: true })
+    manager.add((s) => received.push(s), { readOnly: true })
+    manager.notify(state, false)
+
+    expect(received).toHaveLength(2)
+    expect(received[0]).toBe(state)
+    expect(received[1]).toBe(state)
+  })
+})
+
+// ==================== R5-124：驱逐事件上报 ====================
+describe('SubscriptionManager 驱逐上报通道', () => {
+  it('onSubscriberEvicted 收到被驱逐的监听器与额度信息', () => {
+    const events: Array<{ listener: unknown; maxSubscribers: number; size: number }> = []
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation()
+    const manager = new SubscriptionManager({
+      storeName: 'limit-store',
+      maxSubscribers: 1,
+      onSubscriberEvicted: (info) => events.push(info),
+    })
+    function earliestSubscriber() {}
+
+    manager.add(earliestSubscriber)
+    manager.add(() => {})
+
+    expect(events).toHaveLength(1)
+    expect(events[0].listener).toBe(earliestSubscriber)
+    expect(events[0].maxSubscribers).toBe(1)
+    // size 是「驱逐后、新注册写入前」的注册总数
+    expect(events[0].size).toBe(0)
+    warnSpy.mockRestore()
+  })
+
+  it('开发期驱逐告警带上被驱逐监听器的标识', () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation()
+    const manager = new SubscriptionManager({ storeName: 'limit-store', maxSubscribers: 1 })
+    function innocentVictim() {}
+
+    manager.add(innocentVictim)
+    manager.add(jest.fn())
+
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('订阅者数量已达到上限'))
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('innocentVictim'))
+    warnSpy.mockRestore()
+  })
+
+  it('重复注册让位自己最早的一份注册，并同样上报', () => {
+    const events: Array<{ listener: unknown }> = []
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation()
+    const manager = new SubscriptionManager({
+      storeName: 'limit-store',
+      maxSubscribers: 1,
+      onSubscriberEvicted: (info) => events.push(info),
+    })
+    const shared = jest.fn()
+    const keptHandle = manager.add(shared)
+
+    // 已达上限且监听器在册：不该牵连其它监听器，改由自己的最早注册让位
+    manager.add(shared)
+
+    expect(events).toHaveLength(1)
+    expect(events[0].listener).toBe(shared)
+    // 被驱逐那份注册的句柄随之失效，新句柄仍有效
+    expect(manager.delete(shared, keptHandle)).toBe(false)
+    warnSpy.mockRestore()
+  })
+
+  it('上报通道自身抛错不得让 add 失败', () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation()
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation()
+    const manager = new SubscriptionManager({
+      storeName: 'limit-store',
+      maxSubscribers: 1,
+      onSubscriberEvicted: () => {
+        throw new Error('reporter boom')
+      },
+    })
+
+    manager.add(jest.fn())
+    expect(() => manager.add(jest.fn())).not.toThrow()
+    expect(manager.size).toBe(1)
+
+    warnSpy.mockRestore()
+    errorSpy.mockRestore()
+  })
+
+  it('onLimit=throw 时抛错而非驱逐，不产生驱逐事件', () => {
+    const events: unknown[] = []
+    const manager = new SubscriptionManager({
+      storeName: 'limit-store',
+      maxSubscribers: 1,
+      onLimit: 'throw',
+      onSubscriberEvicted: (info) => events.push(info),
+    })
+
+    manager.add(jest.fn())
+    expect(() => manager.add(jest.fn())).toThrow(/Subscriber limit reached/)
+    expect(events).toHaveLength(0)
   })
 })

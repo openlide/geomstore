@@ -54,4 +54,27 @@ describe('deepFreezeState', () => {
     expect(Object.isFrozen(a)).toBe(true)
     expect(Object.isFrozen(b)).toBe(true)
   })
+
+  it('冻结只覆盖自有可枚举字符串键：symbol 键与非可枚举属性指向的子对象保持可变', () => {
+    // 与函数文档的「部分冻结」口径同锁（R5-141）：deepCloneState 不复制这些键，
+    // 冻结它们等于经快照去改活状态，故刻意不覆盖，而非实现遗漏
+    const symKey = Symbol.for('geomstore.test.nested')
+    const viaSymbol = { n: 1 }
+    const viaHidden = { n: 2 }
+    const viaIndexLike = { n: 3 }
+    const state: Record<string, unknown> = { visible: { n: 0 } }
+    Object.defineProperty(state, symKey, { value: viaSymbol, enumerable: false, configurable: true })
+    Object.defineProperty(state, 'hidden', { value: viaHidden, enumerable: false, configurable: true })
+    const list: unknown[] = [1]
+    Object.defineProperty(list, 'extra', { value: viaIndexLike, enumerable: false, configurable: true })
+
+    deepFreezeState(state)
+    deepFreezeState(list)
+
+    expect(Object.isFrozen(state)).toBe(true)
+    expect(Object.isFrozen(state.visible)).toBe(true)
+    expect(Object.isFrozen(viaSymbol)).toBe(false)
+    expect(Object.isFrozen(viaHidden)).toBe(false)
+    expect(Object.isFrozen(viaIndexLike)).toBe(false)
+  })
 })

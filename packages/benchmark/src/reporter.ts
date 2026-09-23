@@ -11,6 +11,109 @@ import { benchmarkUtils } from './utils.js'
 export type ReportFormat = 'markdown' | 'json' | 'html'
 
 /**
+ * HTML 文本转义
+ *
+ * 场景名、建议文案与 metadata 来自配置或运行时环境，未转义直接拼进模板即为
+ * HTML 注入点（`<script>` 或破坏结构）。数值字段无需转义。
+ */
+function escapeHtml(value: unknown): string {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
+/**
+ * Markdown 文本转义
+ *
+ * 与 `escapeHtml` 同一立场：场景名、warnings / errors 文本与建议都可能来自运行时环境
+ * （错误消息里常带路径、环境变量、配置值），未转义拼进 markdown 就是注入点。三类风险：
+ * - 内联 HTML：`<script>`、`<img onerror>` 在允许内联 HTML 的渲染器里直接执行 → 转 `& < >`；
+ * - 结构破坏：换行会让一条 warning 变成多条列表项、或把 `### 场景` 后的内容顶到下一行去
+ *   起新标题/新表格 → 折叠成空格；`|` 会撑破概览表与任意表格行 → 反斜杠转义；
+ * - 反斜杠本身先转义，否则 `\|` 这类原样文本会被二次解释。
+ *
+ * 不在行首的 `#` / `- ` 不会另起标题或列表（markdown 块级语法要求行首），故换线折叠
+ * 之后无需再逐字符转义它们；`* _ \`` 一类行内强调只影响观感，转义反而让建议文案难读。
+ */
+function escapeMarkdown(value: unknown): string {
+  return String(value)
+    .replace(/\\/g, '\\\\')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/\|/g, '\\|')
+    .replace(/[\r\n]+/g, ' ')
+}
+
+/** 报告渲染行：取值与格式化在此完成，两种格式只负责各自的标记语法 */
+interface ReportRow {
+  label: string
+  value: string
+}
+
+/**
+ * 概览指标
+ *
+ * markdown 与 HTML 共用同一份行数据，否则两边各自拼一遍就会开始漂移。
+ */
+function toSummaryRows(report: BenchmarkReport): ReportRow[] {
+  return [
+    { label: '总场景数', value: String(report.summary.totalScenarios) },
+    { label: '通过场景', value: String(report.summary.passedScenarios) },
+    { label: '失败场景', value: String(report.summary.failedScenarios) },
+    { label: '总耗时', value: `${report.summary.totalDuration.toFixed(2)}s` },
+    { label: '总内存增量', value: benchmarkUtils.formatBytes(report.summary.totalMemoryUsage) },
+  ]
+}
+
+/**
+ * 单场景指标（含只在缓存启用时出现的命中率行）
+ */
+function toMetricRows(result: BenchmarkResult): ReportRow[] {
+  const rows: ReportRow[] = [
+    { label: '迭代次数', value: String(result.iterations) },
+    { label: '数据集规模', value: result.datasetSize },
+    { label: '平均耗时', value: benchmarkUtils.formatTime(result.results.executionTime.avg) },
+    { label: 'P99 耗时', value: benchmarkUtils.formatTime(result.results.executionTime.p99) },
+    { label: '吞吐量', value: `${benchmarkUtils.formatNumber(result.results.throughput.opsPerSecond)} ops/s` },
+    { label: '内存增量', value: benchmarkUtils.formatBytes(result.results.memory.delta) },
+  ]
+
+  if (result.results.cache.enabled) {
+    rows.push({ label: '缓存命中率', value: `${result.results.cache.hitRate.toFixed(2)}%` })
+  }
+
+  return rows
+}
+
+/** 单场景的附加段（警告 / 错误） */
+interface ReportSection {
+  /** 段标题，同时决定 HTML 里的样式类 */
+  heading: string
+  className: 'warnings' | 'errors'
+  items: string[]
+}
+
+/**
+ * 警告 / 错误段
+ *
+ * markdown 与 HTML 共用同一份「附加段」数据，与 `toMetricRows` / `toSummaryRows` 同一条
+ * 原则：两种格式各拼一遍就会开始漂移。这里漂移过一次的实际代价是 HTML 整块丢了
+ * warnings/errors——而 HTML 恰恰是给非工程同事看的那份报表，场景在测量前抛错时
+ * （runner 的 catch → createErrorResult，本包最常见的失败路径）它只长成一张红边卡片、
+ * 指标全 0，完全看不到失败原因。
+ */
+function toDetailSections(result: BenchmarkResult): ReportSection[] {
+  const sections: ReportSection[] = []
+  if (result.warnings?.length) sections.push({ heading: '警告', className: 'warnings', items: result.warnings })
+  if (result.errors?.length) sections.push({ heading: '错误', className: 'errors', items: result.errors })
+  return sections
+}
+
+/**
  * 基准测试报告生成器
  */
 export class BenchmarkReporter {
@@ -23,8 +126,12 @@ export class BenchmarkReporter {
         return this.generateJson(report)
       case 'html':
         return this.generateHtml(report)
-      default:
+      case 'markdown':
         return this.generateMarkdown(report)
+      default:
+        // 静默降级成 markdown 会让 'Markdown' / 'csv' 这类拼写错误伪装成一份正常报告；
+        // 格式常来自未类型化的配置，编译器拦不住，只能在此显式失败
+        throw new TypeError(`不支持的报告格式: ${String(format)}（可选值：markdown / json / html）`)
     }
   }
 
@@ -35,19 +142,18 @@ export class BenchmarkReporter {
     const lines: string[] = []
 
     lines.push('# GeomStore 基准测试报告\n')
-    lines.push(`**生成时间**: ${report.metadata.timestamp}`)
-    lines.push(`**版本**: ${report.metadata.version}`)
-    lines.push(`**Node.js**: ${report.metadata.nodeVersion}`)
-    lines.push(`**平台**: ${report.metadata.platform}\n`)
+    lines.push(`**生成时间**: ${escapeMarkdown(report.metadata.timestamp)}`)
+    lines.push(`**版本**: ${escapeMarkdown(report.metadata.version)}`)
+    lines.push(`**Node.js**: ${escapeMarkdown(report.metadata.nodeVersion)}`)
+    lines.push(`**平台**: ${escapeMarkdown(report.metadata.platform)}\n`)
 
     lines.push('## 概览\n')
     lines.push(`| 指标 | 值 |`)
     lines.push(`|------|-----|`)
-    lines.push(`| 总场景数 | ${report.summary.totalScenarios} |`)
-    lines.push(`| 通过场景 | ${report.summary.passedScenarios} |`)
-    lines.push(`| 失败场景 | ${report.summary.failedScenarios} |`)
-    lines.push(`| 总耗时 | ${report.summary.totalDuration.toFixed(2)}s |`)
-    lines.push(`| 总内存增量 | ${benchmarkUtils.formatBytes(report.summary.totalMemoryUsage)} |\n`)
+    for (const row of toSummaryRows(report)) {
+      lines.push(`| ${escapeMarkdown(row.label)} | ${escapeMarkdown(row.value)} |`)
+    }
+    lines.push('')
 
     lines.push('## 详细结果\n')
     for (const result of report.results) {
@@ -56,7 +162,7 @@ export class BenchmarkReporter {
 
     lines.push('## 建议\n')
     for (const rec of report.recommendations) {
-      lines.push(`- ${rec}`)
+      lines.push(`- ${escapeMarkdown(rec)}`)
     }
 
     return lines.join('\n')
@@ -66,29 +172,15 @@ export class BenchmarkReporter {
     const lines: string[] = []
     const status = result.passed ? '✅' : '❌'
 
-    lines.push(`### ${status} ${result.scenario}\n`)
-    lines.push(`- **迭代次数**: ${result.iterations}`)
-    lines.push(`- **数据集规模**: ${result.datasetSize}`)
-    lines.push(`- **平均耗时**: ${benchmarkUtils.formatTime(result.results.executionTime.avg)}`)
-    lines.push(`- **P99 耗时**: ${benchmarkUtils.formatTime(result.results.executionTime.p99)}`)
-    lines.push(`- **吞吐量**: ${benchmarkUtils.formatNumber(result.results.throughput.opsPerSecond)} ops/s`)
-    lines.push(`- **内存增量**: ${benchmarkUtils.formatBytes(result.results.memory.delta)}`)
-
-    if (result.results.cache.enabled) {
-      lines.push(`- **缓存命中率**: ${result.results.cache.hitRate.toFixed(2)}%`)
+    lines.push(`### ${status} ${escapeMarkdown(result.scenario)}\n`)
+    for (const row of toMetricRows(result)) {
+      lines.push(`- **${escapeMarkdown(row.label)}**: ${escapeMarkdown(row.value)}`)
     }
 
-    if (result.warnings?.length) {
-      lines.push(`\n**警告**:`)
-      for (const w of result.warnings) {
-        lines.push(`  - ${w}`)
-      }
-    }
-
-    if (result.errors?.length) {
-      lines.push(`\n**错误**:`)
-      for (const e of result.errors) {
-        lines.push(`  - ${e}`)
+    for (const section of toDetailSections(result)) {
+      lines.push(`\n**${escapeMarkdown(section.heading)}**:`)
+      for (const item of section.items) {
+        lines.push(`  - ${escapeMarkdown(item)}`)
       }
     }
 
@@ -111,30 +203,38 @@ export class BenchmarkReporter {
       .map((r) => {
         const statusClass = r.passed ? 'passed' : 'failed'
         const statusIcon = r.passed ? '✅' : '❌'
+        const metricsHtml = toMetricRows(r)
+          .map((row) => `            <div class="metric">
+              <span class="label">${escapeHtml(row.label)}</span>
+              <span class="value">${escapeHtml(row.value)}</span>
+            </div>`)
+          .join('\n')
+        // 警告 / 错误段：与 markdown 同一份数据（见 toDetailSections）。没有附加段时整块
+        // 不输出，避免卡片里留一个空的 <div class="notes">
+        const notesHtml = toDetailSections(r)
+          .map(
+            (section) => `          <div class="notes ${section.className}">
+            <h4>${escapeHtml(section.heading)}</h4>
+            <ul>
+${section.items.map((item) => `              <li>${escapeHtml(item)}</li>`).join('\n')}
+            </ul>
+          </div>`
+          )
+          .join('\n')
 
         return `
         <div class="result ${statusClass}">
-          <h3>${statusIcon} ${r.scenario}</h3>
+          <h3>${statusIcon} ${escapeHtml(r.scenario)}</h3>
           <div class="metrics">
-            <div class="metric">
-              <span class="label">迭代次数</span>
-              <span class="value">${r.iterations}</span>
-            </div>
-            <div class="metric">
-              <span class="label">平均耗时</span>
-              <span class="value">${benchmarkUtils.formatTime(r.results.executionTime.avg)}</span>
-            </div>
-            <div class="metric">
-              <span class="label">吞吐量</span>
-              <span class="value">${benchmarkUtils.formatNumber(r.results.throughput.opsPerSecond)} ops/s</span>
-            </div>
-            <div class="metric">
-              <span class="label">内存增量</span>
-              <span class="value">${benchmarkUtils.formatBytes(r.results.memory.delta)}</span>
-            </div>
+${metricsHtml}
           </div>
+${notesHtml}
         </div>`
       })
+      .join('\n')
+
+    const summaryHtml = toSummaryRows(report)
+      .map((row) => `      <tr><td>${escapeHtml(row.label)}</td><td>${escapeHtml(row.value)}</td></tr>`)
       .join('\n')
 
     return `<!DOCTYPE html>
@@ -156,22 +256,24 @@ export class BenchmarkReporter {
     .metric { background: #f9f9f9; padding: 10px; border-radius: 4px; }
     .metric .label { display: block; color: #666; font-size: 12px; }
     .metric .value { display: block; font-size: 18px; font-weight: bold; color: #333; }
+    .notes { margin-top: 15px; }
+    .notes h4 { margin: 0 0 6px; font-size: 14px; color: #555; }
+    .notes ul { margin: 0; padding-left: 20px; }
+    .notes li { margin: 4px 0; font-size: 14px; }
+    .notes.errors li { color: #b71c1c; }
+    .notes.warnings li { color: #8a6d1b; }
     .recommendations { background: #e3f2fd; padding: 20px; border-radius: 8px; margin-top: 20px; }
     .recommendations li { margin: 10px 0; }
   </style>
 </head>
 <body>
   <h1>GeomStore 基准测试报告</h1>
-  <p>生成时间: ${report.metadata.timestamp} | Node.js: ${report.metadata.nodeVersion} | 平台: ${report.metadata.platform}</p>
+  <p>生成时间: ${escapeHtml(report.metadata.timestamp)} | 版本: ${escapeHtml(report.metadata.version)} | Node.js: ${escapeHtml(report.metadata.nodeVersion)} | 平台: ${escapeHtml(report.metadata.platform)}</p>
   
   <div class="summary">
     <h2>概览</h2>
     <table>
-      <tr><td>总场景数</td><td>${report.summary.totalScenarios}</td></tr>
-      <tr><td>通过场景</td><td>${report.summary.passedScenarios}</td></tr>
-      <tr><td>失败场景</td><td>${report.summary.failedScenarios}</td></tr>
-      <tr><td>总耗时</td><td>${report.summary.totalDuration.toFixed(2)}s</td></tr>
-      <tr><td>总内存增量</td><td>${benchmarkUtils.formatBytes(report.summary.totalMemoryUsage)}</td></tr>
+${summaryHtml}
     </table>
   </div>
 
@@ -181,7 +283,7 @@ export class BenchmarkReporter {
   <div class="recommendations">
     <h2>建议</h2>
     <ul>
-      ${report.recommendations.map((r) => `<li>${r}</li>`).join('\n')}
+      ${report.recommendations.map((r) => `<li>${escapeHtml(r)}</li>`).join('\n')}
     </ul>
   </div>
 </body>

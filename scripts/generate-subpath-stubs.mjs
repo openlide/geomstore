@@ -9,6 +9,35 @@
  * 时机：由 package.json 的 prepack 钩子在 `npm pack` / `npm publish` 前生成，
  * postpack 钩子在打包完成后清理，故本地 `pnpm build` 不再在仓库根目录留下 stub。
  *
+ * 前置校验（generate 侧，任一不过都以退出码 1 中止、且不留任何落盘）：
+ * 1. dist 及其中的目标产物必须存在：`npm pack` / `pnpm pack` / `npm publish
+ *    --ignore-scripts` 都不会跑 prepublishOnly，缺 dist 时若照样落盘 stub，产出的
+ *    tarball 里每个 stub 的 main/types 都指向不存在的文件（比没有 stub 更糟：
+ *    老式解析器会命中它、然后报「模块找不到」而不是「子路径不支持」）。
+ *    「dist 与源码一致」仍由 prepublishOnly 的 build:release 负责，本脚本只保证「存在」。
+ * 2. 每个 stub 目录必须出现在 package.json 的 files 白名单里（自身或某个祖先目录被
+ *    列出即算，npm 的 files 语义如此）。发布面与这里的 subpathEntries 是同一份清单的
+ *    两处表述，靠人肉对齐必然漂移，故改为打包时机器校验。package.json 没有 files
+ *    字段时整条校验跳过：那时 npm 会打进整个包目录，无所谓白名单漏没漏。
+ * 3. 同名目标目录要么不存在，要么已经是本脚本自己的 stub。mkdirSync(recursive) 对
+ *    已存在的目录是 no-op，紧接着的 writeFileSync 就会把一个同名真实目录的
+ *    package.json（真包的 manifest）覆盖掉。
+ * 4. package.json 的 `miniprogram` 字段（微信「构建 npm」的构建文件生成目录）必须**存在**、
+ *    就是微信产物门禁所验的那份目录（`dist-weapp`），并且该目录存在、是目录、内含 .js
+ *    且在 files 白名单内。npm 对 files 里不存在的项是静默跳过（实测目录缺失时
+ *    `npm pack --dry-run` 零告警出包），不拦就能发出「字段指向空目录」的包；而字段被误写成
+ *    `dist` 之类的目录时（它同样存在、含 .js、在白名单里），四条判据会全过、
+ *    `verify:weapp` 却仍在验 dist-weapp，于是 0.6.0 的坏 ESM 产物照样能发布成功。
+ *    而 pnpm pack / --ignore-scripts / 复用旧 dist 的 CI 都绕过 prepublishOnly，
+ *    所以这道判据只能放在每次打包都跑的 prepack 里。
+ *
+ * 落盘失败：逐目录记账后回滚（本次新建的整目录删掉、原本就是 stub 的写回原 manifest），
+ * 再以退出码 1 + 可读原因结束。半途留下的转发目录同样在 files 白名单里，
+ * 会被提交或被打包成指向不存在产物的 stub。
+ *
+ * 清理（--clean）除 mapping 里登记的名字外，还会按形状判据扫一遍仓库根的一级目录，
+ * 收掉 mapping 里已删除的旧别名留下的孤儿 stub（按名字遍历永远访问不到它们）。
+ *
  * 用法：
  *   node scripts/generate-subpath-stubs.mjs          生成（pnpm stubs）
  *   node scripts/generate-subpath-stubs.mjs --clean  清理（pnpm stubs:clean）
@@ -20,6 +49,26 @@ import { fileURLToPath } from 'node:url'
 
 const pkgRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
 const distDir = path.join(pkgRoot, 'dist')
+
+/**
+ * 微信产物目录（`miniprogram` 字段唯一允许的值）。
+ *
+ * 与 `scripts/build-weapp.mjs` 的 `OUT_DIR`、`scripts/verify-weapp-bundle.mjs` 的
+ * `OUT_DIR` 是同一个值的三处表述——本脚本只能按字面核对（见 checkPreconditions 里的
+ * 「字段与被验目录同源」那条）。把三处收敛成 `weapp-entries.mjs` 的导出常量需要动
+ * build-weapp.mjs / weapp-entries.mjs，已在第六轮台账里记为 NEEDS-MAIN。
+ */
+const WEAPP_ARTIFACT_DIR = 'dist-weapp'
+
+const reasonOf = (error) => (error instanceof Error ? error.message : String(error))
+
+function readTextOrNull(file) {
+  try {
+    return fs.readFileSync(file, 'utf8')
+  } catch {
+    return null
+  }
+}
 
 /**
  * 子路径 -> dist 内相对目录。
@@ -46,29 +95,245 @@ const subpathEntries = {
 }
 
 /** 由深到浅排序，清理时先删子目录再删父目录（plugins/devtools 先于 plugins） */
-const subpathsSorted = () =>
-  Object.keys(subpathEntries).sort((a, b) => b.split('/').length - a.split('/').length)
+const subpathsSorted = () => Object.keys(subpathEntries).sort((a, b) => b.split('/').length - a.split('/').length)
+
+/** 本脚本产出的 stub 目录最多嵌套几层（subpathEntries 目前最深 2 段，留 1 层余量） */
+const MAX_STUB_DEPTH = 3
+
+/** target 是否落在 parent 之内；path.relative 在 win32 下本就按大小写不敏感求公共前缀 */
+function isInsideDir(parent, target) {
+  const rel = path.relative(parent, target)
+  return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel)
+}
+
+/** stub 目录内 main/types 应当指向的那两条相对路径（与 generate 写出的完全一致） */
+function expectedManifest(dir, rel) {
+  const relFrom = (file) => path.relative(dir, path.join(distDir, rel, file)).replace(/\\/g, '/')
+  return { main: relFrom('index.js'), types: relFrom('index.d.ts') }
+}
+
+function readManifest(dir) {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'))
+  } catch {
+    return null
+  }
+}
+
+/**
+ * dir 是否恰好是为登记在 subpathEntries 里的 sub 生成的转发 stub：
+ * package.json 的 main 与将要写出的那一条相对路径**全等**。
+ */
+function isOwnStubDir(dir, sub) {
+  const manifest = readManifest(dir)
+  if (!manifest || typeof manifest !== 'object') return false
+  return manifest.main === expectedManifest(dir, subpathEntries[sub]).main
+}
+
+/**
+ * 一个**没有登记在 subpathEntries 里**的目录是否整体由本脚本产出（孤儿 stub 清扫用）。
+ *
+ * 没有登记的别名就没有「应当等于哪条 main」这把标尺，只能退到形状判据：
+ * package.json 的键恰为 main + types、两者都指向 dist 之内，且目录下其余条目
+ * 递归满足同一条件。清理是 rmSync(recursive)，判错的代价不可回滚，
+ * 所以宁可漏删（残留下次还看得见）也不能多删。
+ */
+function isGeneratedStubTree(dir, depth = 0) {
+  if (depth > MAX_STUB_DEPTH) return false
+  const manifest = readManifest(dir)
+  if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) return false
+  if (Object.keys(manifest).sort().join(',') !== 'main,types') return false
+  const forwards = [manifest.main, manifest.types].every((value) => typeof value === 'string' && value !== '' && isInsideDir(distDir, path.resolve(dir, value)))
+  if (!forwards) return false
+  let entries
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true })
+  } catch {
+    return false
+  }
+  return entries.every((entry) =>
+    entry.name === 'package.json' ? entry.isFile() : entry.isDirectory() && isGeneratedStubTree(path.join(dir, entry.name), depth + 1),
+  )
+}
+
+/**
+ * stub 目录是否落在 package.json files 白名单内：npm 的 files 语义是「列出的目录整体
+ * 随包发布」，故 'plugins/devtools' 由白名单里的 'plugins' 覆盖即可。
+ */
+function coveredByFiles(sub, filesList) {
+  const segments = sub.split('/')
+  for (let i = segments.length; i > 0; i--) {
+    if (filesList.has(segments.slice(0, i).join('/'))) return true
+  }
+  return false
+}
+
+/** 目录内是否递归存在至少一个 .js（空目录与被 npm 跳过的空目录在微信侧是同一件事） */
+function hasJsFileRecursive(dir) {
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name)
+    if (entry.isDirectory()) {
+      if (hasJsFileRecursive(full)) return true
+    } else if (entry.isFile() && entry.name.endsWith('.js')) {
+      return true
+    }
+  }
+  return false
+}
+
+/** 生成前的前置校验；返回人可读的失败原因列表，空数组表示可以安全生成 */
+function checkPreconditions() {
+  const problems = []
+
+  if (!fs.existsSync(distDir)) {
+    problems.push(`dist 不存在：stub 的 main/types 全部指向 dist 内产物，此时生成的 stub 必然是死链`)
+  } else {
+    for (const [sub, rel] of Object.entries(subpathEntries)) {
+      const missing = ['index.js', 'index.d.ts'].filter((f) => !fs.existsSync(path.join(distDir, rel, f)))
+      if (missing.length > 0) {
+        problems.push(`stub \`${sub}\` 的目标 dist/${rel}/{${missing.join(', ')}} 缺失`)
+      }
+    }
+  }
+
+  // 写入前先确认每个目标目录要么不存在、要么已经是本脚本的 stub：
+  // mkdirSync(recursive) 对已存在的目录是 no-op，紧接着的 writeFileSync 就会覆盖一个同名
+  // 真实目录的 package.json（真包的 manifest），既不报错也不可回滚。
+  for (const sub of Object.keys(subpathEntries)) {
+    const dir = path.join(pkgRoot, sub)
+    if (fs.existsSync(dir) && !isOwnStubDir(dir, sub)) {
+      problems.push(`目录 \`${sub}\` 已存在且不是本脚本生成的转发 stub，拒绝覆写它的 package.json`)
+    }
+  }
+
+  // 没有 files 字段 = npm 会把整个包目录都打进包里，不存在「白名单漏了 stub」这回事，
+  // 所以这里给 null（跳过覆盖校验）而不是空 Set：空 Set 会把每个登记项都报成未发布，
+  // 白白用退出码 1 拦下一次本来正确的打包。
+  let pkg = null
+  let filesList = null
+  try {
+    pkg = JSON.parse(fs.readFileSync(path.join(pkgRoot, 'package.json'), 'utf8'))
+    filesList = Array.isArray(pkg.files) ? new Set(pkg.files.map((f) => f.replace(/\/+$/, ''))) : null
+  } catch (error) {
+    problems.push(`无法读取 package.json 校验 files 白名单：${error instanceof Error ? error.message : String(error)}`)
+  }
+  if (filesList) {
+    const unshipped = Object.keys(subpathEntries).filter((sub) => !coveredByFiles(sub, filesList))
+    if (unshipped.length > 0) {
+      problems.push(`以下 stub 目录未列入 package.json 的 files 白名单，打包时不会随包发布：${unshipped.join(', ')}`)
+    }
+  }
+
+  // miniprogram 字段是微信「构建 npm」的「构建文件生成目录」：工具会把该目录**整份拷贝**进
+  // miniprogram_npm。而 npm 对 files 白名单里不存在的项是**静默跳过**——实测目录缺失时
+  // `npm pack --dry-run` 零告警出包，于是能发出「字段指着不存在的目录」的包，微信侧行为不可预期。
+  // 判据必须落在这里而不是 prepublishOnly：`pnpm pack`、`npm pack --ignore-scripts`、
+  // CI 里复用旧 dist 的打包都绕过那条钩子，而 prepack 每次打包都跑。
+  if (pkg && pkg.miniprogram !== undefined) {
+    const mp = String(pkg.miniprogram).replace(/\/+$/, '')
+    if (mp === '') {
+      problems.push('package.json 的 miniprogram 字段是空串')
+    } else if (path.isAbsolute(mp) || mp.split(/[\\/]/).includes('..')) {
+      problems.push(`miniprogram 必须是包内相对目录（当前 ${JSON.stringify(pkg.miniprogram)}）`)
+    } else {
+      // 字段必须指向**被 `verify:weapp` 验过的那份产物目录**：门禁的 8 项断言（以及
+      // build-weapp.mjs 的 outDir）都硬编码作用在 WEAPP_ARTIFACT_DIR 上，而微信只认这个字段。
+      // 少了这条，把字段写成 `dist`（存在、含 .js、也在 files 白名单里）时本脚本四条判据全过、
+      // `verify:weapp` 照样验 dist-weapp 全绿、prepublishOnly 全绿出包，发出去的却是
+      // terser 压缩后的多文件 ESM —— 0.6.0 的两种坏形态原样回来。
+      // 不改为「校验目录内容是不是 CJS」：那种判据脆，而且仍留下字段与门禁两份真值。
+      if (mp !== WEAPP_ARTIFACT_DIR) {
+        problems.push(
+          `miniprogram 字段指向 ${mp}/，但微信产物门禁（pnpm run verify:weapp）验的是 ${WEAPP_ARTIFACT_DIR}/：` +
+            '被发出去的产物必须就是被验过的那一份。请改回字段，或把 build-weapp / verify-weapp 的产物目录一并改成同一个值',
+        )
+      }
+      const dir = path.join(pkgRoot, mp)
+      let stat = null
+      try {
+        stat = fs.statSync(dir)
+      } catch {
+        problems.push(`miniprogram 指向的目录 ${mp}/ 不存在：跑一次 pnpm run build:weapp`)
+      }
+      if (stat && !stat.isDirectory()) problems.push(`miniprogram 指向的 ${mp} 不是目录`)
+      if (stat && stat.isDirectory()) {
+        if (!hasJsFileRecursive(dir)) problems.push(`miniprogram 目录 ${mp}/ 里没有任何 .js 产物`)
+        if (filesList && !coveredByFiles(mp.split(path.sep).join('/'), filesList)) {
+          problems.push(`miniprogram 目录 ${mp}/ 未列入 package.json 的 files 白名单，不会随包发布`)
+        }
+      }
+    }
+  } else if (pkg) {
+    // 字段整体缺失同样是「发出去就坏」的形态：没有它时「构建 npm」会退回
+    // 「从 main 起做依赖分析并把整张图拼成一个文件」，正是 0.6.0 事故的触发条件
+    problems.push(`package.json 没有 miniprogram 字段：微信会退回拼接 main 那条 0.6.0 事故路径，需指向 ${WEAPP_ARTIFACT_DIR}/`)
+  }
+
+  return problems
+}
 
 function generate() {
-  let stubDirs = 0
-  for (const [sub, rel] of Object.entries(subpathEntries)) {
-    const dir = path.join(pkgRoot, sub)
-    fs.mkdirSync(dir, { recursive: true })
-    const relFrom = (root, file) => path.relative(dir, path.join(root, rel, file)).replace(/\\/g, '/')
-    fs.writeFileSync(
-      path.join(dir, 'package.json'),
-      JSON.stringify(
-        {
-          main: relFrom(distDir, 'index.js'),
-          types: relFrom(distDir, 'index.d.ts'),
-        },
-        null,
-        2,
-      ) + '\n',
+  const problems = checkPreconditions()
+  if (problems.length > 0) {
+    console.error(
+      `[stubs] 已中止（未生成任何 stub）：\n  ${problems.join('\n  ')}\n` +
+        '            处置：缺 dist 就先 pnpm build；缺白名单就把新增 stub 目录补进 package.json 的 files；' +
+        '若是同名真实目录挡了路，请改名或删掉它（本脚本不会覆写别人的 package.json）。',
     )
-    stubDirs++
+    process.exit(1)
+  }
+
+  // 落盘阶段的半途失败要能退回原样：checkPreconditions 已保证每个目标目录要么不存在、
+  // 要么已经是本脚本自己的 stub，于是「本次新建的」可以整目录删掉，
+  // 「原本就有的 stub」只需把原来那份 package.json 写回去。
+  // 不回滚的代价很具体：半途留下的转发目录都在 files 白名单里，
+  // 会被提交或被打包成「main/types 指向不存在产物」的 stub，而 postpack 的 clean
+  // 只按 mapping 里的名字访问得到它们。
+  const touched = []
+  let stubDirs = 0
+  try {
+    for (const [sub, rel] of Object.entries(subpathEntries)) {
+      const dir = path.join(pkgRoot, sub)
+      const manifestPath = path.join(dir, 'package.json')
+      const created = !fs.existsSync(dir)
+      const previous = created ? null : readTextOrNull(manifestPath)
+      fs.mkdirSync(dir, { recursive: true })
+      touched.push({ dir, created, previous })
+      fs.writeFileSync(manifestPath, JSON.stringify(expectedManifest(dir, rel), null, 2) + '\n')
+      stubDirs++
+    }
+  } catch (error) {
+    const { deleted, restored, failed } = rollbackStubs(touched)
+    console.error(
+      `[stubs] 已中止：生成第 ${stubDirs + 1} 个 stub 时写盘失败（${reasonOf(error)}）。\n` +
+        `            已回滚：删除本次新建的 ${deleted} 个目录、还原 ${restored} 个原有 stub` +
+        (failed > 0 ? `；另有 ${failed} 个目录回滚失败，请手工清理后再打包` : '') +
+        '。',
+    )
+    process.exit(1)
   }
   console.log(`[stubs] generated ${stubDirs} subpath stub dirs`)
+}
+
+/** 把 generate 半途写出的东西退回原状；单个退回失败不掩盖原始错误，只计数上报 */
+function rollbackStubs(touched) {
+  let deleted = 0
+  let restored = 0
+  let failed = 0
+  for (const { dir, created, previous } of touched) {
+    try {
+      if (created) {
+        fs.rmSync(dir, { recursive: true, force: true })
+        deleted++
+      } else if (previous !== null) {
+        fs.writeFileSync(path.join(dir, 'package.json'), previous)
+        restored++
+      }
+    } catch {
+      failed++
+    }
+  }
+  return { deleted, restored, failed }
 }
 
 function clean() {
@@ -76,22 +341,25 @@ function clean() {
   for (const sub of subpathsSorted()) {
     const dir = path.join(pkgRoot, sub)
     if (!fs.existsSync(dir)) continue
-    // 仅清理本脚本生成的转发目录：判定依据为目录下 package.json 的 main 指向 dist
-    const marker = path.join(dir, 'package.json')
-    let isStub = false
-    if (fs.existsSync(marker)) {
-      try {
-        const pkg = JSON.parse(fs.readFileSync(marker, 'utf8'))
-        isStub = typeof pkg.main === 'string' && pkg.main.includes('dist')
-      } catch {
-        isStub = false
-      }
-    }
-    if (!isStub) continue
+    if (!isOwnStubDir(dir, sub)) continue
     fs.rmSync(dir, { recursive: true, force: true })
     removed++
   }
-  console.log(`[stubs] removed ${removed} subpath stub dirs`)
+
+  // 孤儿 stub：mapping 里已被删掉的旧别名留下的转发目录，上面按名字遍历根本访问不到，
+  // 于是它会永久留在仓库根、随 files 白名单一起发布，指向一份不再有人维护的产物。
+  // 未登记的名字没有「应当等于哪条 main」这把标尺，故只对**一级目录**用形状判据补扫。
+  let orphans = 0
+  for (const entry of fs.readdirSync(pkgRoot, { withFileTypes: true })) {
+    if (!entry.isDirectory() || Object.hasOwn(subpathEntries, entry.name)) continue
+    const dir = path.join(pkgRoot, entry.name)
+    if (!isGeneratedStubTree(dir)) continue
+    fs.rmSync(dir, { recursive: true, force: true })
+    orphans++
+  }
+
+  const orphanNote = orphans > 0 ? `（含 ${orphans} 个 mapping 里已不存在的孤儿 stub）` : ''
+  console.log(`[stubs] removed ${removed + orphans} subpath stub dirs${orphanNote}`)
 }
 
 if (process.argv.includes('--clean')) {

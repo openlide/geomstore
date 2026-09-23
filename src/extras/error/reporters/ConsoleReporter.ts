@@ -13,9 +13,39 @@ import type { ErrorContext, ErrorReporter } from '../../../types/error.js'
  * 微信小程序真机基础库的 console 不提供分组方法，
  * 直接调用会抛 TypeError 导致报告静默失败，需降级为平铺输出。
  * 延迟到调用时求值（而非模块加载时），兼容测试环境对 console 的动态 stub。
+ *
+ * 注意：typeof 判定只覆盖「API 缺失」，覆盖不到「API 存在但调用即抛」的占位实现，
+ * 故调用点另有 try/catch 试探（见 `ConsoleReporter.runGrouped`）。
  */
 function consoleSupportsGroup(): boolean {
   return typeof console.group === 'function' && typeof console.groupEnd === 'function'
+}
+
+/** 级别标签：字段缺失或不是字符串时给占位值，避免 `undefined.toUpperCase()` 抛错顶替被报告的错误 */
+function levelLabel(level: unknown): string {
+  return typeof level === 'string' && level.length > 0 ? level.toUpperCase() : 'UNKNOWN'
+}
+
+/**
+ * Store 名标签：与 levelLabel 同口径给占位值
+ *
+ * 批量行是把名字插进模板串的，`String(undefined)` 会打出字面量 `undefined`，
+ * 读起来像「有个叫 undefined 的 store」；占位值让「字段缺失」与「取值」可分辨
+ */
+function storeLabel(storeName: unknown): string {
+  return typeof storeName === 'string' && storeName.length > 0 ? storeName : 'UNKNOWN'
+}
+
+/**
+ * 时间戳格式化为 ISO 串
+ *
+ * 缺省取当前时间；非有限值或超出 `Date` 可表示范围（`new Date(1e20)` 是
+ * Invalid Date，`toISOString()` 会抛 RangeError）同样回退当前时间。
+ */
+function formatTimestamp(timestamp: unknown): string {
+  const value = typeof timestamp === 'number' && Number.isFinite(timestamp) ? timestamp : Date.now()
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? new Date().toISOString() : date.toISOString()
 }
 
 /**
@@ -23,8 +53,21 @@ function consoleSupportsGroup(): boolean {
  *
  * 按级别将错误信息输出到 console；在缺少 `console.group` 的基础库上
  * 自动降级为平铺输出，保证报告不因 API 缺失而失败。
+ *
+ * 失败传播是有意为之：本报告的输出若抛错（自定义 console、被 stub 的
+ * `console.error`），异常向上交给 `ErrorMonitoring.doFlushReports`，由其折成
+ * 「该报告器 fail」并让整批重新入队重试。此处静默吞掉的话，管线会把
+ * 「一条都没落地」判成上报成功并丢弃批次（见其 `anyReporterSucceeded` 分支）。
  */
 export class ConsoleReporter implements ErrorReporter {
+  /**
+   * 分组能力是否已在本次运行中被证实不可用
+   *
+   * `console.group` 存在但调用即抛的运行时（占位实现）只试探一次，
+   * 之后直接走平铺路径；按实例记录，避免一个报告器的探测结果污染其他实例。
+   */
+  private groupUnavailable = false
+
   /**
    * @param prefix 日志前缀，默认 `[ErrorMonitoring]`
    */
@@ -35,44 +78,101 @@ export class ConsoleReporter implements ErrorReporter {
   }
 
   async report(context: ErrorContext): Promise<void> {
-    if (consoleSupportsGroup()) {
-      console.group(`${this.prefix} ${context.level.toUpperCase()}`)
-      console.error('Error:', context.error)
-      console.error('Store:', context.storeName)
-      console.error('Operation:', context.operation)
-      if (context.payload) {
-        console.error('Payload:', context.payload)
-      }
-      console.error('Timestamp:', new Date(context.timestamp ?? Date.now()).toISOString())
-      console.groupEnd()
-      return
-    }
-
-    // 降级：无分组能力时平铺输出同样信息
-    const header = `${this.prefix} ${context.level.toUpperCase()}`
-    console.error(`${header} Error:`, context.error)
-    console.error(`${header} Store:`, context.storeName)
-    console.error(`${header} Operation:`, context.operation)
-    if (context.payload) {
-      console.error(`${header} Payload:`, context.payload)
-    }
-    console.error(`${header} Timestamp:`, new Date(context.timestamp ?? Date.now()).toISOString())
+    const header = `${this.prefix} ${levelLabel(context?.level)}`
+    this.runGrouped(
+      header,
+      (decorate) => this.printContext(context, decorate),
+      () => this.printContext(context, (label) => `${header} ${label}`),
+    )
   }
 
   async reportBatch(contexts: ErrorContext[]): Promise<void> {
-    if (consoleSupportsGroup()) {
-      console.group(`${this.prefix} Batch Report (${contexts.length} errors)`)
-      contexts.forEach((ctx, index) => {
-        console.error(`[${index + 1}] ${ctx.level} in ${ctx.storeName}:`, ctx.error)
-      })
-      console.groupEnd()
-      return
+    const list = Array.isArray(contexts) ? contexts : []
+    const header = `${this.prefix} Batch Report (${list.length} errors)`
+    this.runGrouped(
+      header,
+      () => list.forEach((ctx, index) => this.printBatchEntry(ctx, index)),
+      () => {
+        console.error(header)
+        list.forEach((ctx, index) => this.printBatchEntry(ctx, index))
+      },
+    )
+  }
+
+  /**
+   * 以分组方式执行 `grouped`，不具备分组能力（缺失或调用即抛）时执行 `flat`
+   *
+   * 组必须闭合：组内输出抛错时少一次 `groupEnd` 会让后续所有输出留在已打开的
+   * 分组里，故闭合放在 grouped 之后无条件执行；`grouped` 的异常本身继续向外传播
+   * （见类文档），且**不被闭合自身的异常掩盖**——否则监控层重试的是 groupEnd 的
+   * 故障，真正的失败原因从现场消失。grouped 成功时，groupEnd 的异常仍是本报告器
+   * 的一次真实失败，继续外抛（吞掉会把「一条都没落地」判成上报成功）
+   *
+   * @param decorate 标签装饰器，分组路径原样输出（`'Error:'`），
+   *        平铺路径由调用方加上头部信息（`'[prefix] ERROR Error:'`）
+   * @private
+   */
+  private runGrouped(header: string, grouped: (decorate: (label: string) => string) => void, flat: () => void): void {
+    if (!this.groupUnavailable && consoleSupportsGroup()) {
+      let opened = false
+      try {
+        console.group(header)
+        opened = true
+      } catch {
+        // 存在但不可用（占位实现）：记住结论，本次与后续都降级平铺
+        this.groupUnavailable = true
+      }
+      if (opened) {
+        let primaryFailure: { error: unknown } | undefined
+        try {
+          grouped((label) => label)
+        } catch (error) {
+          primaryFailure = { error }
+        }
+        try {
+          console.groupEnd()
+        } catch (closeError) {
+          if (!primaryFailure) {
+            throw closeError
+          }
+        }
+        if (primaryFailure) {
+          throw primaryFailure.error
+        }
+        return
+      }
     }
 
     // 降级：无分组能力时平铺输出同样信息
-    console.error(`${this.prefix} Batch Report (${contexts.length} errors)`)
-    contexts.forEach((ctx, index) => {
-      console.error(`[${index + 1}] ${ctx.level} in ${ctx.storeName}:`, ctx.error)
-    })
+    flat()
+  }
+
+  /**
+   * 输出一条错误上下文的全部字段
+   *
+   * 分组与平铺两条路径共用同一份实现（此前复制了四遍，改格式要同步四处且已出现
+   * 级别大小写漂移）。
+   *
+   * @private
+   */
+  private printContext(context: ErrorContext, decorate: (label: string) => string): void {
+    console.error(decorate('Error:'), context?.error)
+    console.error(decorate('Store:'), context?.storeName)
+    console.error(decorate('Operation:'), context?.operation)
+    // 只跳过「没带 payload」（undefined）与显式 null：payload 的类型是 unknown，
+    // 真值判定会把 0 / '' / false 这些恰恰最需要看的诊断值一起吞掉
+    if (context?.payload !== undefined && context?.payload !== null) {
+      console.error(decorate('Payload:'), context.payload)
+    }
+    console.error(decorate('Timestamp:'), formatTimestamp(context?.timestamp))
+  }
+
+  /**
+   * 输出批量报告中的一条（分组与平铺路径同格式）
+   *
+   * @private
+   */
+  private printBatchEntry(context: ErrorContext, index: number): void {
+    console.error(`[${index + 1}] ${levelLabel(context?.level)} in ${storeLabel(context?.storeName)}:`, context?.error)
   }
 }

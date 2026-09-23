@@ -15,6 +15,16 @@
 import { composeStore, createStore } from '@/index.js'
 import { ActionExecutor, ActionUtils } from '@/extras/index.js'
 
+/**
+ * 双向精确类型相等断言（`Equal<A, B>` 为 true 才通过）
+ *
+ * 「可赋值」断言在这里会被 `never` 白送：基例一旦退回 `Record<string, never>`，交叉结果会注入
+ * `[x: string]: never`，`composedState.count` 被收成 `never`，而 `never` 同时可赋给 `number`
+ * 与 `string` —— 正例照旧编译通过，只有 `.nope` 那条反例抓得住。需要「就是这个类型」时用本 helper
+ * （与 tests/types/integration-types.typecheck.ts 同口径）。
+ */
+type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false
+
 // ==================== ExtractStates 基例不被索引签名污染 ====================
 
 const storeA = createStore({ name: 'compose-a', state: { count: 0 } })
@@ -26,6 +36,9 @@ const composedState = composed.getState()
 // 正例：各 Store 的状态键保持原始类型
 const _composedCount: number = composedState.count
 const _composedName: string = composedState.name
+// 精确锁定（不只是「可赋值」）：索引签名污染下取值会变成 never，下面两行随即报错
+const _composedCountExact: Equal<typeof composedState.count, number> = true
+const _composedNameExact: Equal<typeof composedState.name, string> = true
 
 // 反例：不存在的属性应报错
 // （修复前基例 Record<string, never> 注入 [x: string]: never，任意属性访问返回 never 且不报错）
@@ -46,19 +59,36 @@ const executor = new ActionExecutor<MixedActions>()
 const utils = new ActionUtils<MixedActions>(mixedActions)
 
 // 正例：异步 action 返回已解包（修复前为 Promise<Promise<{id: string}>>，then 回调参数是 Promise，user.id 报错）
-executor.execute(mixedActions, 'fetchUser', 'u1').then((user) => {
-  const _userId: string = user.id
-})
+// 两条 `.then` 断言都收进同一个 await 探针（#434）：此前链子既不 await 也不 catch，
+// 一旦本文件被执行（jest testMatch 放宽、或经 ts-node/tsx 直跑）就是未处理拒绝；
+// 且 `mixedActions` 是 `declare const`，真跑起来会在断言之前抛 ReferenceError
+async function probeThenChannel(): Promise<void> {
+  await executor.execute(mixedActions, 'fetchUser', 'u1').then((user) => {
+    const _userId: string = user.id
+    void _userId
+  })
+  await executor.execute(mixedActions, 'tick').then((n) => {
+    const _tick: number = n
+    void _tick
+  })
+}
+void probeThenChannel
 
-// 正例：同步 action 直接返回值
-executor.execute(mixedActions, 'tick').then((n) => {
-  const _tick: number = n
-})
-
-// 正例：await 结果直接可用
-async function probeExecutor(): Promise<[unknown, number]> {
+// 正例：await 结果直接可用。
+// 返回类型写精确元组而不是 `[unknown, number]`（#435）：`unknown` 恰恰抹掉了本文件要锁的
+// 那点精度——异步 action await 出来的是解包值，写成 unknown 时 Promise<Promise<T>> 也能过
+async function probeExecutor(): Promise<[{ id: string }, number, { id: string }, number]> {
   const user: { id: string } = await executor.execute(mixedActions, 'fetchUser', 'u1')
   const n: number = await utils.execute(mixedActions, 'tick')
-  return [user, n]
+  // ActionUtils 的异步解包路径此前只经 ActionExecutor 验证（#R5-335）：`utils.execute` 若对
+  // 异步 action 退回 `Promise<Promise<T>>`，本文件过去仍会全部通过。这里让异步 action
+  // 也走一遍 utils，并用 Equal 同时排除「未解包」与「漂白成 any」。
+  const asyncViaUtils = await utils.execute(mixedActions, 'fetchUser', 'u1')
+  const syncViaUtils = await utils.execute(mixedActions, 'tick')
+  const _asyncViaUtilsExact: Equal<typeof asyncViaUtils, { id: string }> = true
+  const _syncViaUtilsExact: Equal<typeof syncViaUtils, number> = true
+  void [_asyncViaUtilsExact, _syncViaUtilsExact]
+  return [user, n, asyncViaUtils, syncViaUtils]
 }
 void probeExecutor
+void [_composedCount, _composedName, composed, composedState, executor, utils]

@@ -8,7 +8,7 @@
  */
 
 import type { ActionLoaderOptions } from '../../types/action.js'
-import { ActionLoader } from './ActionLoader.js'
+import { ActionLoader, normalizeActionLoaderOptions } from './ActionLoader.js'
 
 /**
  * 模块级 loader 注册表：宿主 → 选项签名 → ActionLoader。
@@ -31,23 +31,45 @@ const loaderRegistry = new WeakMap<object, Map<string, ActionLoader>>()
 const loadingCountRegistry = new WeakMap<object, Map<string, Map<string, number>>>()
 
 /**
- * 计算选项签名（与 ActionLoader 默认值同口径归一），用于注册表按配置分桶
+ * 宿主对被装饰方法提供的最小能力：`ActionLoader.wrap` 用它写 loading / error 键。
+ *
+ * 声明成结构化类型而不是 `any`：本模块对宿主的**全部**要求就是这一项，写出来即契约；
+ * 至于宿主是否可作为 WeakMap 键（决定 loader 能否跨调用共享），见 `isTrackableHost`。
+ */
+type LoadingHost = { setState?: (key: string, value: unknown) => void }
+
+/** 宿主能否作为 WeakMap 键（对象/函数且非 null） */
+function isTrackableHost(host: unknown): host is object {
+  return (typeof host === 'object' || typeof host === 'function') && host !== null
+}
+
+/**
+ * 计算选项签名（缺省值与 `ActionLoader` 构造器同源：都走
+ * {@link normalizeActionLoaderOptions} + `ACTION_LOADER_DEFAULTS`），用于注册表按配置分桶。
+ *
+ * 签名桶决定「哪些装饰器共用同一个 loader / 同一份 loading 计数」，故归一化必须与
+ * 构造器逐项一致——两侧各写一份字面量时漂移过一次，且类型层无法约束这种同步。
+ *
+ * 序列化用 `JSON.stringify` 而非按分隔符拼接：键名由调用方给定，`|` 这类分隔符会造出
+ * 相同串（`{loadingKey:'x|y',errorKey:'z'}` 与 `{loadingKey:'x',errorKey:'y|z'}` 都拼成
+ * `true|x|y|z|false`），撞桶的两个装饰器共用一个 loader，后一个会静默按前一个的
+ * loadingKey/errorKey 写状态。JSON 数组带引号与括号边界，任意字符串都无歧义。
  */
 function resolveLoaderSignature(options: ActionLoaderOptions): string {
-  return [
-    options.autoLoading ?? true,
-    options.loadingKey ?? 'loading',
-    options.errorKey ?? 'error',
-    options.errorDataKey ?? 'errorData',
-    options.perActionKeys ?? false,
-  ].join('|')
+  const normalized = normalizeActionLoaderOptions(options)
+
+  return JSON.stringify([normalized.autoLoading, normalized.loadingKey, normalized.errorKey, normalized.errorDataKey, normalized.perActionKeys])
 }
 
 /**
  * 计算 loading 签名：仅包含决定 loading 状态键的选项
+ *
+ * 序列化口径与 {@link resolveLoaderSignature} 一致（`JSON.stringify`），理由同上。
  */
 function resolveLoadingSignature(options: ActionLoaderOptions): string {
-  return [options.autoLoading ?? true, options.loadingKey ?? 'loading', options.perActionKeys ?? false].join('|')
+  const normalized = normalizeActionLoaderOptions(options)
+
+  return JSON.stringify([normalized.autoLoading, normalized.loadingKey, normalized.perActionKeys])
 }
 
 /** 获取（或创建）宿主上按 loading 签名集中共享的引用计数存储 */
@@ -101,17 +123,24 @@ export function withLoading(options: ActionLoaderOptions = {}): MethodDecorator 
   return function (_target: unknown, propertyKey: string | symbol, descriptor: PropertyDescriptor): PropertyDescriptor {
     const originalMethod = descriptor.value
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    descriptor.value = async function (this: any, ...args: unknown[]) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const setState = (this as any)?.setState?.bind(this)
+    descriptor.value = async function (this: LoadingHost | null | undefined, ...args: unknown[]) {
+      const setState = this?.setState?.bind(this)
 
       if (!setState) {
         throw new Error('[withLoading] Method must be used in a Store instance')
       }
 
+      // 「有 setState」推不出「宿主可跟踪」：setState 可能来自原型链上的基本类型包装
+      // （`Number.prototype.setState = fn` 后以 `method.call(1)` 调用），此时 WeakMap
+      // 无从按宿主存状态。两条路径的差别只在 loader 能否跨调用共享，故在此分流：
+      // 可跟踪宿主用注册表里的共享 loader（引用计数集中，见模块头），
+      // 否则每次调用给一份独立计数，保证不跨调用串扰。
       let loaderInstance: ActionLoader
-      if (typeof this === 'object' && this !== null) {
+      if (isTrackableHost(this)) {
+        // 函数宿主（静态方法里 `this` 是类构造器）同样是合法的 WeakMap 键，
+        // 必须与对象宿主走同一条共享路径：否则每次调用都新建 loader，
+        // 各自的 loading 引用计数互不可见，先完成的 action 会把共享键提前置 false，
+        // ErrorBoundary 一类的按宿主状态也会丢掉历史
         let byOptions = loaderRegistry.get(this)
         if (!byOptions) {
           byOptions = new Map()
@@ -124,8 +153,7 @@ export function withLoading(options: ActionLoaderOptions = {}): MethodDecorator 
         }
         loaderInstance = loader
       } else {
-        // 宿主非对象（罕见）：一次性实例，不跨调用串扰
-        loaderInstance = new ActionLoader(options)
+        loaderInstance = new ActionLoader({ ...options, sharedLoadingCounts: new Map() })
       }
 
       // 只绑定 this，参数由 wrapped(...args) 传入，避免参数被应用两次

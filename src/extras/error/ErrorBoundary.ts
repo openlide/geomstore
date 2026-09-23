@@ -6,6 +6,7 @@
  */
 
 import type { ErrorBoundaryOptions, ErrorFallback } from '../../types/error.js'
+import { DEFAULT_MAX_LOG_SIZE, isThenable } from './ErrorHandler.js'
 
 /**
  * 错误边界类
@@ -13,7 +14,8 @@ import type { ErrorBoundaryOptions, ErrorFallback } from '../../types/error.js'
  * 用于捕获和处理函数执行过程中的错误，支持错误恢复和回退状态
  *
  * @class ErrorBoundary
- * @template S - 状态类型
+ * @template S - 状态类型（作为回退计算函数的上下文）
+ * @template F - 回退值类型（与 S 解耦：回退值不必是状态对象）
  *
  * @example
  * ```typescript
@@ -98,8 +100,10 @@ export class ErrorBoundary<S = unknown, F = undefined> {
    * @template T - 返回值类型
    * @param {() => T} fn - 要执行的函数
    * @param {S} [currentState] - 当前状态（用于回退）
-   * @returns {T | undefined} 函数执行结果，如果错误且可恢复则返回undefined
-   * @throws {Error} 如果错误且不可恢复则重新抛出
+   * @returns {T | F | undefined} 函数执行结果；错误且可恢复时返回回退值 `F`，
+   *   可恢复但未配 fallback 时返回 undefined
+   * @throws {Error} 错误且不可恢复时重抛原始错误；可恢复但 `fallback` 函数自身抛错时
+   *   同样重抛**原始**错误（回退路径已失效，不返回 undefined），见 {@link ErrorBoundary.handleError}
    *
    * @example
    * ```typescript
@@ -114,12 +118,13 @@ export class ErrorBoundary<S = unknown, F = undefined> {
    * // safeResult will be undefined, error is handled
    * ```
    */
-  execute<T>(fn: () => T, currentState?: S): T | F {
+  execute<T>(fn: () => T, currentState?: S): T | F | undefined {
     try {
       return fn()
     } catch (error) {
-      // 返回类型 T | F 与配置完全一致：配了 fallback 返回 F，否则 undefined
-      return this.handleError(error as Error, currentState) as T | F
+      // 可显式配 recoverable: true 而不配 fallback，此时 handleError 返回 undefined，
+      // 返回类型必须含 undefined，否则调用方按 T | F 消费会在远端炸出二次异常
+      return this.handleError(error, currentState)
     }
   }
 
@@ -131,8 +136,9 @@ export class ErrorBoundary<S = unknown, F = undefined> {
    * @template T - 返回值类型
    * @param {() => Promise<T>} fn - 要执行的异步函数
    * @param {S} [currentState] - 当前状态（用于回退）
-   * @returns {Promise<T | undefined>} 函数执行结果，如果错误且可恢复则返回undefined
-   * @throws {Error} 如果错误且不可恢复则重新抛出
+   * @returns {Promise<T | F | undefined>} 函数执行结果，如果错误且可恢复则返回回退值（未配 fallback 时为 undefined）
+   * @throws {Error} 与 {@link ErrorBoundary.execute} 同：不可恢复、或可恢复但 fallback
+   *   函数自身抛错时重抛原始错误
    *
    * @example
    * ```typescript
@@ -146,12 +152,12 @@ export class ErrorBoundary<S = unknown, F = undefined> {
    * }, state)
    * ```
    */
-  async executeAsync<T>(fn: () => Promise<T>, currentState?: S): Promise<T | F> {
+  async executeAsync<T>(fn: () => Promise<T>, currentState?: S): Promise<T | F | undefined> {
     try {
       return await fn()
     } catch (error) {
-      // 同 execute：返回类型与配置一致（T | F）
-      return this.handleError(error as Error, currentState) as T | F
+      // 同 execute：可恢复且未配 fallback 时返回 undefined，返回类型必须含 undefined
+      return this.handleError(error, currentState)
     }
   }
 
@@ -159,17 +165,24 @@ export class ErrorBoundary<S = unknown, F = undefined> {
    * 处理错误
    *
    * @private
-   * @param {Error} error - 错误对象
+   * @param {unknown} rawError - 被捕获的原始抛出值（非 Error 会归一化为 Error 记录）
    * @param {S} [currentState] - 当前状态
-   * @returns {S | undefined} 回退状态（若配置）；未配置回退时返回 undefined
+   * @returns {F | undefined} 回退值（若配置）；未配置回退时返回 undefined
    * @throws {Error} 如果错误且不可恢复
    */
-  private handleError(error: Error, currentState?: S): F | undefined {
+  private handleError(rawError: unknown, currentState?: S): F | undefined {
+    // 归一化：`throw 'str'` / `throw 42` 会让 errorHistory（声明为 Error[]）与
+    // onError/fallback 拿到非 Error，下游读 .message/.stack 得到 undefined。
+    // 重抛时仍用原始值，保持「原样向上抛」的既有捕获方语义
+    const error: Error = rawError instanceof Error ? rawError : new Error(String(rawError))
     // 记录错误
     this.errorHistory.push(error)
-    // 上限保护：与 ErrorHandler.maxLogSize 同口径，高频失败场景下
-    // Error 对象无界累积（此前只增不减，需手动 clearErrorHistory）
-    if (this.errorHistory.length > 100) {
+    // 上限保护：与 ErrorHandler 的 errorLog 共用同一个 DEFAULT_MAX_LOG_SIZE（单一来源，
+    // 调那一处常量即同时改掉两侧上限），高频失败场景下 Error 对象不再无界累积（此前只增
+    // 不减，需手动 clearErrorHistory）。每个入口只 push 一条，故此处判后 shift 恰好丢掉最旧
+    // 一条，等价于「保留最新 N 条」；本类的上限暂不对外开放（需要可调请走 ErrorHandler.setMaxLogSize
+    // 的同类接口设计，属新增公开配置，不在本轮范围）
+    if (this.errorHistory.length > DEFAULT_MAX_LOG_SIZE) {
       this.errorHistory.shift()
     }
 
@@ -184,7 +197,7 @@ export class ErrorBoundary<S = unknown, F = undefined> {
 
     // 如果不可恢复，重新抛出
     if (!this.recoverable) {
-      throw error
+      throw rawError
     }
 
     // 返回回退状态：支持固定值与根据错误/当前状态动态计算
@@ -194,12 +207,15 @@ export class ErrorBoundary<S = unknown, F = undefined> {
       if (typeof this.fallback === 'function') {
         // fallback 函数自身就是容错路径，出错概率不低：不加保护会以 fallback
         // 的异常顶替原错误逃逸（原错误现场丢失）。失败时重抛原错误，
-        // 与上方 onError 回调的防护口径一致
+        // 与上方 onError 回调的防护口径一致。
+        // 刻意不「按 recoverable 语义返回 undefined」：回退值是容错的最后一道，它自己
+        // 失败时本边界已无从恢复，改判成功会把容错路径的故障静默成一次「正常的 undefined」，
+        // 调用方拿不到任何信号；此处抛出的是原始错误而非 fallback 异常，现场不失真
         try {
           return (this.fallback as (error: Error, currentState: S | undefined) => F)(error, currentState)
         } catch (fallbackError) {
           console.error('[ErrorBoundary] Error in fallback function:', fallbackError)
-          throw error
+          throw rawError
         }
       }
       return this.fallback
@@ -211,7 +227,7 @@ export class ErrorBoundary<S = unknown, F = undefined> {
   /**
    * 获取回退状态
    *
-   * @returns {S | undefined} 回退状态；若配置为计算函数则需结合错误上下文调用，此处返回undefined
+   * @returns {F | undefined} 回退值；若配置为计算函数则需结合错误上下文调用，此处返回undefined
    *
    * @example
    * ```typescript
@@ -228,7 +244,7 @@ export class ErrorBoundary<S = unknown, F = undefined> {
   /**
    * 设置回退状态
    *
-   * @param {S} state - 新的回退状态
+   * @param {F} state - 新的回退值
    *
    * @example
    * ```typescript
@@ -356,14 +372,31 @@ export function withErrorBoundary(options?: ErrorBoundaryOptions) {
   return function (_target: unknown, _propertyKey: string | symbol, descriptor: PropertyDescriptor): PropertyDescriptor {
     const originalMethod = descriptor.value
 
+    // 访问器描述符（get/set）与非函数属性的 value 是 undefined：晚到失败只会抛出
+    // `originalMethod.apply is not a function`，故在装饰阶段拒绝
+    if (typeof originalMethod !== 'function') {
+      throw new TypeError('[withErrorBoundary] can only decorate a method, but the descriptor.value is not a function')
+    }
+
     descriptor.value = function (this: ThisParameterType<typeof originalMethod>, ...args: unknown[]) {
       const boundary = getBoundary(this)
       // 同步阶段（含 async 方法的同步抛出）由 execute 包裹
-      const result = boundary.execute(() => originalMethod.apply(this, args))
-      // async 方法返回的 Promise 其 rejection 会绕过同步 try/catch，
-      // 需改用 executeAsync 包裹，避免成为 unhandled rejection
-      if (result instanceof Promise) {
-        return boundary.executeAsync(() => result)
+      // 被包裹方法的**原始返回值**单独留一份：execute 的返回值可能是它、也可能是
+      // fallback 值，只对原始返回值做 thenable 判定（见下），否则「恰好带 callable
+      // `then` 的回退值/普通返回值」会被误判成 Promise 再走一遍 executeAsync，
+      // 方法的返回形状从 X 变成 Promise<X>。回退值本身一律原样返回：它是边界自己
+      // 产出的值，不是「被包裹方法的异步结果」，await 它等于把同步方法的返回值换成 Promise
+      let rawResult: unknown
+      const result = boundary.execute(() => {
+        rawResult = originalMethod.apply(this, args)
+        return rawResult
+      })
+      // Promise rejection（含 async 方法的 rejection）会绕过同步 try/catch，
+      // 需改用 executeAsync 包裹，避免成为 unhandled rejection。
+      // 用 then 鸭子类型而非 instanceof Promise：跨 realm Promise（iframe/worker）
+      // 与自定义 thenable 的 instanceof 为 false，其 rejection 会被漏掉
+      if (isThenable(rawResult)) {
+        return boundary.executeAsync(() => rawResult as Promise<unknown>)
       }
       return result
     }
@@ -373,6 +406,9 @@ export function withErrorBoundary(options?: ErrorBoundaryOptions) {
 }
 
 /**
- * 默认导出
+ * 命名类型再导出（本模块无 default export）
+ *
+ * 定义在 `src/types/error.ts`，此处转发只为保持深导入路径 `extras/error/ErrorBoundary.js`
+ * 的类型可用；公开出口是 `extras/error/index.ts`（它直接从定义模块导出同一个类型）。
  */
 export type { ErrorBoundaryOptions } from '../../types/error.js'

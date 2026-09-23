@@ -19,7 +19,8 @@ describe('PerformanceMonitor', () => {
 
       expect(typeof timestamp).toBe('number')
     } finally {
-      (globalThis as any).wx = originalWx
+      const g = globalThis as any
+      g.wx = originalWx
     }
   })
 
@@ -575,7 +576,8 @@ describe('计时单位契约（_getTimestamp 恒返回毫秒）', () => {
   const originalWx = (globalThis as any).wx
 
   afterEach(() => {
-    (globalThis as any).wx = originalWx
+    const g = globalThis as any
+    g.wx = originalWx
   })
 
   /** 用受控毫秒时钟替换 wx.getPerformance().now() */
@@ -653,5 +655,42 @@ describe('计时单位契约（_getTimestamp 恒返回毫秒）', () => {
     clock.advance(2 * 60 * 1000)
     monitor.record(metric('y'))
     expect(ops.size).toBe(0)
+  })
+})
+
+describe('maxSize 规范化', () => {
+  const rec = (operation: string) => ({
+    operation,
+    type: 'dispatch' as const,
+    duration: 1,
+    timestamp: Date.now(),
+    exceedThreshold: false,
+  })
+  const readMaxSize = (monitor: PerformanceMonitor) => (monitor as unknown as { options: { maxSize: number } }).options.maxSize
+
+  it('负数 maxSize 收敛为 0：淘汰逻辑不得在空数组上死循环', () => {
+    const monitor = new PerformanceMonitor({ maxSize: -5 })
+    monitor.record(rec('a'))
+    monitor.record(rec('b'))
+
+    expect(monitor.getMetrics()).toHaveLength(0)
+  })
+
+  it('小数向下取整，NaN / Infinity 回落默认容量', () => {
+    expect(readMaxSize(new PerformanceMonitor({ maxSize: 2.7 }))).toBe(2)
+    expect(readMaxSize(new PerformanceMonitor({ maxSize: NaN }))).toBe(1000)
+    expect(readMaxSize(new PerformanceMonitor({ maxSize: Infinity }))).toBe(1000)
+  })
+
+  it('setOptions 同样规范化：NaN 保留原容量，负数收敛为 0', () => {
+    const monitor = new PerformanceMonitor({ maxSize: 4 })
+
+    monitor.setOptions({ maxSize: NaN })
+    expect(readMaxSize(monitor)).toBe(4)
+
+    monitor.setOptions({ maxSize: -1 })
+    expect(readMaxSize(monitor)).toBe(0)
+    monitor.record(rec('after-zero'))
+    expect(monitor.getMetrics()).toHaveLength(0)
   })
 })

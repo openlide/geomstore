@@ -59,7 +59,7 @@ function jsonStringifySafe(value: unknown, space?: number): string {
  *
  * @interface TimeTravelOptions
  * @template S - 状态类型
- * @property {number} [maxSize=50] - 最大快照数量
+ * @property {number} [maxSize=50] - 最大快照数量（非正整数/非有限值回退到默认值，见 normalizeMaxSize）
  * @property {(state: S) => boolean} [filter] - 过滤函数，决定是否记录快照
  * @property {boolean} [autoRecord=true] - 是否自动记录快照
  *
@@ -75,12 +75,62 @@ function jsonStringifySafe(value: unknown, space?: number): string {
  * ```
  */
 export interface TimeTravelOptions<S extends State = State> {
-  /** 最大快照数量 */
+  /**
+   * 最大快照数量（默认 50）
+   *
+   * 只接受 ≥ 1 的数值，小数向下取整；`NaN`/`Infinity`/`0`/负数等无法作为上限的取值
+   * 一律回退到默认值（判据与理由见 `normalizeMaxSize`）
+   */
   maxSize?: number
   /** 过滤函数 */
   filter?: (state: S) => boolean
   /** 是否自动记录 */
   autoRecord?: boolean
+}
+
+/** 全局调试表的键名：注册与日志提示必须同源，否则日志会指向一个不存在的路径 */
+const TIME_TRAVEL_GLOBAL_KEY = '__GEOMSTORE_TIME_TRAVEL__'
+
+/** `maxSize` 缺省值，同时是非法取值（非有限数 / 小于 1）的回退值 */
+const DEFAULT_MAX_SIZE = 50
+
+/**
+ * 归一 `maxSize` 为正整数。
+ *
+ * 未归一的取值会让上限在两处朝相反方向失效：
+ * - `NaN`（如 `Number(用户输入)`）：`snapshots.length > NaN` 恒为 false，上限静默消失，
+ *   快照无限增长——一个常装的 devtools 插件就是实打实的内存泄漏
+ * - `0` / 负数：`recordSnapshot` 每次 push 完立刻 shift，历史恒空；更糟的是
+ *   `importHistory` 里 `overflow = snapshots.length - maxSize` 会把快照清空而
+ *   `currentIndex` 停在 0——这是 `clear()` 从不产生的非法态（-1），
+ *   `getCurrentIndex()` 与 `goTo(0)` 就此互相矛盾
+ *
+ * 小数按向下取整（`3.7 → 3`），小于 1 与不可解析的值退回默认值。
+ */
+function normalizeMaxSize(raw: number | undefined): number {
+  if (raw === undefined || !Number.isFinite(raw) || raw < 1) {
+    return DEFAULT_MAX_SIZE
+  }
+
+  return Math.floor(raw)
+}
+
+/**
+ * 外部输入对象的结构准入判断（importHistory 专用）
+ *
+ * 三条口径与 `Store.$replaceState` 的准入条件对齐（见 core/store/Store.ts）：
+ * - 非 null 的 `typeof === 'object'`
+ * - **排除数组**：数组同样过 `typeof === 'object'`，放行后 `goTo/undo/redo` 会打到
+ *   核心的 `[GeomStore] $replaceState: newState must be a plain object`，
+ *   与本文件「畸形数据直接跳过，避免污染历史」的注释自相矛盾
+ * - 排除自带 `__proto__` 自有键的对象：`JSON.parse` 产出的是**数据属性**（不触发 setter），
+ *   会一路通过校验，把 `state.__proto__` 读起来不是原型的怪对象塞进活状态。
+ *   （core/utils/clone.ts 已在克隆处用 defineProperty 复刻该键、原型未被导入数据接管，
+ *   实测全局原型也不受影响，故这里是「入口收紧」而非唯一防线；更深层的 `__proto__`
+ *   键仍由克隆层的同一防护兜底）
+ */
+function isImportableObject(value: unknown): boolean {
+  return value !== null && typeof value === 'object' && !Array.isArray(value) && !Object.prototype.hasOwnProperty.call(value as object, '__proto__')
 }
 
 /**
@@ -132,9 +182,9 @@ export interface TimeTravelOptions<S extends State = State> {
  * }))
  *
  * // 访问时间旅行API
- * const api = store.__timeTravel__
- * // 或
- * const api = globalThis.__GEOMSTORE_TIME_TRAVEL__['todo']
+ * // 全局表只在非生产环境挂载，读到 undefined 时需判空；
+ * // store.__timeTravel__ 是内部字段（不参与类型检查），不要按它写业务代码
+ * const api = globalThis.__GEOMSTORE_TIME_TRAVEL__?.['todo']
  *
  * // 获取所有快照
  * const snapshots = api.getSnapshots()
@@ -168,7 +218,8 @@ export interface TimeTravelOptions<S extends State = State> {
  * ```
  */
 export const timeTravelPlugin = <S extends State = State>(options: TimeTravelOptions<S> = {}): Plugin => {
-  const { maxSize = 50, filter, autoRecord = true } = options
+  const { filter, autoRecord = true } = options
+  const maxSize = normalizeMaxSize(options.maxSize)
 
   return {
     name: 'timeTravel',
@@ -258,6 +309,12 @@ export const timeTravelPlugin = <S extends State = State>(options: TimeTravelOpt
         // 避免用户状态中名为 timestamp 的键被快照元数据覆盖）
         // 与记录快照使用同一克隆策略：隔离支持的嵌套类型，保留不可安全克隆
         // 的类实例/WeakMap/Promise 等原引用，不用 JSON 或 structuredClone 改变兼容性。
+        //
+        // 展开的形态限制（#377）：`{ timestamp, ...clone }` 只对**顶层为纯对象**的状态
+        // 成立。顶层是 Date/Map/Set/数组时展开只会得到 `{ timestamp }`（非纯对象没有
+        // 可枚举自有键，数组则退化为数字键）——克隆本身保留了这些类型，是展开把它们
+        // 丢掉了。该扁平结构已被现有测试与文档固化，改形状属破坏性变更，故这里
+        // 只把口径写清：本方法只对顶层为纯对象的状态给出完整回显
         getSnapshots: () => snapshots.map((s) => ({ timestamp: s.timestamp, ...deepCloneState(s.state) })),
 
         // 获取快照数量
@@ -268,15 +325,26 @@ export const timeTravelPlugin = <S extends State = State>(options: TimeTravelOpt
 
         // 跳转到指定快照
         goTo: (index: number): void => {
-          if (index < 0 || index >= snapshots.length) {
+          // 整数是取到快照的前提，而裸的 `< 0 / >= length` 两个比较对 NaN 恒为 false、
+          // 对小数也放行：snapshots[NaN] / snapshots[1.5] 得 undefined，下一行的
+          // `snapshot.state` 抛裸 TypeError『Cannot read properties of undefined』，
+          // 而不是本方法设计的清洁越界错误。devtools 消费方常自行换算索引
+          // （goTo(Number(用户输入))、goTo(getCurrentIndex() + 0.5)），触发条件确定。
+          // 与 importHistory 的口径分工明确：那边是「导入的不可信数据」→ floor 后钳制，
+          // 这里是「调用方直传的索引」→ 一律按非法值送进同一条 out-of-bounds 错误路径
+          if (!Number.isInteger(index) || index < 0 || index >= snapshots.length) {
             throw new Error(`[timeTravel] Index ${index} out of bounds [0, ${snapshots.length})`)
           }
 
           const snapshot = snapshots[index]
-          currentIndex = index
           traveling = true
           try {
             store.$replaceState(snapshot.state)
+            // 索引在回放成功后才推进（#378）：$replaceState 抛错（store 已销毁、
+            // 快照状态非纯对象）时若先改索引，索引会指向一个从未生效的快照而真实状态
+            // 仍是旧的——此后 recordSnapshot 以该索引为分支点截断 redo 历史，
+            // 且 undo/redo 每次都会把这个坏索引一路继承下去、反复抛同一个错
+            currentIndex = index
             // 同步通知下回放已在 traveling 窗口内被吞掉；这里为异步通知留下识别标记，
             // 版本号在本次回放后再未前进时，下一次通知即为该回放本身
             pendingTravelVersion = getStateVersion(store.state)
@@ -298,8 +366,9 @@ export const timeTravelPlugin = <S extends State = State>(options: TimeTravelOpt
         // 撤销
         undo: (): void => {
           if (currentIndex > 0) {
-            currentIndex--
-            api.goTo(currentIndex)
+            // 目标索引交给 goTo 推进：goTo 只在 $replaceState 成功后才写 currentIndex，
+            // 此处若先自减，回放抛错时索引同样会与真实状态失步（#378）
+            api.goTo(currentIndex - 1)
           } else {
             console.warn('[timeTravel] Cannot undo: already at first snapshot')
           }
@@ -308,8 +377,7 @@ export const timeTravelPlugin = <S extends State = State>(options: TimeTravelOpt
         // 重做
         redo: (): void => {
           if (currentIndex < snapshots.length - 1) {
-            currentIndex++
-            api.goTo(currentIndex)
+            api.goTo(currentIndex + 1)
           } else {
             console.warn('[timeTravel] Cannot redo: already at latest snapshot')
           }
@@ -344,32 +412,45 @@ export const timeTravelPlugin = <S extends State = State>(options: TimeTravelOpt
 
         // 导入历史
         importHistory: (json: string): void => {
-          const data = JSON.parse(json)
+          // JSON 语法错误同样属于「畸形数据」：文本框里残留的半个导出串、HTML 错误页
+          // 正文、undefined 被字符串化后的值都会从这里进来，把 SyntaxError 抛给调用方
+          // 会打断整个 devtools 导入流程，与本方法「畸形数据静默跳过」的契约矛盾
+          let data: { snapshots?: unknown; currentIndex?: unknown }
+          try {
+            data = JSON.parse(json) as { snapshots?: unknown; currentIndex?: unknown }
+          } catch {
+            return
+          }
           // JSON.parse('null') 合法但 data.snapshots 会抛 TypeError，与函数内
           // 其余畸形数据静默跳过的防御风格保持一致
           if (!data || typeof data !== 'object' || !Array.isArray(data.snapshots)) {
             return
           }
-          // 结构校验：仅接受合法快照条目（state 为对象、timestamp 为数字），
+          // 结构校验：仅接受合法快照条目（state 为可导入对象、timestamp 为数字），
           // 畸形数据直接跳过，避免污染历史导致 goTo/undo 异常
           const valid = data.snapshots.filter(
             (s: unknown): s is { state: S; timestamp: number } =>
-              s !== null &&
-              typeof s === 'object' &&
-              (s as { state?: unknown }).state !== null &&
-              typeof (s as { state?: unknown }).state === 'object' &&
-              typeof (s as { timestamp?: unknown }).timestamp === 'number',
+              isImportableObject(s) && isImportableObject((s as { state?: unknown }).state) && typeof (s as { timestamp?: unknown }).timestamp === 'number',
           )
           if (valid.length === 0) {
             return
           }
           snapshots.length = 0
-          snapshots.push(...valid)
+          // 逐条 push 而非 `push(...valid)`（#379）：条目数由输入决定，
+          // 展开传参在超过 V8 实参上限（约 1e5 量级）时直接抛
+          // RangeError: Maximum call stack size exceeded——一条畸形超大 JSON
+          // 就能让导入崩溃。也不在此预截取尾部 maxSize 条：那会让下面的
+          // currentIndex 变成「相对裁剪后数组」的位置而漂移（#380）
+          for (const entry of valid) {
+            snapshots.push(entry)
+          }
           // currentIndex 钳制到合法范围（缺省为最后一个）；小数向下取整，
           // 避免小数索引取 snapshots[1.5] 得 undefined 传入 $replaceState 抛错
           currentIndex =
             typeof data.currentIndex === 'number' ? Math.min(Math.max(Math.floor(data.currentIndex), 0), snapshots.length - 1) : snapshots.length - 1
-          // 导入同样受 maxSize 限制：超出部分淘汰最旧快照并同步修正索引
+          // 导入同样受 maxSize 限制：超出部分淘汰最旧快照并同步修正索引。
+          // 顺序必须是「先按完整输入钳制 index，再按 overflow 偏移」（#380）：
+          // 100 条取末 50 条、原 index 90 时应得 40，先裁剪再钳制会得到 49
           if (snapshots.length > maxSize) {
             const overflow = snapshots.length - maxSize
             snapshots.splice(0, overflow)
@@ -385,9 +466,9 @@ export const timeTravelPlugin = <S extends State = State>(options: TimeTravelOpt
       // 设置全局访问（生产环境不暴露，防止内部结构泄露）
       let unregisterGlobal: () => void = () => {}
       if (!isProduction()) {
-        unregisterGlobal = registerGlobalEntry('__GEOMSTORE_TIME_TRAVEL__', store.name, api)
+        unregisterGlobal = registerGlobalEntry(TIME_TRAVEL_GLOBAL_KEY, store.name, api)
         console.log(`[GeomStore][timeTravel] Time travel enabled for store "${store.name}"`)
-        console.log(`[GeomStore][timeTravel] Access at: globalThis.__GEOMSTORE_TIME_TRAVEL__["${store.name}"]`)
+        console.log(`[GeomStore][timeTravel] Access at: globalThis.${TIME_TRAVEL_GLOBAL_KEY}["${store.name}"]`)
       }
 
       return () => {

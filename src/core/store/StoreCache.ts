@@ -11,6 +11,7 @@
 
 import type { State, CacheStats } from '../../types/store.js'
 import type { LRUCache } from '../cache/LRUCache.js'
+import { isProduction } from './utils.js'
 
 /**
  * 缓存管理器配置
@@ -18,7 +19,12 @@ import type { LRUCache } from '../cache/LRUCache.js'
 export interface StoreCacheOptions<S extends State = State> {
   /** LRU 缓存实例 */
   cache: LRUCache<keyof S, S[keyof S]>
-  /** TTL（毫秒，0 表示不过期） */
+  /**
+   * TTL（毫秒，0 表示不过期）
+   *
+   * 非有限值（NaN/Infinity）与负数在构造期归一为 0 并留开发期告警：
+   * 类内过期判定统一写作 `ttl > 0`，NaN 会让它恒为 false（配置失效且无信号）
+   */
   ttl?: number
 }
 
@@ -36,7 +42,16 @@ export class StoreCacheManager<S extends State = State> {
 
   constructor(options: StoreCacheOptions<S>) {
     this._cache = options.cache
-    this._ttl = options.ttl ?? 0
+    // 与 LRUCache 的 capacity 守卫同口径（Number.isFinite + 归一到「默认值」）：
+    // 类内所有 TTL 判定都写成 `this._ttl > 0`，NaN 会让它恒为 false，
+    // 配置里明明写了 ttl 却被静默丢弃、缓存永不过期；Infinity/负数同理
+    // （永不过期本就该用 ttl: 0 表达）。归一时留一条开发期告警：
+    // 只改数值不改语义的话，配置里算错的 ttl 依旧不会有任何信号
+    const ttl = options.ttl ?? 0
+    this._ttl = Number.isFinite(ttl) && ttl >= 0 ? ttl : 0
+    if (this._ttl === 0 && ttl !== 0 && !isProduction()) {
+      console.warn(`[GeomStore] cacheConfig.ttl=${ttl} 不是有效的过期时长（需为有限非负数），已按 0（不过期）处理`)
+    }
   }
 
   /**
@@ -72,34 +87,21 @@ export class StoreCacheManager<S extends State = State> {
       // 只在 TTL > 0 时检查过期
       if (this._ttl > 0) {
         const timestamp = this._timestamps.get(key)
-        if (timestamp && Date.now() - timestamp > this._ttl) {
+        // 时间戳缺失（含 0）按已过期处理：新鲜度未知时宁可回读状态源，
+        // 也不能像真值判断那样静默跳过检查、把这条旧值无限读下去
+        if (timestamp === undefined || Date.now() - timestamp > this._ttl) {
           // 缓存已过期，刷新
           const value = getState()
-          // 只缓存非 undefined 值，避免将 undefined 值当作有效缓存
-          if (value !== undefined) {
-            this._cache.set(key, value)
-            this._timestamps.set(key, Date.now())
-          } else {
-            // 值是 undefined，删除缓存条目
-            this._cache.delete(key)
-            this._timestamps.delete(key)
-          }
+          this._writeEntry(key, value, Date.now())
           return value
         }
       }
       return cachedValue as S[K]
     }
 
-    // 缓存未命中，从状态获取并缓存
+    // 缓存未命中，从状态获取并缓存（统一走 _writeEntry，避免同一套写入语义多处漂移）
     const value = getState()
-    // 只缓存非 undefined 值
-    if (value !== undefined) {
-      this._cache.set(key, value)
-      // 只在 TTL > 0 时记录时间戳
-      if (this._ttl > 0) {
-        this._timestamps.set(key, Date.now())
-      }
-    }
+    this._writeEntry(key, value, Date.now())
     return value
   }
 
@@ -107,20 +109,8 @@ export class StoreCacheManager<S extends State = State> {
    * 更新缓存值
    */
   set<K extends keyof S>(key: K, value: S[K]): void {
-    if (this._enabled) {
-      if (!this._cacheKeys || this._cacheKeys.has(key)) {
-        // 与 get/refreshFromState 保持一致：undefined 值不缓存，并清理旧条目
-        if (value !== undefined) {
-          this._cache.set(key, value)
-          // 只在 TTL > 0 时记录时间戳
-          if (this._ttl > 0) {
-            this._timestamps.set(key, Date.now())
-          }
-        } else {
-          this._cache.delete(key)
-          this._timestamps.delete(key)
-        }
-      }
+    if (this._enabled && (!this._cacheKeys || this._cacheKeys.has(key))) {
+      this._writeEntry(key, value, Date.now())
     }
   }
 
@@ -130,11 +120,17 @@ export class StoreCacheManager<S extends State = State> {
   enable(keys: Array<keyof S> | undefined, getState: (key: keyof S) => S[keyof S], stateKeys?: Array<keyof S>): void {
     this._enabled = true
     this._cacheKeys = keys ? new Set(keys) : undefined
+    // 空键集是「缓存全部关闭」而非「缓存全部键」：_cacheKeys 非 undefined 会让 get/set
+    // 把所有键都过滤掉，而 enabled 仍报 true，配置与观测不一致最难排查。
+    // 不把它当作未指定 keys——显式传空数组通常来自一个算出空集的配置，
+    // 反向解释成全量缓存会引入用户没要的旧值风险
+    if (keys && keys.length === 0 && !isProduction()) {
+      console.warn('[GeomStore] cacheKeys 为空数组：缓存不会命中任何键，enableCache 形同关闭（需要缓存全部键请传 undefined）')
+    }
     // 重新配置即重建：先清掉上一轮键集的残留条目。否则收窄 cacheKeys 后旧条目仍
     // 留在 LRU 里占用容量（导致新键集内的有效键被提前淘汰）并被 getStats() 报告，
     // 而 get() 已因 _cacheKeys 过滤永远读不到它们。清空后条目立即从状态源回填，无数据丢失
-    this._cache.clear()
-    this._timestamps.clear()
+    this._clearEntries()
     const now = Date.now()
 
     if (keys) {
@@ -160,12 +156,71 @@ export class StoreCacheManager<S extends State = State> {
       // 只在 TTL > 0 时记录时间戳
       if (this._ttl > 0) {
         this._timestamps.set(key, now)
+        // 摊还回收：LRU 静默淘汰留下的孤儿（见 _pruneOrphanTimestamps）。
+        // 阈值给到 2×容量 + 8，让一次 O(键数) 扫描摊到其后十几笔写入上
+        if (this._timestamps.size > this._cache.getCapacity() * 2 + 8) {
+          this._pruneOrphanTimestamps()
+        }
       }
     } else {
       // 值为 undefined：不缓存，并清理残留条目
-      this._cache.delete(key)
-      this._timestamps.delete(key)
+      this._deleteEntry(key)
     }
+  }
+
+  /**
+   * 删除单个键的缓存条目与 TTL 时间戳
+   *
+   * `_cache` 与 `_timestamps` 是两张必须同步收缩的 Map：任何一处只删一边都会让
+   * 时间戳条目滞留（只能等 disable()/invalidate() 才释放），历史上门槛最低的
+   * 写法就是散在各调用点各删各的。删除语义收在这一个方法里，调用点不再各写两行
+   *
+   * 但「本类的删除路径」并不覆盖 `_cache` 自己收缩的那一侧：LRUCache 超限时在内部
+   * `evictLRU()` 直接摘条目，Store 构造它时不传 `onEvict`，本类收不到淘汰通知 ⇒
+   * 被淘汰键的时间戳成为孤儿，`_timestamps` 的上界于是从 capacity 变成「历史上出现过的
+   * 缓存键总数」（ttl > 0 时每笔写入都留一行，长期会话里的动态键让它单调增长）。
+   * 该滞留不影响功能（`get()` 对 `_cache` 未命中会回读状态源并重写时间戳），代价是内存
+   * 与 `refreshFromState` 每轮重建的键集合规模，故由 {@link _pruneOrphanTimestamps}
+   * 把「同步收缩」从注释承诺变成实现保证
+   *
+   * @private
+   */
+  private _deleteEntry(key: keyof S): void {
+    this._cache.delete(key)
+    this._timestamps.delete(key)
+  }
+
+  /**
+   * 剔除「`_cache` 里已无对应条目」的 TTL 时间戳
+   *
+   * 判据只有一条：时间戳的唯一用途是给 `_cache` 里的条目算新鲜度，缓存侧已经不存的键
+   * 留着时间戳永远不会被读到（`get()` 走未命中分支时会重新写入）。因此删除时间戳
+   * 不改变任何可观测行为，纯粹是回收 LRU 静默淘汰留下的孤儿。
+   *
+   * 调用点两处，合起来把上界真正钉住：
+   * - `refreshFromState` 收尾（每次 dispatch 一轮，本来就是 O(键数) 的遍历）
+   * - `_writeEntry` 里按「超过 2×容量 + 8」触发（覆盖只写不 dispatch 的宿主，
+   *   摊还后每笔写入的分摊成本是 O(1) 而非 O(键数)）
+   *
+   * @private
+   */
+  private _pruneOrphanTimestamps(): void {
+    // Map 迭代中删除当前条目是安全的，无需先物化成数组
+    for (const key of this._timestamps.keys()) {
+      if (!this._cache.has(key)) {
+        this._timestamps.delete(key)
+      }
+    }
+  }
+
+  /**
+   * 清空全部缓存条目与 TTL 时间戳（`_deleteEntry` 的整表版本，同一套同步约束）
+   *
+   * @private
+   */
+  private _clearEntries(): void {
+    this._cache.clear()
+    this._timestamps.clear()
   }
 
   /**
@@ -174,6 +229,14 @@ export class StoreCacheManager<S extends State = State> {
    * 用于 dispatch 结束后同步缓存：action 可能通过 `this.state.xxx = ...`
    * 直接变异状态（绕过 setState/$patch），导致缓存与真实状态不一致，
    * 此方法按缓存键集合从状态源强制回写
+   *
+   * @remarks TTL 语义是「距最后一次与状态源对齐的时长」，不是「距条目首次写入的时长」：
+   * 本方法在每次 dispatch 收尾把全部缓存键的值重读自状态源并重置时间戳，
+   * 因此高频 dispatch 下热点条目事实上不会过期——这不是缺陷，被重置的条目里存的
+   * 就是刚刚读出的当前值，让它按墙钟过期只会多一次同样返回该值的回读。
+   * 需要知道的边界：ttl 只在「状态被 dispatch 之外的途径改写」时兜陈旧读，
+   * 且该兜底会在高频 dispatch 下被不断推迟，**不是硬过期上限**；
+   * 要求「写入后最长存活」的调用方不要依赖 ttl 达成
    *
    * @param getState - 从状态源读取值的函数
    * @param stateKeys - 当前状态的全部键（未配置 cacheKeys 时作为刷新范围）
@@ -198,20 +261,12 @@ export class StoreCacheManager<S extends State = State> {
     }
 
     for (const key of keys) {
-      const value = getState(key)
-      // 与 get/set 保持一致：undefined 值不缓存，并清理旧条目
-      if (value !== undefined) {
-        this._cache.set(key, value)
-        // 与 set/_writeEntry 对齐：TTL=0（永不过期）不写时间戳，
-        // 否则 get() 的过期判定会把条目永久判为过期，每次 get 都回读状态源
-        if (this._ttl > 0) {
-          this._timestamps.set(key, now)
-        }
-      } else {
-        this._cache.delete(key)
-        this._timestamps.delete(key)
-      }
+      this._writeEntry(key, getState(key), now)
     }
+    // 本轮已与状态源对齐，顺手把 LRU 静默淘汰留下的时间戳孤儿收掉：
+    // 上面的键集合只覆盖「缓存里还有」与「当前状态里还有」的键，两侧都没有的
+    // 历史键在这里之前没有任何回收点（动态顶层键场景下单调增长）
+    this._pruneOrphanTimestamps()
   }
 
   /**
@@ -220,34 +275,21 @@ export class StoreCacheManager<S extends State = State> {
   disable(): void {
     this._enabled = false
     this._cacheKeys = undefined
-    this._cache.clear()
-    this._timestamps.clear()
+    this._clearEntries()
   }
 
   /**
    * 清除缓存
+   *
+   * 不传 key 时整表清空：`$replaceState` 走的正是这条路径——整树替换后旧状态的键
+   * （含 action 内已 delete 的键）都不在新状态里，按键清理会漏掉它们
    */
   invalidate<K extends keyof S>(key?: K): void {
     if (key !== undefined) {
-      this._cache.delete(key)
-      this._timestamps.delete(key)
+      this._deleteEntry(key)
     } else {
-      this._cache.clear()
-      this._timestamps.clear()
+      this._clearEntries()
     }
-  }
-
-  /**
-   * 清理旧状态缓存
-   * 用于 $replaceState 时清理旧状态
-   */
-  clearOldState(stateKeys: Array<keyof S>): void {
-    stateKeys.forEach((key) => {
-      this._cache.delete(key)
-      // TTL 时间戳一并清理：残留条目不影响 get 未命中路径，
-      // 但会让内部 Map 滞留到 disable()/invalidate() 才释放
-      this._timestamps.delete(key)
-    })
   }
 
   /**

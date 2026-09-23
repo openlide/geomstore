@@ -1,11 +1,15 @@
 {
   "extends": "../tsconfig.jest.json",
   "compilerOptions": {
-    "noEmit": true,
-    "strict": true,
+    // 有意重复声明（不是遗漏基线的 noEmit / strict 那类空转项）：基线 ../tsconfig.jest.json
+    // 面向 src + tests，未来若收紧未使用检查，测试树里大量「仅作断言/占位」的绑定会整片报错。
     "noUnusedLocals": false,
     "noUnusedParameters": false
   },
   "include": ["./**/*", "../src/**/*"],
-  "exclude": ["../node_modules", "../dist"]
+  // 局部 exclude 是**整体替换**而非合并基线：../tsconfig.jest.json 的
+  // ["node_modules", "dist", "packages", "**/*.example.ts"] 必须按本文件所在目录重写全，
+  // 否则 include 里的 ../src/**/* 会把示例文件（*.example.ts）与 ../packages 下的文件
+  // 拉进测试类型检查——正是基线注释里说明要防的漂移。
+  "exclude": ["../node_modules", "../dist", "../packages", "../src/**/*.example.ts", "**/*.example.ts"]
 }

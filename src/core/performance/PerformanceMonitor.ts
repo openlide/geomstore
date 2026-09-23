@@ -121,13 +121,64 @@ export class PerformanceMonitor implements PerformanceMonitorInterface {
    */
   constructor(options: PerformanceOptions = {}) {
     this.options = {
-      sampleRate: options.sampleRate ?? 1.0,
-      threshold: options.threshold ?? 16,
+      sampleRate: PerformanceMonitor.normalizeSampleRate(options.sampleRate, 1.0),
+      threshold: PerformanceMonitor.normalizeThreshold(options.threshold, 16),
       logger: options.logger ?? this.defaultLogger.bind(this),
-      maxSize: options.maxSize ?? 1000,
+      maxSize: PerformanceMonitor.normalizeMaxSize(options.maxSize, PerformanceMonitor.DEFAULT_MAX_SIZE),
       trackMemory: options.trackMemory ?? false,
     }
   }
+
+  /** 默认指标容量上限 */
+  private static readonly DEFAULT_MAX_SIZE = 1000
+
+  /**
+   * 规范化采样率
+   *
+   * 留存判据是 `Math.random() < sampleRate`（见 record()）：未校验的 NaN 与负值都会让
+   * 条件恒假，「采样」静默退化成一条都不留，而调用方以为自己在监控。文档口径是 0-1，
+   * 故统一夹到该区间，非有限值回退默认。
+   *
+   * @private
+   */
+  private static normalizeSampleRate(value: number | undefined, fallback: number): number {
+    if (value === undefined || !Number.isFinite(value)) return fallback
+    return Math.min(1, Math.max(0, value))
+  }
+
+  /**
+   * 规范化阈值
+   *
+   * NaN 阈值会让 `duration > NaN` 恒为 false，超阈值预警静默失效；负值等价于 0
+   * （凡有耗时的操作都预警），夹到 0 保持「预警不被关掉」的直觉语义。
+   *
+   * @private
+   */
+  private static normalizeThreshold(value: number | undefined, fallback: number): number {
+    if (value === undefined || !Number.isFinite(value)) return fallback
+    return Math.max(0, value)
+  }
+
+  /**
+   * 规范化容量上限
+   *
+   * maxSize 直接来自调用方，未校验会让 `while (length > maxSize) shift()`
+   * 在负数时于空数组上死循环、NaN 时条件恒 false 使缓冲永不收敛，
+   * 故统一收敛为「有限、非负、整数」。
+   *
+   * @private
+   */
+  private static normalizeMaxSize(value: number | undefined, fallback: number): number {
+    if (value === undefined || !Number.isFinite(value)) return fallback
+    return Math.max(0, Math.floor(value))
+  }
+
+  /**
+   * 缓存的 wx 性能实例（undefined＝未探测，null＝探测过且不可用）
+   *
+   * @private
+   */
+  private cachedWxPerformance?: { now(): number } | null
 
   /**
    * 获取高精度时间戳（兼容微信小程序）
@@ -138,17 +189,56 @@ export class PerformanceMonitor implements PerformanceMonitorInterface {
    * 若某基础库实测 wx.getPerformance().now() 返回微秒，归一化只能改本函数这一处
    * （除以 1000），下游不得各自换算，否则口径会分散失配。
    *
+   * 同一监控器实例只向 wx 取一次性能对象并缓存：start()/end()/pruneStaleOperations()
+   * 处于计时热路径，每点都重新读 globalThis + 调工厂既产生额外分配，
+   * 更关键的是缓存保证了「整轮计时共用同一实例、同一计时原点」，
+   * endTime - startTime 与 MAX_OPERATION_AGE_MS 的差值才不会因原点不同而失真。
+   * 缓存按实例而非模块级：多个监控器（含测试）各自独立探测，互不污染。
+   *
    * @private
    */
   private _getTimestamp(): number {
-    // 优先使用小程序高精度计时 wx.getPerformance().now()（基础库 2.20.1+），
-    // 旧基础库降级使用 Date.now()；两者均为毫秒，可直接互换比较
-    // wx 经 globalThis 读取，避免直接引用未声明的小程序全局标识符
-    const wxGlobal = (globalThis as { wx?: { getPerformance?: () => unknown } }).wx
-    if (wxGlobal && typeof wxGlobal.getPerformance === 'function') {
-      // 微信运行时 getPerformance() 返回的对象确实包含 now()，但部分基础库类型未声明，故此处断言
-      return (wxGlobal.getPerformance() as unknown as { now(): number }).now()
+    if (this.cachedWxPerformance === undefined) {
+      // wx 经 globalThis 读取，避免直接引用未声明的小程序全局标识符
+      const wxGlobal = (globalThis as { wx?: { getPerformance?: () => unknown } }).wx
+      let resolved: { now(): number } | null = null
+      if (wxGlobal && typeof wxGlobal.getPerformance === 'function') {
+        try {
+          // 部分基础库未声明 now()（甚至返回 undefined），只认「now 为函数」的实例，
+          // 缓存下不可用的对象会让后续每次计时都抛 TypeError
+          const instance = wxGlobal.getPerformance() as { now?: unknown } | null | undefined
+          if (instance && typeof instance.now === 'function') {
+            resolved = instance as { now(): number }
+          }
+        } catch {
+          // 工厂本身抛错（旧基础库占位实现）：本次与后续都走 Date.now 兜底
+          resolved = null
+        }
+      }
+      this.cachedWxPerformance = resolved
     }
+
+    const perf = this.cachedWxPerformance
+    if (perf) {
+      const value = perf.now()
+      if (typeof value === 'number' && Number.isFinite(value)) {
+        return value
+      }
+      // 读数非有限数（NaN/Infinity）说明该实例不可信：撤下缓存降级到 Date.now，
+      // 否则 NaN 会让 duration 恒为 NaN、exceedThreshold 恒 false、预警整体失效。
+      this.cachedWxPerformance = null
+      // 降级同时切换了时钟基准：currentOperations 里在途的 startTime 来自 wx 时钟
+      // （进程相对的小值），与 Date.now()（epoch ms）混算会得到 ~1.7e12 的 duration，
+      // 每条都会被记成「超阈值」并永久污染 getStats()/exportJSON()，pruneStaleOperations
+      // 也会把所有在途条目判为过期。基准变了就是在途测量作废，宁可留下监控缺口
+      // （disposer 走「计时条目缺失」分支告警），也不写入跨基准的脏数据。
+      if (this.currentOperations.size > 0) {
+        console.debug(`[GeomStore][Performance] 时钟基准降级，${this.currentOperations.size} 条在途计时已作废（不可跨基准比较）`)
+        this.currentOperations.clear()
+      }
+    }
+
+    // 旧基础库（无 wx.getPerformance）与降级路径统一用 Date.now（同为毫秒）
     return Date.now()
   }
 
@@ -187,14 +277,20 @@ export class PerformanceMonitor implements PerformanceMonitorInterface {
     const key = `${type}:${operation}#${++this.operationSeq}`
     const startTime = this._getTimestamp()
 
+    // 清扫必须落在 start()：只靠 record() 路径的兜底，在「反复 start、从不 end、
+    // 也不再 record」的调用方（计时被中途丢弃的场景）下永不触发，条目随调用无限累积。
+    // 放在 set 之前，本轮新建的条目不会被自己扫掉；复用刚取到的 startTime 作为「现在」，
+    // 省去一次时钟读取，也保证与条目同一基准
+    this.pruneStaleOperations(startTime)
+
     this.currentOperations.set(key, startTime)
 
     return () => {
       const endTime = this._getTimestamp()
-      const startTime = this.currentOperations.get(key)
+      const recordedStartTime = this.currentOperations.get(key)
 
-      if (startTime !== undefined) {
-        const duration = endTime - startTime
+      if (recordedStartTime !== undefined) {
+        const duration = endTime - recordedStartTime
         this.record({
           operation,
           type,
@@ -204,6 +300,10 @@ export class PerformanceMonitor implements PerformanceMonitorInterface {
         })
 
         this.currentOperations.delete(key)
+      } else {
+        // 条目已被 pruneStaleOperations()/clear() 摘除，或同一 disposer 被调用了两次：
+        // 这条测量会无声消失，调用方无从解释监控数据的缺口。降级为可观测但不抛出
+        console.debug(`[GeomStore][Performance] 计时条目缺失，${type}:${operation} 本次未记录（可能被清理或 end() 重复调用）`)
       }
     }
   }
@@ -211,7 +311,8 @@ export class PerformanceMonitor implements PerformanceMonitorInterface {
   /**
    * 记录指标
    *
-   * 直接记录一个性能指标
+   * 直接记录一个性能指标。入参对象**不会被留存**：缓冲区与 logger 拿到的都是它的副本，
+   * 调用方复用/改写该对象不会篡改已记录的历史指标。
    *
    * @param {PerformanceMetrics} metrics - 性能指标
    *
@@ -231,41 +332,63 @@ export class PerformanceMonitor implements PerformanceMonitorInterface {
     // currentOperations 会随错误次数无限增长。
     // 必须置于采样判断之前——清理是监控器自身的内存维护，与「本条指标是否被采样」
     // 无关；放在采样之后会让 sampleRate 很低（尤其为 0）时清理永不执行，泄漏照旧
-    this.pruneStaleOperations()
+    this.pruneStaleOperations(this._getTimestamp())
 
-    // 采样
-    if (Math.random() > this.options.sampleRate) {
-      return
-    }
+    // 采样只决定是否**留存**这条指标；阈值预警不受采样影响（见下方 logger 调用）
+    // 严格小于：Math.random() ∈ [0,1)，sampleRate=0 时 `<= 0` 仍会在随机数恰好为 0
+    // 的那一次留存指标，而 0 的契约是「一条都不留」；sampleRate=1 时 `< 1` 恒真，
+    // 100% 采样的口径不变
+    const sampled = Math.random() < this.options.sampleRate
 
-    // 添加内存使用信息：写入副本而非调用方传入的对象，
-    // 避免副作用泄漏到调用方（复用/比较该对象的代码受影响）
-    let record = metrics
+    // 内存信息写在副本上：写入副本而非调用方传入的对象，避免副作用泄漏到调用方
+    // （复用/比较该对象的代码受影响）。副本是**无条件**的——若只在 trackMemory 生效时
+    // 才复制，缓冲区与 logger 在其余场合仍持有调用方对象引用，调用方后续改动会改写
+    // 历史指标，getMetrics()/getMetricsByType() 的元素复制就白做了
+    // 局部变量刻意不叫 record：与方法名 record() 同名会遮住方法、读起来像自递归
+    const metricRecord: PerformanceMetrics = { ...metrics }
     if (this.options.trackMemory) {
       try {
-        // memory 为 Chrome 系环境扩展属性，不依赖 DOM lib 的 Performance 类型
-        const perf = performance as { memory?: { usedJSHeapSize?: number } }
-        const memory = perf.memory
+        // 经 globalThis 读取：与 _getTimestamp 读 wx 同一口径。裸 `performance` 标识符在
+        // 没有该全局的基础库里抛 ReferenceError，被下面的 catch 吞掉后 trackMemory
+        // 静默失效且无从分辨；globalThis 取值只会得到 undefined
+        const perf = (globalThis as { performance?: { memory?: { usedJSHeapSize?: number } } }).performance
+        const memory = perf?.memory
         if (memory && memory.usedJSHeapSize !== undefined) {
-          record = { ...metrics, memoryUsage: memory.usedJSHeapSize }
+          metricRecord.memoryUsage = memory.usedJSHeapSize
         }
       } catch {
-        // 内存监控可能不可用
+        // memory 取值本身可能抛错（宿主对象的 getter）：内存监控是可选项，不影响计时
       }
     }
 
     // 记录指标
-    this.metrics.push(record)
+    if (sampled) {
+      this.metrics.push(metricRecord)
 
-    // 限制数量：用 while 而非单次 shift，保证任何时刻都收敛到 maxSize
-    // （setOptions 缩小容量后残留的旧记录不应让本缓冲长期超限）
-    while (this.metrics.length > this.options.maxSize) {
-      this.metrics.shift()
+      // 限制数量：一次性 splice 裁剪（容量已由构造器/setOptions 规范化，
+      // 这里不再需要 while+shift 逐步收敛）
+      this.trimToMaxSize()
     }
 
-    // 日志记录
-    if (metrics.exceedThreshold) {
-      this.options.logger(metrics)
+    // 日志记录：threshold 的契约是「超过此值会触发警告」，若与采样同生灭，
+    // sampleRate<1 时超阈值操作只有被抽到的才预警、sampleRate=0 时预警整体失效——
+    // 而预警正是低采样场景下唯一还该保留的信号。
+    // 传副本 metricRecord 而非入参 metrics：logger 看到的与缓冲区留存的是同一份内容，
+    // 否则启用内存监控时 logger 永远看不到 memoryUsage
+    if (metricRecord.exceedThreshold) {
+      this.options.logger(metricRecord)
+    }
+  }
+
+  /**
+   * 超出容量上限时淘汰最旧条目
+   *
+   * @private
+   */
+  private trimToMaxSize(): void {
+    const overflow = this.metrics.length - this.options.maxSize
+    if (overflow > 0) {
+      this.metrics.splice(0, overflow)
     }
   }
 
@@ -287,15 +410,16 @@ export class PerformanceMonitor implements PerformanceMonitorInterface {
    * ```
    */
   getMetrics(): PerformanceMetrics[] {
-    return [...this.metrics]
+    // 元素逐个复制：数组浅拷贝仍指向内部同一批指标对象，
+    // 调用方改 m.duration 会污染内部数据与后续 getStats()/exportJSON()
+    return this.metrics.map((m) => ({ ...m }))
   }
 
   /** 清理超时未结束的计时条目（调用方遗漏 end() 时的兜底，防止 Map 无限增长） */
-  private pruneStaleOperations(): void {
+  private pruneStaleOperations(now: number): void {
     if (this.currentOperations.size === 0) return
-    // 必须与 start() 写入条目时使用同一时钟基准（_getTimestamp 可能是
-    // performance.now 的进程相对时间，与 Date.now 混用会把新条目误判为超时）
-    const now = this._getTimestamp()
+    // now 必须由调用方传入本轮 _getTimestamp() 的读数：条目按该时钟基准写入，
+    // 与 Date.now 混用会把新条目误判为超时（performance.now 是进程相对的小值）
     for (const [key, startTime] of this.currentOperations) {
       if (now - startTime > PerformanceMonitor.MAX_OPERATION_AGE_MS) {
         this.currentOperations.delete(key)
@@ -378,17 +502,15 @@ export class PerformanceMonitor implements PerformanceMonitorInterface {
    */
   setOptions(options: PerformanceOptions): void {
     Object.assign(this.options, {
-      sampleRate: options.sampleRate ?? this.options.sampleRate,
-      threshold: options.threshold ?? this.options.threshold,
+      sampleRate: PerformanceMonitor.normalizeSampleRate(options.sampleRate, this.options.sampleRate),
+      threshold: PerformanceMonitor.normalizeThreshold(options.threshold, this.options.threshold),
       logger: options.logger ?? this.options.logger,
-      maxSize: options.maxSize ?? this.options.maxSize,
+      maxSize: PerformanceMonitor.normalizeMaxSize(options.maxSize, this.options.maxSize),
       trackMemory: options.trackMemory ?? this.options.trackMemory,
     })
     // 缩小容量时立即裁剪：仅靠 record 路径的逐条淘汰，缓冲区会长期保留
     // 超过新上限的旧记录（每次写入只挤掉一条，长度停在旧上限）
-    while (this.metrics.length > this.options.maxSize) {
-      this.metrics.shift()
-    }
+    this.trimToMaxSize()
   }
 
   /**
@@ -423,7 +545,8 @@ export class PerformanceMonitor implements PerformanceMonitorInterface {
    * ```
    */
   getMetricsByType(type: MetricType): PerformanceMetrics[] {
-    return this.metrics.filter((m) => m.type === type)
+    // 元素副本：filter 只复制数组外壳，返回原对象会让调用方改写内部指标
+    return this.metrics.filter((m) => m.type === type).map((m) => ({ ...m }))
   }
 
   /**
@@ -452,7 +575,8 @@ export class PerformanceMonitor implements PerformanceMonitorInterface {
    * ```
    */
   getMetricsByOperation(operation: string): PerformanceMetrics[] {
-    return this.metrics.filter((m) => m.operation === operation)
+    // 元素副本：filter 只复制数组外壳，返回原对象会让调用方改写内部指标
+    return this.metrics.filter((m) => m.operation === operation).map((m) => ({ ...m }))
   }
 
   /**
@@ -475,20 +599,25 @@ export class PerformanceMonitor implements PerformanceMonitorInterface {
    * ```
    */
   getRecentMetrics(count: number = 10): PerformanceMetrics[] {
-    // slice(-0) === slice(0)，会把「最近 0 条」变成返回全部；
-    // 负数则退化为从头截断（slice(5)），与「最近 N 条」语义相反；NaN 同样返回全部
-    if (!Number.isFinite(count) || count <= 0) {
+    // 先取整再判空：Math.floor(0.5) === 0 而 slice(-0) === slice(0)，
+    // (0,1) 之间的小数会让「最近 0.5 条」返回全部指标
+    const n = Math.floor(count)
+    if (!Number.isFinite(count) || n <= 0) {
       return []
     }
-    return this.metrics.slice(-Math.floor(count))
+    return this.metrics.slice(-n).map((m) => ({ ...m }))
   }
 
   /**
    * 导出为JSON
    *
-   * 将所有指标和统计信息导出为JSON字符串
+   * 将所有指标和统计信息导出为JSON字符串。
    *
-   * @returns {string} JSON字符串
+   * @remarks `options` 段刻意不含 `logger`：它是函数，JSON.stringify 会静默丢键，
+   * 与其让报告形状「恰好」少一个字段，不如显式给出可序列化的那部分——
+   * 消费方据此知道报告里的 options 是配置的投影，而非构造入参的完整回放。
+   *
+   * @returns {string} JSON字符串，含 `metrics`（指标快照）、`stats`、`options`（不含 logger）
    *
    * @example
    * ```typescript
@@ -507,11 +636,15 @@ export class PerformanceMonitor implements PerformanceMonitorInterface {
    * ```
    */
   exportJSON(): string {
+    const { logger: _logger, ...reportOptions } = this.options
+
     return JSON.stringify(
       {
-        metrics: this.metrics,
+        // 与 getMetrics()/getStats() 同源：直接序列化内部数组虽然不被 JSON.stringify 改写，
+        // 但会让导出口径依赖「序列化不写回」这一实现细节
+        metrics: this.getMetrics(),
         stats: this.getStats(),
-        options: this.options,
+        options: reportOptions,
       },
       null,
       2,

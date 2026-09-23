@@ -1,6 +1,20 @@
 # 忽略格式化文件 (根据项目需要自行添加)
+# 注：默认调用（--ignore-path 未指定）时 prettier 会同时读 .gitignore + .prettierignore，
+# dist/ 已由 .gitignore 覆盖；但显式 `--ignore-path .prettierignore` 只读本文件，
+# 此时必须自带 dist，否则会把构建产物当源码格式化。
 .vscode
-# dist
+dist
 miniprogram_npm
 node_modules
-package-lock.json
+pnpm-lock.yaml
+
+# skill 的 API 参考是 `pnpm skill:api` 从 dist/**/*.d.ts 生成的**构建产物**，不进入格式门禁。
+# 理由不是「懒得格式化」，而是格式化会**改动它的内容**：实测 prettier 会把该产物头部的
+# `> **… 从 `dist/**/*.d.ts` 生成 …**` 里的星号转义成 `\*\*`（同一段文字放进独立块引用则不转义，
+# 属 prettier md printer 在多行块引用 + printWidth 边界下的行为），并把 ```ts 围栏抬成 ````ts；
+# 配合 .prettierrc 的 semi:false 还会删掉 `.d.ts` 声明行末尾的分号（实测某文件 20 行 → 1 行）。
+# 这份文件的契约恰恰是「内容全部取自类型声明原文」，所以正确做法是别对产物跑源码格式化器，
+# 由 `pnpm skill:api` 独占生成。它的正确性由「与 .d.ts 一致」保证，不由排版门禁保证。
+# 手写文档（README / CONTRIBUTING / docs/** / SKILL.md / references/*-semantics.md）都在门禁内，
+# 且实测 prettier 对它们是幂等且不改动内容的（ts 代码块在 auto 模式下报 unchanged）。
+.codebuddy/skills/geomstore/references/api/

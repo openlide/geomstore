@@ -5,7 +5,7 @@
 
 import { ActionManager, GetterManager } from '@/core/store/ActionManager.js'
 import { HookSystem } from '@/core/hooks/index.js'
-import type { State, ActionContextBase, Actions, Getters } from '@/types/store.js'
+import type { ActionContextBase, Actions, Getters } from '@/types/store.js'
 
 describe('ActionManager', () => {
   const createActionManager = () => {
@@ -71,7 +71,7 @@ describe('ActionManager', () => {
       const notifyListeners = jest.fn()
       const manager = new ActionManager<{ count: number }, { ping: () => Promise<string> }>({
         storeName: 'am-settle-in-batch',
-        withInternalAccess: <T,>(fn: () => T): T => fn(),
+        withInternalAccess: <T>(fn: () => T): T => fn(),
         setDispatching: () => {},
         notifyListeners,
         hooks: new HookSystem(),
@@ -90,7 +90,7 @@ describe('ActionManager', () => {
       const notifyListeners = jest.fn()
       const manager = new ActionManager<{ count: number }, { ping: () => Promise<string> }>({
         storeName: 'am-settle-only-change',
-        withInternalAccess: <T,>(fn: () => T): T => fn(),
+        withInternalAccess: <T>(fn: () => T): T => fn(),
         setDispatching: () => {},
         notifyListeners,
         hooks: new HookSystem(),
@@ -99,20 +99,20 @@ describe('ActionManager', () => {
         getMutationCount: () => 5,
         getLastNotifiedMutationCount: () => 1,
         isInBatch: () => false,
-        })
-        manager.initialize({ ping: async () => 'pong' }, createContext())
+      })
+      manager.initialize({ ping: async () => 'pong' }, createContext())
 
-        await manager.execute('ping')
-        await new Promise((resolve) => setTimeout(resolve, 0))
+      await manager.execute('ping')
+      await new Promise((resolve) => setTimeout(resolve, 0))
 
-        expect(notifyListeners).toHaveBeenCalled()
-        })
+      expect(notifyListeners).toHaveBeenCalled()
+    })
 
-        it('onlyOnChange 未提供「已通知基线」提供者时按 -1 兜底比较', async () => {
-        const notifyListeners = jest.fn()
-        const manager = new ActionManager<{ count: number }, { ping: () => Promise<string> }>({
+    it('onlyOnChange 未提供「已通知基线」提供者时按 -1 兜底比较', async () => {
+      const notifyListeners = jest.fn()
+      const manager = new ActionManager<{ count: number }, { ping: () => Promise<string> }>({
         storeName: 'am-settle-baseline-fallback',
-        withInternalAccess: <T,>(fn: () => T): T => fn(),
+        withInternalAccess: <T>(fn: () => T): T => fn(),
         setDispatching: () => {},
         notifyListeners,
         hooks: new HookSystem(),
@@ -120,27 +120,41 @@ describe('ActionManager', () => {
         getMutationCount: () => 5,
         // 不提供 getLastNotifiedMutationCount：基线兜底为 -1，任何正计数都应补发
         isInBatch: () => false,
-        })
-        manager.initialize({ ping: async () => 'pong' }, createContext())
+      })
+      manager.initialize({ ping: async () => 'pong' }, createContext())
 
-        await manager.execute('ping')
-        await new Promise((resolve) => setTimeout(resolve, 0))
+      await manager.execute('ping')
+      await new Promise((resolve) => setTimeout(resolve, 0))
 
-        expect(notifyListeners).toHaveBeenCalled()
-        })
-        })
+      expect(notifyListeners).toHaveBeenCalled()
+    })
+  })
 
   describe('initialize', () => {
-    it('AM-OPT-001: 未提供 getMutationCount 时默认计数函数安全生效', () => {
-      const hooks = new HookSystem()
+    it('AM-OPT-001: 开启 onlyOnChange 但未提供 getMutationCount 时构造即失败', () => {
+      // R5-109：此前退化成 `() => 0`，_shouldNotifyNow 的 `0 > 0` 恒为 false，
+      // 每次 dispatch 的通知都被静默丢弃。误用点在构造期，就该在构造期报出来
+      expect(
+        () =>
+          new ActionManager<{ count: number }, { ping: () => string }>({
+            storeName: 'opt-store',
+            withInternalAccess: <T>(fn: () => T): T => fn(),
+            setDispatching: () => {},
+            notifyListeners: jest.fn(),
+            hooks: new HookSystem(),
+            notifyOnlyOnChange: true,
+          }),
+      ).toThrow(/getMutationCount/)
+    })
+
+    it('AM-OPT-001b: 未开启 onlyOnChange 时缺省 getMutationCount 仍按默认计数运行', () => {
+      const notifyListeners = jest.fn()
       const manager = new ActionManager<{ count: number }, { ping: () => string }>({
         storeName: 'opt-store',
         withInternalAccess: <T>(fn: () => T): T => fn(),
         setDispatching: () => {},
-        notifyListeners: jest.fn(),
-        hooks,
-        // 开启 onlyOnChange 但不提供 getMutationCount，验证默认 () => 0 分支
-        notifyOnlyOnChange: true,
+        notifyListeners,
+        hooks: new HookSystem(),
       })
 
       const context: ActionContextBase<{ count: number }> = {
@@ -157,8 +171,9 @@ describe('ActionManager', () => {
 
       manager.initialize({ ping: () => 'pong' }, context)
 
-      // 默认计数恒为 0：未变更 → 不通知，且不抛错
+      // 默认模式下不看计数：无条件通知，`() => 0` 兜底不参与判定
       expect(manager.execute('ping')).toBe('pong')
+      expect(notifyListeners).toHaveBeenCalledTimes(1)
     })
 
     it('应该正确初始化空 actions', () => {
@@ -308,7 +323,7 @@ describe('ActionManager', () => {
   })
 
   describe('Proxy 上下文边界', () => {
-    it('访问 Symbol 属性应返回 undefined', () => {
+    it('访问上下文上不存在的 Symbol 属性应返回 undefined', () => {
       const { manager } = createActionManager()
       const context = createContextBase(jest.fn())
 
@@ -316,7 +331,7 @@ describe('ActionManager', () => {
 
       const actions = {
         testSymbol: function (this: any) {
-          // 通过 this 访问 symbol 属性，应触发 Proxy 的 symbol 分支返回 undefined
+          // symbol 键透传给 target：target 上没有该 symbol，故仍为 undefined
           return this[sym]
         },
       }
@@ -376,7 +391,7 @@ describe('GetterManager', () => {
 
   describe('execute', () => {
     it('应该正确执行 getter', () => {
-      const { manager, state } = createGetterManager()
+      const { manager } = createGetterManager()
 
       manager.initialize({
         double: (s) => s.count * 2,

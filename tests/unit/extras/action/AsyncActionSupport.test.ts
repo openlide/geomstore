@@ -627,15 +627,25 @@ describe('ActionExecutor', () => {
         },
       }
 
+      // 三次执行的 rejection 显式收集起来：既让「失败那次确实把错误透传给调用方」
+      // 成为可断言的事实，也避免空 catch 静默吞掉异常
+      const rejections: unknown[] = []
+
       try {
         await executor.execute(actions, 'mixedAction', false)
-      } catch (e) {}
+      } catch (e) {
+        rejections.push(e)
+      }
       try {
         await executor.execute(actions, 'mixedAction', true)
-      } catch (e) {}
+      } catch (e) {
+        rejections.push(e)
+      }
       try {
         await executor.execute(actions, 'mixedAction', false)
-      } catch (e) {}
+      } catch (e) {
+        rejections.push(e)
+      }
 
       const stats = executor.getStats('mixedAction')
 
@@ -643,6 +653,10 @@ describe('ActionExecutor', () => {
       expect(stats.success).toBe(2)
       expect(stats.failure).toBe(1)
       expect(stats.successRate).toBeCloseTo(66.67, 1)
+      // 只有 shouldFail=true 的那次应把原始 Error 抛出，两次成功执行不产生 rejection
+      expect(rejections).toHaveLength(1)
+      expect(rejections[0]).toBeInstanceOf(Error)
+      expect((rejections[0] as Error).message).toBe('Fail')
     })
 
     test('未执行的action应该返回默认统计', () => {

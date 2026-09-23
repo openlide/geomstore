@@ -1,20 +1,37 @@
-# @geomstore/benchmark
+# @openlide/geomstore-benchmark
 
 GeomStore 基准测试工具包 - 提供全面的性能基准测试功能。
 
-## 安装
+## 定位与用法
+
+**仓库内部工具，不发布到 registry**（`package.json` 里 `private: true`，无发布元数据）。
+本包只依赖自己 `src/types/store.ts` 声明的抽象 `BenchmarkStore` 适配契约，
+不 import `@openlide/geomstore`，因此可以被用来跑任意实现了该契约的 store。
+
+在本仓库内直接引用源码即可（`@openlide/geomstore` 也按包名从根包解析）：
+
+```typescript
+import { createStore } from '@openlide/geomstore'
+import { BenchmarkRunner, createBenchmarkAdapter } from './packages/benchmark/src/index.js'
+```
+
+跑冒烟（覆盖 `runAll()` 与 markdown/html/json 三种报告格式，失败时退出码非 0）：
 
 ```bash
-npm install @geomstore/benchmark geomstore
+npx tsc -p packages/benchmark/tsconfig.json && node packages/benchmark/dist/smoke.js
+# 等价写法：cd packages/benchmark && npm run bench
 ```
+
+CI 的 `verify-static` job 里就是这个命令——本包**不在 pnpm 工作区内**，
+它不被 `pnpm install` 链接，因此编译用的 `typescript` 借的是根包装的版本（见下）。
 
 ## 使用方式
 
 ### 基本用法
 
 ```typescript
-import { createStore } from 'geomstore'
-import { BenchmarkRunner, createBenchmarkAdapter } from '@geomstore/benchmark'
+import { createStore } from '@openlide/geomstore'
+import { BenchmarkRunner, createBenchmarkAdapter } from '@openlide/geomstore-benchmark'
 
 // 创建 Store 工厂函数
 const createStoreForBenchmark = (config) => {
@@ -38,7 +55,7 @@ console.log(benchmarkReporter.generate(report, 'markdown'))
 ### 自定义场景
 
 ```typescript
-import { BenchmarkRunner, defaultBenchmarkConfig, mergeConfig } from '@geomstore/benchmark'
+import { BenchmarkRunner, defaultBenchmarkConfig, mergeConfig } from '@openlide/geomstore-benchmark'
 
 const customConfig = mergeConfig(defaultBenchmarkConfig, {
   scenarios: [
@@ -59,7 +76,7 @@ const runner = new BenchmarkRunner(createStoreForBenchmark, customConfig)
 ### 使用工具函数
 
 ```typescript
-import { benchmarkUtils, ResultBuilder } from '@geomstore/benchmark'
+import { benchmarkUtils, ResultBuilder } from '@openlide/geomstore-benchmark'
 
 // 测量执行时间
 const { result, duration } = benchmarkUtils.measureTime(() => {
@@ -113,7 +130,7 @@ const benchmarkResult = ResultBuilder.createResult({
 - `html` - HTML 格式
 
 ```typescript
-import { benchmarkReporter } from '@geomstore/benchmark'
+import { benchmarkReporter } from '@openlide/geomstore-benchmark'
 
 const md = benchmarkReporter.generate(report, 'markdown')
 const json = benchmarkReporter.generate(report, 'json')

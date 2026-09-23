@@ -53,6 +53,8 @@ describe('extras 子入口导出可达性', () => {
   it('extras 总入口：聚合全部可选能力', () => {
     expect(extrasIndex.loggerPlugin).toBeDefined()
     expect(extrasIndex.persistencePlugin).toBeDefined()
+    // 内置微信存储后端：实现已迁到 src/plugins/WxStorageBackend.ts，公开面仍经本入口给出
+    expect(extrasIndex.WxStorageBackend).toBeDefined()
     expect(extrasIndex.analyzerPlugin).toBeDefined()
     expect(extrasIndex.timeTravelPlugin).toBeDefined()
     expect(extrasIndex.PerformanceMonitor).toBeDefined()

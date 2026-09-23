@@ -199,11 +199,11 @@ describe('Action Decorators', () => {
       expect(result).toBe(42)
     })
 
-    it('DECORATOR-DB-005: 当 runArgs 为空数组时应该使用 args 作为 fallback', async () => {
+    it('DECORATOR-DB-005: 无参数调用时应以空参数数组执行原方法', async () => {
       jest.useFakeTimers()
 
-      // 构造一个场景：pendingArgs 被清空后（空数组），fallback 到原始 args
-      // 通过直接操作内部逻辑来触发 runArgs.length 为 falsy 的分支
+      // 原实现的 `runArgs.length ? runArgs : args` 是死分支（pendingArgs 与闭包 args
+      // 恒为同一数组），断言的是「空参数原样传给原方法」这一真实语义
       class EmptyArgsClass {
         @withDebounce(50)
         async method(...args: unknown[]) {
@@ -1076,7 +1076,7 @@ describe('Action Decorators', () => {
         callCount = 0
 
         @withCache({ ttl: 5000 })
-        async lookup(value: unknown) {
+        async lookup(_value: unknown) {
           this.callCount++
           return this.callCount
         }
@@ -1099,7 +1099,7 @@ describe('Action Decorators', () => {
         callCount = 0
 
         @withCache({ ttl: 5000 })
-        async lookup(value: unknown) {
+        async lookup(_value: unknown) {
           this.callCount++
           return this.callCount
         }
@@ -1123,7 +1123,7 @@ describe('Action Decorators', () => {
         callCount = 0
 
         @withCache({ ttl: 5000 })
-        async lookup(value: unknown) {
+        async lookup(_value: unknown) {
           this.callCount++
           return this.callCount
         }
@@ -1151,7 +1151,7 @@ describe('Action Decorators', () => {
         callCount = 0
 
         @withCache({ ttl: 5000 })
-        async lookup(value: unknown) {
+        async lookup(_value: unknown) {
           this.callCount++
           return this.callCount
         }
@@ -1179,7 +1179,7 @@ describe('Action Decorators', () => {
         callCount = 0
 
         @withCache({ ttl: 5000 })
-        async lookup(value: unknown) {
+        async lookup(_value: unknown) {
           this.callCount++
           return this.callCount
         }
@@ -1203,7 +1203,7 @@ describe('Action Decorators', () => {
         callCount = 0
 
         @withCache({ ttl: 5000 })
-        async lookup(value: unknown) {
+        async lookup(_value: unknown) {
           this.callCount++
           return this.callCount
         }
@@ -1231,7 +1231,7 @@ describe('Action Decorators', () => {
         callCount = 0
 
         @withCache({ ttl: 5000 })
-        async lookup(value: unknown) {
+        async lookup(_value: unknown) {
           this.callCount++
           return this.callCount
         }
@@ -1261,7 +1261,7 @@ describe('Action Decorators', () => {
         callCount = 0
 
         @withCache({ ttl: 5000 })
-        async lookup(value: unknown) {
+        async lookup(_value: unknown) {
           this.callCount++
           return this.callCount
         }
@@ -1285,7 +1285,7 @@ describe('Action Decorators', () => {
         callCount = 0
 
         @withCache({ ttl: 5000 })
-        async lookup(a: unknown, b: unknown) {
+        async lookup(_a: unknown, _b: unknown) {
           this.callCount++
           return this.callCount
         }
@@ -1322,7 +1322,7 @@ describe('Action Decorators', () => {
         callCount = 0
 
         @withCache({ ttl: 5000 })
-        async lookup(value: unknown) {
+        async lookup(_value: unknown) {
           this.callCount++
           return this.callCount
         }
@@ -1359,7 +1359,7 @@ describe('Action Decorators', () => {
         callCount = 0
 
         @withCache({ ttl: 1000 })
-        async getValue(arg: unknown) {
+        async getValue(_arg: unknown) {
           this.callCount++
           return `value-${this.callCount}`
         }
@@ -1377,7 +1377,7 @@ describe('Action Decorators', () => {
       expect(instance.callCount).toBe(2)
     })
 
-    it('DECORATOR-CACHE-016: 写入新条目时回收已过期条目', async () => {
+    it('DECORATOR-CACHE-016: 过期条目在摊销的回收窗口内被清除', async () => {
       jest.useFakeTimers()
       const deleteSpy = jest.spyOn(Map.prototype, 'delete')
 
@@ -1394,9 +1394,12 @@ describe('Action Decorators', () => {
       const instance = new ExpiringClass()
       await instance.getValue('a')
       jest.advanceTimersByTime(1500)
-      await instance.getValue('b')
 
-      // 写入 b 时循环回收已过期的 a，避免长生命周期宿主上 Map 持续累积
+      // R5-168：回收按写入次数摊销（异步方法每次调用两次写入：占位 + 值），跨过步长后
+      // 已过期的 a 必须被清掉——否则长生命周期宿主上的 Map 只增不减
+      for (let i = 0; i < 20; i++) {
+        await instance.getValue(`k${i}`)
+      }
       expect(deleteSpy).toHaveBeenCalled()
       jest.useRealTimers()
     })
@@ -2085,7 +2088,7 @@ describe('withCache symbolIds 容量上限', () => {
     class Host {
       calls = 0
       @withCache({ ttl: 60000 })
-      fetch(token: symbol): number {
+      fetch(_token: symbol): number {
         this.calls++
         return this.calls
       }

@@ -5,7 +5,6 @@
 
 import { StoreCacheManager } from '@/core/store/StoreCache.js'
 import { LRUCache } from '@/core/cache/LRUCache.js'
-import type { State } from '@/types/store.js'
 
 describe('StoreCacheManager', () => {
   const createCacheManager = (ttl = 0) => {
@@ -178,7 +177,6 @@ describe('StoreCacheManager', () => {
       manager.set('count', 5)
       expect(manager.get('count', () => 0)).toBe(0)
     })
-
   })
 
   describe('invalidate', () => {
@@ -211,22 +209,6 @@ describe('StoreCacheManager', () => {
       manager.get('name', nameGetter)
       expect(countGetter).toHaveBeenCalled()
       expect(nameGetter).toHaveBeenCalled()
-    })
-  })
-
-  describe('clearOldState', () => {
-    it('应该清理旧状态的缓存', () => {
-      const manager = createCacheManager()
-      const state = { count: 1, name: 'test' }
-
-      manager.enable(undefined, (key) => state[key], ['count', 'name'])
-
-      manager.clearOldState(['count'])
-
-      // count 缓存被清除
-      const countGetter = jest.fn(() => state.count)
-      manager.get('count', countGetter)
-      expect(countGetter).toHaveBeenCalled()
     })
   })
 
@@ -406,24 +388,111 @@ describe('StoreCacheManager', () => {
 })
 
 // ==================== #15 时间戳清理回归 ====================
-describe('StoreCacheManager clearOldState 时间戳清理', () => {
+// 原用例直接调 clearOldState（该方法已删：src 内无调用方，$replaceState 走 invalidate()）。
+// 这里改由仍然在线的公开入口复验同一条不变量：_cache 与 _timestamps 必须同步收缩
+describe('StoreCacheManager 时间戳同步清理', () => {
   const createCacheManager = (ttl = 0) =>
     new StoreCacheManager<{ count: number; name: string }>({
       cache: new LRUCache<'count' | 'name', string | number>({ capacity: 100, enableStats: true }),
       ttl,
     })
 
-  it('clearOldState 应同步删除对应时间戳条目，避免陈旧条目累积', () => {
+  const timestampsOf = (manager: StoreCacheManager<{ count: number; name: string }>) => (manager as unknown as { _timestamps: Map<string, number> })._timestamps
+
+  it('invalidate(key) 同步删除缓存条目与时间戳', () => {
     const manager = createCacheManager(1000)
     const state = { count: 1, name: 'test' }
 
     manager.enable(undefined, (key) => state[key], ['count', 'name'])
     manager.get('count', () => state.count)
     manager.get('name', () => state.name)
-    expect((manager as unknown as { _timestamps: Map<string, number> })._timestamps.size).toBe(2)
+    expect(timestampsOf(manager).size).toBe(2)
 
-    manager.clearOldState(['count'])
+    manager.invalidate('count')
 
-    expect((manager as unknown as { _timestamps: Map<string, number> })._timestamps.has('count')).toBe(false)
+    expect(timestampsOf(manager).has('count')).toBe(false)
+    expect(manager.getStats().size).toBe(1)
+  })
+
+  it('写入 undefined 值时同步删除时间戳（不留滞留条目）', () => {
+    const manager = createCacheManager(1000)
+    const state = { count: 1, name: 'test' }
+
+    manager.enable(undefined, (key) => state[key], ['count', 'name'])
+    expect(timestampsOf(manager).size).toBe(2)
+
+    manager.refreshFromState((key) => (key === 'count' ? undefined : state[key]) as string | number, ['count', 'name'])
+
+    expect(timestampsOf(manager).has('count')).toBe(false)
+    expect(timestampsOf(manager).has('name')).toBe(true)
+  })
+
+  it('disable() 与 invalidate() 清空两表，不滞留时间戳', () => {
+    const disabled = createCacheManager(1000)
+    disabled.enable(undefined, (key) => ({ count: 1, name: 'test' })[key], ['count', 'name'])
+    disabled.disable()
+    expect(timestampsOf(disabled).size).toBe(0)
+
+    const cleared = createCacheManager(1000)
+    cleared.enable(undefined, (key) => ({ count: 1, name: 'test' })[key], ['count', 'name'])
+    cleared.invalidate()
+    expect(timestampsOf(cleared).size).toBe(0)
+  })
+})
+
+// ==================== R5-111：非法 ttl 归一 ====================
+describe('StoreCacheManager ttl 有效性守卫', () => {
+  const makeManager = (ttl: number) => {
+    const cache = new LRUCache<'count', number>({ capacity: 100, enableStats: true })
+    return new StoreCacheManager<{ count: number }>({ cache, ttl })
+  }
+  const ttlOf = (manager: StoreCacheManager<{ count: number }>) => (manager as unknown as { _ttl: number })._ttl
+
+  it.each([
+    ['NaN', NaN],
+    ['Infinity', Infinity],
+    ['-Infinity', -Infinity],
+    ['负数', -1000],
+  ])('%s 归一为 0（不过期）并留开发期告警', (_label, ttl) => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation()
+
+    const manager = makeManager(ttl)
+
+    expect(ttlOf(manager)).toBe(0)
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('cacheConfig.ttl'))
+    warnSpy.mockRestore()
+  })
+
+  it('归一为不过期后缓存仍能命中（不因 NaN 让 ttl 判定静默失效）', () => {
+    const manager = makeManager(NaN)
+    let value = 1
+    manager.enable(undefined, () => value, ['count'])
+
+    value = 2
+    const getter = jest.fn(() => value)
+    expect(manager.get('count', getter)).toBe(1)
+    expect(getter).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['0', 0],
+    ['有限正数', 1000],
+  ])('合法 ttl=%s 原样保留且不告警', (_label, ttl) => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation()
+
+    expect(ttlOf(makeManager(ttl))).toBe(ttl)
+    expect(warnSpy).not.toHaveBeenCalled()
+    warnSpy.mockRestore()
+  })
+
+  it('不传 ttl 时保持 0 且不告警', () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation()
+    const cache = new LRUCache<'count', number>({ capacity: 100, enableStats: true })
+
+    const manager = new StoreCacheManager<{ count: number }>({ cache })
+
+    expect(ttlOf(manager)).toBe(0)
+    expect(warnSpy).not.toHaveBeenCalled()
+    warnSpy.mockRestore()
   })
 })

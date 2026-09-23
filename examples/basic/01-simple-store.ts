@@ -44,7 +44,10 @@ const unsubscribe = counterStore.subscribe((state) => {
   console.log('状态变更: count =', state.count)
 })
 
-// 第二个参数可声明只读订阅：只读订阅者存在时通知路径可做零拷贝优化
+// 第二个参数可声明只读订阅。零拷贝的门槛是「一个可写订阅者都没有」——
+// 判据是 needsClone = (显式配了 notify.clone) || hasWritableListeners()，
+// 不是「存在只读订阅者」：上面注册的第一个订阅是可写的，所以紧接着 40 这次写入
+// 仍然整树深拷贝。等 unsubscribe() 之后（50 这次）只剩只读订阅者，才走零拷贝路径
 const unsubscribeReadOnly = counterStore.subscribe((state) => console.log('只读订阅:', state.message), {
   readOnly: true,
 })

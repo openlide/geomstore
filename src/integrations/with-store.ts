@@ -109,6 +109,10 @@ type ComponentInstance = ComponentOptions & {
  * - mapState / mapGetters / mapActions 的键与值拼错时会在编译期报错
  * - 装饰器返回类型重写所有方法的 this 为 PageThis，使方法内 this.data / this.xxx 自动获得精确类型
  *
+ * 订阅生命周期：绑定按页面实例登记在 `this.__geomUnbinds`，onUnload 统一清理；
+ * onLoad 被重复调用时先清理旧订阅再重绑，绑定阶段抛错则回滚本次订阅并把错误抛回框架
+ * （不转发用户 onLoad：映射未就绪的实例上跑用户逻辑只会产出第二个更难归因的错误）
+ *
  * @template S - 状态类型
  * @template A - Actions 类型
  * @template G - Getters 类型
@@ -145,6 +149,9 @@ export function withPageStore<S extends State, A extends Actions, G extends Gett
 ) {
   // 解析映射与注入配置（与 Component/App 集成共用 resolveMappings）
   const { stateMapping, gettersMapping, actionsMapping, injectMapping } = resolveMappings(options)
+  // resolveMappings 恒返回对象，只判真值等于没有判定：没有任何注入条目时不跑注入、
+  // 也不安装 onShow 包装器
+  const hasInjectMapping = Object.keys(injectMapping).length > 0
 
   return function <C extends PageOptions>(
     // WithPageThis 是同态映射类型，作为入参类型为 C 提供推断位点：
@@ -159,48 +166,69 @@ export function withPageStore<S extends State, A extends Actions, G extends Gett
     const originalOnLoad = enhancedConfig.onLoad
     enhancedConfig.onLoad = function (this: PageInstance, ...args: unknown[]) {
       // 订阅清理列表挂在页面实例上：同一 Page 配置可能存在多个页面实例
-      // （如页面栈中的同名页面），实例级存储避免互相清除订阅
-      if (!this.__geomUnbinds) {
+      // （如页面栈中的同名页面），实例级存储避免互相清除订阅。
+      // 同一实例重入 onLoad 时先清理旧订阅（cleanupBindings 会清空同一个数组、引用不变），
+      // 否则旧订阅会一直叠加到 onUnload，每次通知都重复 setData
+      if (this.__geomUnbinds) {
+        cleanupBindings(this.__geomUnbinds)
+      } else {
         this.__geomUnbinds = []
       }
       const unbindFunctions = this.__geomUnbinds
 
       // 辅助函数：订阅 store 变化（共用 createStoreSubscriber）
+      // 绑定/注入的可复用部分（映射解析、订阅、脏检查、自动注入、批量清理）已全部
+      // 下沉到 integrations/utils（resolveMappings / createStoreSubscriber /
+      // bindMappings / performAutoInject / cleanupBindings）。这里保留的只是各入口的
+      // 接线差异：宿主写入方式（setData vs 写 globalData）、变更键判定
+      // 是否可用（state 传 isStateKeyDirty、getters 不传）、退订登记时机
+      // （页面/组件按实例 __geomUnbinds 并在 onUnload/detached 清理，App 只在重复
+      // onLaunch 前清理）、Component 的 action 走 methods 合并而非 bindActions
+      // ——再抽一层只会把这些差异塞进回调参数里
       const subscribeStore = createStoreSubscriber(store)
 
-      // 绑定 state
-      if (options.mapState) {
-        const unbindState = bindMappings(
-          this.data,
-          stateMapping,
-          (key) => store.state[key as keyof S],
-          (updates) => this.setData(updates),
-          subscribeStore,
-          (storeKey) => store.isStateKeyDirty(storeKey),
-        )
-        unbindFunctions.push(...unbindState)
-      }
+      try {
+        // 绑定 state
+        if (options.mapState) {
+          const unbindState = bindMappings(
+            this.data,
+            stateMapping,
+            (key) => store.state[key as keyof S],
+            (updates) => this.setData(updates),
+            subscribeStore,
+            (storeKey) => store.isStateKeyDirty(storeKey),
+          )
+          unbindFunctions.push(...unbindState)
+        }
 
-      // 绑定 getters
-      if (options.mapGetters) {
-        const unbindGetters = bindMappings(
-          this.data,
-          gettersMapping,
-          (key) => store.getter(key),
-          (updates) => this.setData(updates),
-          subscribeStore,
-        )
-        unbindFunctions.push(...unbindGetters)
-      }
+        // 绑定 getters
+        if (options.mapGetters) {
+          const unbindGetters = bindMappings(
+            this.data,
+            gettersMapping,
+            (key) => store.getter(key),
+            (updates) => this.setData(updates),
+            subscribeStore,
+          )
+          unbindFunctions.push(...unbindGetters)
+        }
 
-      // 绑定 actions（复用 integrations/utils 的 bindActions，与 App 集成同一实现）
-      if (options.mapActions) {
-        unbindFunctions.push(...bindActions(this, actionsMapping, store))
-      }
+        // 绑定 actions（复用 integrations/utils 的 bindActions，与 App 集成同一实现）
+        if (options.mapActions) {
+          unbindFunctions.push(...bindActions(this, actionsMapping, store))
+        }
 
-      // 自动注入（使用getCached）
-      if (options.autoInject && injectMapping) {
-        performAutoInject(this, injectMapping, store, (updates: Record<string, unknown>) => this.setData(updates))
+        // 自动注入（使用getCached）
+        if (options.autoInject && hasInjectMapping) {
+          performAutoInject(this, injectMapping, store, (updates: Record<string, unknown>) => this.setData(updates))
+        }
+      } catch (error) {
+        // 绑定中途抛错：已登记的订阅必须回滚，否则半初始化的页面会带着仍在推送的订阅
+        // 活到 onUnload。错误原样抛回框架（由宿主归因），且不转发用户 onLoad——
+        // 映射尚未就绪的实例上跑用户逻辑只会产出第二个更难归因的错误
+        cleanupBindings(unbindFunctions)
+        console.warn('[withPageStore] 绑定映射失败，已回滚本次登记的订阅', error)
+        throw error
       }
 
       // 调用原始 onLoad
@@ -208,12 +236,16 @@ export function withPageStore<S extends State, A extends Actions, G extends Gett
     }
 
     // 如果启用 autoUpdateOnShow，扩展 onShow
-    if (options.autoUpdateOnShow && options.autoInject) {
+    if (options.autoUpdateOnShow && options.autoInject && hasInjectMapping) {
       const originalOnShow = enhancedConfig.onShow
       enhancedConfig.onShow = function (this: PageInstance, ...args: unknown[]) {
-        performAutoInject(this, injectMapping, store, (updates: Record<string, unknown>) => this.setData(updates))
-        if (typeof originalOnShow === 'function') {
-          originalOnShow.call(this, ...args)
+        try {
+          performAutoInject(this, injectMapping, store, (updates: Record<string, unknown>) => this.setData(updates))
+        } finally {
+          // 注入抛错不得吞掉用户的 onShow（与 onUnload 的 try/finally 同口径）
+          if (typeof originalOnShow === 'function') {
+            originalOnShow.call(this, ...args)
+          }
         }
       }
     }
@@ -245,6 +277,12 @@ export function withPageStore<S extends State, A extends Actions, G extends Gett
  * `O` 保留 options 字面量类型用于精确推导；
  * mapState / mapGetters / mapActions 的键与值拼错时编译期报错；
  * 装饰器返回类型重写所有方法的 this 为 ComponentThis，使方法内 this.data / this.xxx 自动获得精确类型
+ *
+ * 订阅生命周期与绑定失败的回滚口径同 withPageStore：按组件实例登记 `__geomUnbinds`、
+ * detached 统一清理，attached 重入时先清理旧订阅
+ *
+ * action 绑定与组件自身 `methods` 同名时同 Page/App 侧 bindActions：一条覆盖告警 +
+ * detached 恢复原值（映射的 action 在绑定期间始终优先，与 Page 一致）
  *
  * @template S - 状态类型
  * @template A - Actions 类型
@@ -286,15 +324,23 @@ export function withComponentStore<S extends State, A extends Actions, G extends
   ComponentConfig: WithComponentThis<C, ComponentThis<S, A, G, O, ComponentOwnMethods<C>>>,
 ) => ComponentConfig<S, A, G, O, ComponentOwnMethods<C>> &
   Omit<C, 'data' | 'methods'> & { data: (C extends { data: infer D } ? D : object) & ExtractPageData<S, O, G> } {
-  // 解析映射与注入配置（与 Component/App 集成共用 resolveMappings）
+  // 解析映射与注入配置（与 Page/App 集成共用 resolveMappings）
   const { stateMapping, gettersMapping, actionsMapping, injectMapping } = resolveMappings(options)
+  // resolveMappings 恒返回对象，只判真值等于没有判定：没有任何注入条目时不跑注入、
+  // 也不安装 pageLifetimes.show 包装器
+  const hasInjectMapping = Object.keys(injectMapping).length > 0
 
   // 创建绑定后的 actions（作为 methods）
   const boundMethods: Record<string, (...args: unknown[]) => unknown> = {}
   Object.entries(actionsMapping).forEach(([localName, actionName]) => {
-    boundMethods[localName] = (...args: unknown[]) => {
-      return store.dispatch(actionName, ...args)
-    }
+    // 按自有属性写入：`boundMethods['__proto__'] = fn` 会命中 Object.prototype 的 setter，
+    // 该 action 既不报错也不会出现在 methods 里（与 integrations/utils 的 setOwnEntry 同口径）
+    Object.defineProperty(boundMethods, localName, {
+      value: (...args: unknown[]) => store.dispatch(actionName, ...args),
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    })
   })
 
   return function <C extends ComponentOptions>(
@@ -306,6 +352,26 @@ export function withComponentStore<S extends State, A extends Actions, G extends
     Omit<C, 'data' | 'methods'> & { data: (C extends { data: infer D } ? D : object) & ExtractPageData<S, O, G> } {
     const enhancedConfig: ComponentOptions = { ...ComponentConfig }
 
+    // action 绑定的本地名与组件自身 methods 同名时的遮蔽表：键 → 用户原方法。
+    // 与 Page/App 侧的 bindActions 同口径（utils.ts 里那份会「告警 + 解绑时按原描述符
+    // 恢复」）：Component 的 action 走下面的 methods 合并，boundMethods 排在后，
+    // 用户同名方法既没有提示也永不回来（合并发生在配置级，重新 attached 照样被顶掉），
+    // 同一库对「action 绑定遮蔽宿主成员」已裁定为需要告警的事件，这里两个保障都缺。
+    // 判定在配置级做一次（每个组件配置一份表，实例共用），告警随之只刷一次
+    const shadowedMethods = new Map<string, unknown>()
+    // 取 enhancedConfig.methods 而非 ComponentConfig.methods：前者是同一份引用
+    // （enhancedConfig 为浅拷贝），且类型已由 ComponentOptions 收敛，不必依赖 C 上
+    // 是否存在 methods 键。判定必须发生在下面的 methods 合并之前
+    const configMethods = enhancedConfig.methods
+    if (configMethods) {
+      for (const [localName, actionName] of Object.entries(actionsMapping)) {
+        if (Object.prototype.hasOwnProperty.call(configMethods, localName)) {
+          shadowedMethods.set(localName, configMethods[localName])
+          console.warn(`[withComponentStore] 组件已有同名方法 "${localName}"，将被 action "${actionName}" 覆盖，detached 时恢复原值`)
+        }
+      }
+    }
+
     // 扩展 lifetimes
     // 仅从 lifetimes 捕获原始 attached/detached：基础库 3.15.0+ 仅支持 lifetimes 写法，
     // 已移除对微信旧式顶层 attached/detached 的兼容
@@ -316,50 +382,63 @@ export function withComponentStore<S extends State, A extends Actions, G extends
       ...originalLifetimes,
       attached: function (this: ComponentInstance) {
         // 订阅清理列表挂在组件实例上：同一 Component 配置可能存在多个实例
-        // （如列表项组件），实例级存储避免互相清除订阅
-        if (!this.__geomUnbinds) {
+        // （如列表项组件），实例级存储避免互相清除订阅。
+        // 同一实例重入 attached 时先清理旧订阅（cleanupBindings 清空同一个数组、引用不变），
+        // 否则旧订阅会叠加到 detached，每次通知都重复 setData
+        if (this.__geomUnbinds) {
+          cleanupBindings(this.__geomUnbinds)
+        } else {
           this.__geomUnbinds = []
         }
         const unbindFunctions = this.__geomUnbinds
 
-        // 将绑定的 methods 合并到实例上：
-        // 先做实例级浅拷贝再合并，避免 this.methods 引用配置级共享对象时
-        // 直接写入污染所有实例共用的 methods 定义
-        if (this.methods) {
-          this.methods = { ...this.methods, ...boundMethods }
-        }
-
         // 辅助函数：订阅 store 变化（共用 createStoreSubscriber）
         const subscribeStore = createStoreSubscriber(store)
 
-        // 绑定 state
-        if (options.mapState) {
-          const unbindState = bindMappings(
-            this.data,
-            stateMapping,
-            (key) => store.state[key as keyof S],
-            (updates) => this.setData(updates),
-            subscribeStore,
-            (storeKey) => store.isStateKeyDirty(storeKey),
-          )
-          unbindFunctions.push(...unbindState)
-        }
+        try {
+          // 将绑定的 methods 合并到实例上：
+          // 先做实例级浅拷贝再合并，避免 this.methods 引用配置级共享对象时
+          // 直接写入污染所有实例共用的 methods 定义
+          if (this.methods) {
+            this.methods = { ...this.methods, ...boundMethods }
+          }
 
-        // 绑定 getters
-        if (options.mapGetters) {
-          const unbindGetters = bindMappings(
-            this.data,
-            gettersMapping,
-            (key) => store.getter(key),
-            (updates) => this.setData(updates),
-            subscribeStore,
-          )
-          unbindFunctions.push(...unbindGetters)
-        }
+          // 绑定 state
+          if (options.mapState) {
+            const unbindState = bindMappings(
+              this.data,
+              stateMapping,
+              (key) => store.state[key as keyof S],
+              (updates) => this.setData(updates),
+              subscribeStore,
+              (storeKey) => store.isStateKeyDirty(storeKey),
+            )
+            unbindFunctions.push(...unbindState)
+          }
 
-        // 自动注入（使用getCached）
-        if (options.autoInject && injectMapping) {
-          performAutoInject(this, injectMapping, store, (updates: Record<string, unknown>) => this.setData(updates))
+          // 绑定 getters
+          if (options.mapGetters) {
+            const unbindGetters = bindMappings(
+              this.data,
+              gettersMapping,
+              (key) => store.getter(key),
+              (updates) => this.setData(updates),
+              subscribeStore,
+            )
+            unbindFunctions.push(...unbindGetters)
+          }
+
+          // 自动注入（使用getCached）
+          if (options.autoInject && hasInjectMapping) {
+            performAutoInject(this, injectMapping, store, (updates: Record<string, unknown>) => this.setData(updates))
+          }
+        } catch (error) {
+          // 绑定中途抛错：已登记的订阅必须回滚，否则半初始化的组件会带着仍在推送的
+          // 订阅活到 detached。错误原样抛回框架，且不转发用户 attached——映射尚未就绪
+          // 的实例上跑用户逻辑只会产出第二个更难归因的错误
+          cleanupBindings(unbindFunctions)
+          console.warn('[withComponentStore] 绑定映射失败，已回滚本次登记的订阅', error)
+          throw error
         }
 
         // 调用原始 attached（来自 lifetimes）
@@ -379,7 +458,20 @@ export function withComponentStore<S extends State, A extends Actions, G extends
             const methods = { ...this.methods }
             this.methods = methods
             Object.keys(actionsMapping).forEach((localName) => {
-              delete methods[localName]
+              if (shadowedMethods.has(localName)) {
+                // 被遮蔽的组件自身方法按 bindActions 的「解绑恢复原值」口径回放，
+                // 而不是连同用户方法一起 delete 掉（那条路径下用户方法在重新 attached
+                // 之后也回不来）。按自有属性写入：本地名由调用方配置，`'__proto__'`
+                // 用普通赋值会命中 Object.prototype 的 setter
+                Object.defineProperty(methods, localName, {
+                  value: shadowedMethods.get(localName),
+                  writable: true,
+                  enumerable: true,
+                  configurable: true,
+                })
+              } else {
+                delete methods[localName]
+              }
             })
           }
         }
@@ -388,19 +480,25 @@ export function withComponentStore<S extends State, A extends Actions, G extends
 
     // 如果启用 autoUpdateOnShow，扩展 pageLifetimes.show（微信组件标准页面生命周期）：
     // 组件配置上的 onShow 不是组件生命周期，页面显示时不会被框架调用
-    if (options.autoUpdateOnShow && options.autoInject) {
+    if (options.autoUpdateOnShow && options.autoInject && hasInjectMapping) {
       const originalPageLifetimes = enhancedConfig.pageLifetimes || {}
       const originalShow = originalPageLifetimes.show
       enhancedConfig.pageLifetimes = {
         ...originalPageLifetimes,
         show: function (this: ComponentInstance) {
-          performAutoInject(this, injectMapping, store, (updates: Record<string, unknown>) => this.setData(updates))
-          originalShow?.call(this)
+          try {
+            performAutoInject(this, injectMapping, store, (updates: Record<string, unknown>) => this.setData(updates))
+          } finally {
+            // 注入抛错不得吞掉用户的 show（与 detached 的 try/finally 同口径）
+            originalShow?.call(this)
+          }
         },
       }
     }
 
     // 扩展 methods
+    // boundMethods 排在后：action 绑定覆盖组件同名方法（与 Page/App 侧 bindActions 一致，
+    // action 映射必须生效）。同名情况已在上面登记进 shadowedMethods 并告警，detached 时回放原值
     enhancedConfig.methods = {
       ...ComponentConfig.methods,
       ...boundMethods,

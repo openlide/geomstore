@@ -1,0 +1,23 @@
+# 统一换行符：仓库内一律 LF，检出侧也一律 LF。
+#
+# 背景：本机 core.autocrlf=true 时，index 侧 461 个文件本来就全是 LF，但 Windows 工作树
+# 被 smudge 成 187 个 CRLF + 274 个 LF 的混合态。后果不是「不好看」而是三件具体的事：
+#   1. `prettier --check` 在本地整批假红（.prettierrc 的 endOfLine 只能维持 auto，不敢设 lf），
+#      CI 与工作树的判据不一致；
+#   2. 任何批量脚本改写文件时，只要没精确控制换行就会把若干行写成 LF，使文件变成 mixed、
+#      `git diff` 从「改了几行」膨胀成「整个文件重写」（本轮实测踩过三次，三种不同方向）；
+#   3. 重新生成的文件（如 pnpm skill:api 的产物，生成器写 LF）会被 git 标成 modified 却
+#      无任何内容差异，`git status` 长期挂着 11 行假脏。
+#
+# `text=auto` 自带 NUL 探测，将来加入的真二进制会被自动识别，无需提前罗列扩展名
+# （本仓库当前无任何二进制文件：全部是 ts / md / json / mjs / yaml / js / sh / LICENSE）。
+* text=auto eol=lf
+
+# 说明一下刻意**没有**做的两件事，避免下一个人又加回去：
+# - 不给 pnpm-lock.yaml 加 -text。-text 只是关掉 git 的换行转换，若包管理器在某平台写出
+#   CRLF，它会原样进仓库；而 eol=lf 会在 add 时归一回 LF，是自愈的。锁文件是纯文本，
+#   LF 入库正是我们要的结果。
+# - 不引入 .editorconfig / IDE 侧的 CRLF 设置。检出侧已经是 LF，工作树不会再被改成 CRLF。
+#
+# 生效前提：core.autocrlf 会被本文件覆盖（.gitattributes 优先级高于 core.autocrlf），
+# 所以本机不必再调 git config。已检出的工作树需要重新归一一次，方法见 CONTRIBUTING。

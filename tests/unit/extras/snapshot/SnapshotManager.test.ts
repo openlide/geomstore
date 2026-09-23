@@ -38,8 +38,13 @@ describe('SnapshotManager', () => {
     })
 
     test('inherited values do not count as own properties', () => {
-      const absent = Object.create({ value: undefined })
-      const diff = manager.compareSnapshots(manager.createSnapshot(absent), manager.createSnapshot({ value: undefined }))
+      // 原型链上挂着 value: undefined，而克隆只复制自有可枚举属性 → 快照里该键不存在。
+      // 对照物刻意与 absent 共用同一个原型：差异比较把原型纳入相等语义
+      // （与回落用的 deepEqual 同判据），否则这条断言测的是原型判据而不是「自有键」这一点
+      const proto = { value: undefined }
+      const present = Object.create(proto)
+      Object.defineProperty(present, 'value', { value: undefined, enumerable: true, configurable: true, writable: true })
+      const diff = manager.compareSnapshots(manager.createSnapshot(Object.create(proto)), manager.createSnapshot(present))
       expect(diff.changes).toEqual([{ path: 'root.value', oldValue: undefined, newValue: undefined, kind: 'added' }])
     })
   })
@@ -905,7 +910,7 @@ describe('SnapshotManager', () => {
         {},
         {
           ownKeys: () => ['boom1'],
-          getOwnPropertyDescriptor(_target, key) {
+          getOwnPropertyDescriptor(_target, _key) {
             calls++
             if (calls <= 2) {
               return { value: 1, writable: true, enumerable: true, configurable: true }
@@ -934,7 +939,7 @@ describe('SnapshotManager', () => {
         {},
         {
           ownKeys: () => ['boom1'],
-          getOwnPropertyDescriptor(_target, key) {
+          getOwnPropertyDescriptor(_target, _key) {
             calls++
             if (calls <= 2) {
               return { value: 1, writable: true, enumerable: true, configurable: true }
@@ -963,7 +968,7 @@ describe('SnapshotManager', () => {
         {},
         {
           ownKeys: () => ['boom1'],
-          getOwnPropertyDescriptor(_target, key) {
+          getOwnPropertyDescriptor(_target, _key) {
             calls++
             if (calls === 1) {
               return { value: 1, writable: true, enumerable: true, configurable: true }
@@ -984,14 +989,14 @@ describe('SnapshotManager', () => {
       expect(result.success).toBe(false)
     })
 
-    test('同步克隆 onError 返回 false 时应该抛出并返回原数据', () => {
+    test('同步克隆 onError 返回 false 时应该中止且失败结果不回传活引用', () => {
       const manager = new SnapshotManager()
       let calls = 0
       const evil = new Proxy(
         {},
         {
           ownKeys: () => ['boom1'],
-          getOwnPropertyDescriptor(_target, key) {
+          getOwnPropertyDescriptor(_target, _key) {
             calls++
             if (calls === 1) {
               return { value: 1, writable: true, enumerable: true, configurable: true }
@@ -1004,7 +1009,8 @@ describe('SnapshotManager', () => {
       const result = manager.createSnapshot({ evil }, { onError: () => false })
 
       expect(result.success).toBe(false)
-      expect(result.data).toEqual({ evil })
+      // 中止路径不返回调用方传入的活引用（隔离契约），只留 success:false 供判定
+      expect(result.data).toBeUndefined()
     })
 
     test('异步克隆 onError 返回 false 时中止快照并返回失败结果', async () => {
@@ -1014,7 +1020,7 @@ describe('SnapshotManager', () => {
         {},
         {
           ownKeys: () => ['boom1'],
-          getOwnPropertyDescriptor(_target, key) {
+          getOwnPropertyDescriptor(_target, _key) {
             calls++
             if (calls <= 2) {
               return { value: 1, writable: true, enumerable: true, configurable: true }
@@ -1024,11 +1030,12 @@ describe('SnapshotManager', () => {
         },
       )
 
-      // onError(false)：中止整个快照（与同步路径 success:false 语义一致），失败结果携带原始数据
+      // onError(false)：中止整个快照（与同步路径 success:false 语义一致），
+      // 失败结果不回传原始引用
       const result = await manager.createSnapshotAsync(evil, { onError: () => false })
 
       expect(result.success).toBe(false)
-      expect(result.data).toBe(evil)
+      expect(result.data).toBeUndefined()
     })
   })
 
@@ -1404,7 +1411,9 @@ describe('SnapshotManager', () => {
       }
 
       const onError = jest.fn().mockReturnValue(true)
-      const result = manager.createSnapshot(data, {
+      // 结果不被断言（本用例断言点在 onError 收到的兜底 message），但调用必须发生：
+      // 它触发的正是 `error instanceof Error` 为 false 的那条分支
+      manager.createSnapshot(data, {
         onError,
         customCloner: (value) => {
           if (typeof value === 'object' && value !== null && (value as any).inner === 'will-throw-non-error') {
@@ -1485,8 +1494,11 @@ describe('SnapshotManager', () => {
       node1.next = { leaf: 'a' }
       node2.next = { leaf: 'b' }
 
-      const snapshot1 = manager.createSnapshot(deep1)
-      const snapshot2 = manager.createSnapshot(deep2)
+      // 快照的 maxDepth 必须大于链深：默认 100 会让两侧在第 101 层都被截断成同一个
+      // '[MaxDepth Exceeded]' 占位串，两份快照便真的等价了（差异只存在于原始数据里），
+      // 此时 compareSnapshots 报 changed 反而是误报
+      const snapshot1 = manager.createSnapshot(deep1, { maxDepth: 500 })
+      const snapshot2 = manager.createSnapshot(deep2, { maxDepth: 500 })
 
       // 不应栈溢出，应正常返回差异结果
       const diff = manager.compareSnapshots(snapshot1, snapshot2)
@@ -2356,9 +2368,11 @@ describe('P2 快照批修复回归', () => {
     // circular 属可恢复降级：两条路径都应标记成功并记录错误
     expect(syncResult.success).toBe(true)
     expect(asyncResult.success).toBe(true)
-    // 循环引用计入统计计数（不产生 errors 记录），两条路径口径一致
+    // 循环引用既计入统计计数、也逐条落在 errors 里（与 maxDepth 同账本口径），两条路径一致
     expect(syncResult.stats.circularReferences).toBeGreaterThanOrEqual(1)
     expect(asyncResult.stats.circularReferences).toBeGreaterThanOrEqual(1)
+    expect(syncResult.errors.map((e) => e.type)).toEqual(['circular'])
+    expect(asyncResult.errors.map((e) => e.type)).toEqual(['circular'])
   })
 
   it('#21: 同步与异步快照的 cloneOperations 同口径', async () => {

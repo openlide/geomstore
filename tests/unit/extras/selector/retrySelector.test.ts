@@ -154,3 +154,36 @@ describe('createRetrySelectorAsync（可延迟重试）', () => {
     expect(() => createRetrySelectorAsync(jest.fn(), { retries: -1 })).toThrow(TypeError)
   })
 })
+
+describe('annotateAttempts 对不可标注抛出值的安全性', () => {
+  it('抛出冻结的 Error 时原样重抛，不被 defineProperty 的 TypeError 顶替', () => {
+    const frozen = Object.freeze(new Error('frozen boom'))
+    const selector = jest.fn((): number => {
+      throw frozen
+    })
+
+    expect(() => createRetrySelector(selector as Selector<S, number>, { retries: 1 })(state)).toThrow(frozen)
+  })
+
+  it('抛出非对象值（字符串）时原样重抛该值', () => {
+    const selector = jest.fn((): number => {
+      throw 'plain string boom'
+    })
+
+    try {
+      createRetrySelector(selector as Selector<S, number>, { retries: 1 })(state)
+      throw new Error('selector 未抛出，用例失效')
+    } catch (caught) {
+      expect(caught).toBe('plain string boom')
+    }
+  })
+
+  it('异步路径抛出冻结 Error 时同样原样 reject', async () => {
+    const frozen = Object.freeze(new Error('async frozen boom'))
+    const selector = jest.fn(async (): Promise<number> => {
+      throw frozen
+    })
+
+    await expect(createRetrySelectorAsync(selector as unknown as Selector<S, number>, { retries: 1, delay: 0 })(state)).rejects.toBe(frozen)
+  })
+})

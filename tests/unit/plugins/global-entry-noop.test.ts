@@ -45,6 +45,64 @@ describe('全局调试入口的 no-op 兜底', () => {
     expect(table['store-b']).toBeUndefined()
   })
 
+  it('#363 回归: 全局键被占用为原始值/冻结对象时不抛错，条目落在新表', () => {
+    const g = globalThis as unknown as Record<string, unknown>
+
+    g.__GEOMSTORE_TEST_PRIM__ = 'not-a-table'
+    expect(() => registerGlobalEntry('__GEOMSTORE_TEST_PRIM__', 'store-c', { ping: 1 })).not.toThrow()
+    const table = g.__GEOMSTORE_TEST_PRIM__ as Record<string, unknown>
+    expect(typeof table).toBe('object')
+    expect(table['store-c']).toEqual({ ping: 1 })
+    delete g.__GEOMSTORE_TEST_PRIM__
+
+    g.__GEOMSTORE_TEST_FROZEN__ = Object.freeze({ legacy: 1 })
+    expect(() => registerGlobalEntry('__GEOMSTORE_TEST_FROZEN__', 'store-d', { ping: 2 })).not.toThrow()
+    expect((g.__GEOMSTORE_TEST_FROZEN__ as Record<string, unknown>)['store-d']).toEqual({ ping: 2 })
+    delete g.__GEOMSTORE_TEST_FROZEN__
+  })
+
+  it('#363 回归: storeName 为 "__proto__" 时作为自有属性写入，不污染共享表原型链', () => {
+    const g = globalThis as unknown as Record<string, any>
+    delete g.__GEOMSTORE_TEST_PROTO__
+
+    const unregister = registerGlobalEntry('__GEOMSTORE_TEST_PROTO__', '__proto__', { polluted: true })
+    const table = g.__GEOMSTORE_TEST_PROTO__
+
+    expect(Object.getPrototypeOf(table)).toBe(Object.prototype)
+    expect(Object.prototype.hasOwnProperty.call(table, '__proto__')).toBe(true)
+    expect(({} as any).polluted).toBeUndefined()
+
+    unregister()
+    expect(Object.prototype.hasOwnProperty.call(table, '__proto__')).toBe(false)
+    expect(Object.getPrototypeOf(table)).toBe(Object.prototype)
+    delete g.__GEOMSTORE_TEST_PROTO__
+  })
+
+  it('#364 回归: 同一 api 引用重复注册时，先装的卸载函数不得删掉后装的条目', () => {
+    const g = globalThis as unknown as Record<string, any>
+    delete g.__GEOMSTORE_TEST_REUSE__
+    // devtools 插件注册的是 store 实例本身，同一 store 重复安装必然复用同一引用
+    const api = { ping: () => 'pong' }
+    const unregisterFirst = registerGlobalEntry('__GEOMSTORE_TEST_REUSE__', 'same-store', api)
+    const unregisterSecond = registerGlobalEntry('__GEOMSTORE_TEST_REUSE__', 'same-store', api)
+
+    unregisterFirst()
+    expect(g.__GEOMSTORE_TEST_REUSE__['same-store']).toBe(api)
+
+    unregisterSecond()
+    // #365 连带语义：末条目卸载后空容器一并从 globalThis 摘掉，
+    // 故条目读取改用可选链（原断言的「条目不再可见」不受影响）
+    expect(g.__GEOMSTORE_TEST_REUSE__?.['same-store']).toBeUndefined()
+    expect(g.__GEOMSTORE_TEST_REUSE__).toBeUndefined()
+
+    // 卸载幂等：重复调用不再影响后续注册
+    const again = registerGlobalEntry('__GEOMSTORE_TEST_REUSE__', 'same-store', api)
+    unregisterSecond()
+    expect(g.__GEOMSTORE_TEST_REUSE__['same-store']).toBe(api)
+    again()
+    delete g.__GEOMSTORE_TEST_REUSE__
+  })
+
   it('生产模式下 timeTravel 不注册全局入口，卸载器为 no-op', async () => {
     const store = createStore({ name: 'prod-time-travel', state: { count: 1 } })
     const prevEnv = process.env.NODE_ENV

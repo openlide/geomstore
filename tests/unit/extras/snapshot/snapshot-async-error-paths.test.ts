@@ -24,18 +24,18 @@ describe('异步快照的非 Error 抛出物', () => {
     expect(result.success).toBe(false)
   })
 
-  it('进度回调抛出非 Error 时按 Unknown error 记录，不向外抛出', async () => {
-    const result = await createSnapshotAsync(
-      { a: { b: 1 } },
-      {
-        onProgress: () => {
-          throw 'progress boom'
-        },
-      } as any,
-    )
+  it('进度回调抛出非 Error 时记一条 Unknown 并停用上报，不影响克隆结果', async () => {
+    const data = { a: { b: 1 } }
+    const result = await createSnapshotAsync(data, {
+      onProgress: () => {
+        throw 'progress boom'
+      },
+    } as any)
 
-    expect(result.errors.length).toBeGreaterThan(0)
-    expect(result.success).toBe(false)
+    // 进度回调只是「上报」方：它抛错不得把完好克隆降级为失败结果（#300）
+    expect(result.success).toBe(true)
+    expect(result.data).toEqual(data)
+    expect(result.errors.filter((e) => e.type === 'unknown')).toHaveLength(1)
   })
 
   it('填充阶段抛出非 Error 时降级记录且不中断队列', async () => {
@@ -62,10 +62,12 @@ describe('异步快照的超时与进度基线', () => {
   it('超时后不再接受新任务入队（队列不再增长）', async () => {
     const onProgress = jest.fn()
 
-    const result = await createSnapshotAsync(
-      { l1: { l2: { l3: { l4: { l5: 1 } } } }, other: { x: 1 } },
-      { timeout: 1, batchSize: 1, batchInterval: 0, onProgress } as any,
-    )
+    const result = await createSnapshotAsync({ l1: { l2: { l3: { l4: { l5: 1 } } } }, other: { x: 1 } }, {
+      timeout: 1,
+      batchSize: 1,
+      batchInterval: 0,
+      onProgress,
+    } as any)
 
     // 即使超时中断，也必须交付已完成节点的元数据与进度（不得静默产出空壳）
     expect(result.metadata.nodeCount).toBeGreaterThan(0)

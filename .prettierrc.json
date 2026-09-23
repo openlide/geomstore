@@ -4,19 +4,17 @@
   "useTabs": false,
   "semi": false,
   "singleQuote": true,
-  "documentSelectors": ["**/*.wxml", "**/*.wxss"],
   "jsxSingleQuote": false,
   "bracketSpacing": true,
-  "jsxBracketSameLine": true,
+  "bracketSameLine": true,
   "arrowParens": "always",
   "quoteProps": "as-needed",
   "requirePragma": false,
   "insertPragma": false,
   "proseWrap": "preserve",
   "htmlWhitespaceSensitivity": "ignore",
-  "endOfLine": "auto",
+  "endOfLine": "lf",
   "vueIndentScriptAndStyle": false,
-  "disableLanguages": ["vue"],
   "overrides": [
     {
       "files": ["*.wxss"],
@@ -42,6 +40,5 @@
         "parser": "babel"
       }
     }
-  ],
-  "extends": ["prettier", "prettier/vue"]
+  ]
 }

@@ -40,10 +40,22 @@ function throwingCloner(value: unknown): unknown {
 
 const hasOwn = (target: object, key: PropertyKey): boolean => Object.prototype.hasOwnProperty.call(target, key)
 
+/**
+ * 取「失败但仍有部分克隆」的 data（R5-238：`SnapshotResult.data` 的声明已含 undefined）。
+ * 下面两条用例考察的是各容器里被丢弃的位置，前提是根节点确实产出了半成品，
+ * 故在此显式排除 undefined，而不是用非空断言把判空责任糊掉
+ */
+function partialClone<T>(result: { data: T | undefined }): T {
+  if (result.data === undefined) {
+    throw new Error('预期失败结果仍带部分克隆，实际 data 为 undefined')
+  }
+  return result.data
+}
+
 describe('自定义克隆器抛错：两条路径语义一致', () => {
   it('同步路径：onError 允许继续时按位置丢弃被丢弃的节点', () => {
     const result = createSnapshot(buildData(), { customCloner: throwingCloner, onError: () => true })
-    const cloned = result.data
+    const cloned = partialClone(result)
 
     // 对象属性：不写入
     expect(hasOwn(cloned, 'prop')).toBe(false)
@@ -65,7 +77,7 @@ describe('自定义克隆器抛错：两条路径语义一致', () => {
 
   it('异步路径：与同步路径产出完全一致的结构', async () => {
     const result = await createSnapshotAsync(buildData(), { customCloner: throwingCloner, onError: () => true })
-    const cloned = result.data
+    const cloned = partialClone(result)
 
     expect(hasOwn(cloned, 'prop')).toBe(false)
     expect(cloned.arr).toHaveLength(3)
@@ -118,7 +130,7 @@ describe('自定义克隆器抛错：两条路径语义一致', () => {
     expect(result.errors.some((error) => error.message.includes('custom cloner boom'))).toBe(true)
   })
 
-  it('onError 自身抛错时按 unknown 记录并兜底返回原始入参（含非 Error 抛出物）', () => {
+  it('onError 自身抛错时按 unknown 记录并返回空数据（不回传活引用）', () => {
     const source = { a: { b: 1 } }
 
     const result = createSnapshot(source, {
@@ -133,23 +145,21 @@ describe('自定义克隆器抛错：两条路径语义一致', () => {
 
     expect(result.success).toBe(false)
     expect(result.errors.some((error) => error.type === 'unknown' && error.message === 'Unknown error')).toBe(true)
-    // 兜底路径返回原始入参（不做隔离降级承诺）
-    expect(result.data).toEqual(source)
+    // 失败快照不得回传调用方的原始引用（隔离契约）：与 SKIP 降级路径同为 undefined，
+    // 调用方须按 success:false 处理
+    expect(result.data).toBeUndefined()
   })
 
   it('onError 抛非 Error 时逃逸到队列兜底记录（异步，覆盖 String(error) 侧）', async () => {
-    const result = await createSnapshotAsync(
-      { a: { b: 1 } },
-      {
-        customCloner: () => {
-          throw new Error('cloner boom')
-        },
-        // onError 自身抛非 Error：逃出单节点克隆，由队列的逐任务兜底 catch 记录
-        onError: () => {
-          throw 'queue boom'
-        },
-      } as any,
-    )
+    const result = await createSnapshotAsync({ a: { b: 1 } }, {
+      customCloner: () => {
+        throw new Error('cloner boom')
+      },
+      // onError 自身抛非 Error：逃出单节点克隆，由队列的逐任务兜底 catch 记录
+      onError: () => {
+        throw 'queue boom'
+      },
+    } as any)
 
     expect(result.success).toBe(false)
     expect(result.errors.some((error) => String(error.message).includes('queue boom'))).toBe(true)

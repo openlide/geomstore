@@ -86,21 +86,33 @@ describe('extras/snapshot 容错与中止传播', () => {
     it('ownKeys 陷阱抛出 SnapshotAbortError 时原样上抛（不被 onError 改答）', () => {
       const errors: SnapshotError[] = []
 
-      expect(() => cloneDeep(abortingOwnKeysHost(), makeContext(), syncOptions(), errors, makeStats(), makeCounters())).toThrow(
-        SnapshotAbortError,
-      )
+      expect(() => cloneDeep(abortingOwnKeysHost(), makeContext(), syncOptions(), errors, makeStats(), makeCounters())).toThrow(SnapshotAbortError)
       expect(errors).toHaveLength(0)
     })
 
     it('属性 getter 抛错、onError 返回 false 时抛出 SnapshotAbortError', () => {
-      expect(() => cloneDeep(throwingGetterHost(), makeContext(), syncOptions(() => false), [], makeStats(), makeCounters())).toThrow(
-        SnapshotAbortError,
-      )
+      expect(() =>
+        cloneDeep(
+          throwingGetterHost(),
+          makeContext(),
+          syncOptions(() => false),
+          [],
+          makeStats(),
+          makeCounters(),
+        ),
+      ).toThrow(SnapshotAbortError)
     })
 
     it('属性 getter 抛错、onError 允许继续时降级记录错误', () => {
       const errors: SnapshotError[] = []
-      const result = cloneDeep(throwingGetterHost(), makeContext(), syncOptions(() => true), errors, makeStats(), makeCounters())
+      const result = cloneDeep(
+        throwingGetterHost(),
+        makeContext(),
+        syncOptions(() => true),
+        errors,
+        makeStats(),
+        makeCounters(),
+      )
 
       expect(result).toBeDefined()
       expect(errors).toHaveLength(1)
@@ -123,9 +135,26 @@ describe('extras/snapshot 容错与中止传播', () => {
       expect(() => processNodeAsync(task, asyncOptions(), [], makeStats(), makeCounters(), () => {})).toThrow(SnapshotAbortError)
     })
 
-    it('ownKeys 陷阱抛错时降级为记录错误并继续（异步键枚举路径不识别中止信号）', () => {
+    it('ownKeys 陷阱抛出 SnapshotAbortError 时原样上抛（异步键枚举与同步同口径）', () => {
       const errors: SnapshotError[] = []
       const task: AsyncCloneTask = { value: abortingOwnKeysHost(), context: makeContext() }
+
+      // 降级/中止逻辑抽为 handleCloneError 后两条路径共用：中止信号不再被异步侧漏判
+      expect(() => processNodeAsync(task, asyncOptions(), errors, makeStats(), makeCounters(), () => {})).toThrow(SnapshotAbortError)
+      expect(errors).toHaveLength(0)
+    })
+
+    it('ownKeys 陷阱抛出普通错误时降级为记录错误并继续', () => {
+      const errors: SnapshotError[] = []
+      const hostile = new Proxy(
+        {},
+        {
+          ownKeys(): string[] {
+            throw new Error('ownKeys boom')
+          },
+        },
+      )
+      const task: AsyncCloneTask = { value: hostile, context: makeContext() }
 
       const result = processNodeAsync(task, asyncOptions(), errors, makeStats(), makeCounters(), () => {})
 
@@ -137,14 +166,30 @@ describe('extras/snapshot 容错与中止传播', () => {
     it('属性 getter 抛错、onError 返回 false 时抛出 SnapshotAbortError', () => {
       const task: AsyncCloneTask = { value: throwingGetterHost(), context: makeContext() }
 
-      expect(() => processNodeAsync(task, asyncOptions(() => false), [], makeStats(), makeCounters(), () => {})).toThrow(SnapshotAbortError)
+      expect(() =>
+        processNodeAsync(
+          task,
+          asyncOptions(() => false),
+          [],
+          makeStats(),
+          makeCounters(),
+          () => {},
+        ),
+      ).toThrow(SnapshotAbortError)
     })
 
     it('属性 getter 抛错、onError 允许继续时降级记录错误', () => {
       const errors: SnapshotError[] = []
       const task: AsyncCloneTask = { value: throwingGetterHost(), context: makeContext() }
 
-      processNodeAsync(task, asyncOptions(() => true), errors, makeStats(), makeCounters(), () => {})
+      processNodeAsync(
+        task,
+        asyncOptions(() => true),
+        errors,
+        makeStats(),
+        makeCounters(),
+        () => {},
+      )
 
       expect(errors).toHaveLength(1)
       expect(errors[0].type).toBe('cloneError')
@@ -164,11 +209,7 @@ describe('extras/snapshot 容错与中止传播', () => {
   describe('异步队列单点填充失败', () => {
     it('填充抛错时只记录错误、不中断队列也不抛出', async () => {
       const original = Object.defineProperty
-      const spy = jest.spyOn(Object, 'defineProperty').mockImplementation(((
-        target: object,
-        key: PropertyKey,
-        attrs: PropertyDescriptor,
-      ) => {
+      const spy = jest.spyOn(Object, 'defineProperty').mockImplementation(((target: object, key: PropertyKey, attrs: PropertyDescriptor) => {
         // 占位写入的 value 为 undefined；填充写入携带真实克隆结果，据此区分二者
         if (key === 'poison' && attrs?.value !== undefined) {
           throw new Error('fill boom')

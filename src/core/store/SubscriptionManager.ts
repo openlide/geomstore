@@ -14,15 +14,64 @@ import type { SubscriptionManagerInterface } from './types.js'
 import { deepCloneState, isProduction } from './utils.js'
 
 /**
- * 订阅管理器配置
+ * 订阅者被驱逐时交给宿主的信息
+ *
+ * @see SubscriptionManagerOptions.onSubscriberEvicted
  */
-export interface SubscriptionManagerOptions {
-  /** 最大订阅者数量 */
+export interface SubscriberEvictionInfo<S extends State = State> {
+  /** 被驱逐的那一次注册所属的监听器（该监听器可能仍有其它注册存活） */
+  listener: StateListener<S>
+  /** 触发门禁的上限（`size` 已达该值才驱逐） */
+  maxSubscribers: number
+  /** 驱逐完成后、新注册写入前的注册总数 */
+  size: number
+}
+
+/**
+ * 订阅管理器配置
+ *
+ * 带类型参数只为 `onSubscriberEvicted` 的载荷能保住监听器的状态形状：
+ * 回调形参按逆变比较，写成非通用的 `SubscriberEvictionInfo<State>` 会让
+ * `SubscriptionManager<S>` 内部无法安全接收宿主为具体 S 提供的处理器。
+ * 默认 `State`，不带参数的既有写法（如 `const o: SubscriptionManagerOptions`）不变
+ */
+export interface SubscriptionManagerOptions<S extends State = State> {
+  /**
+   * 最大订阅者数量（缺省 50）
+   *
+   * 非法值在构造期归一，与 LRUCache 的 capacity 守卫、StoreCacheManager 的 ttl 守卫同口径：
+   * 门禁写作 `_totalCount >= this._maxSubscribers`，`_maxSubscribers` 为 NaN/Infinity 时该
+   * 比较恒为 false ⇒ `_enforceLimit` 永不被调用，「泄漏护栏」在配置算错的那一刻静默消失
+   * （`parseInt(env.MAX)`、`Math.max(...[])`、storage/JSON 里缺失的键都会给出这类值）。
+   * 故非有限值回落默认 50 并留开发期告警；有限值取整（`2.5` → 2），0 与负数按原语义保留
+   * （见 {@link SubscriptionManager.add} 对 `maxSubscribers <= 0` 的说明）
+   */
   maxSubscribers?: number
   /** Store 名称（用于日志） */
   storeName: string
   /** 订阅者达到上限时的策略（默认 'evict-oldest'） */
   onLimit?: SubscriberLimitPolicy
+  /**
+   * 监听器抛错的上报通道（可选）
+   *
+   * 存在的理由：本类的契约是「一个坏订阅者不得影响其余监听器」，因此回调异常必须被吞掉；
+   * 而吞掉在生产环境（控制台静默）会让某个订阅者从此无声漏掉全部状态更新，线上无从定位。
+   * 由宿主（Store）接 onError 钩子即可让监控插件收集，既保留静默口径又有上报入口。
+   * 不配置时行为与既有一致（仅开发模式打印）
+   */
+  onListenerError?: (error: unknown) => void
+  /**
+   * 订阅者被驱逐时的上报通道（可选）
+   *
+   * 与 `onListenerError` 同一诉求：`evict-oldest` 是默认策略，而在库口径里生产环境必须
+   * 静默（不得写控制台），于是被驱逐的那一份订阅从此收不到任何状态更新、且没有任何
+   * 指标入口，线上表现为「订阅莫名失效」而无法定位。由宿主接入（与 `onListenerError`
+   * 同样走 Store 的 hooks.onError）即可同时保住静默与可观测性。Store 侧已接好该线
+   * （见 `Store.ts` 构造订阅管理器处把驱逐事件转成 `hooks.emit('onError', …, 'subscribe')`），
+   * 不经 Store 直接构造本类的消费方不配置时行为与既有一致（仅开发模式打印，且已带上
+   * 被驱逐监听器的标识）
+   */
+  onSubscriberEvicted?: (info: SubscriberEvictionInfo<S>) => void
 }
 
 /**
@@ -31,6 +80,9 @@ export interface SubscriptionManagerOptions {
  * 负责管理状态监听器的生命周期
  */
 export class SubscriptionManager<S extends State = State> implements SubscriptionManagerInterface<S> {
+  /** 缺省订阅者上限（`maxSubscribers` 非有限值时的回落值） */
+  static readonly DEFAULT_MAX_SUBSCRIBERS = 50
+
   /**
    * 监听器 → 各次注册的可写标记：同一函数注册 N 次通知 N 次，任一份退订只减一（Redux/Vuex 同语义）。
    *
@@ -44,13 +96,33 @@ export class SubscriptionManager<S extends State = State> implements Subscriptio
   private readonly _maxSubscribers: number
   private readonly _storeName: string
   private readonly _onLimit: SubscriberLimitPolicy
+  private readonly _onListenerError?: (error: unknown) => void
+  private readonly _onSubscriberEvicted?: (info: SubscriberEvictionInfo<S>) => void
   /** 监听器注册总次数（按注册次数计）：O(1) 维护，避免 size getter 每次遍历整表求和 */
   private _totalCount = 0
 
-  constructor(options: SubscriptionManagerOptions) {
-    this._maxSubscribers = options.maxSubscribers ?? 50
+  constructor(options: SubscriptionManagerOptions<S>) {
     this._storeName = options.storeName
+    // 先归一上限再落字段：门禁 `>= _maxSubscribers` 一旦拿到 NaN/Infinity 就恒假，
+    // `_enforceLimit` 从此永不被调用——「配置算错 → 泄漏护栏静默消失」正是本类要挡的
+    // 事故形状，且没有任何信号。告警只在开发期出（与库内一致的静默口径），归一本身无条件
+    const requested = options.maxSubscribers ?? SubscriptionManager.DEFAULT_MAX_SUBSCRIBERS
+    if (!Number.isFinite(requested)) {
+      if (!isProduction()) {
+        console.warn(
+          `[GeomStore][${this._storeName}] maxSubscribers=${requested} 不是有效的订阅者上限（需为有限数），` +
+            `已回退默认 ${SubscriptionManager.DEFAULT_MAX_SUBSCRIBERS}：NaN/Infinity 会让上限比较恒为 false，驱逐逻辑永不触发`,
+        )
+      }
+      this._maxSubscribers = SubscriptionManager.DEFAULT_MAX_SUBSCRIBERS
+    } else {
+      // 取整：`2.5` 此前实际放行 3 份注册（`3 >= 2.5` 才触发驱逐），向下取整让上限
+      // 与文档承诺的 `size <= maxSubscribers` 对齐；0 与负数按 add() 里写明的既有语义保留
+      this._maxSubscribers = Math.floor(requested)
+    }
     this._onLimit = options.onLimit ?? 'evict-oldest'
+    this._onListenerError = options.onListenerError
+    this._onSubscriberEvicted = options.onSubscriberEvicted
   }
 
   /**
@@ -73,50 +145,98 @@ export class SubscriptionManager<S extends State = State> implements Subscriptio
   /**
    * 添加监听器
    *
-   * 已有监听器的重复订阅仅递增计数，不参与上限判定与驱逐——否则达到上限时
-   * 重复订阅会先驱逐一个无辜的最旧监听器。新监听器达到上限时按 onLimit 策略处理：
-   * - evict-oldest：警告并驱逐最早的订阅者（默认）
+   * 上限门禁对**每一次注册**生效，包含同一监听器的重复注册：`size` 计的是注册次数，
+   * 重复注册同样占额度、同样让 notify 多跑一遍回调。把它免检等于留下
+   * 「循环订阅同一函数」这条无界增长路径（每次 `subscribe` 都产出新句柄，
+   * 只要不退订就永久持有），maxSubscribers 作为泄漏护栏的目的在该路径上完全失效。
+   * 达上限时按 onLimit 策略处理：
+   * - evict-oldest：警告（开发模式）+ 上报宿主 + 驱逐一份最早注册
+   *  （本次是重复注册时让位的是该监听器自己最早的那一份，不牵连其他监听器）
    * - throw：抛出错误，避免订阅者无声丢失状态更新
+   *
+   * 由此 `size <= maxSubscribers` 是常态不变量；唯一例外是 `maxSubscribers <= 0`
+   * 配 evict-oldest——此时在册监听器为零、无可驱逐对象，首个订阅仍会成功
+   *（该配置本身即「一个订阅者都不许注册」，不额外做拒绝）
    *
    * @param options.readOnly 标记为只读订阅（仅读取状态、不修改），可让 Store 在仅有只读订阅时跳过深拷贝
    */
   add(listener: StateListener<S>, options?: { readOnly?: boolean }): object {
     const registration = {}
     const readOnly = options?.readOnly ?? false
+    if (this._totalCount >= this._maxSubscribers) {
+      this._enforceLimit(listener)
+    }
     const existing = this._listeners.get(listener)
     if (existing !== undefined) {
       existing.registrations.set(registration, readOnly)
-      this._totalCount += 1
-      if (!readOnly) {
-        this._writableCount += 1
-      }
-      return registration
+    } else {
+      this._listeners.set(listener, { registrations: new Map([[registration, readOnly]]) })
     }
-    if (this.size >= this._maxSubscribers) {
-      if (this._onLimit === 'throw') {
-        throw new Error(
-          `[GeomStore][${this._storeName}] Subscriber limit reached (${this._maxSubscribers}). Unsubscribe unused listeners or increase maxSubscribers.`,
-        )
-      }
-      if (!isProduction()) {
-        console.warn(`[GeomStore][${this._storeName}] 订阅者数量已达到上限(${this._maxSubscribers})`)
-      }
-      const firstListener = this._listeners.keys().next().value
-      if (firstListener !== undefined) {
-        // 按注册次数递减而非整条删除：被驱逐的监听器可能注册了 N 份，
-        // 整条删除会让用户仍持有的 N 个退订句柄全部变成静默 no-op，
-        // 也与本类 add/delete 的「注册 N 次通知 N 次、退订只减一」计数语义不一致。
-        // 驱逐一份即腾出新订阅者所需的额度
-        this.delete(firstListener)
-      }
-    }
-
-    this._listeners.set(listener, { registrations: new Map([[registration, readOnly]]) })
     this._totalCount += 1
     if (!readOnly) {
       this._writableCount += 1
     }
     return registration
+  }
+
+  /**
+   * 达到上限时按 onLimit 策略腾出额度（`add` 的任一路径都会走到）
+   *
+   * 驱逐对象优先取「本次要重复注册的那个监听器」自己最早的一份注册：
+   * 重复订阅占的是额度，但不该由别的监听器买单。在册监听器按插入序排列，
+   * 直接取全局最旧会让首个订阅者替后来的重复订阅丢名额。
+   * 其余情况（新监听器）驱逐全局最旧的一份注册。
+   *
+   * 以「一份注册」为单位而非整条监听器：被驱逐的监听器可能注册了 N 份，
+   * 整条删除会让用户仍持有的其余退订句柄全部变成静默 no-op，
+   * 也与本类「注册 N 次通知 N 次、退订只减一」的计数语义不一致
+   *
+   * @private
+   */
+  private _enforceLimit(listener: StateListener<S>): void {
+    if (this._onLimit === 'throw') {
+      throw new Error(
+        `[GeomStore][${this._storeName}] Subscriber limit reached (${this._maxSubscribers}). Unsubscribe unused listeners or increase maxSubscribers.`,
+      )
+    }
+    const selfDuplicated = this._listeners.has(listener)
+    const evicted = selfDuplicated ? listener : this._listeners.keys().next().value
+    if (!isProduction()) {
+      // 带上被驱逐者的可读标识：只报「达到上限」的日志在现场毫无定位价值，
+      // 谁丢了更新才是需要回答的问题
+      console.warn(
+        `[GeomStore][${this._storeName}] 订阅者数量已达到上限(${this._maxSubscribers})${
+          evicted === undefined
+            ? ''
+            : selfDuplicated
+              ? `，本次重复订阅改由该监听器自己最早的一份注册让位`
+              : `，已驱逐最早的监听器 ${evicted.name || '(匿名函数)'} 的一份注册`
+        }`,
+      )
+    }
+    if (evicted !== undefined) {
+      this.delete(evicted)
+      this._reportEviction(evicted)
+    }
+  }
+
+  /**
+   * 把驱逐事件交给宿主上报通道；通道自身抛错不得反噬注册流程
+   *
+   * @private
+   */
+  private _reportEviction(listener: StateListener<S>): void {
+    const reporter = this._onSubscriberEvicted
+    if (!reporter) {
+      return
+    }
+    try {
+      reporter({ listener, maxSubscribers: this._maxSubscribers, size: this._totalCount })
+    } catch (reportError) {
+      if (!isProduction()) {
+        console.error('[GeomStore] Error in subscriber eviction reporter:', reportError)
+      }
+    }
   }
 
   /**
@@ -156,37 +276,90 @@ export class SubscriptionManager<S extends State = State> implements Subscriptio
   /**
    * 通知所有监听器
    *
-   * 优化：
-   * - 使用数组遍历比 Map.forEach 更快
-   * - cloneOnNotify=true（默认）：创建状态深拷贝避免引用共享问题
-   * - cloneOnNotify=false：零拷贝模式，调用方（Store）负责传入只读保护后的状态
+   * 优化与职责边界（载荷分配）：
+   * - 无监听器时直接返回，省去空轮的克隆
+   * - cloneOnNotify=true（默认）：可写注册各得一份独立深拷贝，只读注册共用一份
+   *  ⇒ 监听器之间的引用隔离由**本方法**负责
+   * - cloneOnNotify=false：本方法一次都不拷贝，全部回调共享调用方传入的那个对象
+   *  ⇒ 隔离责任在**调用方**：仅当「先执行的可写回调改不动这个载荷」时才安全
+   *  （库内 `Store._notifyListeners` 已按在册订阅者的可写性传参——存在可写订阅者时传
+   *  true，由本方法给每份可写注册各拷一份载荷，故公开 `store.subscribe(fn)` 路径上
+   *  的监听器互改不可见，闭环已成立；只有自行传 false 的非 Store 调用方仍要自备隔离）
    *
-   * @param cloneOnNotify 是否深拷贝载荷。Store 据此在「仅只读订阅」场景下传 false 跳过深拷贝
+   * @param cloneOnNotify 载荷的拷贝归属：true=由本方法按注册可写性拷贝；
+   * false=调用方已处置载荷，本方法保持零拷贝
    */
   notify(state: S, cloneOnNotify: boolean = true): void {
     // 无订阅者时直接返回：避免高频 setState 下零订阅场景仍执行深拷贝（cloneOnNotify=true 时尤为明显）
     if (this._listeners.size === 0) {
       return
     }
-    // 仅在循环前克隆一次，避免对每个监听器重复深拷贝整棵状态树
-    // （cloneOnNotify=true 默认开启，单次克隆已能保证监听器间的引用隔离）
-    const payload = cloneOnNotify ? deepCloneState(state) : state
+    // 零拷贝的前提是「没有可写订阅者」：此时载荷被所有回调共享，
+    // 任一可写回调就地修改载荷即直接改到活状态，且其他监听器同时看到半成品。
+    // 本类做不到「既不拷贝又隔离」，故只对调用方发信号。Store 主路径不会命中此行：
+    // 它按在册订阅者的可写性传 `cloneOnNotify`（存在可写订阅者时传 true，见
+    // `Store._notifyListeners` 与台账 R5-122），因此剩下的命中方只有「自行传 false 的
+    // 非 Store 调用方」这一档——它指的正是那条未闭环的边界，改法见 notify 文档
+    if (!cloneOnNotify && this._writableCount > 0 && !isProduction()) {
+      console.warn(`[GeomStore][${this._storeName}] cloneOnNotify=false 与可写订阅者共存：监听器可修改共享载荷，存在数据污染风险`)
+    }
+    // 载荷按「注册的可写性」分配，而不是整轮共用一份：
+    // 单次克隆只隔离了「载荷 ↔ 活状态」，没有隔离监听器彼此——先执行的可写回调
+    // 就地改入参，同一轮里后面的监听器就会读到被改过的中间态。
+    // 只读订阅不改载荷，继续共用一份，避免按订阅数等比例放大深拷贝开销；
+    // 份数由 maxSubscribers 封顶（见 add 的门禁），不会因重复注册而无界扩张
+    const hasReadOnlyRegistration = this._writableCount < this._totalCount
+    const sharedPayload: S = cloneOnNotify && hasReadOnlyRegistration ? deepCloneState(state) : state
     // 按注册次数展开：重复注册的监听器每次通知收到多次回调
-    const listeners: Array<(state: S) => void> = []
+    //
+    // 快照语义是有意选择（与 Redux 的 listeners 快照一致）：本轮派发的对象是
+    // 「进入 notify 时在册的注册」，派发过程中才失效的监听器（回调内退订自己、
+    // 或本轮 add 触发 evict-oldest 把最旧注册挤掉）仍会被投递最后一次更新。
+    // 不逐个复核在册状态有两点代价：一是热路径上每个回调都要回查 _listeners 及其
+    // registrations 子 Map；二是「失效发生在第 k 个回调之前还是之后」取决于回调内部
+    // 行为，复核只会让同一轮通知里各监听器看到的变更集合更不可预期。
+    // 依赖退订立即生效的调用方需在回调内自行判定（如比对自持的存活标记）
+    // 两条平行数组而非槽位对象：零拷贝档（Store 主路径）每次 dispatch 都要走这里，
+    // 逐个监听器再包一层对象只是白付分配开销
+    const listeners: Array<StateListener<S>> = []
+    const payloads: S[] = []
     this._listeners.forEach((entry, listener) => {
-      for (let i = 0; i < entry.registrations.size; i++) {
+      for (const readOnly of entry.registrations.values()) {
         listeners.push(listener)
+        payloads.push(cloneOnNotify && !readOnly ? deepCloneState(state) : sharedPayload)
       }
     })
 
     for (let i = 0; i < listeners.length; i++) {
       try {
-        listeners[i](payload as S)
+        listeners[i](payloads[i])
       } catch (error) {
-        // 生产环境移除详细日志
+        // 契约：单个监听器抛错不得中断其余监听器（异常必须被吞掉），但吞掉不等于丢失——
+        // 开发期打印定位来源，生产期走宿主注入的上报通道（Store 接到 hooks 的 onError），
+        // 否则一个持续抛错的订阅者会无声漏掉后续全部更新且无任何指标入口
         if (!isProduction()) {
           console.error('[GeomStore] Error in state listener:', error)
         }
+        this._reportListenerError(error)
+      }
+    }
+  }
+
+  /**
+   * 把监听器异常交给宿主注入的上报通道；通道自身抛错不得反噬 notify 流程
+   *
+   * @private
+   */
+  private _reportListenerError(error: unknown): void {
+    const reporter = this._onListenerError
+    if (!reporter) {
+      return
+    }
+    try {
+      reporter(error)
+    } catch (reportError) {
+      if (!isProduction()) {
+        console.error('[GeomStore] Error in listener error reporter:', reportError)
       }
     }
   }

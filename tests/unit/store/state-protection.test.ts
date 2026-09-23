@@ -237,7 +237,8 @@ describe('状态保护机制', () => {
 
       // 顶层保护仍然有效
       expect(() => {
-        (store.state as any).count = 100
+        const state = store.state as any
+        state.count = 100
       }).toThrow('Direct mutation of state')
 
       // 深层保护已禁用，可以修改嵌套对象
@@ -328,7 +329,8 @@ describe('状态保护机制', () => {
       const config = store.getStateProtectionConfig()
       // TypeScript会阻止修改，但运行时也应该返回副本
       expect(() => {
-        (config as any).enabled = false
+        const copy = config as any
+        copy.enabled = false
       }).not.toThrow() // 修改副本不影响原配置
       expect(store.isStateProtectionEnabled()).toBe(true)
     })
@@ -575,7 +577,8 @@ describe('BUG 回归：变异报错消息的序列化兜底', () => {
     // 修复前：消息构建中 JSON.stringify(2n) 先抛出
     // "Do not know how to serialize a BigInt" 的 TypeError
     expect(() => {
-      (store.state as Record<string, unknown>).big = 2n
+      const state = store.state as Record<string, unknown>
+      state.big = 2n
     }).toThrow('Direct mutation of state')
   })
 
@@ -588,7 +591,8 @@ describe('BUG 回归：变异报错消息的序列化兜底', () => {
     circular.self = circular
 
     expect(() => {
-      (store.state as Record<string, unknown>).holder = circular
+      const state = store.state as Record<string, unknown>
+      state.holder = circular
     }).toThrow('Direct mutation of state')
   })
 })

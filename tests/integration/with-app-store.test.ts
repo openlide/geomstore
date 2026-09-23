@@ -2,7 +2,7 @@
  * with-app-store 集成测试
  */
 
-import { createStore, withAppStore } from '@/index.js'
+import { createStore, withAppStore, type Store } from '@/index.js'
 
 describe('withAppStore', () => {
   type AppState = {
@@ -12,7 +12,9 @@ describe('withAppStore', () => {
     error: string | null
   }
 
-  let store: any
+  // 以 Store<AppState> 而非 any 声明：withAppStore 的映射名合法性、注入到 this 的
+  // 成员集合都由 S/A/G 推断得出，any 会让这些约束整体退化为 never
+  let store: Store<AppState>
   let mockAppConfig: any
 
   beforeEach(() => {
@@ -21,18 +23,20 @@ describe('withAppStore', () => {
         count: 0,
         user: { name: 'test', age: 25 },
         loading: false,
-        error: null
+        error: null,
       },
       getters: {
         doubleCount: (state) => state.count * 2,
-        userName: (state) => state.user.name
+        userName: (state) => state.user.name,
       },
       actions: {
-        increment(...args: unknown[]) {
-          (this.state as any).count++
+        increment(..._args: unknown[]) {
+          const state = this.state as AppState
+          state.count++
         },
-        decrement(...args: unknown[]) {
-          (this.state as any).count--
+        decrement(..._args: unknown[]) {
+          const state = this.state as AppState
+          state.count--
         },
         setCount(...args: unknown[]) {
           const [value] = args as [number]
@@ -41,15 +45,15 @@ describe('withAppStore', () => {
         setUserName(...args: unknown[]) {
           const [name] = args as [string]
           ;(this.state as any).user.name = name
-        }
-      }
+        },
+      },
     })
 
     mockAppConfig = {
       onLaunch: jest.fn(),
       onShow: jest.fn(),
       onHide: jest.fn(),
-      onError: jest.fn()
+      onError: jest.fn(),
     }
   })
 
@@ -84,9 +88,9 @@ describe('withAppStore', () => {
   describe('mapState 映射', () => {
     it('应该将 state 映射到 globalData', () => {
       const app: any = withAppStore(store, {
-        mapState: ['count', 'user']
+        mapState: ['count', 'user'],
       })(mockAppConfig)
-      
+
       app.onLaunch()
       expect(app.globalData.count).toBe(0)
       expect(app.globalData.user).toEqual({ name: 'test', age: 25 })
@@ -96,10 +100,10 @@ describe('withAppStore', () => {
       const app: any = withAppStore(store, {
         mapState: {
           myCount: 'count',
-          currentUser: 'user'
-        }
+          currentUser: 'user',
+        },
       })(mockAppConfig)
-      
+
       app.onLaunch()
       expect(app.globalData.myCount).toBe(0)
       expect(app.globalData.currentUser).toEqual({ name: 'test', age: 25 })
@@ -107,15 +111,15 @@ describe('withAppStore', () => {
 
     it('应该在 state 变化时更新 globalData', () => {
       const app: any = withAppStore(store, {
-        mapState: ['count']
+        mapState: ['count'],
       })(mockAppConfig)
-      
+
       app.onLaunch()
       expect(app.globalData.count).toBe(0)
-      
+
       store.dispatch('increment')
       expect(app.globalData.count).toBe(1)
-      
+
       store.dispatch('setCount', 42)
       expect(app.globalData.count).toBe(42)
     })
@@ -124,9 +128,9 @@ describe('withAppStore', () => {
   describe('mapGetters 映射', () => {
     it('应该将 getters 映射到 globalData', () => {
       const app: any = withAppStore(store, {
-        mapGetters: ['doubleCount', 'userName']
+        mapGetters: ['doubleCount', 'userName'],
       })(mockAppConfig)
-      
+
       app.onLaunch()
       expect(app.globalData.doubleCount).toBe(0)
       expect(app.globalData.userName).toBe('test')
@@ -136,10 +140,10 @@ describe('withAppStore', () => {
       const app: any = withAppStore(store, {
         mapGetters: {
           myDouble: 'doubleCount',
-          name: 'userName'
-        }
+          name: 'userName',
+        },
       })(mockAppConfig)
-      
+
       app.onLaunch()
       expect(app.globalData.myDouble).toBe(0)
       expect(app.globalData.name).toBe('test')
@@ -147,15 +151,15 @@ describe('withAppStore', () => {
 
     it('应该在 getter 依赖变化时更新 globalData', () => {
       const app: any = withAppStore(store, {
-        mapGetters: ['doubleCount']
+        mapGetters: ['doubleCount'],
       })(mockAppConfig)
-      
+
       app.onLaunch()
       expect(app.globalData.doubleCount).toBe(0)
-      
+
       store.dispatch('increment')
       expect(app.globalData.doubleCount).toBe(2)
-      
+
       store.dispatch('setCount', 10)
       expect(app.globalData.doubleCount).toBe(20)
     })
@@ -164,14 +168,14 @@ describe('withAppStore', () => {
   describe('mapActions 映射', () => {
     it('应该将 actions 映射到 App 方法', () => {
       const app: any = withAppStore(store, {
-        mapActions: ['increment', 'decrement']
+        mapActions: ['increment', 'decrement'],
       })(mockAppConfig)
-      
+
       app.onLaunch()
-      
+
       app.increment()
       expect(store.state.count).toBe(1)
-      
+
       app.decrement()
       expect(store.state.count).toBe(0)
     })
@@ -180,29 +184,29 @@ describe('withAppStore', () => {
       const app: any = withAppStore(store, {
         mapActions: {
           add: 'increment',
-          sub: 'decrement'
-        }
+          sub: 'decrement',
+        },
       })(mockAppConfig)
-      
+
       app.onLaunch()
-      
+
       app.add()
       expect(store.state.count).toBe(1)
-      
+
       app.sub()
       expect(store.state.count).toBe(0)
     })
 
     it('应该传递参数到 action', () => {
       const app: any = withAppStore(store, {
-        mapActions: ['setCount', 'setUserName']
+        mapActions: ['setCount', 'setUserName'],
       })(mockAppConfig)
-      
+
       app.onLaunch()
-      
+
       app.setCount(100)
       expect(store.state.count).toBe(100)
-      
+
       app.setUserName('new name')
       expect(store.state.user.name).toBe('new name')
     })
@@ -218,7 +222,7 @@ describe('withAppStore', () => {
     it('应该在 App 实例上暴露 __store__ 调试 API', () => {
       const app = withAppStore(store, {})(mockAppConfig) as any
       app.onLaunch()
-      
+
       expect(app.__store__).toBeDefined()
       expect(app.__store__.getStore()).toBe(store)
       expect(app.__store__.getState()).toEqual(store.state)
@@ -226,13 +230,37 @@ describe('withAppStore', () => {
       expect(typeof app.__store__.subscribe).toBe('function')
     })
 
+    it('action 名与调试 API 同名（getState）时，App 上的展平成员仍是基座 API', () => {
+      // 类型侧的同一口径由 tests/types/integration-types.typecheck.ts 的 `_clashLooksLikeActionString` 锁住；
+      // 那条只证明「编译期按 action 解析」，运行时的挂载顺序（bindActions → exposeStoreAPI，
+      // 后者用 defineProperty 覆盖自有成员）必须在这里锁，否则两侧会静默分叉。
+      const clashStore = createStore<{ count: number }>({
+        name: 'app-clash-getstate',
+        state: { count: 3 },
+        actions: {
+          getState(): string {
+            return 'from-action'
+          },
+        },
+      })
+      const app = withAppStore(clashStore, { mapActions: ['getState'] })({}) as any
+      app.onLaunch()
+
+      // 挂载完成后可见的展平成员是基座 getState，返回状态对象而不是 action 的返回值
+      expect(typeof app.getState).toBe('function')
+      expect(app.getState()).toEqual({ count: 3 })
+      // action 并没有因此丢失，只是不再占据这个名字：显式 dispatch 仍走 action
+      expect(app.__store__.dispatch('getState')).toBe('from-action')
+      expect(clashStore.state.count).toBe(3)
+    })
+
     it('应该通过 __store__.dispatch 调用 action', () => {
       const app = withAppStore(store, {})(mockAppConfig) as any
       app.onLaunch()
-      
+
       app.__store__.dispatch('increment')
       expect(store.state.count).toBe(1)
-      
+
       app.__store__.dispatch('setCount', 50)
       expect(store.state.count).toBe(50)
     })
@@ -240,15 +268,15 @@ describe('withAppStore', () => {
     it('应该通过 __store__.subscribe 订阅变化', () => {
       const app = withAppStore(store, {})(mockAppConfig) as any
       app.onLaunch()
-      
+
       const callback = jest.fn()
       const unsubscribe = app.__store__.subscribe(callback)
-      
+
       store.dispatch('increment')
       expect(callback).toHaveBeenCalled()
-      
+
       unsubscribe()
-      
+
       callback.mockClear()
       store.dispatch('increment')
       expect(callback).not.toHaveBeenCalled()
@@ -298,16 +326,16 @@ describe('withAppStore', () => {
 
     it('应该多次调用 onLaunch/onHide', () => {
       const app: any = withAppStore(store, {
-        mapState: ['count']
+        mapState: ['count'],
       })(mockAppConfig)
-      
+
       app.onLaunch()
       const firstGlobalData = app.globalData
-      
+
       app.onHide()
       app.onLaunch()
       const secondGlobalData = app.globalData
-      
+
       expect(secondGlobalData.count).toBe(firstGlobalData.count)
     })
   })
@@ -317,17 +345,17 @@ describe('withAppStore', () => {
       const app: any = withAppStore(store, {
         mapState: ['count'],
         mapGetters: ['doubleCount'],
-        mapActions: ['increment', 'setCount']
+        mapActions: ['increment', 'setCount'],
       })(mockAppConfig)
-      
+
       app.onLaunch()
       expect(app.globalData.count).toBe(0)
       expect(app.globalData.doubleCount).toBe(0)
-      
+
       app.increment()
       expect(app.globalData.count).toBe(1)
       expect(app.globalData.doubleCount).toBe(2)
-      
+
       app.setCount(10)
       expect(app.globalData.count).toBe(10)
       expect(app.globalData.doubleCount).toBe(20)
@@ -336,20 +364,20 @@ describe('withAppStore', () => {
     it('应该支持使用对象形式的映射', () => {
       const app: any = withAppStore(store, {
         mapState: {
-          myCount: 'count'
+          myCount: 'count',
         },
         mapGetters: {
-          myDouble: 'doubleCount'
+          myDouble: 'doubleCount',
         },
         mapActions: {
-          add: 'increment'
-        }
+          add: 'increment',
+        },
       })(mockAppConfig)
-      
+
       app.onLaunch()
       expect(app.globalData.myCount).toBe(0)
       expect(app.globalData.myDouble).toBe(0)
-      
+
       app.add()
       expect(app.globalData.myCount).toBe(1)
       expect(app.globalData.myDouble).toBe(2)
@@ -380,12 +408,12 @@ describe('createApp', () => {
 
   it('应该创建带有初始 globalData 的 App', () => {
     const store = createStore<TestState>({
-      state: { value: 42 }
+      state: { value: 42 },
     })
     const app: any = withAppStore(store)({
-      onLaunch: jest.fn()
+      onLaunch: jest.fn(),
     })
-    
+
     expect(app).toBeDefined()
     expect(typeof app.onLaunch).toBe('function')
   })
@@ -394,27 +422,27 @@ describe('createApp', () => {
     const store = createStore<TestState>({
       state: { value: 10 },
       getters: {
-        double: (state) => state.value * 2
+        double: (state) => state.value * 2,
       },
       actions: {
         setValue(...args: unknown[]) {
           const [value] = args as [number]
           ;(this.state as any).value = value
-        }
-      }
+        },
+      },
     })
     const app: any = withAppStore(store, {
       mapState: ['value'],
       mapGetters: ['double'],
-      mapActions: ['setValue']
+      mapActions: ['setValue'],
     })({
-      onLaunch: jest.fn()
+      onLaunch: jest.fn(),
     })
-    
+
     app.onLaunch()
     expect(app.globalData.value).toBe(10)
     expect(app.globalData.double).toBe(20)
-    
+
     app.setValue(20)
     expect(app.globalData.value).toBe(20)
     expect(app.globalData.double).toBe(40)

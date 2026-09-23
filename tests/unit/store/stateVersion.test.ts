@@ -4,7 +4,7 @@
  * 覆盖 getStateVersion 的非对象/无标记回退路径，以及 defineStateVersion 的
  * 不可枚举性与冻结容错——这些是选择器 O(1) 失效判定的正确性前提。
  */
-import { defineStateVersion, getStateVersion } from '@/core/store/stateVersion.js'
+import { defineStateVersion, getStateVersion, STATE_VERSION } from '@/core/store/stateVersion.js'
 
 describe('stateVersion', () => {
   describe('getStateVersion', () => {
@@ -24,11 +24,29 @@ describe('stateVersion', () => {
 
     it('标记值不是 number 时返回 undefined', () => {
       const state: Record<PropertyKey, unknown> = {}
-      Object.defineProperty(state, Symbol.for('geomstore.stateVersion'), {
+      // R5-126：键常量由本模块导出，测试不再重写一份 Symbol.for 字面量
+      Object.defineProperty(state, STATE_VERSION, {
         value: '1',
         enumerable: false,
       })
       expect(getStateVersion(state)).toBeUndefined()
+    })
+
+    it('只认自有版本标记：原型链上的版本号不算本对象的版本（R5-125）', () => {
+      const carrier: Record<string, unknown> = { count: 0 }
+      defineStateVersion(carrier, () => 42)
+      expect(getStateVersion(carrier)).toBe(42)
+
+      // 由有版本的对象派生（deepCloneState 就是按同原型克隆），自己没有版本标记
+      const derived = Object.create(carrier) as Record<string, unknown>
+      derived.count = 9
+      // 读成外来的 42 会让「root 版本 !== 索引版本」恒为 false：脏索引不重算、
+      // 选择器缓存在 TTL 内持续命中，静默返回陈旧结果
+      expect(getStateVersion(derived)).toBeUndefined()
+
+      // 往原型上塞同名键也骗不到消费者
+      const polluted = Object.create({ [STATE_VERSION]: 0 }) as Record<string, unknown>
+      expect(getStateVersion(polluted)).toBeUndefined()
     })
   })
 

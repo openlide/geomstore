@@ -1,6 +1,6 @@
 /**
  * GeomStore v1.0 - GeomStoreError测试
- * 
+ *
  * 测试覆盖：
  * - 自定义错误类创建和使用
  * - 错误代码枚举
@@ -24,17 +24,13 @@ import {
   isSelectorError,
   isPluginError,
   isValidationError,
-  createError
+  createError,
 } from '@/extras/error/index.js'
 
 describe('GeomStoreError', () => {
   describe('错误类创建', () => {
     it('ERROR-001: 应该创建基础GeomStoreError实例', () => {
-      const error = new GeomStoreError(
-        'Test error message',
-        ErrorCode.UNKNOWN_ERROR,
-        { key: 'value' }
-      )
+      const error = new GeomStoreError('Test error message', ErrorCode.UNKNOWN_ERROR, { key: 'value' })
 
       expect(error).toBeInstanceOf(Error)
       expect(error).toBeInstanceOf(GeomStoreError)
@@ -46,11 +42,7 @@ describe('GeomStoreError', () => {
     })
 
     it('ERROR-002: 应该创建ActionError实例', () => {
-      const error = new ActionError(
-        'Action failed',
-        ErrorCode.ACTION_EXECUTION_ERROR,
-        { actionName: 'testAction' }
-      )
+      const error = new ActionError('Action failed', ErrorCode.ACTION_EXECUTION_ERROR, { actionName: 'testAction' })
 
       expect(error).toBeInstanceOf(GeomStoreError)
       expect(error).toBeInstanceOf(ActionError)
@@ -59,11 +51,7 @@ describe('GeomStoreError', () => {
     })
 
     it('ERROR-003: 应该创建StateError实例', () => {
-      const error = new StateError(
-        'State update failed',
-        ErrorCode.STATE_UPDATE_ERROR,
-        { key: 'user' }
-      )
+      const error = new StateError('State update failed', ErrorCode.STATE_UPDATE_ERROR, { key: 'user' })
 
       expect(error).toBeInstanceOf(StateError)
       expect(error.name).toBe('StateError')
@@ -71,44 +59,28 @@ describe('GeomStoreError', () => {
     })
 
     it('ERROR-004: 应该创建SelectorError实例', () => {
-      const error = new SelectorError(
-        'Selector not found',
-        ErrorCode.SELECTOR_NOT_FOUND,
-        { selectorName: 'testSelector' }
-      )
+      const error = new SelectorError('Selector not found', ErrorCode.SELECTOR_NOT_FOUND, { selectorName: 'testSelector' })
 
       expect(error).toBeInstanceOf(SelectorError)
       expect(error.name).toBe('SelectorError')
     })
 
     it('ERROR-005: 应该创建PluginError实例', () => {
-      const error = new PluginError(
-        'Plugin installation failed',
-        ErrorCode.PLUGIN_INSTALLATION_ERROR,
-        { pluginName: 'testPlugin' }
-      )
+      const error = new PluginError('Plugin installation failed', ErrorCode.PLUGIN_INSTALLATION_ERROR, { pluginName: 'testPlugin' })
 
       expect(error).toBeInstanceOf(PluginError)
       expect(error.name).toBe('PluginError')
     })
 
     it('ERROR-006: 应该创建ComposeError实例', () => {
-      const error = new ComposeError(
-        'Store name conflict',
-        ErrorCode.STORE_NAME_CONFLICT,
-        { storeName: 'testStore' }
-      )
+      const error = new ComposeError('Store name conflict', ErrorCode.STORE_NAME_CONFLICT, { storeName: 'testStore' })
 
       expect(error).toBeInstanceOf(ComposeError)
       expect(error.name).toBe('ComposeError')
     })
 
     it('ERROR-007: 应该创建ValidationError实例', () => {
-      const error = new ValidationError(
-        'Validation failed',
-        ErrorCode.VALIDATION_ERROR,
-        { field: 'email' }
-      )
+      const error = new ValidationError('Validation failed', ErrorCode.VALIDATION_ERROR, { field: 'email' })
 
       expect(error).toBeInstanceOf(ValidationError)
       expect(error.name).toBe('ValidationError')
@@ -118,11 +90,7 @@ describe('GeomStoreError', () => {
 
   describe('错误序列化', () => {
     it('ERROR-008: toJSON应该返回完整的错误信息', () => {
-      const error = new GeomStoreError(
-        'Test error',
-        ErrorCode.ACTION_NOT_FOUND,
-        { actionName: 'missingAction' }
-      )
+      const error = new GeomStoreError('Test error', ErrorCode.ACTION_NOT_FOUND, { actionName: 'missingAction' })
 
       const json = error.toJSON()
 
@@ -131,15 +99,12 @@ describe('GeomStoreError', () => {
         message: 'Test error',
         code: ErrorCode.ACTION_NOT_FOUND,
         context: { actionName: 'missingAction' },
-        stack: expect.any(String)
+        stack: expect.any(String),
       })
     })
 
     it('ERROR-009: toJSON应该处理没有context的错误', () => {
-      const error = new GeomStoreError(
-        'Test error',
-        ErrorCode.UNKNOWN_ERROR
-      )
+      const error = new GeomStoreError('Test error', ErrorCode.UNKNOWN_ERROR)
 
       const json = error.toJSON()
 
@@ -152,44 +117,29 @@ describe('GeomStoreError', () => {
 
   describe('错误消息格式化', () => {
     it('ERROR-010: getFriendlyMessage应该返回基本消息', () => {
-      const error = new GeomStoreError(
-        'Basic error',
-        ErrorCode.UNKNOWN_ERROR
-      )
+      const error = new GeomStoreError('Basic error', ErrorCode.UNKNOWN_ERROR)
 
       const friendlyMsg = error.getFriendlyMessage()
       expect(friendlyMsg).toBe('Basic error')
     })
 
     it('ERROR-011: getFriendlyMessage应该包含storeName和operation', () => {
-      const error = new GeomStoreError(
-        'Operation failed',
-        ErrorCode.ACTION_EXECUTION_ERROR,
-        { storeName: 'user-store', operation: 'login' }
-      )
+      const error = new GeomStoreError('Operation failed', ErrorCode.ACTION_EXECUTION_ERROR, { storeName: 'user-store', operation: 'login' })
 
       const friendlyMsg = error.getFriendlyMessage()
-      expect(friendlyMsg).toBe('Operation failed in store \'user-store\': login')
+      expect(friendlyMsg).toBe("Operation failed in store 'user-store': login")
     })
 
     it('ERROR-012: getFriendlyMessage应该只包含storeName', () => {
-      const error = new GeomStoreError(
-        'Error occurred',
-        ErrorCode.STATE_UPDATE_ERROR,
-        { storeName: 'cart-store' }
-      )
+      const error = new GeomStoreError('Error occurred', ErrorCode.STATE_UPDATE_ERROR, { storeName: 'cart-store' })
 
       const friendlyMsg = error.getFriendlyMessage()
       expect(friendlyMsg).toContain('cart-store')
-      expect(friendlyMsg).toBe('Error occurred in store \'cart-store\'')
+      expect(friendlyMsg).toBe("Error occurred in store 'cart-store'")
     })
 
     it('ERROR-034: getFriendlyMessage应该只包含operation', () => {
-      const error = new GeomStoreError(
-        'Action error',
-        ErrorCode.ACTION_EXECUTION_ERROR,
-        { operation: 'fetchData' }
-      )
+      const error = new GeomStoreError('Action error', ErrorCode.ACTION_EXECUTION_ERROR, { operation: 'fetchData' })
 
       const friendlyMsg = error.getFriendlyMessage()
       expect(friendlyMsg).toBe('Action error: fetchData')
@@ -198,90 +148,60 @@ describe('GeomStoreError', () => {
 
   describe('错误工厂函数', () => {
     it('ERROR-013: createError应该创建ActionError', () => {
-      const error = createError(
-        ErrorCode.ACTION_NOT_FOUND,
-        'Action missing',
-        { actionName: 'test' }
-      )
+      const error = createError(ErrorCode.ACTION_NOT_FOUND, 'Action missing', { actionName: 'test' })
 
       expect(error).toBeInstanceOf(ActionError)
       expect(error.code).toBe(ErrorCode.ACTION_NOT_FOUND)
     })
 
     it('ERROR-014: createError应该创建StateError', () => {
-      const error = createError(
-        ErrorCode.STATE_KEY_NOT_FOUND,
-        'State key missing',
-        { key: 'user' }
-      )
+      const error = createError(ErrorCode.STATE_KEY_NOT_FOUND, 'State key missing', { key: 'user' })
 
       expect(error).toBeInstanceOf(StateError)
       expect(error.code).toBe(ErrorCode.STATE_KEY_NOT_FOUND)
     })
 
     it('ERROR-015: createError应该创建SelectorError', () => {
-      const error = createError(
-        ErrorCode.SELECTOR_EXECUTION_ERROR,
-        'Selector failed'
-      )
+      const error = createError(ErrorCode.SELECTOR_EXECUTION_ERROR, 'Selector failed')
 
       expect(error).toBeInstanceOf(SelectorError)
     })
 
     it('ERROR-016: createError应该创建PluginError', () => {
-      const error = createError(
-        ErrorCode.PLUGIN_INSTALLATION_ERROR,
-        'Plugin failed'
-      )
+      const error = createError(ErrorCode.PLUGIN_INSTALLATION_ERROR, 'Plugin failed')
 
       expect(error).toBeInstanceOf(PluginError)
     })
 
     it('ERROR-017: createError应该创建ValidationError', () => {
-      const error = createError(
-        ErrorCode.VALIDATION_ERROR,
-        'Validation failed'
-      )
+      const error = createError(ErrorCode.VALIDATION_ERROR, 'Validation failed')
 
       expect(error).toBeInstanceOf(ValidationError)
     })
 
     it('ERROR-017a: createError应该创建ComposeError (STORE_NAME_CONFLICT)', () => {
-      const error = createError(
-        ErrorCode.STORE_NAME_CONFLICT,
-        'Store name conflict',
-        { storeName: 'testStore' }
-      )
+      const error = createError(ErrorCode.STORE_NAME_CONFLICT, 'Store name conflict', { storeName: 'testStore' })
 
       expect(error).toBeInstanceOf(ComposeError)
       expect(error.code).toBe(ErrorCode.STORE_NAME_CONFLICT)
     })
 
     it('ERROR-017b: createError应该创建ComposeError (STORE_DEPENDENCY_ERROR)', () => {
-      const error = createError(
-        ErrorCode.STORE_DEPENDENCY_ERROR,
-        'Store dependency error'
-      )
+      const error = createError(ErrorCode.STORE_DEPENDENCY_ERROR, 'Store dependency error')
 
       expect(error).toBeInstanceOf(ComposeError)
       expect(error.code).toBe(ErrorCode.STORE_DEPENDENCY_ERROR)
     })
 
     it('ERROR-017c: createError应该创建ComposeError (STORE_COMPOSE_ERROR)', () => {
-      const error = createError(
-        ErrorCode.STORE_COMPOSE_ERROR,
-        'Store compose error'
-      )
+      const error = createError(ErrorCode.STORE_COMPOSE_ERROR, 'Store compose error')
 
       expect(error).toBeInstanceOf(ComposeError)
       expect(error.code).toBe(ErrorCode.STORE_COMPOSE_ERROR)
     })
 
     it('ERROR-018: createError应该为未知代码创建GeomStoreError', () => {
-      const error = createError(
-        'UNKNOWN_CODE' as any,
-        'Unknown error'
-      )
+      const error = createError('UNKNOWN_CODE' as any, 'Unknown error')
 
       expect(error).toBeInstanceOf(GeomStoreError)
     })
@@ -393,10 +313,10 @@ describe('GeomStoreError', () => {
       const nestedContext = {
         level1: {
           level2: {
-            level3: 'deep value'
-          }
+            level3: 'deep value',
+          },
         },
-        array: [1, 2, 3]
+        array: [1, 2, 3],
       }
       const error = new GeomStoreError('Test', ErrorCode.UNKNOWN_ERROR, nestedContext)
       expect(error.context).toEqual(nestedContext)

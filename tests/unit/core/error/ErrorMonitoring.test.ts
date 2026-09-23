@@ -15,10 +15,8 @@ import {
   ConsoleReporter,
   HttpReporter,
   ErrorReporter,
-  ErrorGroup,
   createDefaultMonitoring,
   getDefaultMonitoring,
-  GeomStoreError,
   ErrorCode,
   createError,
 } from '@/extras/error/index.js'
@@ -172,6 +170,8 @@ describe('ConsoleReporter', () => {
       expect(consoleErrorSpy).toHaveBeenCalledTimes(2)
       expect(consoleErrorSpy).toHaveBeenNthCalledWith(1, expect.stringContaining('[1]'), contexts[0].error)
       expect(consoleErrorSpy).toHaveBeenNthCalledWith(2, expect.stringContaining('[2]'), contexts[1].error)
+      // 分组必须闭合：少一次 groupEnd 会把后续输出留在已打开的分组里
+      expect(consoleGroupEndSpy).toHaveBeenCalledTimes(1)
     })
 
     it('MONITOR-058: 应该支持不同的错误级别输出', async () => {
@@ -1250,7 +1250,7 @@ describe('ErrorMonitoring', () => {
         enableAggregation: false,
       })
 
-      const contexts: ErrorContext[] = Array.from({ length: 3 }, (_, i) => ({
+      const contexts: ErrorContext[] = Array.from({ length: 3 }, (_, _i) => ({
         storeName: 'test-store',
         operation: 'dispatch',
         error: new Error('Same error'),
@@ -1740,7 +1740,7 @@ describe('ErrorMonitoring', () => {
       const syncThrowReporter: jest.Mocked<ErrorReporter> = {
         getName: jest.fn(() => 'sync-throw'),
         report: jest.fn().mockResolvedValue(undefined),
-        reportBatch: jest.fn((contexts: ErrorContext[]) => {
+        reportBatch: jest.fn((_contexts: ErrorContext[]) => {
           throw new Error('Sync throw in reportBatch')
         }),
       }
@@ -1883,8 +1883,9 @@ describe('ConsoleReporter 分组降级回归（BUG-16）', () => {
       expect(flat).toContain('boom')
       expect(flat).toContain('test-store')
     } finally {
-      (console as any).group = originalGroup
-      ;(console as any).groupEnd = originalGroupEnd
+      const c = console as any
+      c.group = originalGroup
+      c.groupEnd = originalGroupEnd
       consoleErrorSpy.mockRestore()
     }
   })
@@ -1922,8 +1923,9 @@ describe('ConsoleReporter 分组降级回归（BUG-16）', () => {
       expect(flat).toContain('boom-1')
       expect(flat).toContain('boom-2')
     } finally {
-      (console as any).group = originalGroup
-      ;(console as any).groupEnd = originalGroupEnd
+      const c = console as any
+      c.group = originalGroup
+      c.groupEnd = originalGroupEnd
       consoleErrorSpy.mockRestore()
     }
   })
@@ -1950,8 +1952,9 @@ describe('ConsoleReporter 分组降级回归（BUG-16）', () => {
 
       expect(consoleErrorSpy).toHaveBeenCalledWith(expect.stringContaining('Payload:'), { action: 'testAction', retry: 2 })
     } finally {
-      (console as any).group = originalGroup
-      ;(console as any).groupEnd = originalGroupEnd
+      const c = console as any
+      c.group = originalGroup
+      c.groupEnd = originalGroupEnd
       consoleErrorSpy.mockRestore()
     }
   })

@@ -6,7 +6,6 @@
  * 插件安装失败的入列回滚、StoreCache 的 TTL 时间戳、deepMerge 的环路短路、
  * LRUCache 的 enableStats 关闭与 performance 全局缺失回退。
  */
- 
 
 import { createError, ErrorCode, GeomStoreError } from '@/core/errors/GeomStoreError.js'
 import { PerformanceAnalyzer } from '@/core/performance/index.js'
@@ -125,7 +124,8 @@ describe('核心层边界分支', () => {
       expect(store.state.nested).toEqual({ a: 1 })
       // 顶层写入被保护（浅层模式仅保护顶层）
       expect(() => {
-        (store.state as any).nested = { a: 2 }
+        const state = store.state as Record<string, unknown>
+        state.nested = { a: 2 }
       }).toThrow()
     })
   })

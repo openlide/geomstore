@@ -60,7 +60,14 @@ describe('异步克隆的访问器错误载荷', () => {
     })
     const task: any = { value: host, context: cloneContext() }
 
-    processNodeAsync(task, asyncCloneOptions(() => true), errors, cloneStats(), cloneCounters(), () => {})
+    processNodeAsync(
+      task,
+      asyncCloneOptions(() => true),
+      errors,
+      cloneStats(),
+      cloneCounters(),
+      () => {},
+    )
 
     // getter 仅在克隆取值时触发一次：错误载荷复用已取到的描述符，不再兜底读取
     expect(getterCalls).toBe(1)
@@ -75,7 +82,14 @@ describe('异步克隆的描述符兜底', () => {
     const task: any = { value: { poison: 1, ok: 2 }, context: cloneContext() }
 
     try {
-      processNodeAsync(task, asyncCloneOptions(() => true), errors, cloneStats(), cloneCounters(), () => {})
+      processNodeAsync(
+        task,
+        asyncCloneOptions(() => true),
+        errors,
+        cloneStats(),
+        cloneCounters(),
+        () => {},
+      )
 
       // 描述符不可得 → 该节点以兜底读取落账；其余键不受影响
       expect(errors.some((error) => String(error.message).includes('descriptor lookup failed'))).toBe(true)

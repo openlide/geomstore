@@ -60,6 +60,11 @@ export function isPromise(value: unknown): value is Promise<unknown> {
 
 /**
  * 浅比较两个值
+ *
+ * 语义边界：只有「双方都是纯对象」或「双方都是数组」时才按自有可枚举键逐项浅比较；
+ * 其余对象（类实例、Error/URL/Promise/装箱原始值等）没有可信的浅层身份，
+ * 要求引用相等。这类值本函数判不等（保守方向：最多让 createSelector 多做一次
+ * 结果分发，不会把陈旧值当新值返回）。
  */
 export function shallowEqual(a: unknown, b: unknown): boolean {
   if (a === b) return true
@@ -83,6 +88,17 @@ export function shallowEqual(a: unknown, b: unknown): boolean {
   ) {
     return deepEqual(a, b)
   }
+
+  // 数组与普通对象键集可能一致（[] 与 {}、[1] 与 {0:1}）：
+  // 不校验类别会误判浅相等，导致 createSelector 返回陈旧值
+  const aIsArray = Array.isArray(a)
+  if (aIsArray !== Array.isArray(b)) return false
+  if (aIsArray && (a as unknown[]).length !== (b as unknown[]).length) return false
+
+  // 结构判定取代类型白名单：白名单列不全（Error/URL/ArrayBuffer 视图/Promise 的
+  // 自有可枚举键同样为空，两份不同实例会被键比较判为相等）。
+  // 两侧同为纯对象或同为数组才按键比较，否则只认引用相等（上面已判过 !==）
+  if (!aIsArray && !(isPlainObject(a) && isPlainObject(b))) return false
 
   const keysA = Object.keys(a as Record<string, unknown>)
   const keysB = Object.keys(b as Record<string, unknown>)
@@ -110,8 +126,11 @@ export { deepEqual } from './equality.js'
 /**
  * 原型链敏感键：作为普通自有属性覆盖写入，禁止递归合并进原型对象，
  * 防止 JSON.parse('{"__proto__": {...}}') 之类的输入污染 Object.prototype
+ *
+ * 导出：`Store.setState` 是核心侧唯一自行落键的公开写入路径，必须与这里同一份判据
+ * （两处各写一遍就会漂移成「$patch 挡住了、setState 没挡」）。
  */
-const PROTO_SENSITIVE_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
+export const PROTO_SENSITIVE_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
 
 /**
  * 以 DefineOwnProperty 语义写入自有属性。
@@ -119,7 +138,7 @@ const PROTO_SENSITIVE_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
  * Object.assign 走 [[Set]] 语义，键为 `__proto__` 时会触发原型 setter 改写对象原型；
  * defineProperty 只定义自有数据属性，不触发任何 setter，可安全承载任意键名。
  */
-function defineOwnProperty(target: Record<string, unknown>, key: string, value: unknown): void {
+export function defineOwnProperty(target: Record<string, unknown>, key: string, value: unknown): void {
   Object.defineProperty(target, key, {
     value,
     writable: true,
@@ -131,8 +150,21 @@ function defineOwnProperty(target: Record<string, unknown>, key: string, value: 
 /**
  * 深度合并对象
  *
- * 注意：此函数会修改 target 对象。对于非纯对象值（如数组），
- * 会进行深拷贝以防止 source 和 target 之间共享引用。
+ * 注意：此函数会**修改 target** 对象（原地合并，返回值就是 target）。
+ *
+ * 逐类源的合并规则：
+ * - 纯对象 → 纯对象：递归合并进 target 的既有纯对象（target 该位置不是纯对象时整体替换为克隆副本）；
+ * - 数组 / Map / Set / Date / RegExp / 类实例等非纯对象：整体替换为 `clone()` 的副本，不做递归合并；
+ * - 原始值：直接赋值。
+ *
+ * @remarks **合并后的 target 与 source 之间不保证不共享引用**——「深拷贝以防共享引用」只对
+ *   可安全克隆的值成立。`clone()` 默认走 deepCloneState，其窄口径是「不可安全克隆的值保留原引用」，
+ *   命中该路径的有：class 实例、Error/URL/装箱原始值等原型非 Object.prototype/null 的对象、
+ *   ArrayBuffer/TypedArray/DataView，以及 Date/RegExp/Map/Set/Array 的**子类实例**
+ *   （详见 core/utils/clone.ts 的文档）。因此
+ *   `deepMerge(target, { p: new Point(1, 2) })` 之后 `target.p === source.p`，
+ *   后续任一侧的改动都会串到另一侧。Store.$patch 走的就是本函数，
+ *   需要隔离的载荷请自行构造副本再打补丁（或把它放进纯对象/普通数组里由克隆接管）。
  */
 export function deepMerge<T extends Record<string, unknown>>(target: T, ...sources: Partial<T>[]): T {
   // 循环引用防护：同一对 (source, target) 只递归合并一次。source 自引用
@@ -169,15 +201,12 @@ export function deepMerge<T extends Record<string, unknown>>(target: T, ...sourc
           // 避免递归合并被静默跳过导致 source 数据丢失
           defineOwnProperty(dst, key, clone(sourceVal))
         }
-      } else if (Array.isArray(sourceVal) || sourceVal instanceof Map || sourceVal instanceof Set) {
-        // 数组：深拷贝防止共享引用
-        // Map/Set：深拷贝为独立实例，避免误合并成空普通对象或共享引用
-        defineOwnProperty(dst, key, clone(sourceVal))
       } else if (typeof sourceVal === 'object' && sourceVal !== null) {
-        // 其余非纯对象源值（Date/RegExp/类实例等）不可递归合并：
-        // Date/RegExp 的自有可枚举键恒为空，mergeInto 零次循环会把补丁静默丢弃；
-        // 类实例与纯对象合并语义不同，会把数据散落成旧实例上的杂散属性。
-        // 整体替换为深拷贝（Date/RegExp 由 clone 正确克隆，不可克隆类型保留原引用）
+        // 非纯对象源值（数组/Map/Set/Date/RegExp/类实例等）一律整体替换为克隆副本，不递归合并：
+        // - 数组/Map/Set：把补丁合并进既有容器会得到混合值（下标错位、键集叠加），谁都没承诺过这种语义；
+        // - Date/RegExp：自有可枚举键恒为空，mergeInto 的零次循环会把补丁静默丢弃；
+        // - 类实例：与纯对象合并语义不同，会把数据散落成旧实例上的杂散属性。
+        // 克隆的覆盖面按 core/utils/clone.ts 的口径，见 deepMerge 的 @remarks
         defineOwnProperty(dst, key, clone(sourceVal))
       } else {
         defineOwnProperty(dst, key, sourceVal)
@@ -302,17 +331,40 @@ export function uniqueId(prefix?: string): string {
 export type CloneMode = 'deep' | 'shallow' | 'safe' | 'json'
 
 /**
+ * 内建容器的准入门槛：只重建「恰好是该内建类型本身」的实例。
+ *
+ * 与 `clone.ts` 的 `isExactly` 是同一条判据——那份是 clone.ts 的模块私有函数（未导出），
+ * 本模块因此各自复述一行，而不是把它做成 utils 间的隐式契约。两处必须一起漂移：
+ * 想收敛就导出 `isExactly` 后删掉这里（改动跨 clone.ts，本轮分片未含该文件）。
+ * 子类实例走「返回原引用」的降级路径，理由见 {@link clone} 与 deepCloneState 的文档。
+ */
+function isExactlyBuiltin(value: object, proto: object): boolean {
+  return Object.getPrototypeOf(value) === proto
+}
+
+/**
  * 统一的克隆函数
  *
  * @param obj 要克隆的对象
  * @param options.mode 克隆模式（默认 'deep'）：
  * - `deep`：递归深拷贝，支持 Date/RegExp/Map/Set 与循环引用（复用 deepCloneState）
- * - `shallow`：仅复制一层（数组/Map/Set 展开复制，对象浅拷贝）
+ * - `shallow`：仅复制一层，且只覆盖纯对象/Array/Map/Set（Date/RegExp 按类型新建）；
+ *   其余非纯对象（类实例、Error、WeakMap、装箱原始值……）没有保类型的一层展开办法，
+ *   按 deep/safe 的降级口径返回原引用，不返回被抽空的对象
  * - `safe`：尽力深拷贝且绝不抛错——结构保真与 deep 相同（Date/Map/Set 正确克隆），
  *   仅在克隆器真正失败时降级返回原引用并告警。旧版 safe 的 JSON 序列化语义
  *   （Date 变字符串、Map/Set 变 `{}`、丢 undefined/函数）已移至显式命名的 `json` 模式
  * - `json`：JSON 序列化往返，产出可结构化克隆的纯数据副本（有损），
  *   序列化失败（循环引用等）时返回原引用
+ *
+ * @remarks 内建容器的**子类实例**（`class MyMap extends Map`、`class MyDate extends Date`……）
+ * 在 deep/shallow/safe 下都按原引用返回，不会被重建为基类副本：子类的构造参数、内部槽位与
+ * 自有字段都不可知，重建只会得到丢方法与字段的基类副本（调用子类方法直接 TypeError）。
+ * 该准入门槛与 clone.ts 的 `isExactly` 同口径，故五种内建容器（Date/RegExp/Map/Set/Array）
+ * 在「顶层输入」与「嵌在对象里」两处得到同一结果——`clone(x, {mode:'deep'})` 与
+ * `deepCloneState(x)` 对同一个顶层输入不再有两套口径，shallow 也不会把子类降级成基类副本。
+ * `json` 模式不受影响：它的契约本就是有损的 JSON 往返（子类实例也只剩可枚举自有键）。
+ *
  * @returns 克隆后的对象
  */
 export function clone<T>(obj: T, options?: { mode?: CloneMode }): T {
@@ -322,34 +374,53 @@ export function clone<T>(obj: T, options?: { mode?: CloneMode }): T {
     return obj
   }
 
-  // 处理特殊对象类型
-  if (obj instanceof Date) {
-    return new Date(obj.getTime()) as T
-  }
-  if (obj instanceof RegExp) {
-    return new RegExp(obj.source, obj.flags) as T
-  }
-
-  if (mode === 'shallow') {
-    // 浅克隆
-    if (Array.isArray(obj)) {
-      return [...obj] as T
-    }
-    if (obj instanceof Map) {
-      return new Map(obj) as T
-    }
-    if (obj instanceof Set) {
-      return new Set(obj) as T
-    }
-    return { ...obj }
-  }
-
+  // json 模式先判：它的契约是「JSON 往返产出纯数据副本」，Date/RegExp 必须在
+  // 顶层与嵌套处口径一致（此前 Date/RegExp 特判在前，顶层 Date 返回 Date 实例、
+  // 嵌套 Date 序列化成字符串，同一模式两套结果）
   if (mode === 'json') {
     try {
       return JSON.parse(JSON.stringify(obj))
     } catch {
       return obj
     }
+  }
+
+  // 处理特殊对象类型：与 clone.ts 的 `isExactly` 同门槛——只重建「恰好是该内建类型本身」
+  // 的实例。子类实例（`class MyDate extends Date`）不在这里截走，交给下方的降级口径：
+  // deep/safe 走 deepCloneState（它自己也带同一道门槛，返回原引用），shallow 走
+  // 「非纯对象返回原引用」分支。此前这里无条件 `new Date(obj.getTime())`，会让同一个
+  // Date 子类在顶层被降级成基类副本、嵌在对象里却保留原引用（注释与实现相反）
+  if (obj instanceof Date && isExactlyBuiltin(obj, Date.prototype)) {
+    return new Date(obj.getTime()) as T
+  }
+  if (obj instanceof RegExp && isExactlyBuiltin(obj, RegExp.prototype)) {
+    return new RegExp(obj.source, obj.flags) as T
+  }
+
+  if (mode === 'shallow') {
+    // 浅克隆：只复制一层，且只对有「保类型的一层展开」办法的容器做展开
+    // （Date/RegExp 已在上方按类型新建；内建类型的子类一律走下方的原引用降级）
+    if (Array.isArray(obj) && isExactlyBuiltin(obj, Array.prototype)) {
+      return [...obj] as T
+    }
+    if (obj instanceof Map && isExactlyBuiltin(obj, Map.prototype)) {
+      return new Map(obj) as T
+    }
+    if (obj instanceof Set && isExactlyBuiltin(obj, Set.prototype)) {
+      return new Set(obj) as T
+    }
+    // 其余对象只有纯对象可以展开：类实例/Error/WeakMap/Promise 的自有可枚举键一般为空，
+    // { ...obj } 会得到一个连原型（连带全部方法）都丢掉的空壳，值整个消失。
+    // 按 deep/safe 的降级口径返回原引用——宁可共享，也不交出一份被抽空的数据
+    if (!isPlainObject(obj)) {
+      return obj
+    }
+    // 展开运算按键 DefineDataProperty 写入（自有 '__proto__' 键不会被 [[Set]] 吞掉），
+    // 再把原型复位：Object.create(null) 的状态映射展开成 {} 会白得一份 Object.prototype，
+    // 与 deep 路径（deepCloneState）的原型保真口径分叉
+    const copy = { ...obj }
+    Object.setPrototypeOf(copy, Object.getPrototypeOf(obj))
+    return copy as T
   }
 
   // deep 与 safe 共用递归克隆器（支持 Map/Set 与循环引用）：

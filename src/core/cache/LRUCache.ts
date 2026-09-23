@@ -16,6 +16,11 @@ export type { CacheOptions, LRUCacheStats } from './types.js'
 
 import type { CacheOptions, LRUCacheStats, LRUNode } from './types.js'
 
+/** 高精度时间戳（毫秒）：performance.now 具亚毫秒精度，访问耗时统计依赖它 */
+function highResNow(): number {
+  return typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : Date.now()
+}
+
 // ==================== 增强型LRU缓存类 ====================
 
 /**
@@ -43,11 +48,6 @@ import type { CacheOptions, LRUCacheStats, LRUNode } from './types.js'
  * })
  * ```
  */
-/** 高精度时间戳（毫秒）：performance.now 具亚毫秒精度，访问耗时统计依赖它 */
-function highResNow(): number {
-  return typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : Date.now()
-}
-
 export class LRUCache<K, V> {
   /** 当前容量 */
   private capacity: number
@@ -64,6 +64,19 @@ export class LRUCache<K, V> {
   /** 当前缓存项数量 */
   private _size: number
 
+  /**
+   * 淘汰进行中：onEvict 回调重入 set()/resize() 时不再启动第二层淘汰循环。
+   * 重入的写入交给外层循环消化（回调返回后外层 while 会重新核对容量），
+   * 否则「回调内回填刚被逐出的键」会一层套一层递归，直到 RangeError 栈溢出。
+   */
+  private evicting = false
+
+  /**
+   * 「淘汰无法收敛」是否已报告过：每个实例只输出一次，
+   * 否则持续回填的缓存会把一次容量冲突变成每次写入一条日志的刷屏
+   */
+  private capacityViolationReported = false
+
   /** 命中次数 */
   private hitCount: number
 
@@ -76,8 +89,14 @@ export class LRUCache<K, V> {
   /** 总访问时间（毫秒） */
   private totalAccessTime: number
 
-  /** 配置选项 */
-  private options: Required<CacheOptions<K, V>>
+  /**
+   * 配置选项（不含 capacity）
+   *
+   * 容量只保存在 `this.capacity` 一份：此前 options 与 capacity 各存一份，
+   * 构造期的规范化（非有限值回退、小于 1 夹到 1）会让两者取值分叉，
+   * 后续任何按 `options.capacity` 做的淘汰判定都会绕开守卫、重新引入无界缓存
+   */
+  private options: Required<Omit<CacheOptions<K, V>, 'capacity'>>
 
   /**
    * 创建LRU缓存实例
@@ -103,17 +122,18 @@ export class LRUCache<K, V> {
       config = { capacity: config }
     }
 
+    // NaN/Infinity 容量会使 Math.max 产生 NaN，_size > NaN 恒为 false → 缓存无界；
+    // 非有限值回退默认容量。规范化结果即唯一副本（见 options 字段说明）
+    const requestedCapacity = config.capacity ?? 100
+    this.capacity = Number.isFinite(requestedCapacity) ? Math.max(1, requestedCapacity) : 100
+
     // 默认配置
     this.options = {
-      capacity: config.capacity ?? 100,
       enableStats: config.enableStats ?? true,
       trackAccessTime: config.trackAccessTime ?? true,
       onEvict: config.onEvict ?? (() => {}),
     }
 
-    // NaN/Infinity 容量会使 Math.max 产生 NaN，_size > NaN 恒为 false → 缓存无界；
-    // 非有限值回退默认容量
-    this.capacity = Number.isFinite(this.options.capacity) ? Math.max(1, this.options.capacity) : 100
     this.cache = new Map()
     this._size = 0
     this.hitCount = 0
@@ -143,8 +163,6 @@ export class LRUCache<K, V> {
       prev: null,
       next: null,
       createdAt: timestamp,
-      lastAccessedAt: timestamp,
-      accessCount: 0,
     }
   }
 
@@ -157,15 +175,12 @@ export class LRUCache<K, V> {
    * @returns {LRUNode<K, V>} 新节点
    */
   private createNode(key: K, value: V): LRUNode<K, V> {
-    const now = Date.now()
     return {
       key,
       value,
       prev: null,
       next: null,
-      createdAt: now,
-      lastAccessedAt: now,
-      accessCount: 1,
+      createdAt: Date.now(),
     }
   }
 
@@ -175,7 +190,10 @@ export class LRUCache<K, V> {
    * 如果键存在，将其移动到头部（标记为最近使用）并返回值。
    * 如果键不存在，返回undefined。
    *
-   * 优化：减少 Date.now() 调用次数，只在必要时更新访问时间
+   * 优化：时钟调用只在「开启统计且开启计时」的命中路径发生，未命中不取时钟
+   *
+   * @remarks `trackAccessTime` 只影响 `avgAccessTime` 的采样，不影响 LRU 顺序：
+   * 顺序始终由 `moveToHead`（访问即最近使用）决定。
    *
    * @param {K} key - 键
    * @returns {V | undefined} 值或undefined
@@ -191,8 +209,6 @@ export class LRUCache<K, V> {
    * ```
    */
   get(key: K): V | undefined {
-    // 访问计时起点（trackAccessTime 且开启统计时才需要，避免多余的时钟调用）
-    const timing = this.options.trackAccessTime && this.options.enableStats ? highResNow() : 0
     const node = this.cache.get(key)
 
     if (!node) {
@@ -203,22 +219,20 @@ export class LRUCache<K, V> {
       return undefined
     }
 
-    // 命中：更新访问信息并移动到头部
-    // 只在需要时更新访问时间，避免不必要的 Date.now() 调用
-    if (this.options.trackAccessTime) {
-      const now = Date.now()
-      node.lastAccessedAt = now
-      if (this.options.enableStats) {
-        this.hitCount++
-        // 真实访问耗时（此前恒记 1ms，avgAccessTime 是无意义假数据）
-        this.totalAccessTime += highResNow() - timing
-      }
-    } else if (this.options.enableStats) {
+    // 计时起点在「确认命中之后」取：此前每次访问都先取一次高精度时钟，
+    // 未命中路径把它整次丢弃（未命中也要付一次时钟调用）。
+    // 测量区间随之变为命中相对未命中多做的收尾工作（计数 + 摘链/挂链）
+    const measure = this.options.trackAccessTime && this.options.enableStats
+    const timing = measure ? highResNow() : 0
+
+    if (this.options.enableStats) {
       this.hitCount++
     }
-
-    node.accessCount++
     this.moveToHead(node)
+    if (measure) {
+      // 真实访问耗时（此前恒记 1ms，avgAccessTime 是无意义假数据）
+      this.totalAccessTime += highResNow() - timing
+    }
 
     return node.value
   }
@@ -244,10 +258,11 @@ export class LRUCache<K, V> {
     const node = this.cache.get(key)
 
     if (node) {
-      // 节点已存在：更新值并移动到头部
+      // 节点已存在：更新值并移动到头部。
+      // 不再写 lastAccessedAt/accessCount 元数据：二者在全库内无任何读取方
+      // （LRU 顺序由链表决定，统计走 hitCount/totalAccessTime），
+      // 且 set() 原本无条件盖时间戳，与 get() 的 trackAccessTime 门控互相矛盾
       node.value = value
-      node.lastAccessedAt = Date.now()
-      node.accessCount++
       this.moveToHead(node)
       return this
     }
@@ -258,17 +273,7 @@ export class LRUCache<K, V> {
     this.addToHead(newNode)
     this._size++
 
-    // 检查容量，执行LRU淘汰。
-    // 用循环而非单次 if：onEvict 回调可能重入 set()（回调里回填数据），
-    // 单次淘汰后尺寸可能仍超限，容量不变量会永久失效
-    while (this._size > this.capacity) {
-      const sizeBefore = this._size
-      this.evictLRU()
-      // 回调重入写入且淘汰无效（如空缓存）时终止，避免死循环
-      if (this._size >= sizeBefore) {
-        break
-      }
-    }
+    this._enforceCapacity()
 
     return this
   }
@@ -373,6 +378,12 @@ export class LRUCache<K, V> {
   /**
    * 清空缓存
    *
+   * @remarks 清空按「逐条淘汰」口径记账：每个条目触发一次 `onEvict`，
+   * 并累计计入 `getStats().evictions`（该字段的契约是「onEvict 触发次数」，
+   * 而非「因容量上限被挤出的条目数」）。因此把 `clear()` 用于配置性重建
+   * （如 `StoreCacheManager.enable()`）时，`evictions` 会包含这部分非容量淘汰；
+   * 需要区分两类淘汰的调用方，可在配置性清空前后各读一次 `evictions` 求差。
+   *
    * @returns {this} 支持链式调用
    */
   clear(): this {
@@ -392,13 +403,14 @@ export class LRUCache<K, V> {
     this._size = 0
 
     // clear 触发的全量回调与 evictLRU 同口径计入淘汰统计；
-    // 单个回调抛错不中断其余条目（与 evictLRU 的防护对齐）
+    // 单个回调抛错不中断其余条目，错误上报也与 evictLRU 一致（不受 NODE_ENV 门控，
+    // 否则同一类回调故障在两处的可见性不同）
     this.evictionCount += nodes.length
     for (const entry of nodes) {
       try {
         this.options.onEvict(entry.key as K, entry.value as V)
-      } catch {
-        // 淘汰回调失败不影响清空流程
+      } catch (error) {
+        console.error('[LRUCache] Error in onEvict callback:', error)
       }
     }
 
@@ -442,16 +454,9 @@ export class LRUCache<K, V> {
     const validCapacity = Number.isFinite(newCapacity) ? Math.max(1, newCapacity) : this.capacity
 
     // 先落定容量再淘汰：onEvict 回调可能重入 set()，只有容量已更新，
-    // 重入写入才不会按旧上限继续扩容；循环条件也保证回调重入后仍收敛到新容量
+    // 重入写入才不会按旧上限继续扩容
     this.capacity = validCapacity
-    while (this._size > this.capacity) {
-      const sizeBefore = this._size
-      this.evictLRU()
-      // 淘汰未生效（缓存已空）或回调重入使其增长时终止，避免死循环
-      if (this._size >= sizeBefore) {
-        break
-      }
-    }
+    this._enforceCapacity()
 
     return this
   }
@@ -510,17 +515,24 @@ export class LRUCache<K, V> {
   /**
    * 遍历缓存（按最近使用顺序）
    *
+   * @remarks 迭代口径与 `clear()` 一致：进入时先按当前链序取一份**键快照**，
+   * 再逐个按键从缓存取「回调时刻的当前值」。因此回调内对缓存的改动只影响快照：
+   * - 删除非当前键：该键从迭代中消失（不会把已删条目再回调一次），其余条目不丢；
+   * - 读取其他键（`get`/`getOrSet` 命中会 moveToHead 重排）：每个快照键恰好访问一次；
+   * - 遍历期间新写入的键：本次不访问（它们不在快照里），下次遍历可见。
+   * 值不取快照：读到的是当前值，故回调内改过的条目以改动后的值参与回调。
+   *
    * @param {(value: V, key: K) => void} callback - 回调函数
    */
   forEach(callback: (value: V, key: K) => void): void {
-    let node = this.head.next
-
-    while (node && node !== this.tail) {
-      // 先取后继再回调：回调内删除当前节点会经 removeFromList 把 next 置空，
-      // 活指针遍历会在下一步中断，剩余条目被静默跳过
-      const next = node.next
-      callback(node.value, node.key)
-      node = next
+    // 活指针遍历有两类静默失真：removeFromList 会把被摘链节点的 prev/next 置 null，
+    // 于是「预取的后继」可能指向已摘链节点（多访问一条已删数据），
+    // 且该节点的 next === null 会提前终止循环（剩余条目整体被跳过）
+    for (const key of this.keys()) {
+      const node = this.cache.get(key)
+      if (node) {
+        callback(node.value, key)
+      }
     }
   }
 
@@ -660,6 +672,45 @@ export class LRUCache<K, V> {
   }
 
   /**
+   * 把尺寸收敛到容量上限（set() 与 resize() 共用同一判据）
+   *
+   * 用循环而非单次 if：onEvict 回调可能重入 set()（回调里回填数据），
+   * 单次淘汰后尺寸可能仍超限，容量不变量会永久失效。
+   * 重入保护：淘汰进行中回调里再 set() 只写入、不开第二层淘汰循环（由本帧统一收敛），
+   * 否则「回填被逐出的键」会一层套一层递归，几百次写入即 RangeError 栈溢出。
+   * 预算取代「净尺寸没减少就 break」：回调回填会抵消淘汰带来的减量，按净尺寸判定会
+   * 提前收手、把容量永久留在超限档位（回填有限时应收敛到新容量）；
+   * 按「本轮至多淘汰 entrySize 个」判定则既收敛又有界。
+   */
+  private _enforceCapacity(): void {
+    const evictionBudget = this._size
+    let evictions = 0
+    while (!this.evicting && this._size > this.capacity && evictions < evictionBudget) {
+      this.evictLRU()
+      evictions++
+    }
+
+    // 预算耗尽仍超限：onEvict 在淘汰期间写入的条目抵消了淘汰的减量。
+    // 回填条数由回调决定、不受库约束，继续追淘汰只会把单帧变成无界循环，
+    // 因此这一支路只保证「有界 + 可见」，把无法收敛的事实报出来而不静默留档
+    if (!this.evicting && this._size > this.capacity) {
+      this._reportUnconvergedCapacity()
+    }
+  }
+
+  /** 淘汰预算耗尽、容量上限本轮无法达成时的单次诊断（见 _enforceCapacity） */
+  private _reportUnconvergedCapacity(): void {
+    if (this.capacityViolationReported) {
+      return
+    }
+    this.capacityViolationReported = true
+    console.warn(
+      `[LRUCache] 淘汰循环结束仍有 ${this._size} 条超出容量上限 ${this.capacity}：onEvict 回调在淘汰过程中写入了新条目。` +
+        '若每次淘汰都有回填，尺寸将随写入持续增长（每次净增一条），请在回调内停止回填或改用更大的容量',
+    )
+  }
+
+  /**
    * 淘汰最久未使用的节点（LRU策略核心）
    *
    * @private
@@ -678,9 +729,14 @@ export class LRUCache<K, V> {
     this.evictionCount++
 
     try {
+      // 标记本帧淘汰进行中：回调内重入的 set()/resize() 只写入、不再开启第二层
+      // 淘汰循环（嵌套淘汰会在每次回填时再递归一层，capacity=1 时直接栈溢出）
+      this.evicting = true
       this.options.onEvict?.(lruNode.key, lruNode.value)
     } catch (error) {
       console.error('[LRUCache] Error in onEvict callback:', error)
+    } finally {
+      this.evicting = false
     }
   }
 }

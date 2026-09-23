@@ -166,6 +166,19 @@ describe('compose/helpers', () => {
       expect(handler).not.toHaveBeenCalled()
       expect(warnSpy).not.toHaveBeenCalledWith(expect.stringContaining('这些键将丢失'))
     })
+
+    it('warnMissingKeys 不参与路由：$replaceState 路径下嵌套键仍还原成内层形状', () => {
+      // 外层非命名空间、内层是命名空间组合：'leaf/n' 必须还原为 { leaf: { n } }
+      // 交给内层组合自行路由。修复前该还原被 warnMissingKeys（仅开发模式的
+      // $replaceState 才为 true）关掉，导致同一份写入在开发/生产走不同分支
+      const nested = Object.assign(fakeStore('outer'), { stores: { leaf: {} } })
+      const handler = jest.fn()
+
+      dispatchByNamespace(asStores([nested]), undefined, { 'leaf/n': 1 }, false, handler, { warnMissingKeys: true })
+
+      expect(handler).toHaveBeenCalledTimes(1)
+      expect(handler).toHaveBeenCalledWith(nested, { leaf: { n: 1 } })
+    })
   })
 
   describe('findTargetStoreWithKey', () => {

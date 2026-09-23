@@ -616,7 +616,8 @@ describe('analyzerPlugin - uninstall cleanup', () => {
     }
 
     // 先恢复 globalThis
-    (global as any).globalThis = originalGlobalThis
+    const g = global as any
+    g.globalThis = originalGlobalThis
     expect(threw).toBe(false)
   })
 })
@@ -691,7 +692,7 @@ describe('analyzerPlugin - BUG-F2 错误路径清理配对栈', () => {
     jest.restoreAllMocks()
   })
 
-  it('dispatch 抛错后同类型后续操作的配对不错位（残留计时被 onError 清理）', () => {
+  it('R5-319 回归: dispatch 抛错后同类型后续操作的配对不错位', () => {
     const store = createStore({
       name: 'f2-error-dispatch-store',
       state: { count: 0 },
@@ -707,44 +708,79 @@ describe('analyzerPlugin - BUG-F2 错误路径清理配对栈', () => {
 
     store.use(analyzerPlugin)
 
-    // 错误路径：beforeDispatch push 后抛错，afterDispatch 不触发，
-    // onError 应立即结束全部未完成计时（记录到错误为止的耗时）并清空栈
+    // 错误路径：beforeDispatch push 后抛错，afterDispatch 不触发。
+    // 这条失败上报显式点名了 `'dispatch'`：同步 dispatch 中止是全库唯一「after* 再也不会来」
+    // 的发射点。同一无源通道的其余 4 条（Promise 拒绝、settled 兜底、收尾、缓存刷新）都不点名，
+    // 因为它们的 afterDispatch 早已弹过自己的栈项——据它们弹栈会掐断外层进行中的计时、配错 span
     expect(() => store.dispatch('fail')).toThrow('execution failed')
 
-    // 后续正常 dispatch 不应受残留影响：指标正常记录且无残留计时条目
+    // 后续正常 dispatch 不受残留影响：配对仍指向它自己 push 的那条计时
     store.dispatch('succeed')
 
     const monitor = (store as any).__performanceMonitor__
     const metrics = monitor.getMetrics() as Array<{ operation: string }>
-    // 错误场景的计时被记录（到错误发生为止的耗时）
+    // 中止帧被弹栈时照常产出一条「到抛错为止」的耗时：`popEnd` 就是调用 `end()`，
+    // 与 setState/patch/replaceState 正常收尾同语义。看指标的人要知道这条短耗时代表一次中止，
+    // 而不是一次成功的 dispatch
     expect(metrics.filter((m) => m.operation === 'dispatch:fail')).toHaveLength(1)
     expect(metrics.filter((m) => m.operation === 'dispatch:succeed')).toHaveLength(1)
-    // 全部计时条目已配对结束，无残留
+    // 两条计时都已收尾：既不跨帧配错，也不留在途条目等 pruneStaleOperations 按 TTL 清扫
     expect(monitor.currentOperations.size).toBe(0)
   })
 
-  it('通过 onError 钩子手动触发时也应清空全部类型栈', () => {
+  it('#425 回归: 与计时无关的 source（persistence）不得弹掉任何进行中的配对计时', () => {
     const store = createStore({
-      name: 'f2-manual-onerror-store',
+      name: 'f2-unrelated-source-store',
       state: { count: 0 },
     })
 
     store.use(analyzerPlugin)
 
-    // 制造残留：emit beforeXxx 而不 emit afterXxx
+    store.hooks.emit('beforePatch', {})
     store.hooks.emit('beforeSetState', 'count', 1)
-    store.hooks.emit('beforeDispatch', 'whatever', [])
-
-    // 手动触发 onError：残留计时应被立即结束（记录到错误为止），
-    // 后续 afterXxx 弹空栈不产生重复指标
-    store.hooks.emit('onError', new Error('manual'), 'manual')
-    expect(() => store.hooks.emit('afterSetState', 'count', 1)).not.toThrow()
-    expect(() => store.hooks.emit('afterDispatch', 'whatever', [], undefined)).not.toThrow()
-
     const monitor = (store as any).__performanceMonitor__
+    expect(monitor.currentOperations.size).toBe(2)
+
+    // 落盘失败与进行中的计时毫无关系，此前会连带弹掉每一类栈顶
+    expect(() => store.hooks.emit('onError', new Error('persist failed'), 'persistence')).not.toThrow()
+    expect(monitor.currentOperations.size).toBe(2)
+    expect(monitor.getMetrics()).toHaveLength(0)
+
+    // 两条计时仍能与各自的 after* 钩子正确配对
+    store.hooks.emit('afterSetState', 'count', 1)
+    store.hooks.emit('afterPatch', {})
     expect(monitor.currentOperations.size).toBe(0)
-    // 每个操作各1条指标，不因清栈重复记录
-    expect(monitor.getMetrics().length).toBe(2)
+    expect(monitor.getMetrics().map((m: { operation: string }) => m.operation)).toEqual(['setState:count', 'patch'])
+  })
+
+  it('R5-319 回归: 钩子处理器抛错只出声，不得提前掐断仍在进行的嵌套计时', () => {
+    const store = createStore({
+      name: 'f2-scoped-source-store',
+      state: { count: 0 },
+      actions: {
+        bump(this: any) {
+          this.setState('count', 1)
+        },
+      } as any,
+    })
+
+    store.use(analyzerPlugin)
+    const monitor = (store as any).__performanceMonitor__
+
+    // 第三方在 beforeSetState 上挂了抛错的处理器：HookSystem 捕获后继续迭代其余处理器，
+    // 并以出错的 hookName 作第二参转发 onError（见 types/plugin.ts 的 emit 语义），
+    // 之后 afterSetState / afterDispatch 照常触发
+    const off = store.hooks.on('beforeSetState', () => {
+      throw new Error('handler boom')
+    })
+
+    store.dispatch('bump')
+    off()
+
+    // 两条计时各自与自己类型的 after* 配对：弹栈版实现里 afterSetState 会弹到
+    // 外层 dispatch 的配对项上，dispatch 的 span 被提前结束、afterDispatch 再弹一次空栈
+    expect(monitor.getMetrics().map((m: { operation: string }) => m.operation)).toEqual(['setState:count', 'dispatch:bump'])
+    expect(monitor.currentOperations.size).toBe(0)
   })
 })
 
@@ -787,6 +823,38 @@ describe('analyzerPlugin - BUG-F16 getter 包装链防护', () => {
     const result = store.getter('double')
     expect(result).toBe(4)
     expect(laterWrappedCalls).toContain('double')
+  })
+
+  it('#424 回归: 包装被后续插件持有时，卸载后不得再向已失效的 monitor 写入指标', () => {
+    jest.spyOn(console, 'warn').mockImplementation(() => {})
+    const store = createStore({
+      name: 'f16-ghost-store',
+      state: { count: 2 },
+      getters: {
+        double: (state: any) => state.count * 2,
+      },
+    })
+
+    // 卸载后 __performanceMonitor__ 与全局条目都会被清掉，故先留住 monitor 句柄观察
+    const uninstallAnalyzer = store.use(analyzerPlugin)
+    const monitor = (store as any).__performanceMonitor__
+
+    const getterAfterAnalyzer = store.getter
+    ;(store as any).getter = function (this: unknown, ...args: unknown[]): unknown {
+      return (getterAfterAnalyzer as (...a: unknown[]) => unknown).apply(this, args)
+    }
+
+    uninstallAnalyzer()
+
+    // 身份判断失败 → 本插件的包装被后续包装继续持有
+    expect((store as any).__performanceMonitor__).toBeUndefined()
+
+    // 调用仍走包装链且结果正确……
+    expect(store.getter('double')).toBe(4)
+    expect(store.getter('double')).toBe(4)
+    // ……但卸载后不应再产生任何计时（改前每次调用都往已 clear() 的 monitor 里塞一条）
+    expect(monitor.getMetrics()).toHaveLength(0)
+    expect(monitor.currentOperations.size).toBe(0)
   })
 
   it('getter 未被重新包装时卸载应正常恢复原始实现', () => {
@@ -914,6 +982,8 @@ describe('R5 回归：analyzerPlugin 全局注册表清理需身份守卫', () =
 
     uninstall()
 
-    expect(globalObj.__GEOMSTORE_ANALYZER__['solo-analyzer']).toBeUndefined()
+    // #365：最后一个条目卸载后空容器一并从 globalThis 摘掉，故条目读取用可选链
+    expect(globalObj.__GEOMSTORE_ANALYZER__?.['solo-analyzer']).toBeUndefined()
+    expect(globalObj.__GEOMSTORE_ANALYZER__).toBeUndefined()
   })
 })

@@ -7,11 +7,10 @@
  * 判定结果为生产模式；加载完即恢复环境变量，避免影响其余测试。
  *
  * 覆盖面：HookSystem(usePlugin 安装/卸载)、Store.use 重复安装、SubscriptionManager
- * 订阅上限与监听器抛错、composeStore 子 store 重名、compose/helpers 已销毁子 store
+ * 订阅上限与监听器抛错、订阅者驱逐上报通道、composeStore 子 store 重名、compose/helpers 已销毁子 store
  * 与写入竞态、withCache 命中/in-flight 去重、persistencePlugin 安装/无后端降级/恢复、
  * analyzerPlugin 卸载时 getter 已被重新包装。
  */
- 
 
 describe('生产模式下的日志静默', () => {
   let mod: Record<string, any>
@@ -36,6 +35,7 @@ describe('生产模式下的日志静默', () => {
       usePlugin: (await import('@/core/hooks/index.js')).usePlugin,
       HookSystem: (await import('@/core/hooks/index.js')).HookSystem,
       createStore: (await import('@/core/store/index.js')).createStore,
+      SubscriptionManager: (await import('@/core/store/SubscriptionManager.js')).SubscriptionManager,
       composeStore: (await import('@/core/compose/index.js')).composeStore,
       dispatchByNamespace: (await import('@/core/compose/helpers.js')).dispatchByNamespace,
       withCache: (await import('@/extras/action/decorators/cache.js')).withCache,
@@ -103,6 +103,35 @@ describe('生产模式下的日志静默', () => {
     expect(warnSpy).not.toHaveBeenCalled()
   })
 
+  it('驱逐事件走宿主上报通道时控制台仍静默，通道自身抛错也不外泄', () => {
+    const seen: unknown[] = []
+    const manager = new mod.SubscriptionManager({
+      storeName: 'prod-evict',
+      maxSubscribers: 1,
+      onSubscriberEvicted: (info: unknown) => {
+        seen.push(info)
+        throw new Error('eviction reporter down')
+      },
+      onListenerError: () => {
+        throw new Error('listener reporter down')
+      },
+    })
+    function earliestSubscriber() {}
+    manager.add(earliestSubscriber)
+
+    // 生产下既不打驱逐告警，也不让上报通道的抛错冒出来；事件本身仍送达
+    expect(() => manager.add(() => {})).not.toThrow()
+    expect(seen).toHaveLength(1)
+
+    manager.add(() => {
+      throw new Error('listener boom')
+    })
+    expect(() => manager.notify({ x: 1 })).not.toThrow()
+
+    expect(warnSpy).not.toHaveBeenCalled()
+    expect(errorSpy).not.toHaveBeenCalled()
+  })
+
   it('监听器抛错时静默吞掉（不输出详细日志），且不影响其余监听器', () => {
     const store = mod.createStore({ name: 'prod-listener-throw', state: { x: 1 } })
     const healthy = jest.fn()
@@ -140,7 +169,8 @@ describe('生产模式下的日志静默', () => {
     const racing = { name: 'c', destroyed: false, getState: () => ({ z: 3 }) }
     const handler = jest.fn((store: any) => {
       store.destroyed = true
-      throw new Error('destroyed during write')
+      // 竞态吞掉的判据是「destroyed + 销毁守卫的固定文案」，非销毁类异常不得被静默
+      throw new Error('[GeomStore] Cannot call $patch on a destroyed Store')
     })
 
     expect(() => mod.dispatchByNamespace([racing], undefined, { z: 3 }, false, handler)).not.toThrow()

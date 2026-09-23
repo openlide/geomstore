@@ -27,8 +27,21 @@ export class HookSystem implements IHookSystem {
     }
     handlers.add(handler)
 
+    // 句柄一次性：退订后按当前 Map 取值再删除，会让旧句柄在「同一 handler 重新注册」
+    // 之后把新那份注册删掉（on → off → on → off 即令第二次 on 静默失效）。
+    // 加一位标志让失效句柄的重复调用成为 no-op，退订只作用于它自己那次注册
+    let unsubscribed = false
     return () => {
-      this.hooks.get(hookName)?.delete(handler)
+      if (unsubscribed) return
+      unsubscribed = true
+      const current = this.hooks.get(hookName)
+      if (!current) return
+      current.delete(handler)
+      // 最后一个监听者退订即摘键：留下空 Set 会让无参 size()（「已注册钩子种类数」）
+      // 在全部退订后仍把该钩子计为在册，观测值与真实状态永久背离
+      if (current.size === 0) {
+        this.hooks.delete(hookName)
+      }
     }
   }
 
@@ -42,7 +55,11 @@ export class HookSystem implements IHookSystem {
       try {
         handler(...args)
       } catch (error) {
-        console.error('[GeomStore] Error in hook ' + hookName + ':', error)
+        // 有意不加 isProduction() 门控（与 usePlugin 的 console.debug 不同）：
+        // 这里抛出的是使用者 handler 的真实故障，且已同时转投 onError 钩子；
+        // 钩子没有内建的失败上报通道，生产静默会让故障完全不可见。
+        // 需要收敛输出请在 onError 里自行接监控（错误已被再次 emit 出来）
+        console.error(`[GeomStore] Error in hook ${hookName}:`, error)
         if (hookName !== 'onError') {
           this.emit('onError', error, hookName)
         }
@@ -93,25 +110,47 @@ export class HookSystem implements IHookSystem {
  *
  * `plugin` 需与 store 的状态类型匹配；状态无关的插件写作 `Plugin<State>`（如 `loggerPlugin`），
  * 对任意 Store 都适用。
+ *
+ * 失败语义分两类：插件安装自身失败（含 plugin 形状非法）按 PLUGIN-002 降级——
+ * `console.error` 上报并返回空卸载函数，不拖垮 Store 初始化；
+ * 而在**已销毁的 Store** 上安装属调用方误用，`store.use` 抛出的原始异常原样冒泡
+ * （该异常不是「可选插件失败」，静默降级会让调用方拿到一个从未安装的插件还误以为成功）。
  */
-export function usePlugin<S extends State, A extends Actions, G extends Getters<S>>(plugin: Plugin<NoInfer<S>> | Plugin<State>, store: Store<S, A, G>): () => void {
+export function usePlugin<S extends State, A extends Actions, G extends Getters<S>>(
+  plugin: Plugin<NoInfer<S>> | Plugin<State>,
+  store: Store<S, A, G>,
+): () => void {
+  let uninstall: () => void
   try {
     // 委托给 store.use：插件需登记进宿主，destroy() 才会执行清理、重复安装才会被识别。
     // 此前直接调 plugin.install，绕过登记：destroy() 不卸载、与 store.use 混用会双重安装、
     // 全局入口（如 timeTravelPlugin）在销毁后残留
-    const uninstall = store.use(plugin as Plugin<S>)
-    if (!isProduction()) {
-      console.debug(`[GeomStore] Plugin "${plugin.name}" installed`)
-    }
-
-    return () => {
-      uninstall()
-      if (!isProduction()) {
-        console.debug(`[GeomStore] Plugin "${plugin.name}" uninstalled`)
-      }
-    }
+    uninstall = store.use(plugin as Plugin<S>)
   } catch (error) {
-    console.error(`[GeomStore] Failed to install plugin "${plugin.name}":`, error)
+    // 「对已销毁 Store 调用 use」是调用方误用，不是插件安装故障：Store.use 的 @throws
+    // 已把它写进契约，PLUGIN-002 的静默降级只针对后者。一并吞掉会让调用方失去
+    // 唯一的可编程信号（拿到一个空卸载函数，插件其实从未安装）
+    if (store.destroyed) {
+      throw error
+    }
+    // 兜底分支自身不得再抛：install 失败很可能源于 plugin 为 null/形状非法
+    // （store.use 读取 plugin.install 时即抛 TypeError），直接取 plugin.name 会抛出
+    // 第二个 TypeError 顶掉原始错误，调用方只看到「Cannot read properties of undefined」
+    const pluginName = (plugin as { name?: string } | null | undefined)?.name ?? 'unknown'
+    console.error(`[GeomStore] Failed to install plugin "${pluginName}":`, error)
+    // 失败以 console.error 上报并返回空卸载函数（既有契约 PLUGIN-002）：
+    // 此处不抛错是为了让「可选插件」失败不拖垮 Store 初始化
     return () => {}
+  }
+
+  if (!isProduction()) {
+    console.debug(`[GeomStore] Plugin "${plugin.name}" installed`)
+  }
+
+  return () => {
+    uninstall()
+    if (!isProduction()) {
+      console.debug(`[GeomStore] Plugin "${plugin.name}" uninstalled`)
+    }
   }
 }

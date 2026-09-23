@@ -9,7 +9,7 @@
  */
 
 import { isProduction } from '../../../core/store/utils.js'
-import { isAsyncFunction } from './common.js'
+import { isAsyncFunction, isThenable } from './common.js'
 
 /**
  * 缓存装饰器选项
@@ -23,6 +23,16 @@ export interface CacheDecoratorOptions {
 
 /** 单宿主缓存条目上限，防止参数空间大的方法导致 Map 无限增长 */
 const MAX_CACHE_ENTRIES = 1000
+
+/**
+ * 在途占位条目的最短生存时间（毫秒）
+ *
+ * 占位条目若不过期，被装饰方法返回的 Promise 永不结算（请求被丢弃、宿主挂起等）时
+ * 该条目会永久驻留：既回收不掉（过期清理只看 `expiry <= at`），又让此后所有同参调用
+ * 一直拿到同一个永不结算的 Promise——相当于该方法永久失效。取 60s 与 wx.request 的
+ * 默认超时同量级：正常的在途请求在此之前完成，异常请求的占位则会被回收。
+ */
+const MIN_IN_FLIGHT_TTL = 60_000
 
 /** symbolIds 表上限：动态创建的 Symbol 参数（请求令牌等）不可 GC，强引用表会无限增长 */
 const MAX_SYMBOL_IDS = 1000
@@ -50,6 +60,50 @@ function identityId(value: object): number {
   return id
 }
 
+/** 数组的规范下标键（'0'、'1'…）：这类键由元素路径负责，附加键收集要跳过它们 */
+function isIndexKey(key: string): boolean {
+  const index = Number(key)
+  return Number.isInteger(index) && index >= 0 && String(index) === key
+}
+
+/**
+ * 自有**可枚举**键，含 symbol 键
+ *
+ * 不用 `Object.keys`：它只返回字符串键，会让「只差在 symbol 键上」的两个互异参数生成
+ * 同一个缓存键（详见 {@link sortKeysDeep} 的失效清单）。非枚举键仍按原口径排除——
+ * JSON.stringify 也不认它们，纳入只会让键与可观察到的值语义不一致。
+ */
+function ownEnumerableKeys(value: object): Array<string | symbol> {
+  const keys: Array<string | symbol> = []
+  for (const key of Reflect.ownKeys(value)) {
+    if (Object.prototype.propertyIsEnumerable.call(value, key)) {
+      keys.push(key)
+    }
+  }
+  return keys
+}
+
+/** 按键标记排序，使「声明顺序不同的等价参数」生成同一份键 */
+function byKeyMarker(a: [string, unknown], b: [string, unknown]): number {
+  return a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0
+}
+
+/**
+ * 把给定键折成 `[键标记, 值标记]` 对（按键标记排序）
+ *
+ * 这些键都进不了 JSON.stringify 的键位：symbol 键被它整体忽略，数组的非下标自有键被它整体
+ * 丢弃。折成数组元素后两侧都参与序列化，键标记恒为字符串（`String()` 只是把 `unknown` 收窄
+ * ——sortKeysDeep 的 symbol 叶子分支给出的就是 `symbol:...#id` 文本，字符串键则是 `s:"..."`）。
+ */
+function keyValuePairs(value: object, keys: Array<string | symbol>): Array<[string, unknown]> {
+  const record = value as Record<string | symbol, unknown>
+  const pairs: Array<[string, unknown]> = []
+  for (const key of keys) {
+    pairs.push([String(sortKeysDeep(key)), sortKeysDeep(record[key])])
+  }
+  return pairs.sort(byKeyMarker)
+}
+
 /**
  * 递归排序对象键并给每个叶子打上类型标记
  *
@@ -62,14 +116,21 @@ function identityId(value: object): number {
  * - RegExp 序列化为 `{}`，所有正则互相撞键且与普通空对象撞键
  * - Date 序列化为 ISO 字符串，与同文本的字符串参数撞键
  * - Promise/WeakMap 等无可枚举键的对象恒为 `{}`，互相撞键
+ * - **自有可枚举 symbol 键被整体丢弃**（`Object.keys` 与 JSON.stringify 都只认字符串键）：
+ *   `{ id: 1, [TOKEN]: 'a' }` 与 `{ id: 1, [TOKEN]: 'b' }` 撞键，`{ [s]: 1 }` 与 `{}` 撞键。
+ *   带 symbol 令牌/品牌键的选项对象是常见写法，后果同样是返回别人的结果，
+ *   故 symbol 键按 `[键标记, 值标记]` 对折进承载结构（键标记复用 symbol 叶子的身份编号口径）
+ * - 数组的非下标自有键（`arr.meta = 1`、`arr[TOKEN] = 'a'`）同样被 JSON.stringify 丢弃，
+ *   与「没有这些附加键的同内容数组」撞键，按同一方式折入
  *
  * 故所有叶子统一映射为「类型前缀 + 文本」。字符串叶子经 JSON.stringify 转义，
  * 无法伪造其他类型的前缀（字符串 `"n:5"` 标记为 `s:"n:5"`，与数字 5 的 `n:5` 不同），
  * 因此标记后的结构再经 JSON.stringify 仍是注入的。
  *
  * Map/Set 保留 `__map`/`__set` 包装与插入序（插入序不同的等价 Map 生成不同键，
- * 仅损失命中率不会串用结果——保守正确性优先）；叶子已带类型标记，
- * 用户自带的 `__map`/`__set` 键也无法伪造这两种包装。
+ * 仅损失命中率不会串用结果——保守正确性优先）；包装用「首元素为裸 `__map` 的数组」
+ * 而非对象字面量：数组元素位置的字符串一律被标记成 `s:"..."`，用户参数无法伪造出裸标记，
+ * 故 `{ __map: [...] }` 这类自带键的对象不会与 Map 撞键。
  *
  * @private
  */
@@ -109,36 +170,161 @@ function sortKeysDeep(value: unknown): unknown {
   if (value instanceof RegExp) return `r:${JSON.stringify([value.source, value.flags])}`
 
   if (Array.isArray(value)) {
-    return value.map(sortKeysDeep)
+    const ownKeys = ownEnumerableKeys(value)
+    // 第三个元素承载「非下标的自有可枚举键」：JSON.stringify 只序列化下标元素，
+    // `arr.meta = 1` 与 `arr[TOKEN] = 'a'` 这类附加键此前被整体丢掉（与不带附加键的
+    // 同内容数组撞键 → 返回别人的结果）。元素本身仍按下标序参与，不做排序
+    return [
+      '__arr',
+      value.map(sortKeysDeep),
+      keyValuePairs(
+        value,
+        ownKeys.filter((key) => typeof key === 'symbol' || !isIndexKey(key)),
+      ),
+    ]
   }
   if (value instanceof Map) {
     const entries: Array<[unknown, unknown]> = []
     for (const [key, val] of value) {
       entries.push([sortKeysDeep(key), sortKeysDeep(val)])
     }
-    return { __map: entries }
+    // 数组包装而非对象字面量：`{ __map: ... }` 会被参数 `{ __map: [[1,2]] }` 原样伪造
+    // （对象键不参与类型标记），导致 Map 与该技术对象撞键、直接返回彼此的缓存结果
+    return ['__map', entries]
   }
   if (value instanceof Set) {
-    return { __set: [...value].map(sortKeysDeep) }
+    return ['__set', [...value].map(sortKeysDeep)]
   }
 
-  const record = value as Record<string, unknown>
-  const keys = Object.keys(record)
-  // 无可枚举键的非纯对象按身份标记：Object.keys 恒为空，按值序列化会让
-  // 互异的 Promise/WeakMap/无状态类实例全部折叠为 {} 而串用缓存
+  const record = value as Record<string | symbol, unknown>
+  const ownKeys = ownEnumerableKeys(record)
+  // 无可枚举键的非纯对象按身份标记：键集为空时按值序列化会让
+  // 互异的 Promise/WeakMap/无状态类实例全部折叠为 {} 而串用缓存。
+  // 判据含 symbol 键（此前用 Object.keys）：只有一个 `[TOKEN]` 品牌键的类实例
+  // 会被误判成「无可枚举键」而按身份标记，与同样只差 symbol 值的另一实例互相串用
   const proto = Object.getPrototypeOf(value)
-  if (keys.length === 0 && proto !== Object.prototype && proto !== null) {
+  if (ownKeys.length === 0 && proto !== Object.prototype && proto !== null) {
     return `o:${identityId(value as object)}`
   }
 
   // 纯对象与带可枚举状态的类实例：按键排序后递归，保持值语义
   // Object.create(null) 承载：参数可合法含自有 __proto__ 键，普通对象上赋值会触发
   // 原型 setter（键被静默丢弃且容器原型被换）；null 原型对象无该 setter
+  //
+  // 字符串键与 symbol 键分开收集：`Array.prototype.sort` 的默认比较器对非字符串元素做
+  // ToString，而 ToString(symbol) 会抛 TypeError（`String(sym)` 才放行）——混在一个数组里
+  // 排序会让整次键生成失败、退化成「每次都 miss」
+  const stringKeys: string[] = []
+  const symbolKeys: symbol[] = []
+  for (const key of ownKeys) {
+    if (typeof key === 'symbol') {
+      symbolKeys.push(key)
+    } else {
+      stringKeys.push(key)
+    }
+  }
   const sorted: Record<string, unknown> = Object.create(null) as Record<string, unknown>
-  for (const key of keys.sort()) {
+  for (const key of stringKeys.sort()) {
     sorted[key] = sortKeysDeep(record[key])
   }
-  return sorted
+  // 值语义路径也要带类型标签：只按自有可枚举键取值会让 `new Uint8Array([1, 2])`、
+  // `new String('ab')` 与普通对象 `{ 0: 1, 1: 2 }` 生成同一个键，两个互异类型的参数
+  // 于是串用缓存——后果是返回别人的结果，而不只是损失命中率。
+  // 纯对象与 null 原型对象共用空标签（二者本就按值等价），其余原型按身份编号。
+  // 用「首元素为裸 __obj 的数组」承载而非给 sorted 加保留键：对象键不参与类型标记，
+  // 用户参数自带的 `__obj` 键能原样伪造标签（与 __map/__set 的包装同一理由）
+  const typeTag = proto === Object.prototype || proto === null ? '' : `p:${identityId(proto as object)}`
+
+  // 第四元素承载 symbol 键：它们占不了 `sorted` 的键位（JSON.stringify 整体忽略 symbol 键）
+  return ['__obj', typeTag, sorted, keyValuePairs(record, symbolKeys)]
+}
+
+/** 缓存条目：`pending` 非空即在途占位（同参并发复用它，值由结算后回填） */
+interface CacheEntry {
+  value: unknown
+  expiry: number
+  pending?: Promise<unknown>
+}
+
+/** 单宿主的缓存容器 + 写入计数（过期回收按写入次数摊销，见 {@link SWEEP_EVERY_WRITES}） */
+interface HostCache {
+  entries: Map<string, CacheEntry>
+  writes: number
+}
+
+/** 写入前回收过期条目（含已超时的在途占位），避免长生命周期宿主上 Map 持续累积 */
+function reclaimExpired(cache: Map<string, CacheEntry>, at: number): void {
+  for (const [entryKey, entry] of cache) {
+    if (entry.expiry <= at) {
+      cache.delete(entryKey)
+    }
+  }
+}
+
+/**
+ * 过期回收的摊销步长：每这么多次写入才扫一遍全表
+ *
+ * 回收只影响内存占用、不影响正确性：读路径自己判 `expiry > now`，写路径覆盖旧值。
+ * 而每次写入都全表扫描会让热方法的单次写入成本是 O(n)（n 上限 1000，突发期近似 O(n²)）。
+ * 逼近容量上限时本轮仍要扫：那时过期条目正占着坑，不扫就会把还有效的条目当成「最旧」淘汰掉
+ */
+const SWEEP_EVERY_WRITES = 32
+
+/**
+ * 按插入序把容量压回 {@link MAX_CACHE_ENTRIES}
+ *
+ * `onlySettled` 为 true 时跳过在途占位：删掉它会让同参并发调用 miss 并重复执行原方法
+ * （重复发请求），正常情况下「淘汰最旧的已完成条目」优先于去重能力。
+ */
+function evictOldest(cache: Map<string, CacheEntry>, onlySettled: boolean): void {
+  for (const [entryKey, entry] of cache) {
+    if (cache.size < MAX_CACHE_ENTRIES) {
+      return
+    }
+    if (onlySettled && entry.pending !== undefined) {
+      continue
+    }
+    cache.delete(entryKey)
+  }
+}
+
+/**
+ * 容量硬上限：已完成条目优先淘汰，占位条目在无路可退时也淘汰
+ *
+ * 只淘汰已完成条目的话，本函数的产出可以是 0——占位条目最短也要活到
+ * {@link MIN_IN_FLIGHT_TTL}（60s），而「大量不同参数键的在途调用」与「键生成每次都退化成
+ * {@link uncacheableKey}」（循环引用/BigInt 参数、抛错的 keyFn）都会持续写入永不复用的新
+ * 占位。那样 `cache.size` 的上界就只剩「调用速率 × inFlightExpiry」，与文档承诺的
+ * MAX_CACHE_ENTRIES 无关。越界时宁可让那批并发调用失去去重，也不让 Map 无界增长
+ */
+function enforceCapacity(cache: Map<string, CacheEntry>): void {
+  evictOldest(cache, true)
+  evictOldest(cache, false)
+}
+
+/**
+ * 写入前的统一闸门（值与在途占位两条写入路径共用）
+ *
+ * 计数自增 + 摊销回收 + 容量淘汰。放在一处，避免只有一条路径受闸门约束
+ */
+function beforeWrite(cache: HostCache, at: number): void {
+  cache.writes += 1
+  if (cache.entries.size >= MAX_CACHE_ENTRIES || cache.writes % SWEEP_EVERY_WRITES === 0) {
+    reclaimExpired(cache.entries, at)
+  }
+  enforceCapacity(cache.entries)
+}
+
+/**
+ * 「本次调用不缓存」的一次性唯一键
+ *
+ * 键生成失败时的统一退路：与既有任意键都不相撞，因此本次调用必然 miss、直接执行原方法，
+ * 结果也不会被写进一个每次都不同的键里（等于跳过缓存），而不是让被装饰方法整体不可用。
+ *
+ * @private
+ */
+function uncacheableKey(): string {
+  return `__uncacheable__${Date.now()}_${Math.random()}`
 }
 
 /**
@@ -152,7 +338,42 @@ function defaultKeyFn(...args: unknown[]): string {
   } catch {
     // 序列化失败（如循环引用参数）：返回唯一键，等效跳过缓存直接执行原方法，
     // 避免被装饰方法因键生成失败而整体不可用
-    return `__uncacheable__${Date.now()}_${Math.random()}`
+    return uncacheableKey()
+  }
+}
+
+/**
+ * 调用用户提供的 `keyFn`
+ *
+ * 用户 keyFn 里常见的 `JSON.stringify` / 深层取值都可能抛错，而它在**每次调用**的路径上：
+ * 不做保护会让「缓存键生成失败」升级为「业务方法抛错」，且调用方无从区分这两类故障。
+ * 与 {@link defaultKeyFn} 同口径降级为一次性唯一键（本次调用跳过缓存）。
+ *
+ * 返回值也要验：`String()` 会把 `undefined`（箭头函数体漏写 `return`）折成 `"undefined"`、
+ * 把对象折成 `"[object Object]"`，于是**所有**参数共用一个键、第二次调用起拿到的都是第一次
+ * 的结果——正是本模块其余路径全力避免的「返回别人的缓存值」，而 TS 的 `=> string` 只挡得住
+ * TS 调用方（JS/`as any` 调用照样进来）。非 string/number 与抛错同一口径处理。
+ *
+ * @private
+ */
+function userKeyFn(keyFn: (...args: unknown[]) => string, args: unknown[]): string {
+  try {
+    const raw: unknown = keyFn(...args)
+    if (typeof raw !== 'string' && typeof raw !== 'number') {
+      if (!isProduction()) {
+        console.debug('[Cache] keyFn returned a non-string key, this invocation is not cached:', raw)
+      }
+
+      return uncacheableKey()
+    }
+
+    return String(raw)
+  } catch (error) {
+    if (!isProduction()) {
+      // 静默降级会让「缓存明明配了却从不命中」难以定位，故开发期点名原因
+      console.debug('[Cache] keyFn threw, this invocation is not cached:', error)
+    }
+    return uncacheableKey()
   }
 }
 
@@ -164,6 +385,10 @@ function defaultKeyFn(...args: unknown[]): string {
  * @param {CacheDecoratorOptions} [options={}] - 缓存选项
  * @param {number} [options.ttl=5000] - 缓存生存时间（毫秒）
  * @param {(...args: unknown[]) => string} [options.keyFn] - 自定义缓存键函数
+ *
+ * @remarks `keyFn` 抛错（典型是其内部的 `JSON.stringify` 遇到循环引用/BigInt）不会让被装饰
+ * 方法失败：该次调用退化为一次性唯一键、直接执行原方法且不入缓存，与内置默认键生成器的
+ * 失败口径一致。开发期会有一条 `[Cache] keyFn threw...` 的 `console.debug` 点名原因。
  * @returns {MethodDecorator} 方法装饰器
  *
  * @example
@@ -192,27 +417,36 @@ function defaultKeyFn(...args: unknown[]): string {
  */
 export function withCache(options: CacheDecoratorOptions = {}): MethodDecorator {
   const { ttl = 5000, keyFn } = options
+  // 在途占位条目的过期时刻：至少给到 MIN_IN_FLIGHT_TTL，短 TTL 不应让在途请求提前失去去重
+  const inFlightExpiry = Math.max(ttl, MIN_IN_FLIGHT_TTL)
 
   // 按宿主对象隔离缓存，避免多实例共享缓存条目。宿主包含函数（类/静态方法场景）。
   // entry.pending：异步方法进行中的 Promise（in-flight 去重标记），
   // 并发的同参调用复用同一 Promise，避免重复执行（如重复发请求）
-  const store = new WeakMap<object, Map<string, { value: unknown; expiry: number; pending?: Promise<unknown> }>>()
+  const store = new WeakMap<object, HostCache>()
   let nextMethodId = 0
 
-  const getCache = (host: unknown): Map<string, { value: unknown; expiry: number; pending?: Promise<unknown> }> => {
+  const getCache = (host: unknown): HostCache => {
     if ((typeof host !== 'object' && typeof host !== 'function') || host === null) {
-      // 宿主不是对象或函数时返回一次性 Map（不跨调用串扰）
-      return new Map()
+      // 宿主不是对象或函数时返回一次性容器（不跨调用串扰）
+      return { entries: new Map(), writes: 0 }
     }
     let cache = store.get(host)
     if (!cache) {
-      cache = new Map()
+      cache = { entries: new Map(), writes: 0 }
       store.set(host, cache)
     }
     return cache
   }
 
-  return function (_target: unknown, propertyKey: string | symbol, descriptor: PropertyDescriptor): PropertyDescriptor {
+  return function (_target: unknown, propertyKey: string | symbol, descriptor?: PropertyDescriptor): PropertyDescriptor {
+    // 装饰期判据与 withDebounce / withRetry / withTimeout / createDecorator 同族：
+    // legacy 装饰器误用到类字段上时按 PropertyDecorator 调用（运行时只有两个实参，descriptor
+    // 为 undefined），裸读 `descriptor.value` 抛的错误会把真实原因（用错了地方）盖掉
+    if (descriptor === undefined || typeof descriptor.value !== 'function') {
+      throw new TypeError(`[withCache] can only decorate a method, but "${String(propertyKey)}" is not a function`)
+    }
+
     const originalMethod = descriptor.value
     // 每次装饰独立编号，避免复用工厂时不同方法（含同描述 Symbol）共享参数缓存。
     const methodKey = `${++nextMethodId}::`
@@ -220,37 +454,19 @@ export function withCache(options: CacheDecoratorOptions = {}): MethodDecorator 
     const isAsyncMethod = isAsyncFunction(originalMethod)
     let observesPromise = false
 
-    const writeCache = (
-      cache: Map<string, { value: unknown; expiry: number; pending?: Promise<unknown> }>,
-      key: string,
-      value: unknown,
-      at: number,
-    ): unknown => {
-      // 写入前回收过期条目，避免长生命周期宿主上 Map 持续累积
-      for (const [entryKey, entry] of cache) {
-        if (entry.expiry <= at) {
-          cache.delete(entryKey)
-        }
-      }
-      // 容量保护：仍超限时淘汰最早写入的条目（Map 保持插入顺序）
-      for (const entryKey of cache.keys()) {
-        if (cache.size < MAX_CACHE_ENTRIES) {
-          break
-        }
-        cache.delete(entryKey)
-      }
-
-      cache.set(key, { value, expiry: at + ttl })
+    const writeCache = (cache: HostCache, key: string, value: unknown, at: number): unknown => {
+      beforeWrite(cache, at)
+      cache.entries.set(key, { value, expiry: at + ttl })
       return value
     }
 
     descriptor.value = function (this: unknown, ...args: unknown[]) {
       const cache = getCache(this)
-      const key = `${methodKey}${keyFn ? keyFn(...args) : defaultKeyFn(...args)}`
+      const key = `${methodKey}${keyFn ? userKeyFn(keyFn, args) : defaultKeyFn(...args)}`
       const now = Date.now()
 
       // 检查缓存
-      const cached = cache.get(key)
+      const cached = cache.entries.get(key)
       if (cached && cached.expiry > now) {
         // in-flight 命中：直接复用进行中的 Promise（失败时条目已被删除，后续调用重新执行）
         if (cached.pending) {
@@ -269,14 +485,21 @@ export function withCache(options: CacheDecoratorOptions = {}): MethodDecorator 
 
       // 执行方法：同步方法同步返回，异步方法保持 Promise 语义
       const result = originalMethod.apply(this, args)
-      if (result instanceof Promise) {
+      // isThenable 而非 `instanceof Promise`：手写 thenable 与跨 realm（iframe/worker、
+      // ESM+CJS 双副本）的 Promise 都会被判为同步结果，于是
+      // 1) 占位条目不再写入、`pending` 分支失效，同参并发失去去重；
+      // 2) rejection 没人接管，变成 unhandledRejection；
+      // 3) 结果被当成同步值直接缓存，`observesPromise` 也永不置位。
+      // 统一过 Promise.resolve 才拿到真正的 Promise 来当占位（thenable 自身的 then
+      // 返回值可能是任意值，不能直接在它上面调用 .then 的结果）
+      if (isThenable(result)) {
         observesPromise = true
-        const pending = result.then(
+        const pending = Promise.resolve(result).then(
           (value) => {
             // 乱序完成保护：仅在条目仍是本次调用的占位（或已被淘汰）时回填。
             // 若同参的新调用已替换占位或已写入新值，旧请求的结果不得回写——否则
             // 「旧请求慢、新请求快」会让缓存退回更早的数据
-            const entry = cache.get(key)
+            const entry = cache.entries.get(key)
             if (entry === undefined || entry.pending === pending) {
               writeCache(cache, key, value, Date.now())
             }
@@ -284,20 +507,21 @@ export function withCache(options: CacheDecoratorOptions = {}): MethodDecorator 
           },
           (error) => {
             // 失败不缓存：仅当条目仍是本次调用写入的 pending 时删除，
-            // 避免误删期间已被重试调用覆盖的新条目
-            // 可选链替代 `entry && entry.pending === pending`：语义等价（entry 缺失时
-            // 比较结果为 false，同样不删除）
-            /* istanbul ignore else -- 并发同参调用复用同一 pending、无逐出路径，
-               条目不可能在结算前被替换或删除，故该 false 侧不可达 */
-            if (cache.get(key)?.pending === pending) {
-              cache.delete(key)
+            // 避免误删期间已被重试调用覆盖的新条目。
+            // 条目也可能已消失：占位条目到 inFlightExpiry 会被回收（永不结算的请求），
+            // 或被同参的新调用替换 —— 此时更不该删掉别人的条目
+            if (cache.entries.get(key)?.pending === pending) {
+              cache.entries.delete(key)
             }
             throw error
           },
         )
-        // 先占位再返回：占位条目不过期（等待中的请求没有 TTL 语义），
-        // 并发同参调用经 pending 分支复用同一 Promise
-        cache.set(key, { value: undefined, expiry: Number.MAX_SAFE_INTEGER, pending })
+        // 先占位再返回：并发同参调用经 pending 分支复用同一 Promise。
+        // 占位条目必须有有限期限：MAX_SAFE_INTEGER 会让永不结算的请求（被丢弃的请求、
+        // 宿主挂起）把条目永久留在 Map 里，且此后所有同参调用都一直拿到这个永不结算的
+        // Promise——等于该方法永久失效
+        beforeWrite(cache, now)
+        cache.entries.set(key, { value: undefined, expiry: now + inFlightExpiry, pending })
         return pending
       }
       return writeCache(cache, key, result, now)

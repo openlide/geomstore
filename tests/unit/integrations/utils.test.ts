@@ -20,15 +20,35 @@ describe('integrations/utils', () => {
       })
     })
 
-    it('UTIL-002: 应该保持对象映射不变', () => {
+    it('UTIL-002 (#343 行为变更): 对象映射归一为新对象，不再返回入参本身', () => {
       const mapping = { totalCount: 'count', userName: 'name' }
       const result = parseMapping(mapping)
 
-      expect(result).toBe(mapping)
+      // 返回新对象：调用方/集成层对映射的写入不回灌用户配置
+      expect(result).not.toBe(mapping)
       expect(result).toEqual({
         totalCount: 'count',
         userName: 'name',
       })
+    })
+
+    it('#343 回归: 对象分支的键与值同样经 String() 归一', () => {
+      const mapping = { local: 7, flag: true } as unknown as Record<string, PropertyKey>
+
+      const result = parseMapping(mapping)
+
+      // 归一前 value 会以 number/boolean 原样流向 storeKey 查表
+      expect(result).toEqual({ local: '7', flag: 'true' })
+      result.local = 'mutated'
+      expect(mapping.local).toBe(7)
+    })
+
+    it('#343 回归: "__proto__" 作为映射键写入自有属性，不改坏结果对象原型链', () => {
+      const result = parseMapping(['__proto__'])
+
+      expect(Object.prototype.hasOwnProperty.call(result, '__proto__')).toBe(true)
+      expect(Object.getOwnPropertyDescriptor(result, '__proto__')?.value).toBe('__proto__')
+      expect(Object.getPrototypeOf(result)).toBe(Object.prototype)
     })
 
     it('UTIL-003: 应该处理空数组', () => {
@@ -140,10 +160,12 @@ describe('integrations/utils', () => {
         state: { count: 0 },
         actions: {
           increment(n: number) {
-            (this.state as { count: number }).count += n
+            const state = this.state as { count: number }
+            state.count += n
           },
           decrement(n: number) {
-            (this.state as { count: number }).count -= n
+            const state = this.state as { count: number }
+            state.count -= n
           },
         },
       })
@@ -189,8 +211,10 @@ describe('integrations/utils', () => {
         state: { count: 0, name: 'test' },
         actions: {
           setValues(count: number, name: string) {
-            (this.state as { count: number }).count = count
-            ;(this.state as { count: number; name: string }).name = name
+            const counter = this.state as { count: number }
+            counter.count = count
+            const named = this.state as { count: number; name: string }
+            named.name = name
           },
         },
       })
@@ -204,6 +228,39 @@ describe('integrations/utils', () => {
 
       expect(store.getState().count).toBe(42)
       expect(store.getState().name).toBe('updated')
+    })
+
+    it('UTIL-010a: 原型链键名写成自有属性，解绑后不残留', () => {
+      const store = createStore({ state: { count: 0 } })
+      const target: Record<string, unknown> = {}
+      const protoSpy = jest.spyOn(console, 'warn').mockImplementation(() => {})
+
+      // 计算键才会产出自有属性（字面量里的 `__proto__: x` 是设原型，不是建键）
+      const unbinds = bindActions(target, { ['__proto__']: 'noop' }, store)
+
+      // 直接赋值会走 __proto__ 的 setter 污染原型链；defineProperty 只写自有属性
+      expect(Object.prototype.hasOwnProperty.call(target, '__proto__')).toBe(true)
+      expect(Object.getPrototypeOf(target)).toBe(Object.prototype)
+
+      unbinds[0]()
+      expect(Object.prototype.hasOwnProperty.call(target, '__proto__')).toBe(false)
+      protoSpy.mockRestore()
+    })
+
+    it('UTIL-010b: 覆盖宿主已有成员时告警并在解绑后恢复原值', () => {
+      const store = createStore({ state: { count: 0 } })
+      const original = () => 'original'
+      const target: Record<string, unknown> = { update: original }
+      const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {})
+
+      const unbinds = bindActions(target, { update: 'noop' }, store)
+
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('宿主已有成员 "update"'))
+      expect(target.update).not.toBe(original)
+
+      unbinds[0]()
+      expect(target.update).toBe(original)
+      warnSpy.mockRestore()
     })
   })
 
@@ -275,6 +332,21 @@ describe('integrations/utils', () => {
 
       expect(setterCalls).toBe(0)
     })
+
+    it('#347 回归: 无缓存的注入源汇总告警一次，不再静默丢弃', () => {
+      const store = createStore({ state: { count: 0, optional: undefined }, enableCache: true })
+      const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {})
+      let receivedUpdates: Record<string, unknown> = {}
+
+      performAutoInject({}, { count: 'localCount', optional: 'localOptional', missing: 'localMissing' }, store, (updates) => {
+        receivedUpdates = updates
+      })
+
+      expect(receivedUpdates).toEqual({ localCount: 0 })
+      expect(warnSpy).toHaveBeenCalledTimes(1)
+      expect(warnSpy.mock.calls[0][0]).toContain('optional, missing')
+      warnSpy.mockRestore()
+    })
   })
 
   describe('exposeStoreAPI', () => {
@@ -283,7 +355,8 @@ describe('integrations/utils', () => {
         state: { count: 0 },
         actions: {
           increment(n: number) {
-            (this.state as { count: number }).count += n
+            const state = this.state as { count: number }
+            state.count += n
           },
         },
       })
@@ -338,7 +411,8 @@ describe('integrations/utils', () => {
         state: { count: 0 },
         actions: {
           setCount(n: number) {
-            (this.state as { count: number }).count = n
+            const state = this.state as { count: number }
+            state.count = n
           },
         },
       })
@@ -359,6 +433,52 @@ describe('integrations/utils', () => {
 
       // 取消订阅
       unsubscribe()
+    })
+
+    it('#348 回归: 暴露的 subscribe 默认按只读注册，不翻转 needsClone 判定', () => {
+      const store = createStore({ state: { count: 0 } })
+      const target: Record<string, unknown> = {}
+      const subscriptionManager = (store as unknown as { _subscriptionManager: { hasWritableListeners(): boolean } })._subscriptionManager
+
+      exposeStoreAPI(target, store)
+      const unsubscribe = (target.subscribe as (cb: () => void) => () => void)(() => {})
+
+      expect(subscriptionManager.hasWritableListeners()).toBe(false)
+
+      // 显式要求可写时仍按调用方意愿注册
+      const writableUnsubscribe = (target.subscribe as Function)(() => {}, { readOnly: false })
+      expect(subscriptionManager.hasWritableListeners()).toBe(true)
+      writableUnsubscribe()
+      unsubscribe()
+      expect(subscriptionManager.hasWritableListeners()).toBe(false)
+    })
+
+    it('#349 回归: target 与 __store__ 共用同一份方法定义', () => {
+      const store = createStore({ state: { count: 0 } })
+      const target: Record<string, unknown> = {}
+
+      const unexpose = exposeStoreAPI(target, store)
+      const debug = target.__store__ as Record<string, unknown>
+
+      // 两处指向同一实现：只改一处导致行为分叉的可能不再存在
+      expect(debug.getStore).toBe(target.getStore)
+      expect(debug.subscribe).toBe(target.subscribe)
+      expect(debug.dispatch).toBe(target.dispatch)
+
+      unexpose()
+    })
+
+    it('#349 回归: 宿主自有同名成员在取消暴露时还原而非删除', () => {
+      const store = createStore({ state: { count: 0 } })
+      const ownGetState = () => '宿主自己的 getState'
+      const target: Record<string, unknown> = { getState: ownGetState }
+
+      const unexpose = exposeStoreAPI(target, store)
+      expect(target.getState).not.toBe(ownGetState)
+
+      unexpose()
+
+      expect(target.getState).toBe(ownGetState)
     })
   })
 
@@ -459,7 +579,8 @@ describe('integrations/utils', () => {
         state: { count: 0 },
         actions: {
           increment() {
-            (this.state as { count: number }).count++
+            const state = this.state as { count: number }
+            state.count++
           },
         },
       })
@@ -503,8 +624,9 @@ describe('integrations/utils', () => {
 
   describe('performAutoInject 边界覆盖', () => {
     it('UTIL-COVER-001: 所有缓存值都为 undefined 时不应该调用 setter', () => {
-      // 创建一个 store，所有 getCached 返回 undefined
-      const store = createStore({
+      // 先真实创建一个带缓存的 store（构造本身是被测前置），但本用例喂给
+      // performAutoInject 的是下面的 mockStore，故不绑定这个未被读到的实例
+      void createStore({
         state: { count: 0 },
         enableCache: true,
       })
@@ -561,7 +683,8 @@ describe('integrations/utils', () => {
         state: { count: 0 },
         actions: {
           increment(n: number) {
-            (this.state as { count: number }).count += n
+            const state = this.state as { count: number }
+            state.count += n
           },
         },
       })

@@ -36,11 +36,11 @@ import type {
 } from '../../types/store.js'
 import type { Plugin as PluginType } from '../../types/plugin.js'
 import { HookSystem } from '../hooks/index.js'
-import { deepMerge } from '../utils/helpers.js'
+import { deepMerge, isPlainObject, PROTO_SENSITIVE_KEYS, defineOwnProperty } from '../utils/helpers.js'
 import { LRUCache } from '../cache/LRUCache.js'
 
 // 子模块导入
-import { StateProxyManager, createProxyCache, isBuiltinObject } from './StateProxy.js'
+import { StateProxyManager, createProxyCache, isBuiltinObject, isMapLike, isSetLike } from './StateProxy.js'
 import { SubscriptionManager, createSubscribeFunction } from './SubscriptionManager.js'
 import { StoreCacheManager } from './StoreCache.js'
 import { ActionManager, GetterManager } from './ActionManager.js'
@@ -57,6 +57,28 @@ const DEFAULT_MAX_SUBSCRIBERS = 50
 
 /** 自动生成 Store 名称时使用的前缀 */
 const STORE_NAME_PREFIX = 'store-'
+
+/**
+ * 读取「一次按键写入将要写入/比对的那个值」，原型链敏感键按**自有属性描述符**取。
+ *
+ * `__proto__` / `constructor` / `prototype` 在 `Object.prototype` 上是 accessor：
+ * `target['__proto__']` 拿到的是原型而不是写入值，拿它做等值比对会得出与合并结果相反的结论
+ * （`setState` 与 `$patch` 共用这一条判据——两处各写一遍就会漂移成「一侧挡住、另一侧没挡」，
+ * 与 deepMerge / defineOwnProperty 的既定口径同源，见 R6-007）。
+ */
+function readOwnValue(target: Record<string, unknown>, key: string): unknown {
+  if (!PROTO_SENSITIVE_KEYS.has(key)) {
+    return target[key]
+  }
+  const descriptor = Object.getOwnPropertyDescriptor(target, key)
+  return descriptor ? descriptor.value : undefined
+}
+
+/**
+ * destroy() 排空插件卸载函数的最大轮数（见 _drainPluginUninstalls）：
+ * 每轮都要求「清理中新注册的插件」比上一轮少，否则到上限即止，不无限排空
+ */
+const MAX_PLUGIN_UNINSTALL_ROUNDS = 10
 
 /**
  * Store 实现类（模块化重构版）
@@ -202,6 +224,25 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
       storeName: this.name,
       maxSubscribers: options.subscription?.maxSubscribers ?? DEFAULT_MAX_SUBSCRIBERS,
       onLimit: options.subscription?.onLimit,
+      // 监听器抛错走 onError 钩子：控制台在生产是静默的（库口径），没有这条通道
+      // 一个坏订阅者的异常就彻底丢失。_hooks 在下一段才赋值，此处的箭头函数
+      // 首次被调用时（notify）早已就绪
+      onListenerError: (error) => this._hooks.emit('onError', error),
+      // 驱逐事件的同理：`_enforceLimit` 的开发期 console.warn 在生产不响，被挤掉那份注册的
+      // 监听器从此不再收到任何更新，而现场没有任何指标可指认「丢了一次订阅」。
+      // 与 onListenerError 同口径挂到 onError 钩子上，监控/上报插件即可见。
+      // 第二参给 `'subscribe'` 而不是 `'dispatch'`：注册动作可能发生在 action 体内
+      // （嵌套 dispatch 的中途），点名任何操作配对键都会让 analyzerPlugin 弹掉与本次
+      // 驱逐无关的进行中计时；`'subscribe'` 不是配对键，只作来源标识
+      onSubscriberEvicted: (info) =>
+        this._hooks.emit(
+          'onError',
+          new Error(
+            `[GeomStore][${this.name}] 订阅者达到上限(${info.maxSubscribers})，evict-oldest 驱逐了一份注册` +
+              `（监听器：${info.listener.name || '(匿名函数)'}，驱逐后在册注册数：${info.size}，不含本次新注册）`,
+          ),
+          'subscribe',
+        ),
     })
 
     // 初始化异步通知合并器（仅启用时）：将同一 tick 内的多次 notify 合并为一次微任务通知，
@@ -291,6 +332,20 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
 
   /**
    * 设置单个状态值
+   *
+   * 值按**引用**保存（与 `_initializeState` / `$replaceState` 的深拷贝不同，与 `$patch`
+   * 的合并结果同口径）：Store 不接管调用方对象的归属。这是别名脏键
+   * （`_markAliasedKeys`）与脏追踪索引成立的前提——它们都按对象身份做可达性判定，
+   * 写入时换一份克隆就等于把「同一对象被多个顶层键引用」这条关系从状态图里抹掉。
+   *
+   * 由此带来的两条边界要清楚：
+   * - 调用方在 setState 之后再改它传进来的那个对象，Store 不会察觉：没有变更计数、
+   *   没有脏键、没有钩子、缓存里就是同一个引用，读到的是被外部改过的值；
+   * - 要交出可安全持有的副本，请读 `$snapshot()`，别把传入引用的所有权当已转移。
+   * 需要「写入即定格」的语义就用 `$patch`：deepMerge 从不把调用方的对象引用落进状态
+   * （补丁里的纯对象只在目标位置也是纯对象时逐层就地合并，其余分支一律换成克隆），
+   * 之后改补丁对象不会影响 Store。
+   *
    * @param key - 状态键名（不能为空）
    * @param value - 状态值
    */
@@ -304,15 +359,25 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
 
     this._hooks.emit('beforeSetState', key, value)
 
-    // 相等性检查：值未变化时跳过写入和通知，避免无意义的订阅触发
-    const oldValue = this._state[key]
+    // 原型链敏感键与 deepMerge 同口径：Object.prototype 上的 `__proto__` 是 accessor，
+    // 裸 [[Set]] 会改写状态对象的原型（值非对象时按规范静默丢弃却仍被记成一次变更）。
+    // defineProperty 只定义自有数据属性，不触发任何 setter。
+    const protoSensitive = typeof key === 'string' && PROTO_SENSITIVE_KEYS.has(key)
+
+    // 相等性检查：值未变化时跳过写入和通知，避免无意义的订阅触发。
+    // 敏感键的取值经 `readOwnValue`（读自有描述符而不是 [[Get]]），与 $patch 同一判据
+    const oldValue = readOwnValue(this._state as unknown as Record<string, unknown>, key as string)
     if (Object.is(oldValue, value)) {
       this._hooks.emit('afterSetState', key, value)
       return
     }
 
     this._withInternalAccess(() => {
-      this._state[key] = value
+      if (protoSensitive) {
+        defineOwnProperty(this._state as unknown as Record<string, unknown>, key as string, value)
+      } else {
+        this._state[key] = value
+      }
     })
 
     this._mutationCount++
@@ -327,6 +392,19 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
 
   /**
    * 批量更新状态
+   *
+   * 「改没改」的判据与 `setState` 同一条（顶层键 `Object.is` 比对，命中的键整键跳过）：
+   * `_mutationCount` 是 `notify.onlyOnChange` 的唯一依据（见 `_onBatchEnd` 与 ActionManager
+   * 的 dispatch 收尾），此前 `$patch` 无条件推进它、并无条件把补丁触及的每个键标脏 + 写缓存，
+   * 于是 `$patch({})` 与「补丁值与当前状态逐字相同」都被记成一次真实变更——
+   * 两个公开写入 API 对同一次写入给出相反答案，onlyOnChange 想省的 setData
+   * 在最常用的补丁路径上省不掉。现在两侧一样：没有任何键发生变化 ⟹ 不计数、不标脏、
+   * 不写缓存、不调度通知，钩子照常成对触发（与 setState 的等值早退同形）。
+   *
+   * 只比顶层键，不下探：嵌套对象即便内容相同也是不同引用，deepMerge 仍会逐层合并
+   * （可能补进目标里原本没有的键），所以那种补丁照常计 —— 早退只覆盖
+   * 「合并后不可能产生任何差异」的键（同引用或等值原始值）。
+   *
    * @param partialState - 部分状态对象（不能为 null/undefined）
    */
   $patch(partialState: Partial<S>): void {
@@ -339,22 +417,53 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
 
     this._hooks.emit('beforePatch', partialState)
 
+    // 逐键取出「真正要合并的键」。两侧都经 `readOwnValue`：原型链敏感键
+    // （`state.__proto__` / `partial.__proto__`）按 [[Get]] 拿到的是原型而不是写入值，
+    // 拿它做等值比对会得出与合并结果相反的结论（与 setState 同一份判据）
+    const stateRecord = this._state as unknown as Record<string, unknown>
+    const patchRecord = partialState as unknown as Record<string, unknown>
+    const effective: Record<string, unknown> = {}
+    for (const key of Object.keys(patchRecord)) {
+      const patchValue = readOwnValue(patchRecord, key)
+      if (Object.is(readOwnValue(stateRecord, key), patchValue)) {
+        continue
+      }
+      const protoSensitive = PROTO_SENSITIVE_KEYS.has(key)
+      // 敏感键以 defineProperty 承载：`effective['__proto__'] = value` 走 [[Set]]，
+      // 会把这份中间对象的原型换掉并把该键整条丢掉，补丁就静默不生效了
+      if (protoSensitive) {
+        defineOwnProperty(effective, key, patchValue)
+      } else {
+        effective[key] = patchValue
+      }
+    }
+
+    if (Object.keys(effective).length === 0) {
+      this._hooks.emit('afterPatch', partialState)
+      return
+    }
+
+    // 别名脏键的目标集必须在合并**之前**采集：deepMerge 之后「被就地改写的对象」
+    // 和「被换成新克隆的值」在状态里长得一模一样，事后无法区分
+    const mergedInPlace = this._collectInPlaceMergedObjects(stateRecord, effective)
+
     this._withInternalAccess(() => {
-      deepMerge(this._state as Record<string, unknown>, partialState as Record<string, unknown>)
+      deepMerge(stateRecord, effective)
     })
 
     this._mutationCount++
 
-    Object.keys(partialState).forEach((key) => {
+    const changedKeys = Object.keys(effective) as Array<keyof S>
+    changedKeys.forEach((key) => {
       // 缓存应写入 deepMerge 后的最终状态值：嵌套对象被递归合并后，
       // this._state[key] 与 partialState[key] 可能不同（如 {a:{x:1}} patch {a:{y:2}}），
       // 写入 partial 值会导致缓存与状态不一致
       this._cacheManager.set(key as keyof S, this._state[key as keyof S])
-      // 记录脏键：deepMerge 可能就地变异该键下的嵌套对象，故整键标记为已变更
+      // 记录脏键：deepMerge 可能就地改写该键下的嵌套对象，故整键标记为已变更
       this._markDirtyKey(key as keyof S)
     })
     // deepMerge 就地改写的对象可能同时被其他顶层键引用，那些键的内容也变了
-    this._markAliasedKeys(new Set(Object.keys(partialState) as Array<keyof S>))
+    this._markAliasedKeys(mergedInPlace, new Set(changedKeys))
 
     if (!this._dispatching && !this._batchManager.isInBatch) {
       this._scheduleNotify()
@@ -382,6 +491,11 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
 
     this._hooks.emit('beforeReplaceState', resolvedState)
 
+    // 旧键集必须在替换前取：只标新状态的键，被这次替换删掉的键就永远
+    // 不被标记为脏，isStateKeyDirty 对它是 false——集成层据此跳过 setData，
+    // 视图会一直留着已消失键的值
+    const previousKeys = Object.keys(this._state) as Array<keyof S>
+
     this._withInternalAccess(() => {
       // 整树替换：旧状态的键（含 action 内已 delete 的键）不再存在于新状态，
       // 直接整表清空再由下方按新状态回填。仅按旧状态键清理会漏掉
@@ -408,7 +522,10 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
     // 脏跟踪代理缓存指向旧状态对象树，一并重建
     this._dirtyProxyCache = createDirtyTrackingCache()
     this._mutationCount++
-    // 整树替换：所有键均视为已变更
+    // 整树替换：新键与「被替换掉的旧键」都视为已变更（后者是消失型变更）
+    for (const key of previousKeys) {
+      this._markDirtyKey(key)
+    }
     Object.keys(this._state).forEach((key) => {
       this._markDirtyKey(key as keyof S)
     })
@@ -427,15 +544,25 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
    * 供集成层（withPageStore / withComponentStore）在同步通知回调内精确判断某个映射键是否变化，
    * 从而跳过未变化对象值的冗余 setData。脏键在每次通知结束时清空。
    *
+   * 键型是 `string | symbol` 而非 `string`：脏键集合按 `Reflect.ownKeys` 收集
+   * （`_markAliasedKeys` 与 action 侧的脏追踪代理都会给出 symbol 根键），
+   * 只收 string 会让 symbol 键的顶层状态查不到脏位，脏跳过优化对它静默失效。
+   *
    * @param key - 状态键名
    * @returns 该键自上次通知后是否发生过变更
    */
-  isStateKeyDirty(key: string): boolean {
+  isStateKeyDirty(key: string | symbol): boolean {
     return this._dirtyKeys.has(key as keyof S)
   }
 
   /**
    * 创建状态快照
+   *
+   * @returns 深克隆后**部分冻结**的副本：纯对象与数组链上为深度只读，
+   *   但经 Date/RegExp/Map/Set 或非纯对象（class 实例等）触达的节点仍是活的
+   *   可变对象——`Readonly<S>` 只到类型层面，别把它当作深度不可变的保证。
+   *   另注意 Date/RegExp 在克隆时总新建实例，别名关系不保留
+   *   （详见 core/utils/clone.ts 的 deepCloneState 文档）
    */
   $snapshot(): Readonly<S> {
     if (this._destroyed) {
@@ -443,7 +570,8 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
     }
     return this._withInternalAccess(() => {
       // 深克隆后递归冻结纯对象/数组，使 Readonly<S> 的只读承诺在嵌套层级也成立
-      // （内建对象 Date/Map 等的 mutator 不走 [[Set]] 陷阱，冻结无意义故跳过）
+      // （Date/RegExp/Map/Set 的 mutator 不走 [[Set]] 陷阱，冻结拦不住故连同其子节点
+      //  一并留为可变，这就是上面「部分冻结」口径的来源）
       return deepFreezeState(deepCloneState(this._state)) as Readonly<S>
     })
   }
@@ -491,7 +619,13 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
    * Getters 定义对象（只读）
    *
    * 供类型系统推断 Getters 键集合（如 withPageStore 的 mapGetters 约束），
-   * 亦可用于调试与运行时检查。允许在销毁后调用（只读，返回空对象）。
+   * 亦可用于调试与运行时检查。允许在销毁后调用（只读，不抛错）。
+   *
+   * @remarks 销毁后返回的**不是空对象**：destroy() 不注销 getter 定义，
+   *   这里给出的是初始化时登记的那份（`getter(name)` 则会在销毁后抛错，
+   *   两者对「已销毁」的严格程度不同）。销毁后仍调用返回对象里的函数时，
+   *   它会经 `store.state` 读到保留未释放的 `_state`——需要「销毁即失联」
+   *   的语义请显式判 `store.destroyed`
    */
   get getters(): G {
     return this._getterManager.getters
@@ -602,7 +736,7 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
    * 4. 钩子清除
    * 5. 批量管理器重置
    * 6. 销毁标记
-   * 7. Proxy 缓存清空
+   * 7. 兜底闸门（finally）：再排空一次插件 + 清空集合引用 + 重建 Proxy 管理器
    */
   destroy(): void {
     if (this._destroyed) {
@@ -610,25 +744,8 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
     }
 
     try {
-      // 1. 反向卸载插件（后安装的先卸载）
-      // 先快照并逐个消费映射再调用：清理函数可能重入（调用其他插件的卸载句柄、
-      // 或在清理中重新 use 插件）。按实时数组下标迭代会因 splice 移位而重复执行
-      // 同一个清理，也会让顺序错乱
-      const pluginsSnapshot = [...this._plugins]
-      for (let i = pluginsSnapshot.length - 1; i >= 0; i--) {
-        const plugin = pluginsSnapshot[i]
-        const uninstallFn = this._pluginUninstallFns.get(plugin)
-        this._pluginUninstallFns.delete(plugin)
-        this._pluginInstallations.delete(plugin)
-        if (typeof uninstallFn === 'function') {
-          try {
-            uninstallFn()
-          } catch (error) {
-            console.error(`[GeomStore] Error uninstalling plugin:`, error)
-          }
-        }
-      }
-      this._plugins = []
+      // 1. 反向卸载插件（后安装的先卸载），含清理过程中重入 use() 新装的那批
+      this._drainPluginUninstalls()
 
       // 2. 清理订阅器
       this._subscriptionManager.clear()
@@ -646,16 +763,62 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
 
       // 6. 标记已销毁
       this._destroyed = true
-
-      // 7. 清空集合引用
-      this._plugins = []
-      this._pluginUninstallFns.clear()
-      this._pluginInstallations.clear()
-      this._proxyCache = createProxyCache()
     } catch (error) {
       console.error('[GeomStore] Error during Store destruction:', error)
       // 即使出错也标记为销毁，防止半销毁状态
       this._destroyed = true
+    } finally {
+      // 7. 「teardown 结束前必须全空」的最后一道闸门，放在 finally 而不是 try 尾部：
+      //    2~6 任一步抛错都会跳到 catch，写在 try 尾部的收尾会被整段跳过，闸门若也在 try 里
+      //    就等于没有。它同时兜住重入注册：2~6（订阅清除的清理回调、钩子清除）都可能
+      //    再 use() 一个插件，此时步骤 1 的排空已经收敛、_destroyed 也才在第 6 步置位，
+      //    直接丢空容器会让这些插件的卸载函数永不执行（其 install() 注册的订阅与
+      //    全局副作用就此泄漏），所以要先再排空一次、只清掉确实排不尽的残余
+      this._drainPluginUninstalls()
+      this._plugins = []
+      this._pluginUninstallFns.clear()
+      this._pluginInstallations.clear()
+      // 走重建而非直接换 _proxyCache：StateProxyManager 在构造时就把缓存捕获成
+      // readonly 字段，只替换 this._proxyCache 清不掉管理器实际使用的那份，
+      // 旧状态树的 Proxy 仍可通过 _stateProxyManager 被引用
+      this._rebuildStateProxyManager()
+    }
+  }
+
+  /**
+   * 排空全部在册插件的卸载函数（后装先卸），并接住清理过程中的重入注册
+   *
+   * 逐轮从「插件 → 卸载函数」映射消费而不是按 `_plugins` 的实时下标迭代：
+   * 下标迭代既会因 splice 移位重复执行同一个清理，也会打乱反向顺序。
+   * 代际令牌先删，被删插件自己的卸载句柄随即失效（清理里再调它不会二次执行）。
+   *
+   * 轮数上限只是防「清理函数一被调用就再装一个插件」这种不自收敛的病态实现：
+   * 正常重入一轮就排空（新条目由下一轮接住），超出上限说明剩下的永远排不完，
+   * 告警后丢弃，destroy 不得因此挂住。
+   */
+  private _drainPluginUninstalls(): void {
+    for (let round = 0; this._pluginUninstallFns.size > 0; round++) {
+      if (round >= MAX_PLUGIN_UNINSTALL_ROUNDS) {
+        if (!isProduction()) {
+          console.warn(
+            `[GeomStore][${this.name}] 插件清理在 ${MAX_PLUGIN_UNINSTALL_ROUNDS} 轮内未收敛，` +
+              `剩余 ${this._pluginUninstallFns.size} 个卸载函数被丢弃；请在 install() 的返回函数里做幂等清理，不要在清理中重新 use()`,
+          )
+        }
+        return
+      }
+      for (const plugin of [...this._pluginUninstallFns.keys()].reverse()) {
+        const uninstallFn = this._pluginUninstallFns.get(plugin)
+        this._pluginUninstallFns.delete(plugin)
+        this._pluginInstallations.delete(plugin)
+        if (typeof uninstallFn === 'function') {
+          try {
+            uninstallFn()
+          } catch (error) {
+            console.error('[GeomStore] Error uninstalling plugin:', error)
+          }
+        }
+      }
     }
   }
 
@@ -737,8 +900,16 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
 
   /**
    * 动态启用/禁用状态保护
+   *
+   * 与其他写接口同口径拒绝销毁后调用：destroy() 已经重建过 Proxy 管理器，
+   * 这里再改配置会把「已销毁」的 Store 拉回可变状态并白造一个新管理器。
+   * 只读侧（isStateProtectionEnabled / getStateProtectionConfig）不在此列
+   * @throws 如果 Store 已销毁
    */
   setStateProtection(enabled: boolean): void {
+    if (this._destroyed) {
+      throw new Error('[GeomStore] Cannot call setStateProtection on a destroyed Store')
+    }
     this._stateProtection.enabled = enabled
     this._stateProtectionEnabled = enabled
     if (!enabled) {
@@ -803,7 +974,13 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
       }
       return result
     } finally {
-      this.endBatch()
+      // 回调把 Store 销毁掉了（组件在 batch 里卸载是可达路径）：endBatch 会抛
+      // 「Cannot call endBatch on a destroyed Store」，那笔异常会顶掉回调的返回值
+      // 或回调自身的原始错误，真实故障就此消失。销毁已经把批量语义作废
+      // （BatchManager 深度归零、监听器全部退订），收尾无事可做
+      if (!this._destroyed) {
+        this.endBatch()
+      }
     }
   }
 
@@ -925,24 +1102,74 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
   }
 
   /**
-   * 标记与补丁键共享对象引用的其他顶层键
+   * 收集一次 `$patch` 里会被 deepMerge **就地改写**的状态对象
    *
-   * `$patch` 的 deepMerge 会就地改写被补丁对象；若该对象同时被别的顶层键引用
-   * （如 `state.current = state.list[0]`），那些键的内容同样变了却没有被标记，
-   * 只映射它们的页面将永远看不到更新。仅在补丁值为对象时做可达性扫描，
-   * 与 `$replaceState` 的「整树所有键视为已变更」相比只覆盖确实受影响的部分。
+   * 判据与 deepMerge 的递归分支同一条（core/utils/helpers.ts：仅当「补丁值与目标位置
+   * 同为纯对象」时才 mergeInto 就地改写；其余分支一律 defineOwnProperty 换成新克隆，
+   * 新对象不可能被别的顶层键提前引用）：
+   * - 只被替换的键（数组 / Map / Set / Date / 类实例、以及类型冲突位）不进目标集 ⇒
+   *   常见「整体替换」补丁路径直接跳过 O(顶层键数 × 全图) 的可达性扫描；
+   * - 漏收才是真问题（别名键永久不标脏、视图停在旧值），所以宁可多收：
+   *   deepMerge 对 `__proto__` / `constructor` / `prototype` 一律换成克隆，
+   *   这些位置可能被多收一个，后果只是别名键多标一次脏、多一次 setData。
+   *
+   * 本方法是那条判据在 Store 侧的镜像，改 deepMerge 的合并条件时必须同步改这里。
    */
-  private _markAliasedKeys(patched: ReadonlySet<keyof S>): void {
-    const targets: object[] = []
-    for (const key of patched) {
-      const value = this._state[key]
-      if (value !== null && typeof value === 'object') {
-        targets.push(value)
+  private _collectInPlaceMergedObjects(dst: Record<string, unknown>, src: Record<string, unknown>): object[] {
+    const out: object[] = []
+    // 守卫与 deepMerge 的 seenPairs 逐字同构（键=补丁节点，值=已合并进该补丁的目标节点集），
+    // 目的有二：状态与补丁各自成环时（`state.a.self === state.a` 且补丁写了 `a.self`）递归必须终止；
+    // 以及「同一目标被两个补丁键命中」时两边都得展开。
+    // 按「目标节点最多下沉一次」去重会漏收：`state.a === state.b`（别名）且补丁同时写了 a、b 时，
+    // 第二个补丁键的子树被整段跳过，那段子树里的嵌套别名就永久不标脏——漏收的方向是漏报
+    const mergedPairs = new WeakMap<object, Set<object>>()
+    const walk = (target: Record<string, unknown>, patch: Record<string, unknown>): void => {
+      let mergedInto = mergedPairs.get(patch)
+      if (!mergedInto) {
+        mergedInto = new Set()
+        mergedPairs.set(patch, mergedInto)
+      } else if (mergedInto.has(target)) {
+        return
+      }
+      mergedInto.add(target)
+      for (const key of Object.keys(patch)) {
+        const patchValue = patch[key]
+        if (!isPlainObject(patchValue)) {
+          continue
+        }
+        const targetValue = target[key]
+        if (!isPlainObject(targetValue)) {
+          continue
+        }
+        const nested = targetValue as Record<string, unknown>
+        out.push(nested)
+        walk(nested, patchValue as Record<string, unknown>)
       }
     }
-    if (targets.length === 0) {
+    walk(dst, src)
+    return out
+  }
+
+  /**
+   * 标记与本次补丁共享对象引用的其他顶层键
+   *
+   * `$patch` 的 deepMerge 会就地改写 `mergedInPlace` 里的对象；若其中一个同时被别的
+   * 顶层键引用（`state.current = state.a.nested` 这种嵌套别名也算），那些键的内容
+   * 同样变了却没有被补丁键覆盖，只映射它们的页面将永远看不到更新。
+   * 因此对每个非补丁键做一次可达性扫描。与 `$replaceState` 的
+   * 「整树所有键视为已变更」相比，这里只覆盖确实受影响的部分。
+   *
+   * @param mergedInPlace - 见 {@link _collectInPlaceMergedObjects}，空集直接跳过扫描
+   * @param patched - 已按补丁键标过脏的顶层键，跳过
+   */
+  private _markAliasedKeys(mergedInPlace: readonly object[], patched: ReadonlySet<keyof S>): void {
+    if (mergedInPlace.length === 0) {
       return
     }
+
+    // 目标集合在扫描前一次性建好：_reachesAny 每个顶层键调用一次，
+    // 在函数内 new Set 会把 O(N × graph) 的扫描再叠上 O(N × K) 的构建与分配
+    const targetSet = new Set(mergedInPlace)
 
     for (const rootKey of Reflect.ownKeys(this._state) as Array<keyof S>) {
       if (patched.has(rootKey)) {
@@ -952,7 +1179,7 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
       if (!descriptor || !('value' in descriptor)) {
         continue
       }
-      if (this._reachesAny(descriptor.value, targets)) {
+      if (this._reachesAny(descriptor.value, targetSet)) {
         this._markDirtyKey(rootKey)
       }
     }
@@ -964,14 +1191,13 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
    * 迭代实现（与脏追踪代理的归属解析同口径）：不进入内建对象、不求值访问器，
    * 命中即提前返回。
    */
-  private _reachesAny(value: unknown, targets: object[]): boolean {
-    if (targets.includes(value as object)) {
+  private _reachesAny(value: unknown, targets: ReadonlySet<object>): boolean {
+    if (targets.has(value as object)) {
       return true
     }
     if (value === null || typeof value !== 'object') {
       return false
     }
-    const targetSet = new Set(targets)
     const pending: unknown[] = [value]
     const seen = new Set<object>()
     while (pending.length > 0) {
@@ -980,14 +1206,14 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
         continue
       }
       seen.add(current)
-      if (targetSet.has(current)) {
+      if (targets.has(current)) {
         return true
       }
-      if (current instanceof Map) {
+      if (isMapLike(current)) {
         for (const [key, child] of current) {
           pending.push(key, child)
         }
-      } else if (current instanceof Set) {
+      } else if (isSetLike(current)) {
         for (const child of current) {
           pending.push(child)
         }
@@ -1023,17 +1249,13 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
     // 不会修改载荷，可直接复用只读保护 Proxy（零拷贝），省去整棵状态树的深拷贝开销。
     // 用户显式 notify.clone=true 时强制拷贝（兼容既有显式配置语义）。
     const needsClone = (this._notifyCloneExplicit && this._notifyClone) || this._subscriptionManager.hasWritableListeners()
-    // 需要克隆：每次通知都生成一份独立深拷贝快照，避免监听器共享被持续就地突变的活对象
-    // （此前直接传原始 this._state 并把 cloneOnNotify 设为 false，导致所有回调在断言时都变成最终态）。
-    // 仅只读订阅者（页面/组件绑定）时跳过深拷贝，传入只读保护 Proxy（零拷贝），且订阅者无法修改载荷。
-    let payload: S
-    if (needsClone) {
-      payload = deepCloneState(this._state)
-    } else if (this._stateProtectionEnabled) {
-      payload = this._stateProxyManager.createStateProxy(this._state, '')
-    } else {
-      payload = this._state
-    }
+    // 拷贝归属只有管理器一处知道「哪些注册可写」，所以判定为需要隔离时把**原始状态**
+    // 连同 `cloneOnNotify=true` 一起交下去：可写注册各拿一份独立深拷贝（先执行的可写回调
+    // 改入参，不会让同一轮里后面的监听器读到半成品），只读注册共用一份。
+    // 此前这里自备一份克隆再以 `false` 下发，等于替管理器处置好载荷，按注册分配的隔离
+    // 在公开 `store.subscribe(fn)` 路径上整个失效（所有回调共用同一份），
+    // 并且每轮 dispatch 都会触发管理器那条「cloneOnNotify=false 与可写订阅者共存」的 dev 告警
+    const payload: S = needsClone || !this._stateProtectionEnabled ? this._state : this._stateProxyManager.createStateProxy(this._state, '')
     // 本轮已通知的脏键与「通知期间新产生的脏键」分离：回调内的写入（重入）会被
     // 调度为下一轮通知，其脏键必须留给下一轮。若在收尾统一 clear，重入写入的脏键
     // 会连同一轮的脏键一起被清掉，集成层对稳定引用对象值的跳过判定（isStateKeyDirty）
@@ -1050,7 +1272,8 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
 
     this._notifying = true
     try {
-      this._subscriptionManager.notify(payload, false)
+      // needsClone 时载荷尚未处置，拷贝交给管理器按注册可写性分配；否则传已备好的零拷贝载荷
+      this._subscriptionManager.notify(payload, needsClone)
     } finally {
       this._notifying = reentrant
     }

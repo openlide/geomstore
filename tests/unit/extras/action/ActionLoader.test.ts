@@ -52,7 +52,7 @@ describe('ActionLoader', () => {
   describe('wrap', () => {
     it('应该包装成功的 action', async () => {
       const action = jest.fn(async (value: number) => value * 2)
-      const wrapped = loader.wrap(action as any, 'testAction', setStateMock)
+      const wrapped = loader.wrap(action, 'testAction', setStateMock)
       const result = await wrapped(5)
       expect(result).toBe(10)
       expect(action).toHaveBeenCalledWith(5)
@@ -191,7 +191,7 @@ describe('ActionLoader', () => {
         }
         return tag
       })
-      const wrapped = loader.wrap(action as any, 'concurrentAction', setStateMock)
+      const wrapped = loader.wrap(action, 'concurrentAction', setStateMock)
 
       const promise1 = wrapped('first')
       const promise2 = wrapped('second')

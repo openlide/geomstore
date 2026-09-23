@@ -35,7 +35,10 @@ const store = createStore({
 
 // ==================== 内置插件 ====================
 
-// 日志插件：打印每次 action 的名称、参数与耗时
+// 日志插件：打印 dispatch 的 action 名与实参数组（beforeDispatch）、action 名与返回值
+// （afterDispatch）、setState 的键值（before/afterSetState），并另挂一条只读订阅打印整份状态。
+// 它不统计耗时——要耗时/慢 action 分析请用 `@openlide/geomstore/extras/performance` 的 analyzerPlugin；
+// 且生产环境（isProduction()）下它整体静默，什么都不打
 store.use(loggerPlugin)
 
 /**

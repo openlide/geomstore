@@ -74,7 +74,22 @@ interface Op {
 
 /** 随机生成一个「经代理的写入」操作 */
 function randomOp(random: () => number): Op {
-  const kinds = ['objA.scalar', 'objB.scalar', 'objA.child', 'listPush', 'listPop', 'listSplice', 'mapSet', 'mapDelete', 'setAdd', 'setDelete', 'aliasAssign', 'aliasNestedWrite', 'nestedAdd', 'nestedDelete']
+  const kinds = [
+    'objA.scalar',
+    'objB.scalar',
+    'objA.child',
+    'listPush',
+    'listPop',
+    'listSplice',
+    'mapSet',
+    'mapDelete',
+    'setAdd',
+    'setDelete',
+    'aliasAssign',
+    'aliasNestedWrite',
+    'nestedAdd',
+    'nestedDelete',
+  ]
   return { kind: kinds[Math.floor(random() * kinds.length)], detail: Math.floor(random() * 5) }
 }
 

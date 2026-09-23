@@ -201,7 +201,14 @@ describe.each([false, true])('action dirty keys (onlyOnChange=%s)', (onlyOnChang
     store.subscribe(() => dirty.push(Object.keys(state).filter((key) => store.isStateKeyDirty(key))))
     await store.dispatch('edit')
     await new Promise((resolve) => setTimeout(resolve, 0))
-    expect(dirty).toEqual([['first', 'second']])
+    // R6-037 的预期行为变更：异步 action 的**同步段**现在当场补发一次通知，
+    // `async: true` 的合并窗口下它与 settle 那一轮落在两个批次，两种模式表现不同：
+    // - `onlyOnChange: false`：多出一个 dirty 为空的投递（脏键已在第一轮被消费掉）。
+    //   集成层按脏键跳过 setData，空批次不产生额外渲染；替代做法（让 settle 轮跳过）
+    //   会让 await 之后的裸写重新变成不可见，与 store.test.ts 钉住的「宁多勿漏」冲突。
+    // - `onlyOnChange: true`：settle 轮按变更计数去重，仍只有一次投递。
+    expect(dirty).toEqual(onlyOnChange ? [['first', 'second']] : [['first', 'second'], []])
+    expect(dirty.filter((keys) => keys.length > 0)).toEqual([['first', 'second']])
     expect(store.isStateKeyDirty('first')).toBe(false)
   })
 })

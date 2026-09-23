@@ -34,9 +34,15 @@ describe('通知行为优化', () => {
         notify: { clone: false },
       })
       let received: unknown
-      store.subscribe((state) => {
-        received = state
-      })
+      // 零拷贝档只对**只读**订阅开放：这里要锁的是「clone=false + 状态保护开启时载荷就是缓存的保护 Proxy」，
+      // 故按只读注册。可写注册在 R5-122 之后每轮各拿一份克隆，拿身份比较当期望等于
+      // 把「全员共用 Store 自备那一份克隆」的旧缺陷固化成断言
+      store.subscribe(
+        (state) => {
+          received = state
+        },
+        { readOnly: true },
+      )
 
       store.setState('count', 1)
 
@@ -45,9 +51,12 @@ describe('通知行为优化', () => {
       expect((received as { count: number }).count).toBe(1)
       // 两次通知收到同一缓存 Proxy（引用稳定，无重复克隆）
       let second: unknown
-      const unsub = store.subscribe((state) => {
-        second = state
-      })
+      const unsub = store.subscribe(
+        (state) => {
+          second = state
+        },
+        { readOnly: true },
+      )
       store.setState('count', 2)
       expect(second).toBe(received)
       unsub()

@@ -3,7 +3,7 @@
     "target": "ES2020",
     "module": "NodeNext",
     "moduleResolution": "nodenext",
-    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "lib": ["ES2020"],
     "declaration": true,
     "declarationMap": true,
     "sourceMap": true,
@@ -25,12 +25,16 @@
     "verbatimModuleSyntax": false,
     "experimentalDecorators": true,
     "emitDecoratorMetadata": true,
+    // 基线默认只做类型检查；declaration/outDir/rootDir 等 emit 选项由
+    // tsconfig.build.json 以 "noEmit": false 启用（map 在 build 侧显式关闭）
     "noEmit": true,
     "incremental": false,
-    "types": ["node", "jest"],
+    // 基线只带 node 类型：jest 全局由 tsconfig.jest.json / tsconfig.tests.json 各自的
+    // types 提供。写在基线里会让 src/** 与 examples/** 白得一份用不到的测试全局
+    // （实测去掉后四条 typecheck 与 build 全零错，唯一变红的就是引用 jest 全局的测试侧文件）
+    "types": ["node"],
     "paths": {
-      "@/*": ["./src/*"],
-      "@tests/*": ["./tests/*"]
+      "@/*": ["./src/*"]
     }
   },
   "include": ["src/**/*"],

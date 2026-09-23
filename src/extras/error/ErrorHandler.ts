@@ -8,6 +8,38 @@
 import { createErrorContext, defaultErrorHandler, type ErrorContext, type ErrorHandler, type ErrorLevel, type OperationType } from '../../types/error.js'
 
 /**
+ * 错误条目上限的默认值 —— **唯一来源**：`ErrorHandler.errorLog` 的字段初始化、
+ * `setMaxLogSize` 的非有限值回退，以及 `ErrorBoundary.errorHistory` 的裁剪都取本常量。
+ *
+ * 调这一处即同时改掉两侧上限（此前 `ErrorBoundary` 另写了一份字面量、注释却自称
+ * 「与 ErrorHandler 同口径」，值各持一份 = 迟早漂移）。
+ *
+ * 导出仅供同目录复用；未经 barrel 再导出，不是公开 API。
+ */
+export const DEFAULT_MAX_LOG_SIZE = 100
+
+/**
+ * thenable 判定：只看**语法**（自带 callable `then`），不比对 `instanceof Promise`
+ *
+ * 跨 realm（iframe / worker / node:vm）的 Promise 与手写 thenable 的 `instanceof` 均为 false，
+ * 只认 Promise 实例会让它们的 rejection 无人接收（unhandledRejection）。
+ *
+ * 导出仅供同目录复用（`ErrorBoundary` 的装饰器需要同一判据）；未经 barrel 再导出，不是公开 API。
+ */
+export function isThenable(value: unknown): value is PromiseLike<unknown> {
+  return value !== null && (typeof value === 'object' || typeof value === 'function') && typeof (value as { then?: unknown }).then === 'function'
+}
+
+/**
+ * handler 失败的唯一出口：只落一条日志，绝不再抛
+ *
+ * 同步抛错与异步 rejection 共用它，两条路径的可见输出才会一致。
+ */
+function reportHandlerFailure(error: unknown): void {
+  console.error('[ErrorHandler] Error in error handler:', error)
+}
+
+/**
  * 错误处理器类
  *
  * 用于管理GeomStore运行过程中的错误处理、记录和统计
@@ -31,9 +63,6 @@ import { createErrorContext, defaultErrorHandler, type ErrorContext, type ErrorH
  * console.log(`Total errors: ${stats.total}`)
  * ```
  */
-/** errorLog 条目上限的默认值：字段初始化与 setMaxLogSize 的非有限值回退共用 */
-const DEFAULT_MAX_LOG_SIZE = 100
-
 export class ErrorHandlerImpl {
   /**
    * 错误处理函数
@@ -63,6 +92,11 @@ export class ErrorHandlerImpl {
    *
    * @param {ErrorHandler} handler - 错误处理函数
    * @throws {Error} 如果handler不是函数
+   *
+   * @remarks 允许传 async 函数（TS 的 void 返回签名并不排除它）：**被返回的那条 Promise**
+   * 的 rejection 由 {@link ErrorHandlerImpl.handleError} 接住并折成一条 `console.error`，
+   * 调用方拿不到「handler 失败」的信号；handler 内部另起而未返回的 Promise 不在保护范围内，
+   * 需自行兜底。
    *
    * @example
    * ```typescript
@@ -103,16 +137,34 @@ export class ErrorHandlerImpl {
    * }
    * errorHandler.handleError(context)
    * ```
+   *
+   * @remarks 处理器抛错被隔离成一条 `[ErrorHandler] Error in error handler:` 的
+   * `console.error`，不外溢给调用方：本方法是错误链路的最后一环，让坏掉的上报 handler
+   * 把原始错误顶替成二次异常，会让现场只剩 handler 的堆栈。异步 handler（返回 Promise 的
+   * 函数可赋给 `(context) => void` 的签名）的 rejection 同样被接住并折成同一条日志——
+   * 否则「上报错误」这条链路自己就能把进程搞崩（Node 下 unhandledRejection 可终止进程）。
+   * context 在调用 handler 之前已写入 errorLog，因此 handler 长期失效时仍可由
+   * `getErrorLog()`/`getErrorStats()` 观察到错误在累积——这是该取舍的兜底通道，也是不额外加
+   * `onHandlerError` 钩子的理由（钩子本身同样可能抛错，且要新增公开 API）。
    */
   handleError(context: ErrorContext): void {
     // 记录错误
     this.logError(context)
 
-    // 调用处理器
+    // 交给 handler 的是副本：传同一个对象时，handler 里一句 `ctx.level = 'critical'`
+    // 或 `ctx.error = ...` 就静默改写了已入库的记录（见 copyContext 的不变量）
+    let handlerResult: unknown
     try {
-      this.handler(context)
+      handlerResult = this.handler(this.copyContext(context))
     } catch (error) {
-      console.error('[ErrorHandler] Error in error handler:', error)
+      reportHandlerFailure(error)
+      return
+    }
+
+    // 只在 handler 真的返回 thenable 时建 Promise 链：同步 handler（默认路径）不为此
+    // 多付一次微任务，async handler 的 rejection 才有人接
+    if (isThenable(handlerResult)) {
+      Promise.resolve(handlerResult).catch(reportHandlerFailure)
     }
   }
 
@@ -154,7 +206,9 @@ export class ErrorHandlerImpl {
    * @param {ErrorContext} context - 错误上下文
    */
   private logError(context: ErrorContext): void {
-    this.errorLog.push(context)
+    // 入库即取副本：留着调用方手里的同一个对象，则 `handleError(ctx)` 之后
+    // 任何一句 `ctx.level = ...` 都会改写历史记录——副本不变量只在读取路径生效等于没做
+    this.errorLog.push(this.copyContext(context))
 
     // 限制日志大小
     if (this.errorLog.length > this.maxLogSize) {
@@ -163,9 +217,23 @@ export class ErrorHandlerImpl {
   }
 
   /**
+   * 拷贝一条错误上下文
+   *
+   * 内部 errorLog 存的若是交给调用方的同一个对象，一句 `ctx.level = 'critical'`
+   * 或 `ctx.error = ...` 就会污染此后所有查询与统计，故对外一律给副本——
+   * 交给 handler 的那一份同样如此（handler 是长期驻留的用户代码，最容易出现「顺手改一下」）。
+   * 浅拷贝已足够：`error`/`payload` 按约定是外部持有的不可变引用。
+   *
+   * @private
+   */
+  private copyContext(context: ErrorContext): ErrorContext {
+    return { ...context }
+  }
+
+  /**
    * 获取错误日志
    *
-   * 返回所有错误上下文的副本
+   * 返回所有错误上下文的副本（数组与条目均可安全修改，不影响内部状态）
    *
    * @returns {ErrorContext[]} 错误日志数组的副本
    *
@@ -178,7 +246,7 @@ export class ErrorHandlerImpl {
    * ```
    */
   getErrorLog(): ErrorContext[] {
-    return [...this.errorLog]
+    return this.errorLog.map((context) => this.copyContext(context))
   }
 
   /**
@@ -195,7 +263,9 @@ export class ErrorHandlerImpl {
    * ```
    */
   getLastError(): ErrorContext | undefined {
-    return this.errorLog[this.errorLog.length - 1]
+    const last = this.errorLog[this.errorLog.length - 1]
+
+    return last ? this.copyContext(last) : undefined
   }
 
   /**
@@ -218,7 +288,7 @@ export class ErrorHandlerImpl {
    *
    * 当日志超过指定大小时，最旧的错误会被移除
    *
-   * @param {number} size - 最大日志数量（必须 >= 1）
+   * @param {number} size - 最大日志数量（必须 >= 1；小数向下取整，非有限值回退 {@link DEFAULT_MAX_LOG_SIZE}）
    *
    * @example
    * ```typescript
@@ -230,7 +300,10 @@ export class ErrorHandlerImpl {
     // NaN/Infinity 守卫：Math.max(1, NaN) 返回 NaN，此后 logError 的
     // `length > this.maxLogSize` 与下方截断 while 条件恒为 false，
     // errorLog 会变成无界增长（入参可能来自 parseInt(配置) 等）
-    this.maxLogSize = Number.isFinite(size) ? Math.max(1, size) : DEFAULT_MAX_LOG_SIZE
+    // 取整只为让字段值等于实际容量：`length > 5.9` 的稳态本来就是 5 条，
+    // 但字段留着 5.9 会让读它的人（和下面的截断循环）误算成 5.9 条；
+    // 与 ActionHistoryTracker.setMaxHistory 的口径也由此一致
+    this.maxLogSize = Number.isFinite(size) ? Math.max(1, Math.floor(size)) : DEFAULT_MAX_LOG_SIZE
 
     // 如果当前日志超过新大小，截断
     while (this.errorLog.length > this.maxLogSize) {
@@ -252,7 +325,7 @@ export class ErrorHandlerImpl {
    * ```
    */
   getErrorsByOperation(operation: OperationType): ErrorContext[] {
-    return this.errorLog.filter((ctx) => ctx.operation === operation)
+    return this.errorLog.filter((ctx) => ctx.operation === operation).map((ctx) => this.copyContext(ctx))
   }
 
   /**
@@ -272,32 +345,38 @@ export class ErrorHandlerImpl {
    * ```
    */
   getErrorsByLevel(level: ErrorLevel): ErrorContext[] {
-    return this.errorLog.filter((ctx) => ctx.level === level)
+    return this.errorLog.filter((ctx) => ctx.level === level).map((ctx) => this.copyContext(ctx))
   }
 
   /**
    * 获取错误统计信息
    *
-   * 返回按级别和操作类型分组的错误统计
+   * 两个分组字段都是**稀疏**的：只包含实际出现过的级别 / 操作类型，
+   * 未出现过的键不存在（而非 0），因此按 `Partial` 暴露——
+   * 把它们预置成 0 会让「`Object.keys(byLevel)` 的长度」这类聚合口径失真。
+   * 读侧请写 `stats.byLevel.warn ?? 0`。
    *
-   * @returns {{total: number, byLevel: Record<ErrorLevel, number>, byOperation: Record<OperationType, number>}} 错误统计对象
+   * @returns {{total: number, byLevel: Partial<Record<ErrorLevel, number>>, byOperation: Record<string, number>}} 错误统计对象
+   *
+   * 键类型为 `string`（而非 `OperationType`）是刻意的：`OperationType` 是开放字符串
+   * 联合的聚合口径，调用方传入自定义 operation 时也会原样出现在这里。
    *
    * @example
    * ```typescript
    * const stats = errorHandler.getErrorStats()
    * console.log(`Total: ${stats.total}`)
-   * console.log(`Critical: ${stats.byLevel.critical}`)
-   * console.log(`Action errors: ${stats.byOperation['action-execution']}`)
+   * console.log(`Critical: ${stats.byLevel.critical ?? 0}`)
+   * console.log(`Action errors: ${stats.byOperation['action-execution'] ?? 0}`)
    * ```
    */
   getErrorStats(): {
     total: number
-    byLevel: Record<ErrorLevel, number>
+    byLevel: Partial<Record<ErrorLevel, number>>
     byOperation: Record<string, number>
   } {
     const stats = {
       total: this.errorLog.length,
-      byLevel: {} as Record<ErrorLevel, number>,
+      byLevel: {} as Partial<Record<ErrorLevel, number>>,
       byOperation: {} as Record<string, number>,
     }
 
@@ -311,7 +390,10 @@ export class ErrorHandlerImpl {
 }
 
 /**
- * 默认导出
+ * 命名再导出（本模块无 default export）
+ *
+ * `defaultErrorHandler` / `createErrorContext` 的**定义在 `src/types/error.ts`**，此处转发是为
+ * 保持既有深导入路径（`extras/error/ErrorHandler.js`）可用；barrel 直接从定义模块导出。
  */
 export { defaultErrorHandler, createErrorContext }
 export type { ErrorContext, ErrorHandler, ErrorLevel, OperationType } from '../../types/error.js'

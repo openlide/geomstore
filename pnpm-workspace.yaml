@@ -1,5 +1,11 @@
 # pnpm 工作区配置
 # 当前仅根包纳入锁文件管理；packages/benchmark 为实验性子包，暂未接入
+# —— 它不在这里声明 `packages:`，根 package.json 也刻意不写 npm 风格的 `workspaces`：
+#    两处都写会让 npm/yarn 与 pnpm 得出两套拓扑（前者链接子包、后者不链接），
+#    而子包声明的 devDependencies 在 pnpm 下永不被安装。
+# 子包的编译与冒烟一律借用根装的 typescript，由 CI 直接执行：
+#    npx tsc -p packages/benchmark/tsconfig.json && node packages/benchmark/dist/smoke.js
+# 接入本包的前提是先补齐它自己的 devDependencies 安装路径并重生成锁文件。
 # allowBuilds：批准依赖的安装脚本（pnpm 10+ 默认禁止构建脚本）
 allowBuilds:
   esbuild: true

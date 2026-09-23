@@ -1,29 +1,41 @@
 # Dependencies
+# 依赖锚定由 pnpm-lock.yaml 承担，且它照常入库（git ls-files 命中、git check-ignore 退出 1）。
+# 下面两条只针对「误用 npm/yarn 时顺手提交的第二把锁」：本仓库是 pnpm-only
+# （package.json > packageManager + CI pnpm install --frozen-lockfile），
+# 出现第二把锁只会让 CI 与本地解析出两套树，故一律忽略、不入库。
 node_modules/
 package-lock.json
 yarn.lock
 
 # Build outputs
 dist/
+# 微信「构建 npm」专用产物（`miniprogram` 字段指向的目录，由 pnpm run build:weapp 生成）
+dist-weapp/
 build/
 *.log
 *.tsbuildinfo
 
 # 说明：子路径转发 stub（store/ hooks/ plugins/ 等）由 prepack 钩子在打包发布时
-# 生成、postpack 清理，不落盘到仓库，故无需忽略规则。详见 scripts/generate-subpath-stubs.cjs
+# 生成、postpack 清理，不落盘到仓库，故无需忽略规则。详见 scripts/generate-subpath-stubs.mjs
 
 # Test coverage
 coverage/
 coverage-report.json
 .nyc_output/
-coverage-report.json
-coverage-*.json
+# 根级 jest 汇总产物；锚到仓库根，避免子包/工具目录里的同名合法文件被静默吞掉
+/coverage-*.json
 
-# IDE
+# IDE / 编码助手的本地数据
 # .codebuddy 整体保持忽略（内含会话与本地数据），仅放开 skills 目录，使 project skill 可随仓库分发
 .codebuddy/*
 !.codebuddy/skills/
 !.codebuddy/skills/**
+# 同类：其他编码助手的会话记忆目录，同样是本地数据，不随仓库分发。
+# 不显式忽略时 `git add -A` 会把它们提交进来（.workbuddy 已实测踩过）。
+.workbuddy/
+# 文档重构的跨片台账与中间产物（.docfix/LEDGER.md 是工作底稿，结论沉淀进 docs/ 与 CONTRIBUTING 后即可删）
+.docfix/
+.workbuddy/*
 .vscode/
 .idea/
 *.swp
@@ -35,10 +47,35 @@ coverage-*.json
 *.tmp
 *.temp
 .cache/
-examples/
+
+# 示例工程 examples/ 是仓库源码，不忽略：tools/tsconfig.examples.json 的 include 覆盖整个
+# examples/**，CI 的「Typecheck (examples)」步骤就跑在它上面；整目录忽略会让干净检出缺文件
+# （曾漏网：examples/global.d.ts 声明的 App/Page/Component 被已跟踪的 examples/weapp/*.ts 调用，
+#  以及 examples/*/index.ts 汇总入口），新增示例也不再需要 git add -f。
+# src 下的 *.example.ts 由 tsconfig 的 exclude 挡在编译之外，与此处无关。
 
 # Environment variables
+# .env.* 覆盖 .env.local / .env.production / .env.development / .env.test 等全部变体；
+# 仅允许签入模板文件 .env.example（不含真实凭据）
 .env
-.env.local
-.env.*.local
+.env.*
+!.env.example
+
+# 审查素材与逐条判定台账
+# ocr*.md / review.json 是外部审查工具的原始输出，只作输入不作产物；
+# .ocr-fix 下除「判定结论」（decisions*.md 与 verdicts*/）外全部是可由原始报告重新生成的
+# 中间产物（ledger / state / groups 分片 markdown、切分脚本），故整目录忽略后白名单放开结论文件。
+# 三份素材都钉在仓库根：不加前导 / 时它们会命中任意层级，docs/ocr.md、packages/*/review.json
+# 这类合法文件名会被静默忽略。
+/ocr.md
+/ocrreview*.md
+/review.json
+# 白名单按**模式**写，不按轮次点名。逐轮加 `!.ocr-fix/decisionsN.md` 已经两次漏放新一轮的
+# 台账（第五轮补 decisions5/verdicts5 时第六轮还不存在，第六轮的 decisions6.md、verdicts6/**
+# 同样落在 `.ocr-fix/*` 里）：被忽略的文件 `git status` 不列、`git add` 只安静跳过，
+# 断链要等到下一轮在干净检出上读不到判定结论才暴露。改成模式后每轮自动覆盖。
+.ocr-fix/*
+!.ocr-fix/decisions*.md
+!.ocr-fix/verdicts*/
+!.ocr-fix/verdicts*/**
 

@@ -1,7 +1,7 @@
 /**
  * GeomStore 基础示例 3：Getter（派生状态）
  *
- * 覆盖：getter 定义、经 store.getter(name) 读取、依赖未变时复用缓存。
+ * 覆盖：getter 定义、经 store.getter(name) 读取。getter 每次调用按当前状态重算，Store 不缓存它的结果。
  */
 
 import { createStore } from '../../src/index.js'
@@ -28,9 +28,9 @@ const cartStore = createStore({
     coupon: 50,
   }),
   getters: {
-    // 只读派生值：建议保持纯函数，便于缓存命中与调试
+    // 只读派生值：保持纯函数便于调试；需要「依赖未变则复用」请用 extras/selector 的 createSelector
     subtotal: (state: CartState) => state.items.reduce((sum, item) => sum + item.price * item.count, 0),
-    // getter 只接收 state（需要组合时在函数内自行计算，保持纯函数便于缓存）
+    // getter 只接收 state（需要组合时在函数内自行计算）
     total(state: CartState) {
       const subtotal = state.items.reduce((sum, item) => sum + item.price * item.count, 0)
       return Math.max(0, subtotal - state.coupon)
@@ -44,7 +44,8 @@ const cartStore = createStore({
   },
 })
 
-// 读取 getter（泛型签名会推导出返回类型）
+// 读取 getter（泛型签名会推导出返回类型）。注意：每一次 getter() 都会重算，
+// Store 侧没有 getter 结果缓存，重复读取的收益只是类型收敛与写法统一
 console.log('小计:', cartStore.getter('subtotal'))
 console.log('应付:', cartStore.getter('total'))
 

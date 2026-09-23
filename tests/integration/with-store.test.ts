@@ -246,8 +246,9 @@ describe('withPageStore - Page集成', () => {
       const store = createStore({
         state: { count: 0 },
         actions: {
-          increment(...args: unknown[]) {
-            (this.state as any).count++
+          increment(..._args: unknown[]) {
+            const state = this.state as any
+            state.count++
           },
         },
       })
@@ -265,8 +266,9 @@ describe('withPageStore - Page集成', () => {
       const store = createStore({
         state: { count: 0 },
         actions: {
-          increment(...args: unknown[]) {
-            (this.state as any).count++
+          increment(..._args: unknown[]) {
+            const state = this.state as any
+            state.count++
           },
         },
       })
@@ -376,7 +378,9 @@ describe('withPageStore - Page集成', () => {
         state: { count: 0 },
         getters: { double: (state) => state.count * 2 },
         actions: {
-          add(amount: number) { this.state.count += amount },
+          add(amount: number) {
+            this.state.count += amount
+          },
         },
       })
       const onUnload = jest.fn(function (this: any) {
@@ -468,8 +472,9 @@ describe('withPageStore - Page集成', () => {
           },
         },
         actions: {
-          increment(...args: unknown[]) {
-            (this.state as any).count++
+          increment(..._args: unknown[]) {
+            const state = this.state as any
+            state.count++
           },
         },
       })
@@ -496,8 +501,9 @@ describe('withPageStore - Page集成', () => {
           },
         },
         actions: {
-          increment(...args: unknown[]) {
-            (this.state as any).count++
+          increment(..._args: unknown[]) {
+            const state = this.state as any
+            state.count++
           },
         },
       })
@@ -606,8 +612,9 @@ describe('withComponentStore - Component集成', () => {
       const store = createStore({
         state: { count: 0 },
         actions: {
-          increment(...args: unknown[]) {
-            (this.state as any).count++
+          increment(..._args: unknown[]) {
+            const state = this.state as any
+            state.count++
           },
         },
       })
@@ -625,8 +632,9 @@ describe('withComponentStore - Component集成', () => {
       const store = createStore({
         state: { count: 0 },
         actions: {
-          increment(...args: unknown[]) {
-            (this.state as any).count++
+          increment(..._args: unknown[]) {
+            const state = this.state as any
+            state.count++
           },
         },
       })
@@ -689,7 +697,9 @@ describe('withComponentStore - Component集成', () => {
         state: { count: 0 },
         getters: { double: (state) => state.count * 2 },
         actions: {
-          add(amount: number) { this.state.count += amount },
+          add(amount: number) {
+            this.state.count += amount
+          },
         },
       })
       const detached = jest.fn(function (this: any) {
@@ -851,8 +861,9 @@ describe('withComponentStore - Component集成', () => {
           },
         },
         actions: {
-          increment(...args: unknown[]) {
-            (this.state as any).count++
+          increment(..._args: unknown[]) {
+            const state = this.state as any
+            state.count++
           },
         },
       })
@@ -879,8 +890,9 @@ describe('withComponentStore - Component集成', () => {
           },
         },
         actions: {
-          increment(...args: unknown[]) {
-            (this.state as any).count++
+          increment(..._args: unknown[]) {
+            const state = this.state as any
+            state.count++
           },
         },
       })
@@ -1059,7 +1071,8 @@ describe('withComponentStore - 覆盖率补全', () => {
       state: { count: 0 },
       actions: {
         increment(..._args: unknown[]) {
-          (this.state as any).count++
+          const state = this.state as any
+          state.count++
         },
       },
     })
@@ -1094,7 +1107,8 @@ describe('withComponentStore - 覆盖率补全', () => {
       state: { count: 0 },
       actions: {
         increment(..._args: unknown[]) {
-          (this.state as any).count++
+          const state = this.state as any
+          state.count++
         },
       },
     })
@@ -1261,7 +1275,8 @@ describe('withComponentStore - 覆盖率补全', () => {
       state: { count: 0 },
       actions: {
         increment(..._args: unknown[]) {
-          (this.state as any).count++
+          const state = this.state as any
+          state.count++
         },
       },
     })
@@ -1328,7 +1343,8 @@ describe('withComponentStore - 覆盖率补全', () => {
       state: { count: 0 },
       actions: {
         increment(..._args: unknown[]) {
-          (this.state as any).count++
+          const state = this.state as any
+          state.count++
         },
       },
     })

@@ -5,23 +5,24 @@
     // node10，故无需 ignoreDeprecations）。
     // 注意：Jest 的 CJS 转译参数不在此处，而由 jest.config.js 中 ts-jest 的内联
     // compilerOptions 提供——否则 module: CommonJS 会强制 node10 解析。
-    "declaration": false,
-    "declarationMap": false,
-    "sourceMap": true,
+    // rootDir 是**必要**项而非冗余项：基线为 './src'，本配置的 include 含 tests/**/*，
+    // 实测改用基线值会报 119 条 TS6059（文件不在 rootDir 下）。
     "rootDir": ".",
     "types": ["jest", "node"],
-    "noEmit": true,
+    // 与 tsconfig.tests.json 的测试语义对齐：测试内大量 mock/夹具为无标注对象字面量，
+    // 隐式 any 报错只会催生冗余类型噪音；strict 伞下其余检查保持开启
     "noImplicitAny": false,
     "strict": true,
     // tsconfig.json 面向 src 开启未使用变量检查；测试侧存在大量仅作断言/占位的变量与
     // 参数，关闭以对齐 tsconfig.tests.json 的测试语义。
     "noUnusedLocals": false,
-    "noUnusedParameters": false,
-    "paths": {
-      "@/*": ["./src/*"],
-      "@tests/*": ["./tests/*"]
-    }
+    "noUnusedParameters": false
+    // 基线已 noEmit: true，故此处不再声明 declaration/declarationMap/sourceMap 等
+    // emit 选项（实测强制打开它们零产出、零诊断），也不重复声明 noEmit。
   },
   "include": ["src/**/*", "tests/**/*"],
-  "exclude": ["node_modules", "dist"]
+  // 局部 exclude 是**整体替换**而非合并基线，故需把基线里对本配置有效的排除项写全：
+  // 漏掉 '**/*.example.ts' 会让 include(src/**/*) 把示例文件纳入类型检查。
+  // 有意不复抄基线的 'tests'——本配置的 include 正需要 tests/**/*。
+  "exclude": ["node_modules", "dist", "packages", "**/*.example.ts"]
 }

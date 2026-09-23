@@ -476,7 +476,6 @@ describe('StateProxyManager', () => {
       warnSpy.mockRestore()
     })
   })
-
 })
 
 describe('createProxyCache', () => {
@@ -635,8 +634,8 @@ describe('StateProxyManager 补充覆盖', () => {
   })
 
   describe('深层 Proxy 内部访问路径补充', () => {
-    it('内部访问设置嵌套属性时应该正确删除缓存', () => {
-      const { manager, setInternal, proxyCache } = createManager()
+    it('内部访问修改嵌套对象属性：代理与源对象同时可见（缓存按 target 索引，无 stale 可删）', () => {
+      const { manager, setInternal } = createManager()
       const state = { nested: { value: 1 } }
       const proxy = manager.createStateProxy(state, '') as any
 
@@ -666,8 +665,8 @@ describe('StateProxyManager 补充覆盖', () => {
       expect(proxy.newProp).toBe(123)
     })
 
-    it('内部访问设置顶层属性时应该清除缓存', () => {
-      const { manager, setInternal, proxyCache } = createManager()
+    it('内部访问设置顶层属性：代理与源对象同时可见（同上，代理缓存不存在需要清除的旧条目）', () => {
+      const { manager, setInternal } = createManager()
       const state = { count: 0 }
       const proxy = manager.createStateProxy(state, '') as any
 

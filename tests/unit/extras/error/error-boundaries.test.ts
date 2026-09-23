@@ -6,7 +6,6 @@
  * 非 2xx / method 缺省、ErrorMonitoring 的重入队容量判定与「定时器无 unref」
  * 环境、ErrorRecovery 的重试窗口容量清理。
  */
- 
 
 import { ErrorBoundary, ErrorMonitoring, ErrorRecovery, RecoveryStrategy } from '@/extras/error/index.js'
 import { ConsoleReporter } from '@/extras/error/reporters/ConsoleReporter.js'
@@ -53,9 +52,11 @@ describe('错误处理域边界分支', () => {
       const boundary = new ErrorBoundary({ fallback: { count: 0 }, recoverable: true })
 
       for (let i = 0; i < MAX_ERROR_HISTORY + 1; i++) {
-        expect(boundary.execute(() => {
-          throw new Error(`e${i}`)
-        })).toEqual({ count: 0 })
+        expect(
+          boundary.execute(() => {
+            throw new Error(`e${i}`)
+          }),
+        ).toEqual({ count: 0 })
       }
 
       expect(boundary.getErrorHistory()).toHaveLength(MAX_ERROR_HISTORY)
@@ -65,9 +66,11 @@ describe('错误处理域边界分支', () => {
       const boundary = new ErrorBoundary({ fallback: () => ({ count: 9 }), recoverable: true })
 
       expect(boundary.getFallbackState()).toBeUndefined()
-      expect(boundary.execute(() => {
-        throw new Error('boom')
-      })).toEqual({ count: 9 })
+      expect(
+        boundary.execute(() => {
+          throw new Error('boom')
+        }),
+      ).toEqual({ count: 9 })
     })
   })
 
@@ -235,22 +238,22 @@ describe('错误处理域边界分支', () => {
           TEST_CODE: { strategy: RecoveryStrategy.RETRY, maxRetries: 3, retryDelay: 0, exponentialBackoff: false },
         })
 
-        // 直接构造「超过 MAX_RETRY_KEYS(1000) 且全部过期」的窗口表：
+        // 直接构造「超过 MAX_RETRY_KEYS(1000) 且全部到期」的周期表（值是**到期时刻**）：
         // 动态 operation id 场景下正是该状态触发容量守卫（逐次 recover 需千次调用，过慢）
         const internal = recovery as unknown as {
-          retryWindowStart: Map<string, number>
+          retryCycleEnd: Map<string, number>
           retryCount: Map<string, number>
         }
         for (let i = 0; i <= 1000; i++) {
-          internal.retryWindowStart.set(`expired-${i}`, now - 120_000)
+          internal.retryCycleEnd.set(`expired-${i}`, now - 120_000)
           internal.retryCount.set(`expired-${i}`, 1)
         }
 
         await expect(recovery.recover(new GeomStoreError('probe', 'TEST_CODE'), { operation: 'fresh' })).rejects.toThrow()
 
         // 过期窗口被清理，键数压回上限内
-        expect(internal.retryWindowStart.has('expired-0')).toBe(false)
-        expect(internal.retryWindowStart.size).toBeLessThanOrEqual(1000)
+        expect(internal.retryCycleEnd.has('expired-0')).toBe(false)
+        expect(internal.retryCycleEnd.size).toBeLessThanOrEqual(1000)
       } finally {
         nowSpy.mockRestore()
         warnSpy.mockRestore()

@@ -1,30 +1,55 @@
 name: CI
 
+# 同一分支/PR 上连续推送时，只保留最新一次运行，取消已被取代的全矩阵运行以省 runner。
+# 长期分支（main/master/develop）不取消：那里的运行是「已合入代码的验证记录」，
+# 中途取消会让最新提交失去 CI 结论。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' && github.ref != 'refs/heads/master' && github.ref != 'refs/heads/develop' }}
+
 on:
   push:
     branches: [main, master, develop]
   pull_request:
   workflow_dispatch:
 
+# 第三方 Action 一律钉到**完整 commit SHA**（行尾注释保留语义版本）。理由：`@v4` 是会被
+# 维护者移动的分支/标签 ref，钉 tag 等于允许上游在一次 CI 运行里改变执行代码。
+# SHA 是按「当前 `vN` ref 实际解析到的那个 commit」取的，所以这次改动零行为变化；
+# 四个 ref 各自的 commit 同时是其最新补丁标签（checkout v4.4.0 / setup-node v4.4.0 /
+# upload-artifact v4.6.2 / pnpm action-setup v4.3.0）。
+# 升级姿势：`gh release list -R <owner>/<repo>` 看新版本 → 用
+# `GET /repos/<owner>/<repo>/git/ref/tags/<新tag>` 拿 SHA（annotated tag 要再经
+# `/git/tags/<sha>` 剥一层才得到 commit）→ 逐处替换 SHA 并改行尾注释。
+
+# 最小权限：工作流级只保留读取仓库；Actions 域的写权限单独下放给唯一真正需要它的
+# job（见 jobs.verify.permissions），跑 PR head 代码的其它 job 不再继承。
+# 注：actions/upload-artifact 的文档（已核 v4.6.2 的 README）**没有**把 `actions: write`
+# 列为上传制品的前置权限——文中唯一提到写权限的地方是「有仓库写权限的用户才能看到删除图钉」。
+# 所以这条收窄不是「文档要求的必需权限」，而是「拿不准就按最小面授予」的处置；
+# 若上传步骤因权限失败，信号会直接出现在那条 step 上。
+permissions:
+  contents: read
+
 jobs:
-  verify:
-    name: Lint / Typecheck / Test / Build (Node ${{ matrix.node-version }})
+  # lint 与 typecheck 与 Node 运行版本无关（tsconfig target=ES2020、eslint/typescript 都是
+  # devDependencies 里锁定的版本），在 22/24 两条矩阵腿上各跑一遍只是把 runner 时间翻倍、
+  # 覆盖率为零，故拆成单腿 job，矩阵里只留 Test / Build / Smoke。
+  verify-static:
+    name: Lint / Typecheck
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        node-version: [22, 24]
+    timeout-minutes: 20
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
 
-      - name: Setup Node.js ${{ matrix.node-version }}
-        uses: actions/setup-node@v4
+      - name: Setup Node.js 22
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: ${{ matrix.node-version }}
+          node-version: 22
           cache: pnpm
 
       - name: Install dependencies
@@ -33,22 +58,107 @@ jobs:
       - name: Lint
         run: pnpm run lint:ci
 
+      # 格式门禁与 lint:ci 同口径（跑不过就是红，不设基线冻结/白名单）。
+      # 判据直接调 `pnpm format:check`，glob 只在 package.json 里定义一次——过去这里抄一份
+      # 逐字相同的 glob，改脚本就必须记得同步改这里，否则「门禁红、本地修复器不认」的分裂
+      # 会重新出现（这正是本条注释原先要防的事，靠复制粘贴防不住）。
+      # 覆盖面：src/tests 的 TS + 全部手写文档 md（README / CONTRIBUTING / CHANGELOG / docs/** /
+      # packages/** 的 README / SKILL.md 与 references/*-semantics.md）。
+      # **不含** `.codebuddy/skills/geomstore/references/api/**`——那是 `pnpm skill:api` 从
+      # `dist/**/*.d.ts` 生成的构建产物。对它跑格式化器会**改动内容**：实测会转义块引用里
+      # 粗体跨度内的星号、把 ```ts 围栏抬成 ````ts，并因 .prettierrc 的 semi:false 删掉
+      # `.d.ts` 声明行末尾的分号（某文件实测 20 行 → 1 行）。而这份文件的契约恰恰是
+      # 「逐字取自类型声明原文」——它的正确性由「与 .d.ts 一致」保证，不由排版门禁保证。
+      # 排除规则与同一份理由写在 .prettierignore。`.ocr-fix/**` 是复审工作记录、不属于文档
+      # 产品，本步的 glob 从不点名它。
+      # 换行符侧的口径：仓库内与检出侧一律 LF，由仓库根的 .gitattributes（`* text=auto eol=lf`）
+      # 钉住，`.prettierrc.json` 因此可以直接判 `endOfLine: lf`——本步**既判格式也判换行**，
+      # 本地与 Linux runner 的判据完全一致，不会再出现「CI 绿、Windows 本地整批假红」。
+      # 之所以以前只能维持 auto：core.autocrlf=true 会把 Windows 工作树 smudge 成 CRLF
+      # （当时实测 187 个 w/crlf / 274 个 w/lf 混存，而 index 侧 461 个文件本来就全是 LF），
+      # 于是设 lf 会让本地整批假红、且 `pnpm format` 把工作树改写后 git 侧看不见 diff。
+      # 归一是在检出侧做的（把工作树文件写成 LF），仓库侧一个字节都没变——
+      # `git add --renormalize .` 对已经全是 LF 的 index 是空操作，所以这次提交不含 400 文件churn。
+      # 新增文件会被 checkout/clone 自动带成 LF，无需再手动处理。
+      - name: Format check
+        run: pnpm run format:check
+
       - name: Typecheck (src)
         run: pnpm run typecheck
+
+      - name: Typecheck (tests)
+        run: pnpm run typecheck:tests
 
       - name: Typecheck (examples)
         run: pnpm run typecheck:examples
 
+      # benchmark 子包不在 pnpm 工作区内（pnpm-workspace.yaml 无 `packages:` 键），
+      # 此前 CI 只编译根包 → 该包从未被执行过，runner/reporter/阈值推导的回归无人拦截。
+      # 产物落 packages/benchmark/dist/（已被 dist/ 规则忽略），冒烟入口见 src/smoke.ts。
+      - name: Benchmark package smoke
+        run: |
+          npx tsc -p packages/benchmark/tsconfig.json
+          node packages/benchmark/dist/smoke.js
+
+  verify:
+    name: Test / Build / Smoke (Node ${{ matrix.node-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # 本 job 末步上传覆盖率制品，需要 Actions 域写权限；仅在此处声明。
+    permissions:
+      contents: read
+      actions: write
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [22, 24]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+
+      - name: Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
       - name: Test with coverage
         run: pnpm run test:ci
 
-      - name: Build
-        run: pnpm run build
+      # 冒烟加载的必须是要被发布的那份字节：真正 publish 走 prepublishOnly →
+      # `pnpm run build:release`（= build + scripts/minify-dist.mjs --strict 就地覆写 dist，
+      # terser `mangle.toplevel` + `compress`）。此前这一步只跑 `pnpm run build`，
+      # 于是「压缩是语义改写」这条风险全程无人加载验证——minify-dist 只校验
+      # 「返回字符串 / 非空 / dist 内无未压缩 js 残留」，不 import 产物；
+      # terser 升级或某个边界写法把某个模块压坏时，build 与 smoke 都会绿，只有包用户会撞到。
+      # dist-weapp 那条链路不受影响（build-weapp.mjs 独立从 src 转译，见下一步）。
+      - name: Build release artifact (tsc + minify --strict)
+        run: pnpm run build:release
 
-      - name: Smoke test dist bundles (ESM + subpath)
+      # 0.6.0 的事故里 test / build / pack 全绿，坏产物照样发出去了——因为没有任何一步
+      # 真正加载过「要被微信构建 npm 拷走的那份文件」。这一步把该验证固化成门禁。
+      - name: Build & verify WeChat npm artifact (dist-weapp)
         run: |
+          pnpm run build:weapp
+          pnpm run verify:weapp
+
+      - name: Smoke test release dist bundles (ESM + subpath, minified)
+        run: |
+          # 此刻 dist/ 已经是上一步 build:release 覆写过的压缩产物 → 这段冒烟加载的就是发布面
           node --input-type=module -e '
-            const s = await import("./dist/index.js")
+            const { readFileSync } = await import("node:fs")
+            const { name, exports: exp } = JSON.parse(readFileSync("package.json", "utf8"))
+            // 用自引用 import 走 Node 自己的 exports 解析器，跟消费者的写法一致。
+            // 之前是手工拼 `./` + exp[key].default 再 new URL(...)：绕开解析器后，
+            // exports 里键名写错、条件顺序错、default 缺失都会照样「冒烟通过」，
+            // 而字符串型 exports / 通配子路径又会抛出看似产物损坏的 TypeError。
+            const s = await import(name)
             const store = s.createStore({
               name: "ci-smoke",
               state: { count: 1 },
@@ -57,21 +167,43 @@ jobs:
             store.dispatch("inc")
             if (store.getState().count !== 2) throw new Error("esm smoke failed")
             if (typeof s.composeStore !== "function") throw new Error("composeStore missing")
-            const err = await import("./dist/extras/error/index.js")
+            // exports 表里除 "." 与 "./package.json" 外的每个子路径都要能被 Node 解析出非空模块
+            for (const key of Object.keys(exp)) {
+              if (key === "." || key === "./package.json") continue
+              if (!key.startsWith("./")) throw new Error("exports key not a subpath: " + key)
+              const sub = await import(name + key.slice(1))
+              if (Object.keys(sub).length === 0) throw new Error("empty subpath module: " + key)
+            }
+            const err = await import(name + "/extras/error")
             if (typeof err.GeomStoreError !== "function") throw new Error("error subpath failed")
-            const plugins = await import("./dist/extras/plugins.js")
+            const plugins = await import(name + "/extras/plugins")
             if (!plugins.loggerPlugin) throw new Error("plugins subpath failed")
-            const selector = await import("./dist/extras/selector/index.js")
+            const selector = await import(name + "/extras/selector")
             if (typeof selector.createSelector !== "function") throw new Error("selector subpath failed")
-            const integrations = await import("./dist/integrations/index.js")
+            const integrations = await import(name + "/integrations")
             if (typeof integrations.bindMappings !== "function") throw new Error("integrations subpath failed")
-            console.log("ESM SMOKE OK")
+            console.log("ESM SMOKE OK (exports map exercised by node resolver)")
           '
+
+      # scripts/generate-subpath-stubs.mjs 的四条前置校验（dist 目标产物存在、files 白名单
+      # 覆盖 11 个 stub 目录、同名目录冲突、miniprogram 目录非空且在白名单内）此前只由
+      # prepack 触发，也就是只有真正 publish 那一刻才第一次执行——CI 既不 pack 也不跑 stubs。
+      # 刻意不加 --ignore-scripts：那样 prepack 钩子根本不执行，等于只校验 tarball 清单、
+      # 四条判据一条都跑不到（同 .npmignore 头注与第五轮 R5-374 的结论）。
+      # --dry-run 只做「除写 tarball 之外」的全部动作：prepack 会跑，postpack 不会，
+      # 所以末尾显式 stubs:clean，不把 14 个 stub 目录留在工作树里（本地实测踩过一次）。
+      - name: Pack dry-run (exercise prepack checks)
+        run: |
+          pnpm pack --dry-run
+          pnpm run stubs:clean
 
       - name: Upload coverage report
         if: matrix.node-version == 22
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: coverage-report
           path: coverage/lcov-report
+          # 报告由 jest.config.js 的 html reporter 稳定产出；缺文件说明产出链断了，
+          # 必须让作业变红，而不是只留一条告警后静默丢报告。
+          if-no-files-found: error
           retention-days: 14
