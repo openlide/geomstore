@@ -107,7 +107,7 @@ import { ErrorBoundary } from '@openlide/geomstore/extras/error'
 import { createEnterpriseApp } from '@openlide/geomstore/extras/enterprise'
 ```
 
-> 包内另有若干**转发子目录**（`store/`、`hooks/`、`plugins/`、`integrations/`），由 `pnpm stubs` 生成，供不支持 `exports` 子路径的老式解析器按目录裸导入。**微信「构建 npm」走的是另一条路**：包根的 `miniprogram` 字段指向 `dist-weapp/`——与 `dist` 导出面逐项一致的**自包含单文件 CJS**（11 个入口），工具会整目录拷贝到 `miniprogram_npm`，不做拼接也不做依赖分析；为什么必须这样见 [docs/WECHAT_NPM_FIX.md](./docs/WECHAT_NPM_FIX.md)。也可一次性引入全部可选能力（`@openlide/geomstore/extras`），但只在调试或确实全都要用时才建议这样做。
+> 包内另有若干**转发子目录**（`store/`、`hooks/`、`plugins/`、`integrations/`），由 `pnpm stubs` 生成，供不支持 `exports` 子路径的老式解析器按目录裸导入。**微信「构建 npm」走的是另一条路**：包根的 `miniprogram` 字段指向 `dist-weapp/`——与 `dist` **同为 105 个模块、按模块一比一转译的 CJS**（11 个公开子路径的入口文件一一对应，模块间保留相对 `require`），工具会整目录拷贝到 `miniprogram_npm`，不做拼接也不做依赖分析；为什么必须这样见 [docs/WECHAT_NPM_FIX.md](./docs/WECHAT_NPM_FIX.md)。也可一次性引入全部可选能力（`@openlide/geomstore/extras`），但只在调试或确实全都要用时才建议这样做。
 
 ## 环境适配要点
 

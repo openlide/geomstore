@@ -482,6 +482,14 @@ npx jest --passWithNoTests
 
 `pnpm run verify:weapp`（`scripts/verify-weapp-bundle.mjs`）逐入口检查：非空、可被 CJS 真实加载、零 `require`、无 `outsideDeps`、无残留 ESM 语法、**导出面与 `dist` 的 ESM 逐项比对**，再跑一次真实用例（createStore / dispatch / subscribe / getter / `$snapshot` 只读）。已串进 `prepublishOnly` 与 CI 的 `verify` job。加载时复制成临时 `.cjs` 的做法沿用本文 S5——根 `package.json` 是 `"type": "module"`，仓库内 `.js` 会被 Node 当 ESM，直接 require 会报 `module is not defined in ES module scope`，那是 Node 的扩展名规则而非产物缺陷。
 
+### C5 实施后复盘：产物形态由「bundle 单文件」改成「按模块一比一转译」（§0 修复方向、§S3、§S4、§S6 里「单文件 / 外部无 `require`」的表述以本条为准）
+
+- 触发点：C1 落地后在开发者工具里实测——`miniprogram_npm/@openlide/geomstore/` 里 11 个 `.js` 与构建出的 `dist-weapp/` **逐字节相同（11/11）**，既不拼接也不做依赖分析。也就是说 bundle 所防的那件事（工具自己打包整张图）在 `miniprogram` 路径下根本不会发生；缺陷 A/B 的成因是「无该字段时按 `main` 打包 ESM」，加字段已经绕开了它。
+- 于是 bundle 只剩下代价，两条都实测过：**体积** 457.1 KB vs 228.3 KB（esbuild 的 `--splitting` 只支持 `esm`，CJS 多入口必然重复内联 core）；**语义** 自包含 bundle 让 `.` 与 `./core` 各持一份 `globalRegistry`、`./extras` 与 `./extras/enterprise` 各持一份 `storeManager`（实测两条均为「不是同一对象」，ESM 侧两条都是同一对象）——等于一次运行里有两套 Store 注册表，这比体积更不能接受。
+- 现方案：`dist-weapp/` 是 `src` 全部模块一比一转译成的 CJS（105 个文件，文件树与 `dist` 一致），**保留相对 `require`**；运行时只加载真正被 require 到的文件，跨入口天然共享同一实例。`verify:weapp` 的断言相应换成「`dist` 镜像完整 + 每条相对 `require` 的目标必须存在 + 整张图按 CJS 真实加载 + 导出面逐项比对 + **跨入口单例同一性** + 真实用例」。反向验证：删掉 `dist-weapp/extras/snapshot/clone.js` 后门禁报 5 项，其中闭环那条直接点名两条断链的引用方。
+- 加载方式也换掉了 §S5 的「复制成 `.cjs`」：产物靠相对 `require("./x.js")` 互联，Node 按字面扩展名解析，改后缀等于把依赖图剪断。现在整目录复制到临时目录并就地放一个 `{"type":"commonjs"}` 的 manifest，加载路径与微信运行时同构。
+- 若未来某版工具改成对拷贝目录再做一次依赖分析：`outsideDeps` 复现、`Cannot find module` 会被门禁与 §S9 四项当场抓住；换回 bundle 只需在 `build-weapp.mjs` 里加回 `bundle: true` 与 11 个 `entryPoints`，但要同时接受体积翻倍，并把「跨入口单例同一性」降级为告警——那是形态决定的，不是回归。
+
 ### 实测数据（0.6.1，`esbuild 0.28.2`，`--minify`）
 
 | 子路径 | 产物 | 大小 |

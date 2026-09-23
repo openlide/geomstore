@@ -15,16 +15,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed（构建与发布链）
 
-- **新增微信专用产物 `dist-weapp/`，并由 `miniprogram` 字段指向它**。0.6.0 的 `dist` 是「terser 压缩后的多文件 ESM」，开发者工具的「构建 npm」在把它拼成单文件时稳定产出两种坏形态：① 语句之间丢分隔符（实测 `exports.isBuiltinObject = isBuiltinObjectfunction i(e){` → `node --check` 报 `SyntaxError: Unexpected identifier 'i'`）；② 相对模块被记进文件尾的 `//miniprogram-npm-outsideDeps=["./utils/helpers.js","../integrations/with-store.js",...]` 却一个文件都不产出 → `withPageStore` / `withComponentStore` / `withAppStore` 整块丢失，小程序启动即 `module '...' is not defined`。改成「每个公开子路径打成自包含单文件 CJS」后，拼接没有可拼的多模块、依赖标记没有可被错标的外部依赖，两条成因同时消失。产物覆盖全部 **11 个入口**（不止主入口——`miniprogram` 指向的是目录，官方规定「小程序 npm 包会直接拷贝构建文件生成目录下的所有文件到 miniprogram_npm 中」，只做主入口会让其余 10 个子路径在微信侧无路可走）。
-- **新增 `scripts/verify-weapp-bundle.mjs` 门禁**（`pnpm run verify:weapp`，已串进 `prepublishOnly` 与 CI）：逐入口校验非空、可被 CJS 真实加载（等价 `node --check` 但更强）、零 `require`、无 `outsideDeps` 残留、无残留 ESM 语法、**导出面与 `dist` 的 ESM 逐项一致**，并跑一次真实用例。这次事故之所以能发出去，就是因为 test / build / pack 都不加载「要被微信拷走的那份文件」。
-- `scripts/build-weapp.mjs` 的入口清单**从 `package.json` 的 `exports` 派生**（`./dist/x/y.js` → `src/x/y.ts` → `dist-weapp/x/y.js`），不另抄一份映射；对不上即退出码 1。esbuild 未装/不可用一律硬失败，口径与 `build:release` 对 terser 的一致（绝不静默产出缺目录的包）。
+- **新增微信专用产物 `dist-weapp/`，并由 `miniprogram` 字段指向它**。0.6.0 的 `dist` 是「terser 压缩后的多文件 ESM」，开发者工具的「构建 npm」在把它拼成单文件时稳定产出两种坏形态：① 语句之间丢分隔符（实测 `exports.isBuiltinObject = isBuiltinObjectfunction i(e){` → `node --check` 报 `SyntaxError: Unexpected identifier 'i'`）；② 相对模块被记进文件尾的 `//miniprogram-npm-outsideDeps=["./utils/helpers.js","../integrations/with-store.js",...]` 却一个文件都不产出 → `withPageStore` / `withComponentStore` / `withAppStore` 整块丢失，小程序启动即 `module '...' is not defined`。官方对**带 `miniprogram` 字段的包**走的是另一条路径：「小程序 npm 包会直接拷贝构建文件生成目录下的所有文件到 miniprogram_npm 中」——消费端实测逐字节相同、既不拼接也不做依赖分析，两条成因一起消失。`dist-weapp/` 因此是 `src` 全部模块**一比一转译成的 CJS**（105 个文件，文件树与 `dist` 一一对应，11 个公开子路径的入口齐备）。
+- **新增 `scripts/verify-weapp-bundle.mjs` 门禁**（`pnpm run verify:weapp`，已串进 `prepublishOnly` 与 CI）：① `dist` 的每个运行时模块都要在 `dist-weapp` 有对应文件；② **每条相对 `require("./x.js")` 的目标必须真实存在**（缺陷 B 的正面表达：被引用却没产出）；③ 整张依赖图按 CJS 真实加载（临时目录里放一个 `{"type":"commonjs"}` 的 manifest，绕开根包 `type: module` 的扩展名规则）；④ 无 `outsideDeps`、无顶层 ESM 残留、无零字节文件；⑤ 每个公开入口的**导出面与 `dist` 的 ESM 逐项比对**；⑥ **跨入口单例必须是同一对象**（`.` vs `./core` 的 `globalRegistry`、`./extras` vs `./extras/enterprise` 的 `storeManager`）；⑦ 主入口跑一次真实用例。反向验证：删掉 `dist-weapp/extras/snapshot/clone.js` 后门禁报 5 项，其中 require 闭环那条直接点名两条断链的引用方。这次事故能发出去，就是因为 test / build / pack 都不加载「要被微信拷走的那份文件」。
+- `scripts/build-weapp.mjs` 的模块清单取 `src` 下全部 `.ts`（排除 `.d.ts`），公开入口清单**从 `package.json` 的 `exports` 派生**（`./dist/x/y.js` → `src/x/y.ts` → `dist-weapp/x/y.js`），两份都由 `scripts/weapp-entries.mjs` 单一实现供 build 与 verify 共用；对不上即退出码 1。esbuild 未装/不可用一律硬失败，口径与 `build:release` 对 terser 的一致（绝不静默产出缺目录的包）。
 - `package.json`：新增 `miniprogram: "dist-weapp"`、`files` 加 `dist-weapp`、`scripts` 加 `build:weapp` / `verify:weapp`、`prepublishOnly` 末尾串联两步；`esbuild` 由传递依赖升为**显式 devDependency**（`^0.28.2`，锁文件同步）。
 - `.gitignore` 忽略 `dist-weapp/`。**未**把它塞进 `clean-dist.mjs`：`build-weapp.mjs` 自己先整目录清空再写（不留已删除子路径的尸体），而让 `pnpm build` 去删 `dist-weapp` 反而会开出一条「`miniprogram` 字段指向空目录、npm 静默跳过缺失的 files 项、微信退回按 `main` 打包」的路。
 
 ### 体积与代价（消费端需要知道）
 
-- `dist-weapp/` 压缩后合计 **457.1 KB**（11 个入口；主入口 66.8 KB）。由于微信是整目录拷贝、且只有该目录计入小程序包体积，这是**装了包就要付**的额度，与用到几个入口无关。只需要核心能力的宿主可自行裁剪 `exports` 后重跑 `build:weapp`。
-- 单文件按入口打包意味着 `core` 在多个 bundle 里各有一份（esbuild 的代码切分只支持 `esm`，CJS 下无法共享 chunk），这是换取「零相对 require」的必然代价。
+- `dist-weapp/` 压缩后合计 **228.3 KB（105 个文件）**。由于微信是整目录拷贝、且只有该目录计入小程序包体积，这是**装了包就要付**的额度，与用到几个入口无关；运行时则确实是按需的——只有被 `require` 到的文件才进模块表。
+- 为什么不是「bundle 成单文件」：先做过一版，两条实测数据把它否掉了。① 体积——esbuild 的 `--splitting` 只支持 `esm`，CJS 多入口必然把 core 重复内联，11 个入口 **457.1 KB vs 一比一转译的 228.3 KB**；② 语义——自包含 bundle 让每个入口各持一份模块实例，`.` 与 `./core` 的 `globalRegistry` **不是同一个对象**、`./extras` 与 `./extras/enterprise` 的 `storeManager` 也不是（ESM 侧两条都是 true），等于「一次运行里有两套 Store 注册表」。保留相对 `require` 后两条都与 ESM 行为一致。
 
 ## [0.6.0] - 2026-09-23
 

@@ -245,7 +245,7 @@ onLaunch(options) { console.log(this.globalData.appName); this.markLaunched(Stri
 ### `@openlide/geomstore/xxx` 解析不到？
 
 - 先确认该子路径在 `exports` 映射中（`core`、`extras`、`extras/*`）
-- 微信「构建 npm」解析的是包内 `miniprogram` 字段指向的 **`dist-weapp/`**（自包含单文件 CJS，11 个子路径各有产物，导出面与 `dist` 逐项一致），不是 `exports`、也不是 `dist`；构建 npm 后仍取不到某个子路径，先在 `miniprogram_npm/@openlide/geomstore/` 下数文件，缺哪一条就是产物问题（判据与排查见 [WECHAT_NPM_FIX.md](./WECHAT_NPM_FIX.md)）
+- 微信「构建 npm」解析的是包内 `miniprogram` 字段指向的 **`dist-weapp/`**（按模块一比一转译的 CJS，105 个模块与 `dist` 一一对应，11 个公开子路径的入口文件齐备、导出面逐项一致），不是 `exports`、也不是 `dist`；构建 npm 后仍取不到某个子路径，先在 `miniprogram_npm/@openlide/geomstore/` 下数文件，缺哪一条就是产物问题（判据与排查见 [WECHAT_NPM_FIX.md](./WECHAT_NPM_FIX.md)）
 - `@openlide/geomstore/{store,hooks,plugins,integrations}` 这类**转发子目录**由 `pnpm stubs` 生成，服务的是**其他**不解析 `exports` 的老式场景（它们指向 `dist` 里的 ESM，微信侧不走这条）；Node / 打包器请优先用 `extras/*`
 - 注意 `bindMappings` 等底层绑定工具**不在主入口**，需从 `@openlide/geomstore/integrations` 引入（已在 `exports` 声明）；日常优先用 `withPageStore` / `withComponentStore` / `withAppStore`
 
