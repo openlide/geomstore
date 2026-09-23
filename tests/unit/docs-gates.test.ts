@@ -17,6 +17,7 @@
  *   都不会误报，不需要为它们开例外。
  */
 
+import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import path from 'node:path'
 
@@ -342,6 +343,31 @@ describe('文档门禁 G13：表格必须可扫读', () => {
     }
     expect(max).toBeLessThan(CELL_MAX)
     expect(max).toBeGreaterThan(0)
+  })
+})
+
+describe('文档门禁 G14：换行符归一不回退', () => {
+  // 仓库根 .gitattributes 用 `* text=auto eol=lf` 把仓库内与检出侧统一钉成 LF，
+  // .prettierrc.json 因此可以直接判 endOfLine: lf。本用例守住这个前提：
+  // 一旦有跟踪文件带回 CRLF，`pnpm format:check` 会在本地整批失败、且 `git diff`
+  // 容易被批量脚本撑成「整个文件重写」。
+  it('tracked 文件清单里不含任何 CR 字节', () => {
+    const tracked = execFileSync('git', ['ls-files', '-z'], { cwd: repoRoot, encoding: 'utf8' }).split('\0').filter(Boolean)
+    expect(tracked.length).toBeGreaterThan(100)
+    const offenders: string[] = []
+    for (const f of tracked) {
+      const abs = path.join(repoRoot, f)
+      if (!existsSync(abs) || statSync(abs).isDirectory()) continue
+      if (readFileSync(abs).includes(0x0d)) offenders.push(f)
+    }
+    expect(offenders).toEqual([])
+  })
+
+  it('.gitattributes 仍把检出侧钉成 LF，且 .prettierrc 与之呼应', () => {
+    const attrs = read('.gitattributes')
+    expect(attrs).toMatch(/^\*\s+text=auto\s+eol=lf\s*$/m)
+    // 归一已落地，endOfLine 不该再退回 auto（退回就等于宣布本地判据与 CI 不一致）
+    expect(read('.prettierrc.json')).toMatch(/"endOfLine":\s*"lf"/)
   })
 })
 

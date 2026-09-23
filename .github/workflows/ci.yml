@@ -71,13 +71,15 @@ jobs:
       # 「逐字取自类型声明原文」——它的正确性由「与 .d.ts 一致」保证，不由排版门禁保证。
       # 排除规则与同一份理由写在 .prettierignore。`.ocr-fix/**` 是复审工作记录、不属于文档
       # 产品，本步的 glob 从不点名它。
-      # 换行符侧的口径（第六轮定稿）：`.prettierrc.json` 维持 endOfLine=auto，本步只判格式不判 EOL。
-      # lf 方案实测过：index 侧 400 个文件确实全是 i/lf（`git ls-files --eol` 的 i/crlf = 0），
-      # Linux runner 判绿，但 Windows 工作树在 core.autocrlf=true 下有 198 个 w/crlf 文件，
-      # 本地 `prettier --check` 因此整批假红——在没有 .gitattributes 钉住检出侧之前不可用。
-      # 待办（单独一次提交做）：加 `* text=auto eol=lf` + `git add --renormalize .`，
-      # 把检出侧与工作树统一成 LF 之后再把 endOfLine 切到 lf（本轮工作树有大量未提交改动，
-      # 不适合做全库换行归一这种难回退的操作）。
+      # 换行符侧的口径：仓库内与检出侧一律 LF，由仓库根的 .gitattributes（`* text=auto eol=lf`）
+      # 钉住，`.prettierrc.json` 因此可以直接判 `endOfLine: lf`——本步**既判格式也判换行**，
+      # 本地与 Linux runner 的判据完全一致，不会再出现「CI 绿、Windows 本地整批假红」。
+      # 之所以以前只能维持 auto：core.autocrlf=true 会把 Windows 工作树 smudge 成 CRLF
+      # （当时实测 187 个 w/crlf / 274 个 w/lf 混存，而 index 侧 461 个文件本来就全是 LF），
+      # 于是设 lf 会让本地整批假红、且 `pnpm format` 把工作树改写后 git 侧看不见 diff。
+      # 归一是在检出侧做的（把工作树文件写成 LF），仓库侧一个字节都没变——
+      # `git add --renormalize .` 对已经全是 LF 的 index 是空操作，所以这次提交不含 400 文件churn。
+      # 新增文件会被 checkout/clone 自动带成 LF，无需再手动处理。
       - name: Format check
         run: pnpm run format:check
 
