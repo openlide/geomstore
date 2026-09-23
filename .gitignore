@@ -25,11 +25,17 @@ coverage-report.json
 # 根级 jest 汇总产物；锚到仓库根，避免子包/工具目录里的同名合法文件被静默吞掉
 /coverage-*.json
 
-# IDE
+# IDE / 编码助手的本地数据
 # .codebuddy 整体保持忽略（内含会话与本地数据），仅放开 skills 目录，使 project skill 可随仓库分发
 .codebuddy/*
 !.codebuddy/skills/
 !.codebuddy/skills/**
+# 同类：其他编码助手的会话记忆目录，同样是本地数据，不随仓库分发。
+# 不显式忽略时 `git add -A` 会把它们提交进来（.workbuddy 已实测踩过）。
+.workbuddy/
+# 文档重构的跨片台账与中间产物（.docfix/LEDGER.md 是工作底稿，结论沉淀进 docs/ 与 CONTRIBUTING 后即可删）
+.docfix/
+.workbuddy/*
 .vscode/
 .idea/
 *.swp

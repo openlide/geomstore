@@ -1,4 +1,4 @@
-# # GeomStore API 参考（按入口拆分，自动生成）
+# GeomStore API 参考（按入口拆分，自动生成）
 
 > **本文件由 `scripts/generate-skill-api-reference.mjs` 从 `dist/**/*.d.ts` 生成，请勿手工编辑。**
 >
@@ -26,6 +26,8 @@
 | `./extras/snapshot` | 完整声明 | 14 | [`extras-snapshot.md`](./extras-snapshot.md) |
 | `./integrations` | 完整声明 | 28 | [`integrations.md`](./integrations.md) |
 
+`./core` 与 `./extras` 是 `.` 及其子入口的聚合/别名，为避免重复只列符号名；完整声明请看对应入口文件。
+
 ### 检索方式
 
 不确定某个符号属于哪个入口时，直接搜目录：
@@ -34,5 +36,3 @@
 rg -n 'createSelector' references/api/          # 找出定义位置与所在入口
 rg -n '^### `createSnapshot`' references/api/   # 精确定位某个符号的完整声明
 ```
-
-`./core` 与 `./extras` 是 `.` 及其子入口的聚合/别名，为避免重复只列符号名；完整声明请看对应入口文件。

@@ -14,19 +14,15 @@ pnpm test          # 全量测试
 
 ## 目录结构
 
-```
-src/
-  core/            核心：store / cache(LRUCache) / hooks / compose / performance / utils
-  extras/          可选能力：snapshot / selector / action / error / performance / plugins / enterprise
-  integrations/    微信小程序集成（withPageStore / withComponentStore / withAppStore）
-  plugins/         插件实现（builtin / WxStorageBackend / devtools / performance / globalRegistry）
-  types/           公共类型契约：**只放类型与接口**，不得有运行时导出（类 / 函数 / 常量）
-tests/             unit / integration（按领域分目录）
-examples/          可运行示例（分类目录 + 索引）：**仓库源码**，随 CI 的 `typecheck:examples` 全量校验，不再被 .gitignore 忽略
-docs/              文档
-scripts/           clean-dist / postbuild-dist / minify-dist / generate-subpath-stubs / generate-skill-api-reference（均为 .mjs）
-packages/benchmark 性能基准：**不是 pnpm 工作区成员**（`pnpm-workspace.yaml` 无 `packages:` 键、根 `package.json` 刻意不写 npm 风格的 `workspaces`），`private: true` 不发布
-```
+本仓库 `src/` 的树与各子目录职责的正本在 [ARCHITECTURE.md「目录结构与职责」](./docs/ARCHITECTURE.md#3-目录结构与职责)，本文件不复制第二份。其余顶层目录：
+
+| 目录                 | 作用                                                                                                                                                                  |
+| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `tests/`             | `unit`（按领域分目录）+ `integration`                                                                                                                                 |
+| `examples/`          | 可运行示例。它是**仓库源码**、随 CI 的 `typecheck:examples` 全量编译                                                                                                  |
+| `docs/`              | 文档。**不随 npm 包发布**（`files` 白名单里没有它）                                                                                                                   |
+| `scripts/`           | `clean-dist` / `postbuild-dist` / `minify-dist` / `build-weapp` / `verify-weapp-bundle` / `weapp-entries` / `generate-subpath-stubs` / `generate-skill-api-reference` |
+| `packages/benchmark` | 性能基准。**不是 pnpm 工作区成员**（`pnpm-workspace.yaml` 无 `packages:` 键），根目录的 `pnpm` 命令与 `--filter` 都不作用于它                                         |
 
 **分层原则**：`extras/*` 的实现不得被核心反向依赖；核心只保留运行必需 API。若某能力只有部分用户需要，它就应该出现在 `extras`。
 
@@ -34,7 +30,7 @@ packages/benchmark 性能基准：**不是 pnpm 工作区成员**（`pnpm-worksp
 
 ```bash
 pnpm lint:ci          # ESLint，--max-warnings 0：零告警即门禁，不做基线冻结、不加白名单
-pnpm exec prettier --check "src/**/*.ts" "tests/**/*.ts"   # 格式（CI 的 Format check 同一条命令；仓库暂无 format:check 脚本）
+pnpm format:check   # 格式（CI 的 Format check 就是这一条；修复器是 `pnpm format`，两者共用 package.json 里同一组 glob）
 pnpm typecheck        # 源码
 pnpm typecheck:tests  # 测试代码（tsconfig.tests.json；CI 独立成步，别指望它被 src 的检查顺带覆盖）
 pnpm typecheck:examples
@@ -45,7 +41,7 @@ npx tsc -p packages/benchmark/tsconfig.json && node packages/benchmark/dist/smok
 
 `packages/benchmark` 不在 pnpm 工作区内，所以 `pnpm --filter` / 子包目录下的 `pnpm install` 都不适用：它借根装的 `typescript` 编译，产物落 `packages/benchmark/dist/`（被 `dist/` 规则忽略）。要把它接进工作区，前提是先补齐它自己的 devDependencies 安装路径并重生成锁文件——否则保持「声明了却没接入」的自相矛盾状态就是缺陷。
 
-**换行符与格式门禁的现状（第六轮定稿）**：`.prettierrc.json` 保持 `endOfLine: auto`，CI 的 `Format check` 步跑 `pnpm exec prettier --check "src/**/*.ts" "tests/**/*.ts"`（与 `pnpm format` 同一 glob，`format` 就是它的修复器），因此**该步只判格式、不判换行符**。原因：本机 `core.autocrlf=true`，工作树侧 231 个文件是 CRLF（而 index 侧 400 个文件全 LF，Linux runner 检出即 LF，所以 CI 侧本来就不会因 EOL 变红）；在没有 `.gitattributes` 钉住检出侧之前把 `endOfLine` 设成 `lf`，唯一后果是 Windows 本地 `prettier --check` 整批假红、`pnpm format` 把工作树改写成 LF（git 侧看不到 diff）。换行符归一化是**另开一次单独提交**做的事：加 `.gitattributes`（`* text=auto eol=lf`，二进制资源与 `pnpm-lock.yaml` 加 `-text` 豁免）+ `git add --renormalize .`；在那之前不要顺手改 `endOfLine`，文档里也别提前写「Windows 检出亦为 LF」。**别把这条写成已生效的规范**——它现在没生效。
+**换行符与格式门禁的口径**：`.prettierrc.json` 保持 `endOfLine: auto`，CI 的 `Format check` 步就是 `pnpm format:check`（glob 只在 `package.json` 里定义一次，这里不重抄），覆盖 `src` / `tests` 的 TS 与**全部手写文档 md**，因此**该步只判格式、不判换行符**。生成物 `.codebuddy/skills/geomstore/references/api/**` 由 `.prettierignore` 排除：对它跑格式化器会**改动内容**（转义块引用内粗体跨度里的星号、把三反引号围栏抬成四反引号、并按 `semi:false` 删掉 `.d.ts` 声明行末的分号——实测某文件 20 行剩 1 行），而这份文件的契约恰恰是「逐字取自类型声明原文」，它的正确性由「与 `.d.ts` 一致」保证、不由排版门禁保证。手写文档实测幂等且不改动内容。`.ocr-fix/**` 是复审工作记录、不是文档产品，门禁的 glob 从不点名它。原因：`core.autocrlf=true` 下 Windows 工作树检出为 CRLF、index 侧存 LF，Linux runner 检出即 LF 所以 CI 侧本来就不会因 EOL 变红；而在没有 `.gitattributes` 钉住检出侧之前把 `endOfLine` 设成 `lf`，唯一后果是 Windows 本地 `prettier --check` 整批假红、`pnpm format` 把工作树改写成 LF（git 侧看不到 diff）。换行符归一化的**前置条件**是先落 `.gitattributes`（`* text=auto eol=lf`，二进制资源与 `pnpm-lock.yaml` 加 `-text` 豁免）+ `git add --renormalize .`，那是一个独立提交，别和格式门禁的改动混在一起；在那之前不要顺手改 `endOfLine`，文档里也不要提前写「Windows 检出亦为 LF」。另有一条实操坑：**用脚本批量改写文件时，先确认被改的那几行原本的换行形态再写回**——把 CRLF 文件里的若干行写成 LF，会让 `git diff` 从「改了几行」膨胀成「整个文件重写」，`git ls-files --eol` 也从 `w/crlf` 变成 `w/mixed`（本轮改 `docs/API.md` 标题时踩过一次，归一回 `w/crlf` 后 diff 才回到 30 行）。
 
 CI（`.github/workflows/ci.yml`）分两条 job：`verify-static`（Node 22 单腿）跑 lint:ci + `Format check` + 三项 typecheck + 上面那条 benchmark 冒烟，`verify`（Node 22/24 矩阵）跑 test:ci / `build:release` / `build:weapp` + `verify:weapp` / `npm pack --dry-run` / 冒烟 / 制品上传。另有三条约束，本地复现时注意：`concurrency` 对非长期分支取消旧运行、工作流级 `permissions` 只有 `contents: read`（`actions: write` 单独下放给上传制品的 `jobs.verify`）、两条 job 各自 `timeout-minutes: 20`。
 
@@ -85,36 +81,60 @@ node --input-type=module -e 'const s = await import("./dist/index.js"); console.
   4. skill —— `pnpm run build && pnpm run skill:api` 重跑生成物（`references/api/*.md` 的「来源版本」行），另需手改 `SKILL.md` 三处版本号（frontmatter 的 `description`、正文「当前版本」、指向 `references/api/index.md` 那条的「当前对应 vX.Y.Z」）。这四处分量**必须一次改齐**：`tests` 里有用例把 `SKILL.md` 的手写版本行与生成物的「来源版本」行钉到 `package.json`，漏改 `SKILL.md` 三处或漏跑 `pnpm skill:api` 现在会让 `pnpm test` 直接变红（不再只是文档措辞过期）
   5. 门禁 —— `lint:ci` / `Format check` / 四条 `typecheck` / `test:ci` / `build:release` / `build:weapp` + `verify:weapp` / `npm pack --dry-run`（核对文件数，且必须看到 `dist-weapp/**` 与 `miniprogram` 字段随包出去），并在本地复现 CI 那条**走 Node `exports` 解析器的子路径冒烟**
   6. `git tag` 与 `npm publish` 是**对外不可逆动作**（npm 不允许覆盖已发版本），须单独确认后再做
-- **第六轮（`ocrreview6.md`）的口径**：本轮发的是 **0.7.0**，含 **5 组行为变更**（R6-005 组合层子店销毁的读路径、R6-006 冻结/不可写属性豁免、R6-007 `setState` 原型链敏感键、R6-008 快照对子类与内部槽位值保留原引用、R6-050 `SnapshotDiff.inputTrusted` 新增必填字段），按 0.x 语义必须升 minor、不能发 patch。上面那四处版本号（`package.json` / `LIBRARY_VERSION` / `SKILL.md` 三处手写行 / `skill:api` 生成物的「来源版本」行）由**主会话在收口时统一 bump 并重跑 `pnpm skill:api`**：改文档与修代码的分片**不要自己去动那四处**，否则会出现「文档写着 0.7.0、`package.json` 还是 0.6.1」的假话，且 `pnpm test` 的版本一致性用例会红。行为变更的调用方影响与改法见 [docs/MIGRATION.md](./docs/MIGRATION.md) 的「升级到 0.7.0」。
 - **0.x 的版本号语义**：`^0.5.1` 展开为 `>=0.5.1 <0.6.0`，即 caret **不跨 minor**——所以含破坏性变更的发版必须升 minor（0.6.0 就是这么定的）。发成 patch 会把破坏性变更自动装进按 caret 锁定的宿主并让它们的编译失败
 - 改动 `package.json` 的 `exports` / `files` 后，请用 `pnpm stubs` + `pnpm build` 验证一次真实解析
 
 ## 文档
 
-- 文档以**源码为唯一依据**；示例代码请与 `examples/` 保持同源，使其可通过 `pnpm typecheck:examples` 校验。写完一段结论就回 `src/` 核一遍——判定表 / 复审报告的措辞不是真相，代码才是
-- **文档不写未经实跑的数字**：覆盖率一律引用 `jest.config.js` 的 `coverageThreshold`（global 语句 / 函数 / 行 98、分支 95；`core` 与 snapshot / selector / action 另设单文件分支 85 下限），不写「100%」「全绿」这类不实措辞；套件数 / 用例数 / 实测百分比要么删掉，要么写成 `（第六轮收口实测：<待填>）` 由收口那次实跑填。**没跑过门禁就不要替它说话**
-- `.codebuddy/skills/geomstore/references/api/*.md` 是 `pnpm run skill:api` 从 `dist` 的 `.d.ts` 生成的**产物**：不要手改，改了也会被下次生成覆盖。要改技能里的口径，先改 `src/**` 的 JSDoc，构建后重跑生成器
-- 易错点（写文档时特别容易写错，均有测试兜底）：
-  - `store.subscribe(listener, options?)` 的监听器是 **`(state: S) => void`**，没有 `prevState`；载荷**按注册的可写性分配**——每个可写注册一份独立深拷贝、只读注册共用一份，只有全只读时才零拷贝（`notify.clone` 未显式配置＝自动），别写成「默认总是深拷贝」或「本轮共用一份克隆」。`maxSubscribers` 是覆盖每一次注册的硬上界，`evict-oldest` 触发时会发一条 `onError`
-  - `store.$snapshot()` 是**部分冻结**（纯对象 / 数组链只读，Date/RegExp/Map/Set 与非纯对象触达的节点仍可变），别写成「递归深冻结」
-  - `deepEqual` **先判原型一致，再走内建内容分支**：子类实例与基类实例一律判不等（空 `MyMap extends Map` ≠ 空 `Map`），装箱原始值按 `Object.is(a.valueOf(), b.valueOf())` 判（`new Number(1)` ≠ `new Number(2)`），且比完**不跳过**通用键比较（装箱子类可另带自有属性）。别把口径写回「按自有可枚举键比较，内建类型特殊处理」——那描述的正是判错方向的旧实现（假相等 → 选择器返回陈旧值）；跨 realm 的 `Map` / `Set` 仍按 `instanceof` 判，未与 `StateProxy` 的 `isMapLike` / `isSetLike` 标签并集统一
-  - 快照 `onError` 按**真值**解释（判定是 `if (!shouldContinue)`）：`void` / `undefined` 等同拒绝继续；`cloneError` 与 `circular` 的拒绝后果不同（前者整次失败、后者落占位并继续），失败 / 中止时 `data` 为 `undefined`（类型面就是 `T | undefined`）。`errors` 是**完整账本**（`circular`、`maxDepth` 都入账），但只有 `cloneError` 参与 `success`
-  - `createSelector(单个选择器函数, 选项?)`，没有「输入函数 + 结果函数」的双函数重载；选项名是 `cacheSize` / `cacheTTL`（不是 `maxCacheSize`），且只在 `cache: true` 时被读取；两者都过归一化（`cacheTTL` 拒绝 `NaN` / `<= 0` 回落 5000、**有意**放行 `Infinity`，别和 `cacheSize` 强行统一成一个函数）。无版本号状态的失效凭证是显式选项 `snapshotState`（默认 `true`＝内容快照），**不要**把「传 `equalityFn: (a, b) => a === b`」写成免克隆出口
-  - `withThrottle(interval, options)` 的间隔是**第一个位置参数**；`withLog(name?, options?)` 的名称在第一位；`createDecorator(options?)` 传的是 `{ before, after, onError }`
-  - 装饰器选项为 `withRetry({ retries, delay, shouldRetry })`，`retries` 是首次执行**之外**的次数；`withRetry` 装饰**同步方法**会把返回类型变成 `Promise<T>`（写文档时别仍然按同步返回举例）；超时错误的判据是 `code === 'ACTION_TIMEOUT'`，两个入口的文案不同、只作展示
-  - `withLog` 的生产摘要里 `Error` **只留 `name`**（不含 `message`），且 `redact` 之后仍会再过一层摘要，除非显式 `summarizeInProduction: false`
-  - 持久化后端必须是**同步且三方法齐备**的实现：`new WxStorageBackend()` 或自封装，**不要**写 `storage: wx`（`wx` 全局对象没有 `getItem`）
-  - 持久化**不传 `storage` 时的默认后端就是 `WxStorageBackend`**（内联适配器已删除）：缺失键（微信的 `''`）与非字符串载荷按「无数据」处理。两条不同的路径别混写——插件先用 `isWxStorageSyncAvailable()` 探测，三方法不齐备才降级内存；而**直接 new 出来的 `WxStorageBackend` 在 `wx` / 对应 `*StorageSync` 缺失时抛错**（不是静默 no-op）。实现住在 `src/plugins/WxStorageBackend.ts`，公开子入口仍是 `extras/plugins` 与 `extras`——写「定义在 `src/types/persistence.ts`」已失真
-  - `withThrottle` / `withDebounce` 的挂起调用有三个**语义不同**的收尾入口：`cancel*` 丢弃、`flush*` 立即执行**且只执行一次**、`dispose*` 取消**并**释放该宿主的整张状态表。参数是**宿主 `this`**（装饰器表达式在类定义期即被丢弃，没有句柄可传），别写成「装饰期返回 handle」；`withCache` / `withRetry` 没有对应入口。**也别写成「对 store action 同样成立」**：store action 的 `this` 是每次 dispatch 现造的 action 上下文代理、不对外暴露，那六个入口在 store action 上一律静默 no-op（0.7.0 定稿），文档要给人能用的替代写法（装饰 Page/Component 方法，或在 store 外包一层）
-  - **Store 侧没有 getter 结果缓存**：`store.getter(name)` 每次都按当前状态重算，`GetterManager` 只持 `_storeName / _getState / _getters` 三个字段。别写「依赖未变时复用结果、判定基于内部状态版本号」——版本号只服务于选择器与缓存失效，记忆化的唯一入口是 `createSelector`
-  - **缓存读取只有 `getCached(key)` 这一个入口**：`getState()` 不查缓存也不计未命中（用它演示 hits 是白演示）；`setState` / `$patch` 是**写穿**（回写条目、不删条目），显式失效只有 `invalidateCache()` 与 `$replaceState`（整表清空）。别把 `cacheConfig.enableStats` 写成「默认关闭 / 按需开启」——它**默认就是 `true`**，性能敏感时传 `false`、代价是 hits/misses 恒 0
-  - **状态保护对「不可配置且不可写」的自有属性是豁免的**：读取返回裸引用、不抛错（Proxy `[[Get]]` 不变量所迫），代价是这类子树不拦截写入也不计脏。别写成「所有绕过 setState 的变异都会抛错」而不带这条例外
-  - **组合层的子 store 被独立销毁不再抛错**：读路径按空视图并入 + 按 store 去重一次性告警（与写侧 `applyToStore` 同判据）。别写成「读会崩 / 写静默」那套旧口径，也别暗示「合并状态里那个键消失了」——它变成空对象
-  - **快照对 `Date`/`RegExp`/`Map`/`Set`/`Array` 的子类与「内部槽位承载值」（Promise、装箱原始值、TypedArray/ArrayBuffer、弱集合、Error、生成器）保留原引用**，同步与异步两条路径一致；类实例仍是「重建为同类实例」。别回到「快照内绝不会出现活引用」这句旧话，也别把 `compareSnapshots` 的 Map 条目路径写成 `root.key[0]` 这种迭代下标（现按 `String(key)` 键身份；`Set` 的 `[added:i]` 仍是报告序下标、不是条目身份）
-  - **`SnapshotDiff.inputTrusted` 是必填字段**：任一侧快照 `success:false` 时 `changed` 恒为 `true` 且只给一条 root 级差异，含义是「输入不可信」而不是「确有差异」。写 `compareSnapshots` 的段落一律按「先判 success → 再判 inputTrusted → 最后读 changes」的顺序
-  - **异步 action 的同步段现在当场补发一次通知**：默认模式下一轮异步 action 两次通知（settle 那一轮覆盖续段），`notify.async` 与 `onlyOnChange` 会吸收回一次、`batch` 内不提前补发。别再写「同步段不单独通知」，也别把通知次数写成恒 1
-  - 同步快照克隆是**递归**实现（栈深＝数据深度），生效上限是 `min(maxDepth, HARD_MAX_CLONE_DEPTH = 1000)`；`deepEqual` 才是迭代实现，两者都不要写成「无限深度安全」
-- 新增/变更 API 时同步更新：[docs/API.md](./docs/API.md)、相关指南，以及（若涉及行为变更）[CHANGELOG.md](./CHANGELOG.md) 与 [docs/MIGRATION.md](./docs/MIGRATION.md)
+十篇文档共用一张「唯一正本」地图，**同一件事只在一处写全，其余位置一律一句结论 + 锚点链接**。新增内容前先确认它归哪一篇；写重了就会漂（本轮就是这么修掉 `enableStats` 方向被写反、三处各说各话那类问题的）。
+
+| 内容                                   | 正本                                                                 |
+| -------------------------------------- | -------------------------------------------------------------------- |
+| 机制语义、契约边界、为什么这样设计     | [`docs/CONCEPTS.md`](./docs/CONCEPTS.md)                             |
+| 选项默认值、逐 API 契约、易误用点      | [`docs/API.md`](./docs/API.md)                                       |
+| 逐字签名与重载                         | `pnpm skill:api` 的生成物 + 随包 `.d.ts`（**两处都不手改**）         |
+| 症状 → 诊断                            | [`docs/FAQ.md`](./docs/FAQ.md)                                       |
+| 接入代码与上手路径                     | [`docs/GUIDE.md`](./docs/GUIDE.md)；可运行正本在 `examples/`         |
+| 该做 / 别做的结论                      | [`docs/BEST_PRACTICES.md`](./docs/BEST_PRACTICES.md)                 |
+| 分层、依赖方向、模块职责、设计取舍     | [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md)                     |
+| 行为的历史对照（此前 → 现在 → 怎么改） | [`docs/MIGRATION.md`](./docs/MIGRATION.md)——**只有这里写历史**       |
+| 门禁、构建、发版、目录树               | 本文件（目录树正本在 ARCHITECTURE §3）                               |
+| agent 速查（一句结论 + §N）            | `.codebuddy/skills/geomstore/SKILL.md` → `references/*-semantics.md` |
+
+- **文档以源码为唯一依据**：写完一段结论就回 `src/` 核一遍。复审报告 / 判定台账里的措辞不是真相，代码才是。
+- **正文只写当前行为**：不写「此前 X、现在 Y」「旧实现」「0.x.0 变更」这类时间对比，也不留版本标签。要交代升级影响就写进 `MIGRATION.md` 并在正文放一个链接。
+- `examples/` 是**唯一被编译的示例**（CI 的 `typecheck:examples`）。文档里的代码片段没有任何机制会编译它，所以照抄 `examples/` 里已验证的写法，比现编一段更稳。
+- **文档不写实测数字**：覆盖率阈值的唯一事实来源是 `jest.config.js` 的 `coverageThreshold`（当前 global 语句 / 函数 / 行 98、分支 95；`core` 与 snapshot / selector / action 另设单文件分支 85 下限）——本文件是它面向人的正本，其余文档一律链接过来、**不抄数值**，本文件那串数值由文档门禁反查 `jest.config.js` 钉住，改了配置忘了改文档会变红。套件数 / 用例数 / 实测百分比**不写进任何文档**：它们随轮次变动，写下来就是等着漂移的假话，要数字当场跑 `pnpm test`。**严禁留「等收口时填」这类空占位**——占位进仓库就是对读者宣称「这里有数字但我没算」，宁可不写。同理不写「100% 覆盖」「全绿」这类不实措辞：**没跑过门禁就不要替它说话**
+- `.codebuddy/skills/geomstore/references/api/*.md` 是 `pnpm run skill:api` 从 `dist` 的 `.d.ts` 生成的**产物**：不要手改，改了也会被下次生成覆盖。要改技能里的口径，先改 `src/**` 的 JSDoc，构建后重跑生成器。
+- **结构层面的问题已经有机器门禁**：`tests/unit/docs-gates.test.ts` 判单一 h1、链接与锚点可达、文件内逐字节重复行、未填占位、子路径与 `package.json` 双向一致、模块数与覆盖率阈值的陈述、目录树真实性。排版与语义仍靠人。
+- **新增 / 变更 API 时同步**：`docs/API.md` 相应小节、`docs/CONCEPTS.md`（若引入了新契约）、`SKILL.md` 及其 `references/*-semantics.md`、`examples/`，以及发版时的版本号（见上方清单第 4 步）。
+
+### 写文档时最常写错的那一面
+
+这张表**只列错法**，不重述正确契约——契约在上面那两处。每行指向它该去读的地方。
+
+| 别这么写                                                               | 一手出处                                                      |
+| ---------------------------------------------------------------------- | ------------------------------------------------------------- |
+| 快照是「递归深冻结」                                                   | [CONCEPTS §1](./docs/CONCEPTS.md#1-状态state)                 |
+| `subscribe` 回调能拿到 `prevState`                                     | [CONCEPTS §2](./docs/CONCEPTS.md#监听器与只读订阅)            |
+| 用 `getState()` 演示缓存命中 / 把 `setState` 说成失效                  | [CONCEPTS §6](./docs/CONCEPTS.md#6-缓存cache)                 |
+| 依赖未变时 getter 会复用结果、判定基于版本号                           | [CONCEPTS §4](./docs/CONCEPTS.md#4-getter无记忆化)            |
+| 状态保护会拦住一切绕过 `setState` 的变异                               | [CONCEPTS §3](./docs/CONCEPTS.md#冻结与不可写属性明确豁免)    |
+| 组合层读已销毁子 store 会崩、或那个键消失了                            | [CONCEPTS §12](./docs/CONCEPTS.md#子-store-生命周期)          |
+| 快照把子类与内部槽位值克隆成独立副本                                   | [CONCEPTS §8](./docs/CONCEPTS.md#保留原引用的两类值)          |
+| `compareSnapshots` 的 `changed: true` 就等于内容有差异                 | [CONCEPTS §8](./docs/CONCEPTS.md#差异比较comparesnapshots)    |
+| 一次异步 dispatch 恰好一次通知                                         | [CONCEPTS §2](./docs/CONCEPTS.md#dispatch-的通知时点)         |
+| 同步快照「无限深度安全」                                               | [CONCEPTS §8](./docs/CONCEPTS.md#同步与异步)                  |
+| 快照 `onError` 不写 `return` 等于忽略错误                              | [CONCEPTS §8](./docs/CONCEPTS.md#错误账本与降级策略)          |
+| `deepEqual` 先判内建类型再判原型                                       | [API.md 核心工具函数](./docs/API.md#工具函数)                 |
+| 把 `wx` 全局对象直接当 `storage` 后端                                  | [CONCEPTS §11](./docs/CONCEPTS.md#调试表与持久化)             |
+| `createSelector(输入fn, 结果fn)` 双函数重载；选项名写成 `maxCacheSize` | [API.md 选择器](./docs/API.md#extrasselector选择器)           |
+| `withThrottle` 的间隔写成选项字段而非第一个位置参数                    | [API.md Action 增强](./docs/API.md#extrasactionaction-增强)   |
+| `withRetry` 装饰同步方法后返回类型不变                                 | [API.md Action 增强](./docs/API.md#extrasactionaction-增强)   |
+| 按错误 message 文本识别超时                                            | [API.md Action 增强](./docs/API.md#extrasactionaction-增强)   |
+| `withLog` 的生产摘要里带 `Error.message`                               | [API.md Action 增强](./docs/API.md#extrasactionaction-增强)   |
+| 装饰 store action 后还能用 `cancel*Calls(this)` 收尾                   | [API.md 宿主收尾入口](./docs/API.md#防抖--节流的宿主收尾入口) |
+| `flush*` 会执行多次、`dispose*` 只是取消                               | [API.md 宿主收尾入口](./docs/API.md#防抖--节流的宿主收尾入口) |
 
 ## 提交与 PR
 

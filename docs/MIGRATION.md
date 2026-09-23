@@ -4,9 +4,13 @@
 
 > 版本约定：`0.x` 阶段的行为契约变更会显式标注「Breaking」并给出迁移代码；仅「新增可选项」之类的纯增量不在此列。
 
+**直接跳到你那一档**（多数升级只需看目标版本那一节；跨多个 minor 的请把中间各档的「需要改代码」都读一遍）：
+
+[0.7.0](#升级到-070) · [0.6.0](#升级到-060) · [0.5.1](#升级到-051) · [0.5.0](#升级到-050) · [0.4.0](#升级到-040) · [0.3.0](#升级到-030) · [0.2.x](#升级到-02x) · [0.1.3](#升级到-013) · [0.1.1 / 0.1.2](#升级到-011--012)
+
 ## 升级到 0.7.0
 
-0.6.x → 0.7.0 收录第六轮全库复审（`ocrreview6.md`，180 个文件 / 114 条，逐条判定 FIXED 112 / 明确不修 2）的修复。对外语义的变化以 `CHANGELOG.md` 的 0.7.0 一节为准，计数口径写死在这里以免两份文档各说各话：**Breaking 3 条（类型面与对外契约）+ Changed 19 条（行为变更）+ Added 3 条（纯增量）+ Fixed 4 条 + Docs 4 条 + Tooling 9 条 + 明确不修与待拍板 6 条**。本节只挑其中**需要改代码的 5 条**与**无需改代码但断言 / 监控要复核的 5 条**展开，剩下的属于「原本就该如此」的缺陷修正与文档纠偏。0.6.1 那一档只动微信产物链（`dist-weapp/` 的编译与 `verify:weapp` 门禁），对调用方无影响，所以本节从 0.6.0 的行为差异整体算起。
+0.6.x → 0.7.0 是一轮全库复审的产出，对外语义变化以 [CHANGELOG](../CHANGELOG.md) 的 0.7.0 一节为准，本节只展开**需要改代码的 5 条**与**无需改代码但断言 / 监控要复核的 5 条**，其余属于「原本就该如此」的缺陷修正。0.6.1 那一档只动微信产物链（`dist-weapp/` 的编译与 `verify:weapp` 门禁），对调用方无影响，所以本节从 0.6.0 的行为差异整体算起。下面各条括号里的编号是 CHANGELOG 同批条目的追溯号。
 
 > **同样不会自动发生**：本版含破坏性变更，按 0.x 的语义升的是 **minor**（0.6.1 → 0.7.0）。`^0.6.1` 展开为 `>=0.6.1 <0.7.0`，要拿到这一轮修复请把依赖显式改成 `^0.7.0`。
 
@@ -16,23 +20,22 @@
 - **不要再靠组合层的抛错发现子 store 被销毁**（R6-005）：子 store 在组合之外被 `destroy()` 后，`composed.getState()` / `composed.state` / `composed.$snapshot()` 与平铺模式的归属判定都不再抛 `Cannot call getState on a destroyed Store`——该子店按**空视图**并入、按 store 去重告警一次，其余子店照常读写。三处要检查：① `try { composed.getState() } catch {}` 这类「抛错＝子店没了」的探测逻辑，改成看告警或自己持有引用；② 把 `composed.getState().child === undefined` 当「子店不在」的判断——现在它是一个**空对象**而不是缺失键；③ 依赖「合并状态里键数不变」的深比较断言。销毁整个组合仍是 `composed.destroy()`，语义未变。
 - **手工构造 `SnapshotDiff` 的代码要补 `inputTrusted`**（R6-050）：该字段是**新增必填**（`SnapshotDiff.inputTrusted: boolean`，库产出的对象一定带它）。写测试夹具 / 自造 diff 对象的地方直接补 `inputTrusted: true`，否则编译报错。同时注意判读顺序：任一侧快照 `success: false` 时 `compareSnapshots` 不再逐路径比对，而是交付一条 root 级整体差异并把 `changed` 置为 `true`——那表示「输入不可信」，不表示「确有差异」，先判 `success`、再判 `inputTrusted`、最后才读 `changes`。旧实现会把两份失败快照报成 `changed: false`（把「快照没做成」伪装成「状态没变」）。
 - **按 `root[0]` 这类下标聚合 `Map` 条目路径的消费方要改成按键身份**（R6-101）：`compareSnapshots` 的 `changes[].path` 现在与克隆账本 `errors[].path` 同一份方言——`Map` **值差异**记 `parent.<String(key)>`、**键新增 / 删除**记 `parent.key.<String(key)>`（旧写法是 `root.key[0]` 这种「两侧各自的迭代下标」，会随插入顺序漂移、双向比对给出不同路径）。正则按 `\.key\[\d+\]` 解析的请改按 `\.key\.<键串>`；`Symbol` 键串是 `String(key)`、`toString` 抛错的键退回 `<unstringifiable key>`。`Set` 的 `[removed:i]` / `[added:i]` 里的 `i` 仍是**报告序下标、不是条目身份**（集合元素没有可当身份的键），跨快照配对 `Set` 变化请读 `oldValue` / `newValue` 而不是按下标配。
-- **别指望快照把子类与「内部槽位承载值」克隆成独立副本**（R6-008 / R6-099 / R6-100 + 主会话 B14/B15）：`Date` / `RegExp` / `Map` / `Set` / `Array` 的**子类实例**，以及 `Promise`、装箱原始值（`new Number(1)` / `new String('x')`）、`ArrayBuffer` / TypedArray / DataView、`WeakMap` / `WeakSet`、`Error`、生成器，现在一律**保留原引用**（与核心 `deepCloneState` 同口径，同步与异步两条路径一致）。此前它们分别被 `new X()` 重建（子类字段与方法丢失）或被拷成「`instanceof` 仍真、内部槽位为空」的壳（`await snap.data.p`、`Number(snap.data.n)` 当场抛 `TypeError`；`compareSnapshots` 对 `new Number(1)` vs `new Number(2)` 恒判无差异）。如果你的代码依赖「快照之后改原对象不影响快照」，对这两类节点请改用 `customCloner` 自己接管；类实例仍按既有契约重建为同类实例。另两条同批口径：数组上的**附加自有键**（非下标、非 `length`）现在同步与异步两条路径都跟着克隆；`includeNonEnumerable: true` 拷进来的键一律落为可枚举（`Object.keys` / `JSON.stringify` / diff 键集比对从此看得见它们，若你的断言按「不可枚举」写需要复核）。
+- **别指望快照把子类与「内部槽位承载值」克隆成独立副本**（R6-008 / R6-099 / R6-100）：`Date` / `RegExp` / `Map` / `Set` / `Array` 的**子类实例**，以及 `Promise`、装箱原始值（`new Number(1)` / `new String('x')`）、`ArrayBuffer` / TypedArray / DataView、`WeakMap` / `WeakSet`、`Error`、生成器，现在一律**保留原引用**（与核心 `deepCloneState` 同口径，同步与异步两条路径一致）。此前它们分别被 `new X()` 重建（子类字段与方法丢失）或被拷成「`instanceof` 仍真、内部槽位为空」的壳（`await snap.data.p`、`Number(snap.data.n)` 当场抛 `TypeError`；`compareSnapshots` 对 `new Number(1)` vs `new Number(2)` 恒判无差异）。如果你的代码依赖「快照之后改原对象不影响快照」，对这两类节点请改用 `customCloner` 自己接管；类实例仍按既有契约重建为同类实例。另两条同批口径：数组上的**附加自有键**（非下标、非 `length`）现在同步与异步两条路径都跟着克隆；`includeNonEnumerable: true` 拷进来的键一律落为可枚举（`Object.keys` / `JSON.stringify` / diff 键集比对从此看得见它们，若你的断言按「不可枚举」写需要复核）。
 
 ### 行为变更（无需改代码，但断言 / 监控需复核）
 
 - **异步 action 的同步段现在会当场补发一次通知**（R6-037）：默认模式下「同步段有写入且最终 settle」的一次异步 action，通知数由 **1 变 2**（结算那一轮保留，覆盖 `await` 之后的续段）。`notify.async`（同 tick 微任务合并）与 `notify.onlyOnChange`（按写入计数去重，同步段无写入就不多刷）都会把它吸收回 1 次；`batch` 内不提前补发。动机是 Promise 永不 settle 时同步段的写入此前要等「下一个不相干通知」才浮出来。按「一次 dispatch 一次回调」写断言的测试、以及靠通知次数做上报去重的插件需要重算；`notify.async` 合并窗口下可能多出一个**脏键为空**的投递批次（内容已在上一批投完，集成层据此跳过 `setData`）。
 - **状态保护不再对冻结 / 不可写属性抛错，读取拿到裸引用**（R6-006）：自有属性「既不可配置也不可写」时（`Object.freeze` 过的子树、`defineProperty` 成 `writable:false + configurable:false` 的键；最省事的来路就是把 `$snapshot()` 的深冻结结果 `setState` 回状态），深代理与数组代理都原样返回目标值——这是 Proxy `[[Get]]` 不变量的硬要求，修复前连**读取**都会抛 `TypeError: 'get' on proxy: property 'x' is a read-only and non-configurable data property…`。代价写在文档里：这类子树不受写保护、不计变更与脏键，`state.frozen.x = 1` 在严格模式下仍按 JS 自身规则抛 `TypeError`（那不是本库的守卫，报错文本与可捕获性都变了口径）。要复核的用例形状是「读冻结子树会抛 Proxy invariant 错」——那种读取现在不再抛。
 - **`withDebounce` / `withThrottle` 的 `cancel*` / `flush*` / `dispose*` 在 store action 上不可用**（R6-046，文档纠正而非新增限制）：这六个入口按「被装饰方法被调用时的 `this`」定位状态槽位，而 store action 的 `this` 是 `ActionManager` 每次 dispatch 现造的 action 上下文代理、不挂在任何公开成员上，于是 `cancelDebouncedCalls(this)` 之类调用命中空槽位、**静默 no-op**（不抛错、也不清定时器）。本库刻意不暴露那个宿主（否则「装饰器内部槽位键」升为跨 core 与 extras 的公开契约）。改写法即可：① 装饰 Page / Component 上的方法、让它去 `dispatch`；② 在 store 外面自己包一层并把那一层当宿主传进去。此前文档（`docs/GUIDE.md` §3、`docs/FAQ.md` 装饰器一节）按「对 store action 同样成立」写过，已改正——照旧抄写的代码不会崩，但以为「已收尾」的挂起定时器会照旧到点执行。
-- **文档层面的两条口径纠偏（库行为未变）**：① Store 侧**从来没有 getter 结果缓存**，`store.getter(name)` 每次按当前状态重算；「依赖未变时复用结果、判定基于内部状态版本号」这句在 GUIDE / API / 示例里都是假话，已删，记忆化请走 `extras/selector` 的 `createSelector`。② 内置缓存的**唯一读取入口是 `getCached(key)`**——`getState()` 不查缓存也不计未命中（用它演示命中是白演示），`setState` / `$patch` 是**写穿**（回写条目、不删条目、不计失效），显式失效只有 `invalidateCache()` 与 `$replaceState`（整表清空）。另外 `cacheConfig.enableStats` **默认就是 `true`**（示例与文档里「按需开启」的措辞把方向说反了，性能敏感时该传 `false`，代价是 hits/misses 恒为 0）。
 - **异步快照的超时判定**：只有「仍有未处理任务、或超时后丢掉过入队任务」才让 `success: false`；收尾竞态下交付的完好克隆不再被判为失败（此前会出现 `success: false` 但 `data` 是完整副本的自相矛盾结果）。
 
 ### 版本号与文档同步
 
-版本号散在四处（`package.json` 的 `version`、`src/integrations/enterprise/hot-update.ts` 的 `LIBRARY_VERSION`、`SKILL.md` 三处手写行、`pnpm skill:api` 生成物的「来源版本」行），本轮由维护侧一次性 bump 到 **0.7.0** 并重跑生成器；发版清单见 [CONTRIBUTING](../CONTRIBUTING.md#构建与发布)。
+版本号散在四处（`package.json`、`hot-update.ts` 的 `LIBRARY_VERSION`、`SKILL.md` 三处手写行、`skill:api` 生成物的「来源版本」行），由发版方按 [CONTRIBUTING 的发版清单](../CONTRIBUTING.md#构建与发布) 一次改齐，升级方无需处理。
 
 ## 升级到 0.6.0
 
-0.5.1 → 0.6.0 一并收录第四轮（454 条）与第五轮（376 条）两次复审的修复。多数为「原本就该如此」的缺陷修复，本节只列**需要动调用方**或**会改变可观测行为**的点；完整清单见 [CHANGELOG](../CHANGELOG.md)，第五轮条目见本节末尾的「第五轮复审追加」。
+0.5.1 → 0.6.0 是两轮全库复审合并发布的产出。多数为「原本就该如此」的缺陷修复，本节只列**需要动调用方**或**会改变可观测行为**的点；完整清单见 [CHANGELOG](../CHANGELOG.md)，后半批条目见本节末尾的「同批发布的其余可观测变更」。
 
 > **这次升级不会自动发生**：本库还在 0.x，而本版含破坏性变更（下面「需要改代码」一节的类型收紧与判据反转），所以升的是 **minor**（0.5.1 → 0.6.0）。`^0.5.1` 展开为 `>=0.5.1 <0.6.0`，包管理器不会把 0.6.0 塞给你——想拿到这两轮复审的修复，要把依赖显式改成 `^0.6.0`，并按本节逐条改代码。
 
@@ -68,9 +71,9 @@
 - **错误子系统统计与上报**：`ErrorAggregator` 的样例不再携带 `payload` 且随命中刷新、`byStore` 随组驱逐保持一致；`ErrorMonitoring` 的 `reportTimeout <= 0` 表示不超时、`clear()` 复位连续失败计数；`ErrorRecovery` 的受控字段（`error` / `config` / `attempt`）不再被调用方上下文覆盖；`ErrorBoundary` 会把非 `Error` 抛出值归一化后记账（重抛仍用原始值）。
 - **时间旅行 `importHistory` 会跳过畸形条目**（`state` 为数组或自持 `__proto__` 键），`undo` / `redo` 在回放成功后才推进索引。
 
-### 第五轮复审追加（同一版发布）
+### 同批发布的其余可观测变更（同一版）
 
-第五轮（`ocrreview.md` 376 条）的修复与上面第四轮的条目一起进 0.6.0。这里只列**升级时需要动手**或**要复核断言 / 监控**的点，括号内是判定台账编号，可回 `.ocr-fix/verdicts5/<分片>.md` 逐条核对。
+这批修复与上面 0.6.0 的条目一起发布。这里只列**升级时需要动手**或**要复核断言 / 监控**的点，括号内是与 [CHANGELOG](../CHANGELOG.md) 同批条目的追溯号。
 
 #### 需要改代码
 
@@ -85,13 +88,13 @@
 - **`ErrorRecovery` 的上限语义**（R5-201 / R5-203 / R5-205）：抛 `Max retries (n) exceeded` 时**保留**计数与周期窗，同一故障周期内的后续 `recover()` 持续被拦截（旧行为是清键 → 紧接着下一次又领到一整个新额度，防重试风暴只对触发超限那一次生效）；抛出物由裸 `Error` 变为 `GeomStoreError`（`code: INTERNAL_ERROR`、带 `cause`，`context.retryKey` 指明被用满的是哪一份额度，两个来源都缺时键名为 `<code>:unattributed`）。按 `message` 前缀匹配的调用方不受影响，要按类型分支处理超限的请改读 `code`。
 - **越界的 `stateProtection.productionHandler` 改为建店即失败**（R5-115）：非 `'error' | 'warn' | 'silent'` 的取值让 `createStore` 当场抛 `TypeError`（此前留到很远的一次非法写入才以别的面目炸）。
 - **以 `Object.prototype` 成员名当错误码时**（R5-204）：`ErrorRecovery.getConfig('constructor')` 由「返回原型链成员」变为 `undefined`，`recover()` 改报「No recovery strategy configured for error code: constructor」。策略表已换成 `Map`。
-- **`deepEqual` 改为「原型一致」先于一切内建内容判定，并新增装箱原始值一档**（第五轮登记的语义债，不属 376 条）：空的 `class MyMap extends Map` 实例此前与空 `new Map()` 判等（`Set` / `Date` / `RegExp` 同理），`new Number(1)` 与 `new Number(2)` 判等（`String` / `Boolean` / `BigInt` / `Symbol` 同理），现在都判不等。两类状态若混在一条选择器链上，此前是「命中并返回陈旧值」，现在会正确地重算——**性能敏感路径请复核**：把子类实例与基类实例当同一状态来源的写法（例如自己 `new` 一个 `Map` 子类再和反序列化出来的基类 `Map` 比），现在要显式统一成同一个类。装箱原始值不建议放进状态：`clone` 对它们保留原引用，比较又只看 `valueOf`，既拿不到子类语义也拿不到不可变性。
+- **`deepEqual` 改为「原型一致」先于一切内建内容判定，并新增装箱原始值一档**：空的 `class MyMap extends Map` 实例此前与空 `new Map()` 判等（`Set` / `Date` / `RegExp` 同理），`new Number(1)` 与 `new Number(2)` 判等（`String` / `Boolean` / `BigInt` / `Symbol` 同理），现在都判不等。两类状态若混在一条选择器链上，此前是「命中并返回陈旧值」，现在会正确地重算——**性能敏感路径请复核**：把子类实例与基类实例当同一状态来源的写法（例如自己 `new` 一个 `Map` 子类再和反序列化出来的基类 `Map` 比），现在要显式统一成同一个类。装箱原始值不建议放进状态：`clone` 对它们保留原引用，比较又只看 `valueOf`，既拿不到子类语义也拿不到不可变性。
 
 #### 断言 / 监控需要复核（无需改代码）
 
-- **同一轮通知里两个可写订阅者的载荷不再是同一引用**（R5-122 + 交接 HANDOVER-2）：拷贝改由 `SubscriptionManager` **按注册分配**——可写注册各一份独立深拷贝、只读注册共用一份。只有全只读时仍是零拷贝；`false` 档（调用方自备载荷）零变化。
+- **同一轮通知里两个可写订阅者的载荷不再是同一引用**（R5-122）：拷贝改由 `SubscriptionManager` **按注册分配**——可写注册各一份独立深拷贝、只读注册共用一份。只有全只读时仍是零拷贝；`false` 档（调用方自备载荷）零变化。
 - **`maxSubscribers` 变成硬上界**（R5-123）：门禁覆盖每一次注册（含同一函数的重复注册），达限时 `evict-oldest` 让**本次重复注册自己最早的一份**让位、`throw` 抛错；`size()` 不再可能高于上限（唯一例外是 `maxSubscribers <= 0` 配 `evict-oldest`）。
-- **驱逐订阅者会发一次 `onError`**（交接 HANDOVER-1）：`evict-oldest` 触发时 `emit('onError', Error, 'subscribe')`——生产环境从完全静默变为可观测，只订阅 `onError` 做监控的调用方会多看到一类事件。
+- **驱逐订阅者会发一次 `onError`**：`evict-oldest` 触发时 `emit('onError', Error, 'subscribe')`——生产环境从完全静默变为可观测，只订阅 `onError` 做监控的调用方会多看到一类事件。
 - **`withLog` 的生产摘要不再输出 `Error` 的 message**（R5-178），且生产构建下 `redact` 之后仍会再过一层摘要，除非显式 `summarizeInProduction: false`（R5-177 新增该选项）。依赖摘要文本的日志解析需同步。
 - **非法构造参数改为归一或拒绝**：`cacheConfig.ttl` 非有限 / 负值归一为 `0`（＝不过期）并打一条开发期告警（R5-111）；`cacheTTL` 的 `NaN` / `<= 0` / 非数值回落 `5000`，`Infinity` 有意放行（R5-225）；`maxEntries` 归一为 `Number.isFinite(v) ? max(1, floor(v)) : 1000`（R5-229）；`ErrorMonitoring` 的 `maxQueueSize` 最小 1、`maxFlushRetries` 最小 0（R5-212）；`SnapshotManager` 的 `batchSize` 在构造期与逐次调用共用一个归一化函数（R5-258），`timeout` / `batchInterval` 的非有限值与非正值统一按「不设超时 / 无延迟」（R5-260）；`timeTravelPlugin({ maxSize })` 的非法值按默认 50 生效（R5-298）；`withDebounce` 的 `delay` 与 `withThrottle` 同口径归一到默认值（R5-173）；`withRetry` 的 `delay` 为正 `Infinity` 时钳到定时器上限而不是折成 0（R5-148）。
 - **快照账本与计数变化**：`result.errors` 现在含 `circular` 条目（先入账再用同一条记录咨询 `onError`，R5-254）；`stats.cloneOperations` 对含 Date / RegExp 的数据变大（R5-255）；失败结果的 `stats` 交出中止点的实际累计值（R5-261）；Proxy `ownKeys` 抛错且允许继续时该节点消失而不再留 `{}` 空壳（R5-251 / R5-252）。
@@ -99,7 +102,7 @@
 - **`isProduction()` 在内联产物里的判定**（R5-140）：构建工具只内联 `process.env.NODE_ENV` 成员表达式、而产物里没有 `process` 全局时，判定结果由 `false` 变 `true`（生产分支才真正生效，直写状态由崩溃变回 warn）。
 - **变异报错文案**：写入函数 / Symbol 时的 `Attempted value:` 不再是 `undefined`（R5-142）；非法写入落在嵌套数组时路径形如 `[0].v`（R5-116 / R5-118）。
 - **`usePlugin(plugin, store)` 在已销毁 Store 上原样抛出 `use` 的异常**（R5-088），不再只 `console.error` + 返回空卸载函数。
-- **被同步中止的 dispatch，其 `onError` 带第二参 `'dispatch'`**（交接 HANDOVER-5）：`analyzerPlugin` 据此作废该次进行中计时并产出一条「到抛错为止」的耗时指标（R5-319 落地的「`onError` 一律不弹栈」由这条接线补全）。
+- **被同步中止的 dispatch，其 `onError` 带第二参 `'dispatch'`**：`analyzerPlugin` 据此作废该次进行中计时并产出一条「到抛错为止」的耗时指标（R5-319 落地的「`onError` 一律不弹栈」由这条接线补全）。
 
 #### 类型面（会编译报错，都是把原本写错的一侧显形）
 
@@ -115,7 +118,7 @@
 
 公开签名基本不变（含两处类型放宽）；升级时请确认依赖旧行为的断言与收尾逻辑。以下两节按修复批次列出会改变可观测行为的点，完整清单见 [CHANGELOG](../CHANGELOG.md)。
 
-### 第三轮复审
+### 脏追踪与运行时语义修复
 
 - **脏追踪范围扩大**：类实例与类型化数组不再原样返回——实例属性写入、数组元素写入会被标记；实例方法调用会保守标记所属键（宁可多报），读取时方法绑定原始接收者，`#private` 与内部槽位可用。`$patch` 就地改写被其他顶层键引用的对象时，这些键一并标记。Date/RegExp/WeakMap/WeakSet 维持原引用与不跟踪契约。
 - **保护代理读取**：`store.state.<实例>.method()` 与类型化数组的展开 / 切片不再抛错（此前 `this` 是代理导致 `#private` 与内部槽位失效），非法写入仍被拒绝。
@@ -125,7 +128,7 @@
 - **类型放宽（编译期）**：`store.use` / `usePlugin` / `ComposedStore.use` 的插件参数接受 `Plugin<State>` 联合类型，状态无关插件（logger/analyzer 等）可直接传入；针对其他状态类型的插件仍被拒绝。`persistencePlugin<S>(options)` 保留状态类型参数。
 - **选择器与 Action 历史**：`createParametricSelector` 的 `ttl: 0` 统一为「立即过期（等同禁用缓存）」；`ActionHistoryTracker.setMaxHistory` 立即裁剪已有桶并在非有限输入下回退 1；重试内核在 `retries` 为 NaN / 负数时按 0 处理（首次尝试必执行，抛出真实错误而非兜底错误）。
 
-### 第一、二轮修复（cb686d4 / 998af4e）
+### 其余行为修复
 
 公开签名不变；升级时请确认依赖旧行为的断言与收尾逻辑：
 

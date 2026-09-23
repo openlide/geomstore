@@ -257,7 +257,7 @@ function main() {
       `| \`${entry.sub}\` | ${NAME_ONLY.has(entry.sub) ? '仅符号名' : '完整声明'} | ${entry.items.length} | [\`${entry.file}\`](./${entry.file}) |`,
   )
   const index = [
-    header('# GeomStore API 参考（按入口拆分，自动生成）', [
+    header('GeomStore API 参考（按入口拆分，自动生成）', [
       '> - 使用规则与快速上手见 [`../../SKILL.md`](../../SKILL.md)',
       '> - 默认值、语义契约与易误用点见仓库 `docs/API.md`（不随包发布，仅仓库内可见）',
     ]),
@@ -269,6 +269,8 @@ function main() {
     '| --- | --- | --- | --- |',
     ...indexRows,
     '',
+    '`./core` 与 `./extras` 是 `.` 及其子入口的聚合/别名，为避免重复只列符号名；完整声明请看对应入口文件。',
+    '',
     '### 检索方式',
     '',
     '不确定某个符号属于哪个入口时，直接搜目录：',
@@ -277,8 +279,6 @@ function main() {
     "rg -n 'createSelector' references/api/          # 找出定义位置与所在入口",
     "rg -n '^### `createSnapshot`' references/api/   # 精确定位某个符号的完整声明",
     '```',
-    '',
-    '`./core` 与 `./extras` 是 `.` 及其子入口的聚合/别名，为避免重复只列符号名；完整声明请看对应入口文件。',
     '',
   ].join('\n')
 

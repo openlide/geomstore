@@ -1,12 +1,12 @@
 # GeomStore
 
-面向**原生微信小程序优先**的状态管理库：核心极简、可选能力下沉 extras，按需引入只为把真正用到的代码带进包里（体积上的收益取决于宿主有没有打包器，直接用「构建 npm」的宿主见「环境适配要点」）。
+面向**原生微信小程序优先**的状态管理库：类 Pinia 的 API、完备的 TypeScript 类型推断，核心极简、可选能力下沉 `extras`。
 
-- **核心 / extras 分层**：主入口与 `core` 只含运行必需 API；快照、选择器、Action 增强、性能监控、错误处理、企业集成等全部通过 `extras/*` 子路径按需引入
-- **小程序原生友好**：内置 `withPageStore` / `withComponentStore` / `withAppStore` 集成，页面卸载自动退订；环境差异（`wx.request`、同步存储、基础库缺失的 `console.group`）均已适配
-- **类型完备**：全量 `.d.ts` 随包发布，泛型化的 state / actions / getters 推导
-- **行为可观测**：统一的错误账本（`errors` + `onError` 降级策略）、性能指标采集、快照隔离与差异对比
-- **工程可信**：覆盖率门禁由 `jest.config.js` 的 `coverageThreshold` 定义（global 语句 / 函数 / 行 98%、分支 95%，`core` 与 snapshot / selector / action 另设单文件分支 85% 下限），未达标即非零退出；全部 tsconfig（源码 / Jest / 测试 / 构建 / 类型检查 / 示例）零错误
+- **瘦核心 / extras 分层** —— 主入口只含运行必需 API；快照、选择器、Action 增强、性能监控、错误处理、企业集成等一律走 `extras/*` 子路径，按需引入
+- **小程序原生友好** —— 内置 `withPageStore` / `withComponentStore` / `withAppStore`，页面卸载自动退订；`wx.request`、同步存储、基础库缺失的 `console.group` 等环境差异均已适配
+- **类型完备** —— 全量 `.d.ts` 随包发布，state / actions / getters 与插件均泛型化推导，无需手写断言
+- **行为可观测** —— 统一错误账本（`errors` + `onError` 降级策略）、性能指标采集、快照隔离与差异对比
+- **工程可信** —— 覆盖率门禁、源码 / 测试 / 示例三路 typecheck 零错误、纯 ESM，产物与构建脚本可复现
 
 ## 安装
 
@@ -15,27 +15,34 @@ pnpm add @openlide/geomstore
 # 或 npm i @openlide/geomstore / yarn add @openlide/geomstore
 ```
 
-要求 **Node.js ≥ 22**（本包为 ESM，`"type": "module"`），**TypeScript ≥ 5.4**（公开类型签名使用了 `NoInfer`，更低版本编译 `.d.ts` 会报 `Cannot find name 'NoInfer'`）。
+| 要求                 | 说明                                                                              |
+| -------------------- | --------------------------------------------------------------------------------- |
+| **Node.js ≥ 22**     | 包是**纯 ESM**：无 CJS 产物，`exports` 里也没有 `require` 条件，请一律写 `import` |
+| **TypeScript ≥ 5.4** | 公开类型签名使用了 `NoInfer`                                                      |
+| 装饰器（可选）       | 用 `extras/action` 的装饰器需在 tsconfig 开启 `experimentalDecorators`            |
+
+「有没有 CJS 入口」和「`require()` 能不能加载」是两件事：答案分别是**没有**、以及 **Node ≥ 22.12 能**（借 require(ESM) 同步加载，22.0–22.11 需 `--experimental-require-module`）——后者是运行时兜底，别据此写 CJS 代码。边界见 [FAQ 的集成与工程一节](./docs/FAQ.md#集成与工程)。
 
 ## 快速开始
+
+先定义状态类型，再用工厂函数标注其返回类型——状态形状只有一份来源，getter / action 无需重复书写字面量类型，也不必写 `as` 断言：
 
 ```ts
 import { createStore } from '@openlide/geomstore'
 
-// 先定义状态类型：状态形状的唯一来源，getter / action 直接复用
 interface CounterState {
   count: number
 }
 
 const counterStore = createStore({
   name: 'counter',
-  // 推荐工厂函数：避免引用类型被多个实例共享；标注返回类型后字段无需断言
+  // 工厂函数：避免引用类型被多个实例共享
   state: (): CounterState => ({ count: 0 }),
   getters: {
     doubled: (state: CounterState) => state.count * 2,
   },
   actions: {
-    // action 的 this 自动注入，无需手写标注
+    // action 的 this 由 Store 自动注入，无需手写标注
     increment() {
       this.$patch({ count: this.state.count + 1 })
     },
@@ -43,22 +50,24 @@ const counterStore = createStore({
 })
 
 counterStore.dispatch('increment')
-console.log(counterStore.getter('doubled')) // 2
-counterStore.subscribe((state) => console.log('changed:', state.count))
+counterStore.getter('doubled') // 2
+const unsubscribe = counterStore.subscribe((state) => console.log(state.count))
+unsubscribe()
 ```
 
-小程序页面中使用：
+在微信小程序页面中使用（三端集成函数**都从主入口引入**）：
 
 ```ts
 import { withPageStore } from '@openlide/geomstore'
 
 Page(
   withPageStore(counterStore, {
-    mapState: ['count'],
+    mapState: ['count'], // 数组简写：注入 this.data.count
     mapGetters: ['doubled'],
-    mapActions: ['increment'],
+    mapActions: ['increment'], // 注入 this.increment()
+    // 对象形式可重命名：{ total: 'count' } / { addOne: 'increment' }
   })({
-    // 页面方法的 this 由集成层注入：this.data 与 mapActions 注入的方法均有类型
+    // 页面方法的 this 由集成层注入（this.data 与映射方法均有类型），不要手写 this 标注
     onLoad() {
       this.increment()
     },
@@ -67,83 +76,69 @@ Page(
 )
 ```
 
-更多可运行示例见 [`examples/`](./examples)（基础 / 缓存 / 小程序集成 / 高级 / extras 五类；`pnpm typecheck:examples` 会校验全部示例）。
+> 完整接入流程（组件 / App 级、缓存、组合、extras）见 [`docs/GUIDE.md`](./docs/GUIDE.md)；可运行示例见 [`examples/`](./examples)，分基础 / 缓存 / 小程序集成 / 高级 / extras 五类，由 `pnpm typecheck:examples` 全量校验。
 
 ## 核心能力
 
-| 能力       | 引入位置 | 说明                                                                                                                                                                                                       |
-| ---------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 状态读写   | 核心     | `getState` / `setState` / `$patch` / `$replaceState`                                                                                                                                                       |
-| 快照与还原 | 核心     | `$snapshot` / `$restore`（深克隆 + 冻结纯对象 / 数组链；内建容器与「内部槽位承载值」的**子类保留原引用**，不重建）                                                                                         |
-| Action     | 核心     | `dispatch`、同步/异步、action 上下文、失败传播                                                                                                                                                             |
-| Getter     | 核心     | `store.getter(name)`：每次读取按当前状态重算，**Store 侧没有 getter 结果缓存**；要「依赖未变则复用」请用 `extras/selector` 的 `createSelector`                                                             |
-| 订阅       | 核心     | `subscribe` 返回退订函数；`maxSubscribers` 是**硬上界**（达限按策略驱逐或抛错）                                                                                                                            |
-| 钩子系统   | 核心     | `store.hooks.on/emit`，供插件与监控接入                                                                                                                                                                    |
-| 批量更新   | 核心     | `batch` / `startBatch` / `endBatch`，合并通知                                                                                                                                                              |
-| 内置缓存   | 核心     | `enableCache(keys?)` / `disableCache` / `invalidateCache` / `getCached` / `getCacheStats`；**读取只认 `getCached()`**（`getState()` 不查缓存），`setState` / `$patch` 写穿、显式失效走 `invalidateCache()` |
-| 插件系统   | 核心     | `use(plugin)` / `usePlugin(plugin, store)`                                                                                                                                                                 |
-| 小程序集成 | 核心     | `withPageStore` / `withComponentStore` / `withAppStore`                                                                                                                                                    |
-| Store 组合 | 核心     | `composeStore`（命名空间 + 斜杠路径）/ `StoreRegistry`                                                                                                                                                     |
-| LRU 缓存   | 核心     | `LRUCache`（容量淘汰 + TTL）                                                                                                                                                                               |
+这张表只是**索引**。每条背后的边界语义（为什么这样、例外在哪）只写在 [docs/CONCEPTS.md](./docs/CONCEPTS.md) 一处，此处不重复。
 
-以下能力**不在**主入口，需按需引入（见下节）：快照引擎、选择器、Action 装饰器、性能监控、内置插件实现、错误处理、企业集成。
+| 能力          | 关键 API                                                                        | 一句话                                              |
+| ------------- | ------------------------------------------------------------------------------- | --------------------------------------------------- |
+| 状态读写      | `getState` / `setState` / `$patch` / `$replaceState` / `$snapshot` / `$restore` | `getState()` 是活动引用；要隔离副本用 `$snapshot()` |
+| Action        | `dispatch`                                                                      | 同步 / 异步统一入口                                 |
+| Getter        | `getter(name)`                                                                  | 无结果缓存；要记忆化用 `createSelector`             |
+| 订阅与批量    | `subscribe` / `batch` / `startBatch` / `endBatch` / `isStateKeyDirty`           | 不写状态的订阅请标 `readOnly: true`                 |
+| 内置缓存      | `enableCache` / `getCached` / `invalidateCache` / `getCacheStats`               | 读取只认 `getCached()`                              |
+| 状态保护      | `stateProtection`                                                               | 拦截绕过 action 的直接变异                          |
+| 钩子与插件    | `hooks.on` / `hooks.emit` / `use` / `usePlugin`                                 | 契约 `{ name, install(store) }`                     |
+| Store 组合    | `composeStore` / `createStoreTree` / `StoreRegistry`                            | 命名空间 + 斜杠路径                                 |
+| 小程序集成    | `withPageStore` / `withComponentStore` / `withAppStore`                         | 都从主入口引入；卸载自动退订                        |
+| 独立 LRU 缓存 | `LRUCache`                                                                      | 容量淘汰 + TTL，可脱离 Store 使用                   |
+
+**不在**主入口、需按需引入的能力：快照引擎、选择器、Action 装饰器与增强、性能监控、内置插件实现、错误处理、企业（WeCom）集成。
 
 ## 引入方式与体积分层
 
 ```ts
-// 核心：主入口（含状态、Action、Getter、订阅、钩子、批量、缓存、插件运行时、小程序集成、组合）
+// 核心：状态 / Action / Getter / 订阅 / 钩子 / 批量 / 缓存 / 插件运行时 / 小程序集成 / 组合
 import { createStore, withPageStore, composeStore } from '@openlide/geomstore'
-
-// 显式核心子入口（与主入口同源，便于按目录组织导入）
-import { createStore } from '@openlide/geomstore/core'
 
 // 可选能力：只在用到时才进入产物
 import { createSnapshot } from '@openlide/geomstore/extras/snapshot'
 import { createSelector } from '@openlide/geomstore/extras/selector'
-import { withThrottle } from '@openlide/geomstore/extras/action'
-import { analyzerPlugin } from '@openlide/geomstore/extras/performance'
 import { persistencePlugin } from '@openlide/geomstore/extras/plugins'
-import { ErrorBoundary } from '@openlide/geomstore/extras/error'
-import { createEnterpriseApp } from '@openlide/geomstore/extras/enterprise'
 ```
 
-> 包内另有若干**转发子目录**（`store/`、`hooks/`、`plugins/`、`integrations/`），由 `pnpm stubs` 生成，供不支持 `exports` 子路径的老式解析器按目录裸导入。**微信「构建 npm」走的是另一条路**：包根的 `miniprogram` 字段指向 `dist-weapp/`——与 `dist` **同为 105 个模块、按模块一比一转译的 CJS**（11 个公开子路径的入口文件一一对应，模块间保留相对 `require`），工具会整目录拷贝到 `miniprogram_npm`，不做拼接也不做依赖分析；为什么必须这样，见 [CONTRIBUTING.md](./CONTRIBUTING.md#构建与发布) 与 CHANGELOG 的 0.6.1 一节。也可一次性引入全部可选能力（`@openlide/geomstore/extras`），但只在调试或确实全都要用时才建议这样做。
+合法子路径的完整清单与各自用途见 [docs/API.md 的「入口一览」](./docs/API.md#入口一览)——`package.json` 的 `exports` 是最终事实来源，文档门禁会反查两边是否一致。其中 `./extras` 是**聚合入口**，会把全部可选能力整体拉进产物，只在调试或确实全都要用时引入。
 
-## 环境适配要点
+微信「构建 npm」不走 `exports`，而是整目录拷贝包根 `miniprogram` 字段指向的 `dist-weapp/`（与 `dist` 一比一对应的 CJS 镜像）。为什么必须是这个形状、以及它为什么不能用 Node 去验证，见 [CONTRIBUTING 的「构建与发布」](./CONTRIBUTING.md#构建与发布)。
 
-- **小程序包体与「按需」的边界**：`extras/*` 分层的体积收益**取决于宿主有没有打包器**。走 webpack / vite / esbuild 的宿主会把没 import 的子入口摇掉，主包确实只带用到的代码；而**直接用 npm + 开发者工具「构建 npm」** 的宿主走的是另一条路——包里的 `miniprogram` 目录（`dist-weapp/`，按模块一比一转译的 CJS）被**整目录拷贝**进 `miniprogram_npm` 并**全部计入小程序包体积**（0.7.0 实测压缩后合计 245.5 KB / 105 个模块），与用到几个子路径无关；运行时仍是按需的（只有被 `require` 的文件才加载执行）。主包额度紧张的宿主可以只引主入口并自行裁剪该目录，或改走自带打包器的方案
-- **定时器**：内部对 `setInterval`/`setTimeout` 做 `unref` 探测，浏览器 / 小程序无该 API 时自动跳过，不会阻止进程退出
-- **网络**：错误上报自动选择 `wx.request`（校验 `statusCode`）或 `fetch`（校验 `ok`），均可注入自定义实现
-- **控制台**：基础库缺少 `console.group` 时错误报告自动降级为平铺输出
-- **存储**：持久化插件要求**同步且三方法齐备**的后端（`getItem` / `setItem` / `removeItem`）；残缺或异步实现会在安装期 / 读写时被明确拒绝，避免写入静默丢失或写到另一个后端。内置的 `WxStorageBackend` 同样如此：`wx` 或对应的 `*StorageSync` 方法缺失 / 非函数时**抛错**，不再把 `?.` 短路成静默 no-op（写删「看起来成功」、读被洗成「键无数据」）；只有 `persistencePlugin` 在**检测不到**可用 wx 同步 API 时才降级为内存存储
-- **生产模式**：插件安装、子 store 竞态等路径在 `NODE_ENV=production` 下静默（仅开发模式打日志）；需要被监控发现的问题统一走 `onError` 钩子——持久化降级与**恢复失败**、监听器抛错、落盘 / 清理失败，以及**达到 `maxSubscribers` 触发驱逐**（此前生产完全静默，被挤掉的订阅者无从定位）
+## 小程序环境适配
 
-## 工程脚本
+- **体积收益取决于宿主有没有打包器**：走 webpack / vite / esbuild 的宿主会把没 import 的子入口摇掉；只靠 npm + 开发者工具「构建 npm」的宿主按包内 `miniprogram` 目录整目录计体积，此时子路径分层换来的是**运行时按需加载**，不是上传体积变小。主包额度紧张时可只引主入口并自行裁剪该目录，或改走自带打包器的方案。产物体积请以 `pnpm build:weapp` 的输出为准，本文不抄实测数字
+- 环境差异（`wx.request` / `fetch` 上报、同步存储后端、基础库缺失的 `console.group`、定时器 `unref`）与生产模式的信号出口（需要被监控发现的问题统一走 `onError`）都已适配，具体契约见 [docs/CONCEPTS.md §11](./docs/CONCEPTS.md#调试表与持久化)，按症状排查见 [docs/FAQ.md](./docs/FAQ.md)
 
-| 脚本                                                        | 用途                                                                                                                  |
-| ----------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| `pnpm test` / `test:unit` / `test:integration`              | 运行测试                                                                                                              |
-| `pnpm test:coverage`                                        | 覆盖率报告（阈值见 `jest.config.js` 的 `coverageThreshold`，未达标即非零退出）                                        |
-| `pnpm typecheck` / `typecheck:tests` / `typecheck:examples` | 源码 / 测试 / 示例类型检查                                                                                            |
-| `pnpm lint` / `lint:fix`                                    | ESLint（`lint:ci` 为 `--max-warnings 0`，零告警门禁）                                                                 |
-| `pnpm build`                                                | `clean-dist` → `tsc -p tsconfig.build.json` → 生成 module-type 标记并移除 sourcemap                                   |
-| `pnpm build:release`                                        | 构建并**强制压缩**（无压缩器时以退出码 1 中止，杜绝静默发出未压缩包）                                                 |
-| `pnpm build:weapp` / `verify:weapp`                         | 生成并校验微信产物 `dist-weapp/`（105 模块与 `dist` 镜像、11 个入口导出面一致、跨入口单例同一、真实用例可加载）       |
-| `pnpm skill:api`                                            | 从 `dist/**/*.d.ts` 重新生成 skill 的 API 参考（`SKILL.md` 手写的版本行需与 `package.json` 同步，有用例钉住四处一致） |
-| `pnpm stubs` / `stubs:clean`                                | 生成 / 清理转发子目录（`prepack`/`postpack` 自动执行）                                                                |
-| `pnpm format`                                               | Prettier 写回；CI 的 `Format check` 用同一组 glob 做只读校验                                                          |
+## 开发
+
+装完依赖后日常三条：`pnpm test`、`pnpm typecheck`、`pnpm build`。
+
+全部脚本、与 CI 同口径的门禁清单、微信产物链（`build:weapp` / `verify:weapp`）、发版流程与覆盖率阈值（唯一事实来源是 `jest.config.js` 的 `coverageThreshold`，此处不抄数值）都在 [CONTRIBUTING.md](./CONTRIBUTING.md#门禁与-ci-一致必须全绿)。
 
 ## 文档
 
-| 文档                                               | 内容                                         |
-| -------------------------------------------------- | -------------------------------------------- |
-| [docs/GUIDE.md](./docs/GUIDE.md)                   | 使用指南：从零接入到进阶用法                 |
-| [docs/API.md](./docs/API.md)                       | API 参考（核心 / extras 标注）               |
-| [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md)     | 分层架构、目录结构、模块职责与设计取舍       |
-| [docs/CONCEPTS.md](./docs/CONCEPTS.md)             | 概念模型：状态、通知、快照隔离、缓存与版本号 |
-| [docs/BEST_PRACTICES.md](./docs/BEST_PRACTICES.md) | 最佳实践与常见坑                             |
-| [docs/FAQ.md](./docs/FAQ.md)                       | 常见问题                                     |
-| [docs/MIGRATION.md](./docs/MIGRATION.md)           | 版本迁移与行为变更对照                       |
+| 文档                                                                           | 内容                                                 |
+| ------------------------------------------------------------------------------ | ---------------------------------------------------- |
+| [docs/GUIDE.md](./docs/GUIDE.md)                                               | 使用指南：从零接入到进阶用法                         |
+| [docs/API.md](./docs/API.md)                                                   | API 参考：入口一览、选项默认值、语义契约             |
+| [docs/CONCEPTS.md](./docs/CONCEPTS.md)                                         | 机制语义的唯一正本：状态、通知、缓存、快照…          |
+| [docs/FAQ.md](./docs/FAQ.md)                                                   | 按症状排查                                           |
+| [docs/BEST_PRACTICES.md](./docs/BEST_PRACTICES.md)                             | 该做 / 别做的结论清单与上线检查                      |
+| [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md)                                 | 分层架构、目录职责与设计取舍                         |
+| [docs/MIGRATION.md](./docs/MIGRATION.md)                                       | 版本迁移与行为变更对照（历史只写在这里）             |
+| [examples/](./examples)                                                        | 可运行示例五类                                       |
+| [CHANGELOG.md](./CHANGELOG.md)                                                 | 完整变更记录（随包发布）                             |
+| [CONTRIBUTING.md](./CONTRIBUTING.md)                                           | 脚本、门禁清单、构建与发版流程                       |
+| [.codebuddy/skills/geomstore/SKILL.md](./.codebuddy/skills/geomstore/SKILL.md) | 供 AI 编码助手读取的库使用规程（仓库内，不随包发布） |
 
 ## 许可
 

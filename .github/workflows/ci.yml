@@ -59,8 +59,18 @@ jobs:
         run: pnpm run lint:ci
 
       # 格式门禁与 lint:ci 同口径（跑不过就是红，不设基线冻结/白名单）。
-      # glob 与 package.json 的 `format` 脚本逐字相同 → `pnpm format` 就是这一步的修复器，
-      # 补 glob 只会造成「门禁红、本地修复器不认」的分裂。
+      # 判据直接调 `pnpm format:check`，glob 只在 package.json 里定义一次——过去这里抄一份
+      # 逐字相同的 glob，改脚本就必须记得同步改这里，否则「门禁红、本地修复器不认」的分裂
+      # 会重新出现（这正是本条注释原先要防的事，靠复制粘贴防不住）。
+      # 覆盖面：src/tests 的 TS + 全部手写文档 md（README / CONTRIBUTING / CHANGELOG / docs/** /
+      # packages/** 的 README / SKILL.md 与 references/*-semantics.md）。
+      # **不含** `.codebuddy/skills/geomstore/references/api/**`——那是 `pnpm skill:api` 从
+      # `dist/**/*.d.ts` 生成的构建产物。对它跑格式化器会**改动内容**：实测会转义块引用里
+      # 粗体跨度内的星号、把 ```ts 围栏抬成 ````ts，并因 .prettierrc 的 semi:false 删掉
+      # `.d.ts` 声明行末尾的分号（某文件实测 20 行 → 1 行）。而这份文件的契约恰恰是
+      # 「逐字取自类型声明原文」——它的正确性由「与 .d.ts 一致」保证，不由排版门禁保证。
+      # 排除规则与同一份理由写在 .prettierignore。`.ocr-fix/**` 是复审工作记录、不属于文档
+      # 产品，本步的 glob 从不点名它。
       # 换行符侧的口径（第六轮定稿）：`.prettierrc.json` 维持 endOfLine=auto，本步只判格式不判 EOL。
       # lf 方案实测过：index 侧 400 个文件确实全是 i/lf（`git ls-files --eol` 的 i/crlf = 0），
       # Linux runner 判绿，但 Windows 工作树在 core.autocrlf=true 下有 198 个 w/crlf 文件，
@@ -69,7 +79,7 @@ jobs:
       # 把检出侧与工作树统一成 LF 之后再把 endOfLine 切到 lf（本轮工作树有大量未提交改动，
       # 不适合做全库换行归一这种难回退的操作）。
       - name: Format check
-        run: pnpm exec prettier --check "src/**/*.ts" "tests/**/*.ts"
+        run: pnpm run format:check
 
       - name: Typecheck (src)
         run: pnpm run typecheck
