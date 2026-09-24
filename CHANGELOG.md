@@ -7,7 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-暂无（0.8.1 已定稿，见下节）。
+### Tooling（工程链）
+
+0.8.1 发布后做了一轮**门禁盲区审计**：把现有门禁逐条摊开，找「它保护的那个声明，比它实际校验的更强」这一类缺口（G15 修的 `compareSnapshots` 就是它的原型——G6 钉「子路径存在」，而「子路径里有那个名字」没人管）。审计结论与本节改动如下，**无任何运行时或类型面变更**。
+
+- **新增 G16：CHANGELOG 与 package.json 同源**。CONTRIBUTING 发版清单把版本落点列为「四处」，而 r6-f1-02 只钉了三处（package.json ↔ hot-update ↔ SKILL.md ×3 ↔ 生成物），**CHANGELOG 完全不在任何测试的阅读范围内**。实测把四处版本 + 12 份生成物全改成 0.9.0、CHANGELOG 停在 0.8.1，版本门禁 4 条与文档门禁 68 条全绿——发版说明就这么漏出去。G16 补上：最新已发布节 = `package.json` 版本（`[Unreleased]` 已有实质内容时放行，那是「下一版正在写」的正常开发态）、每个已发布节按版本倒序、`[Unreleased]` 不带日期、链接区完整。链接判据以 **git tag** 为事实来源而非「每个发布节都要有链接」——CHANGELOG 里的 0.3.0 / 0.4.0 两节在仓库里**没有对应 tag**（tag 从 v0.2.1 直接跳到 v0.5.0），给它们补链接等于编一个可能 404 的地址，而事后补打历史 tag 属于改写仓库历史。顺带补齐了确实该有的两条链接（0.1.3 / 0.2.1，两者都有 tag）。
+- **G15 加一维：纯类型导出必须用 type-only 语法导入**。G15 原先只判「这个名字在不在」，而 `export type { X }` 的 X **在运行时并不存在**：文档若用值语法（`import { X }`）去导纯类型，在 `verbatimModuleSyntax` / `isolatedModules` 下消费方直接编译失败，这两种情况都拦不住「名字存在」这一维。配了一条分类口径自检（`Store` 判值、`StoreConfig` 判类型），避免分类整体退化成恒真。
+- **G6 反向收紧：「被提及」→「被教过」**。原判据只查 corpus 里含不含 `@openlide/geomstore/<sub>`，于是一句「本版移除了 X」也能让计数 +1 而放行。收紧为两个可判的教学信号：有 import 示范，或有以该子路径命名的专节。
+- **新增 G17：错误码与钩子名对源码**。`ErrorCode` 的 21 个成员与 `HookName` 的 9 个字面量此前无任何门禁与文档对齐。正向判文档里的 `ErrorCode.XXX` 必须是真成员（形态唯一、零误报），反向判每个钩子名都必须出现在文档里（新增钩子忘写文档当场变红；反向不做错误码是因为 21 个码里有一部分属内部实现细节，强行要求会把门禁逼成清单复制）。两向都从 AST 取，不用正则猜源码。
+
+### Fixed
+
+- **`REGR-ENT-003` 不再是一颗定时炸弹**（`tests/integration/enterprise.test.ts`）：该用例把 `version: '0.9.0'` 硬编码成「与库版本不一致」的备份样本，**库一旦真发到 0.9.0 它就会失败**（备份版本等于库版本 → 不再产生告警 → `stringContaining('不一致')` 落空），而报错指向的是「备份版本告警语义坏了」，与真实原因（夹具撞上了真实版本）完全无关。改为非 semver 字面量 `0.0.0-legacy-fixture`：可读，且永远不可能等于 `x.y.z` 形状的 `LIBRARY_VERSION`。
+
+### 明确不修（避免后人重复踩）
+
+- **0.3.0 / 0.4.0 两个发布节没有 git tag**（tag 序列从 v0.2.1 跳到 v0.5.0），因此也没有 release 链接。这是既成事实：补打历史 tag 属于改写仓库历史，不由门禁代劳。G16 因此以 tag 为事实来源，只要求「有 tag 的必须有链接」。
 
 ## [0.8.1] - 2026-09-24
 
@@ -763,7 +778,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [0.1.0]: https://github.com/openlide/GeomStore/releases/tag/v0.1.0
 [0.1.1]: https://github.com/openlide/GeomStore/releases/tag/v0.1.1
 [0.1.2]: https://github.com/openlide/GeomStore/releases/tag/v0.1.2
+[0.1.3]: https://github.com/openlide/GeomStore/releases/tag/v0.1.3
 [0.2.0]: https://github.com/openlide/GeomStore/releases/tag/v0.2.0
+[0.2.1]: https://github.com/openlide/GeomStore/releases/tag/v0.2.1
 [Unreleased]: https://github.com/openlide/geomstore/compare/v0.8.1...HEAD
 [0.8.1]: https://github.com/openlide/geomstore/releases/tag/v0.8.1
 [0.8.0]: https://github.com/openlide/geomstore/releases/tag/v0.8.0

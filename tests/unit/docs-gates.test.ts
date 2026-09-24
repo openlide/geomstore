@@ -75,6 +75,8 @@ function anchorsOf(rel: string): Set<string> {
 }
 
 const pkg = JSON.parse(read('package.json')) as {
+  // version 是 G16 的事实来源之一（CHANGELOG 的最新发布节要与它一致）
+  version: string
   exports: Record<string, unknown>
   files: string[]
 }
@@ -201,14 +203,28 @@ describe('文档门禁 G6：子路径与 package.json 双向一致', () => {
     expect([...bad]).toEqual([])
   })
 
-  // 反向：新增 exports 却忘了写文档，同样要变红
-  it('exports 声明的每个子路径都在文档里被提到过', () => {
+  // 反向：新增 exports 却忘了写文档，同样要变红。
+  //
+  // 判据从「字符串出现过」收紧到「**被教过**」：原来只查 corpus 里含不含
+  // `@openlide/geomstore/<sub>`，于是一句「本版移除了 X」也能让计数 +1 而门禁放行——
+  // 「被提及」与「被教过」之间那一维正是 compareSnapshots 那个缺陷的同形位置
+  // （那里是「子路径存在」不等于「子路径里有那个名字」，这里是「提到子路径」不等于
+  // 「教了怎么用它」）。收紧到两个可判的**教学信号**：
+  //   ① 有 `from '@openlide/geomstore/<sub>'` 的 import 示范；
+  //   ② 有以该子路径命名的专节（`##`~`####` 标题行里出现它）。
+  // 主入口（`.`）不在此列：它是默认导入路径，满地都是，不构成「有没有文档」的证据。
+  it('exports 声明的每个子路径都被教过（有 import 示范或自己的专节），而非仅被提及', () => {
     const corpus = mdFiles.map(read).join('\n')
-    const missing = exportKeys.filter((k) => {
+    const esc = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const notTaught = exportKeys.filter((k) => {
       const sub = subOf(k)
-      return sub !== '' && !corpus.includes(`@openlide/geomstore/${sub}`)
+      if (sub === '') return false
+      const spec = `@openlide/geomstore/${sub}`
+      const hasImportExample = new RegExp(`from\\s+['"\`]${esc(spec)}['"\`]`).test(corpus)
+      const hasOwnSection = new RegExp(`^#{2,4} .*${esc(sub)}`, 'm').test(corpus)
+      return !hasImportExample && !hasOwnSection
     })
-    expect(missing).toEqual([])
+    expect(notTaught).toEqual([])
   })
 })
 
@@ -273,6 +289,46 @@ describe('文档门禁 G15：文档里的具名导入对真实出口面', () => 
   }
 
   /**
+   * 出口面上每个名字的「值 / 纯类型」分类。
+   *
+   * 存在的理由：G15 判的是「这个名字在不在」，而 `export type { X }` 的 X **在运行时并不存在**。
+   * 文档若用值语法（`import { X }`）去导一个纯类型，在 `verbatimModuleSyntax` /
+   * `isolatedModules` 下消费方直接编译失败，在部分打包器下则变成运行期 undefined——
+   * 两种都不会被「名字存在」这一维拦住。分类看的是符号解析后的 flags 里有没有值位。
+   */
+  const VALUE_FLAGS =
+    ts.SymbolFlags.Function |
+    ts.SymbolFlags.Class |
+    ts.SymbolFlags.Enum |
+    ts.SymbolFlags.EnumMember |
+    ts.SymbolFlags.Variable |
+    ts.SymbolFlags.BlockScopedVariable |
+    ts.SymbolFlags.ValueModule |
+    ts.SymbolFlags.Method |
+    ts.SymbolFlags.GetAccessor |
+    ts.SymbolFlags.SetAccessor |
+    ts.SymbolFlags.Property
+
+  const kindCache = new Map<string, Map<string, boolean>>()
+  const isValueExport = (sub: string, name: string): boolean | undefined => {
+    let kinds = kindCache.get(sub)
+    if (!kinds) {
+      if (!program || !checker) exportsOf(sub) // 触发懒建 program
+      const sf = program!.getSourceFile(sourceEntryOf(sub))
+      const symbol = sf ? checker!.getSymbolAtLocation(sf) : undefined
+      if (!symbol) throw new Error(`源入口不是模块：${sourceEntryOf(sub)}`)
+      kinds = new Map(
+        checker!.getExportsOfModule(symbol).map((s) => {
+          const target = s.flags & ts.SymbolFlags.Alias ? checker!.getAliasedSymbol(s) : s
+          return [s.getName(), (target.flags & VALUE_FLAGS) !== 0] as const
+        }),
+      )
+      kindCache.set(sub, kinds)
+    }
+    return kinds.get(name)
+  }
+
+  /**
    * 抓出「形如 import { … } from '@openlide/geomstore[/sub]'」的具名导入。
    * `[\s\S]*?` 而非 `[^}]*`：多行 import 声明在文档里是常态（prettier 会折行）。
    * 具名清单按逗号切、取 `as` 之前的原始名，并剥掉内联的 `type` 修饰——
@@ -282,24 +338,27 @@ describe('文档门禁 G15：文档里的具名导入对真实出口面', () => 
    * （FAQ 的包体积一节、MIGRATION 的 0.4.0 下沉一节），按定义就不该在今天的出口面上。
    * `+` 侧是当前推荐写法，仍然要判——只豁免删除侧，不豁免整块围栏。
    */
-  const collectDocImports = (): Array<{ file: string; sub: string; name: string }> => {
-    const re = /import\s+(?:type\s+)?\{([\s\S]*?)\}\s*from\s*['"]@openlide\/geomstore((?:\/[^'"]*)?)['"]/g
-    const found: Array<{ file: string; sub: string; name: string }> = []
+  const collectDocImports = (): Array<{ file: string; sub: string; name: string; typeOnlySyntax: boolean }> => {
+    const re = /import\s+(type\s+)?\{([\s\S]*?)\}\s*from\s*['"]@openlide\/geomstore((?:\/[^'"]*)?)['"]/g
+    const found: Array<{ file: string; sub: string; name: string; typeOnlySyntax: boolean }> = []
     for (const file of mdFiles) {
       const src = read(file)
       let m: RegExpExecArray | null
       while ((m = re.exec(src)) !== null) {
         const lineStart = src.lastIndexOf('\n', m.index) + 1
         if (/^\s*-/.test(src.slice(lineStart))) continue
-        const sub = m[2].replace(/^\//, '').replace(/[.,;)\]]+$/, '')
-        for (const raw of m[1].split(',')) {
+        const sub = m[3].replace(/^\//, '').replace(/[.,;)\]]+$/, '')
+        for (const raw of m[2].split(',')) {
           const name = raw
             .trim()
             .replace(/^type\s+/, '')
             .split(/\s+as\s+/)[0]
             .trim()
           // 注释掉的行、占位符与聚合写法不是具名导入的断言对象
-          if (name && /^[A-Za-z_$][\w$]*$/.test(name)) found.push({ file, sub, name })
+          if (name && /^[A-Za-z_$][\w$]*$/.test(name)) {
+            // 「声明处写了 type」与「花括号内联写了 type」都算 type-only 语法
+            found.push({ file, sub, name, typeOnlySyntax: Boolean(m[1]) || /^\s*type\s+/.test(raw) })
+          }
         }
       }
     }
@@ -323,6 +382,23 @@ describe('文档门禁 G15：文档里的具名导入对真实出口面', () => 
     }
 
     expect([...new Set(bad)]).toEqual([])
+  })
+
+  it('纯类型导出必须用 type-only 语法导入（值语法在 verbatimModuleSyntax 下编译失败）', () => {
+    const bad: string[] = []
+    for (const item of collectDocImports()) {
+      if (item.typeOnlySyntax) continue
+      if (isValueExport(item.sub, item.name) === false) {
+        bad.push(`${item.file}：\`${item.name}\` 是纯类型导出，应写成 \`import type { ${item.name} }\`（或内联 \`type ${item.name}\`）`)
+      }
+    }
+    expect([...new Set(bad)]).toEqual([])
+  })
+
+  it('分类口径本身有效：主入口的 Store（类）与 StoreConfig（纯类型）被判成不同种类', () => {
+    // 两道分类断言若整体退化成「都 true」或「都 false」，上面的用例会恒真通过
+    expect(isValueExport('', 'Store')).toBe(true)
+    expect(isValueExport('', 'StoreConfig')).toBe(false)
   })
 
   it('抓取口径本身有效：GUIDE 那条具名 import 确实被解析到了（防止正则悄悄失效）', () => {
@@ -527,5 +603,160 @@ describe('文档门禁 G12：ARCHITECTURE 的目录树与现实一致', () => {
     const src = read('docs/ARCHITECTURE.md')
     const block = /## 3\. 目录结构与职责[\s\S]*?```([^`]*)```/.exec(src)![1]
     expect(block).not.toMatch(/\d+\s*(文件|行)/)
+  })
+})
+
+/**
+ * 文档门禁 G16：CHANGELOG 的发布节与链接区
+ *
+ * 起因是一个**实测过的**漏检：版本号在 CONTRIBUTING 的发版清单里被列为「散在四处」，
+ * 而 r6-f1-02 只钉了其中三处（package.json ↔ hot-update ↔ SKILL.md ×3 ↔ 生成物），
+ * **CHANGELOG 完全不在任何测试的阅读范围内**。实测把四处版本 + 12 份生成物全部改成
+ * 0.9.0、CHANGELOG 故意停在 0.8.1，版本门禁 4 条与文档门禁 68 条全绿——发版说明就这么
+ * 漏出去，没有任何东西会红。链接区同理：`[Unreleased]` 的 compare 基准与新版本的
+ * release 链接都是手工维护，漏一条也不变红。
+ *
+ * 唯一的放行形态：`[Unreleased]` 里有**实质内容**（不是「暂无…」占位）时，
+ * 允许 package.json 领先于最新已发布节——那是「下一版正在写」的正常开发态。
+ * 按本仓库现行流程（版本在发版提交里 bump，如 ae83b4d / 5ffe8a0）这个分支平时不会命中，
+ * 留着是为了不给「提前 bump、先写 notes」的合理做法判死。
+ */
+describe('文档门禁 G16：CHANGELOG 与 package.json 同源', () => {
+  // 工作树 CRLF/LF 都有过，matchAll 用的 ^ $ 必须按 \n 断行，否则整节都匹配不上
+  const changelog = read('CHANGELOG.md').replace(/\r\n/g, '\n')
+  const released = [...changelog.matchAll(/^## \[(\d+\.\d+\.\d+)\] - (\d{4}-\d{2}-\d{2})$/gm)].map((m) => m[1])
+  const linkEntries = new Set([...changelog.matchAll(/^\[(\d+\.\d+\.\d+)\]: \S+$/gm)].map((m) => m[1]))
+  /**
+   * git tag 是「这个版本真的存在过 tag」的事实来源。
+   *
+   * 为什么不用「每个已发布节都要有链接」这条更直白的判据：CHANGELOG 里的 0.3.0 / 0.4.0
+   * 两节**在仓库里没有对应 tag**（tag 序列从 v0.2.1 直接跳到 v0.5.0）。给它们补链接等于
+   * 编一个可能 404 的地址，而事后补打历史 tag 属于改写仓库历史、不在本门禁射程内。
+   * 故判据取「**有 tag 的**发布节要有链接」，外加反向的「每个 tag 都要有链接」——
+   * 后者能抓住新版本打了 tag 却忘了写链接区这种真遗漏。
+   */
+  const gitTags = new Set(
+    execFileSync('git', ['tag'], { cwd: repoRoot, encoding: 'utf8' })
+      .split('\n')
+      .map((t) => t.trim().replace(/^v/, ''))
+      .filter(Boolean),
+  )
+  /** `[Unreleased]` 到下一个 `## ` 之间的正文；空 / 只有「暂无…」占位视为无实质内容 */
+  const unreleasedBody = (() => {
+    const m = /## \[Unreleased\]\n([\s\S]*?)\n## /.exec(changelog)
+    const body = (m?.[1] ?? '').trim()
+    return /^暂无[^\n]*$/.test(body) ? '' : body
+  })()
+
+  it('CHANGELOG 至少有一个已发布节（否则整套判据都在空集上跑）', () => {
+    expect(released.length).toBeGreaterThan(0)
+  })
+
+  it('有 tag 的已发布节都有链接条目，且每个 tag 都有链接条目', () => {
+    const expected = new Set([...released.filter((v) => gitTags.has(v)), ...gitTags])
+    expect([...expected].filter((v) => !linkEntries.has(v))).toEqual([])
+  })
+
+  it('最新已发布节 = package.json 版本（除非 [Unreleased] 已有实质内容，即下一版正在写）', () => {
+    if (unreleasedBody) return // 开发态：notes 已写、版本已提前 bump
+    expect(released[0]).toBe(pkg.version)
+  })
+
+  it('[Unreleased] 的 compare 基准 = 最新已发布版本', () => {
+    const base = /^\[Unreleased\]: \S*\/compare\/v?(\d+\.\d+\.\d+)\.\.\.HEAD$/m.exec(changelog)
+    if (!base) throw new Error('CHANGELOG 的 [Unreleased] 链接区缺失或形状变了（应为 compare/vX.Y.Z...HEAD），请同步本用例')
+    expect(base[1]).toBe(released[0])
+  })
+
+  it('已发布节按版本倒序（新节置顶，CONTRIBUTING 的发版清单要求倒序置顶）', () => {
+    const sorted = [...released].sort((a, b) => {
+      const pa = a.split('.').map(Number)
+      const pb = b.split('.').map(Number)
+      return pb[0] - pa[0] || pb[1] - pa[1] || pb[2] - pa[2]
+    })
+    expect(released).toEqual(sorted)
+  })
+
+  it('[Unreleased] 节不带发布日期（带日期即表示它已发布，语义与发布节重复）', () => {
+    expect(changelog).not.toMatch(/^## \[Unreleased\] - /m)
+  })
+})
+
+/**
+ * 文档门禁 G17：错误码与钩子名对源码
+ *
+ * 与 G15 同一类盲区的另外两个实例：**封闭的字符串清单**（`ErrorCode` 的 21 个成员、
+ * `HookName` 的 9 个字面量）此前没有任何门禁与文档对齐。两边都极易漂：
+ * 源码里改个枚举名或加个钩子，文档照旧，读者照着敲 `ErrorCode.XXX` 得到 undefined。
+ *
+ * 判据两侧都做，方向不同、误报率也不同：
+ * - **正向**（文档 → 源码）：文档里出现的 `ErrorCode.XXX` 必须是真成员。
+ *   形态唯一（探针确认全库只此一种引用写法），零误报。
+ * - **反向**（源码 → 文档）：每个钩子名都必须出现在文档里。小集合、全字面量匹配，
+ *   「加了钩子忘了写文档」当场变红；反向不做错误码是因为 21 个错误码里有一部分是
+ *   内部实现细节、文档不必逐个列，强行要求会把门禁逼成清单复制。
+ * 两个方向都直接从 AST 取（enum 成员 / 字面量联合的类型成员），不靠正则猜源码。
+ */
+describe('文档门禁 G17：错误码与钩子名对源码', () => {
+  const srcFiles = execFileSync('git', ['ls-files', 'src'], { cwd: repoRoot, encoding: 'utf8' })
+    .split('\n')
+    .filter((f) => f.endsWith('.ts'))
+  const corpus = mdFiles.map(read).join('\n')
+
+  /** 从 AST 取 `enum X { A = ..., B = ... }` 的成员名 */
+  const enumMembers = (source: string, enumName: string): string[] => {
+    const out: string[] = []
+    // 闭合行带缩进（源码里是 ` }`），不能要求顶格。
+    // 反斜杠必须双写：模板字符串在**字符串层**就把 `\s` 吃成 `s`（JS 里它不是合法转义），
+    // 单写得到的正则是 `exports+enums+…`，永远匹配不上——正则字面量没这问题，模板字符串有
+    const re = new RegExp(`export\\s+enum\\s+${enumName}\\s*\\{([\\s\\S]*?)\\n\\s*\\}`, 'm')
+    const body = re.exec(source)?.[1]
+    if (!body) throw new RegExp(`找不到 enum ${enumName}，锚点变了请同步本用例`)
+    for (const line of body.split('\n')) {
+      const m = /^\s*([A-Z][A-Z0-9_]*)\s*=/.exec(line)
+      if (m) out.push(m[1])
+    }
+    return out
+  }
+
+  /** 从 AST 取 `type X = 'a' | 'b'` 的字面量成员 */
+  const unionLiterals = (source: string, aliasName: string): string[] => {
+    const re = new RegExp(`export\\s+type\\s+${aliasName}\\s*=([\\s\\S]*?)(?:\\n\\n|\\n/\\*\\*|\\nexport)`, 'm')
+    const body = re.exec(source)?.[1]
+    if (!body) throw new RegExp(`找不到 type ${aliasName}，锚点变了请同步本用例`)
+    return [...body.matchAll(/'([^']+)'/g)].map((m) => m[1])
+  }
+
+  const errorSrc = srcFiles.map((f) => read(f)).find((s) => /export enum ErrorCode/.test(s)) ?? ''
+  const pluginSrc = srcFiles.map((f) => read(f)).find((s) => /export type HookName/.test(s)) ?? ''
+  const errorCodes = enumMembers(errorSrc, 'ErrorCode')
+  const hookNames = unionLiterals(pluginSrc, 'HookName')
+
+  it('枚举 / 联合都取到了非空成员（取空会让下面两道恒真通过）', () => {
+    expect({ errorCodes: errorCodes.length, hookNames: hookNames.length }).toEqual({
+      errorCodes: expect.any(Number),
+      hookNames: expect.any(Number),
+    })
+    expect(errorCodes.length).toBeGreaterThan(10)
+    expect(hookNames.length).toBeGreaterThan(5)
+  })
+
+  it('文档里引用的每个 ErrorCode.XXX 都是真成员', () => {
+    const known = new Set(errorCodes)
+    const bad = new Set<string>()
+    for (const file of mdFiles) {
+      for (const line of read(file).split('\n')) {
+        if (/^\s*-/.test(line)) continue // diff 删除侧是历史写法
+        for (const m of line.matchAll(/ErrorCode\.([A-Z][A-Z0-9_]+)/g)) {
+          if (!known.has(m[1])) bad.add(`${file}：ErrorCode.${m[1]}`)
+        }
+      }
+    }
+    expect([...bad]).toEqual([])
+  })
+
+  it('每个钩子名都在文档里出现过（加了钩子忘了写文档会变红）', () => {
+    const missing = hookNames.filter((h) => !corpus.includes(h))
+    expect(missing).toEqual([])
   })
 })

@@ -971,7 +971,11 @@ describe('企业级方案 - 热更新状态恢复', () => {
       mockStorage[backupKey] = JSON.stringify({
         timestamp: Date.now(),
         state: { userData: { name: 'Legacy', score: 7 } },
-        version: '0.9.0',
+        // 版本样本必须**永远**不等于 LIBRARY_VERSION：此前这里写死 '0.9.0'，
+        // 库一旦真的发到 0.9.0，本用例就会因为「不再构成不一致」而变红，而报错
+        // 指向的是「备份版本告警语义坏了」，与真实原因（夹具撞上了真实版本）完全无关。
+        // 非 semver 字面量是唯一能同时满足「可读」与「不可能撞上 x.y.z」的形状。
+        version: '0.0.0-legacy-fixture',
       })
       mockStorage[`${backupKey}__pending_update_launch`] = JSON.stringify(true)
 
