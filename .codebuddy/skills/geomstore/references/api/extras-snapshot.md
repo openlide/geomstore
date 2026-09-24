@@ -2,7 +2,7 @@
 
 > **本文件由 `scripts/generate-skill-api-reference.mjs` 从 `dist/**/*.d.ts` 生成，请勿手工编辑。**
 >
-> - 来源版本：`@openlide/geomstore@0.8.0`
+> - 来源版本：`@openlide/geomstore@0.8.1`
 > - 内容来源：构建产物类型声明（随 npm 包发布，与安装版本必然一致）
 > - 重新生成：`pnpm build && pnpm skill:api`
 > - 引入路径：`./extras/snapshot`
@@ -420,6 +420,25 @@ export interface SnapshotStats {
     /** 达到最大深度的节点数 */
     maxDepthHits: number;
 }
+```
+
+### `compareSnapshots`
+
+```ts
+/**
+ * 对比两个快照
+ *
+ * 输入契约：`SnapshotResult` 的 `data` 只在 `success: true` 时是完整克隆
+ * （见 types.ts 的「消费前必须先判 success」）。本函数不要求调用方先判，
+ * 而是把这件事落到结果的 {@link SnapshotDiff#inputTrusted} 上——任一侧非 success 时
+ * 不再逐路径比对（两份都失败的 `data` 同为 `undefined`，会短路成「无差异」的假阴性），
+ * 改为交付一条 root 级整体差异并把 `inputTrusted` 置 false
+ *
+ * @param {SnapshotResult<T1>} snapshot1 - 第一个快照
+ * @param {SnapshotResult<T2>} snapshot2 - 第二个快照（支持不同类型）
+ * @returns {SnapshotDiff} 差异结果
+ */
+export declare function compareSnapshots<T1, T2>(snapshot1: SnapshotResult<T1>, snapshot2: SnapshotResult<T2>): SnapshotDiff;
 ```
 
 ### `createSnapshot`

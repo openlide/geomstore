@@ -20,6 +20,7 @@
 import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import path from 'node:path'
+import ts from 'typescript'
 
 const repoRoot = path.resolve(__dirname, '../..')
 const read = (rel: string): string => readFileSync(path.join(repoRoot, rel), 'utf8')
@@ -208,6 +209,134 @@ describe('文档门禁 G6：子路径与 package.json 双向一致', () => {
       return sub !== '' && !corpus.includes(`@openlide/geomstore/${sub}`)
     })
     expect(missing).toEqual([])
+  })
+})
+
+/**
+ * 文档门禁 G15：文档教的具名导入必须真的在出口面上
+ *
+ * 起因是一个已经发出去的真实缺陷：`docs/GUIDE.md` 教
+ * `import { compareSnapshots } from '@openlide/geomstore/extras/snapshot'`，
+ * 而这个名字从未出现在任何子路径的出口面（0.7.0 / 0.8.0 的实际导出都是
+ * `SnapshotManager / createSnapshot / createSnapshotAsync / [default]`）——
+ * 照文档写的代码拿不到它。G6 抓不到，因为那个子路径**确实存在**；缺的正是
+ * 「子路径存在」与「子路径里有这个名字」之间的那一维。
+ *
+ * 判据一律反查事实来源，且取的是**真实出口面**而非某份快照：
+ * - 子路径 → 源入口的映射走 package.json 的 `exports`（`./dist/a/b.js` → `src/a/b.ts`），
+ *   与构建实际使用的映射同一条，不另立一张表；
+ * - 导出名用 TypeScript checker 的 `getExportsOfModule` 取，能穿过 `export *`、
+ *   也能取到**纯类型导出**（`export type { X }` 在运行时不存在，正则或动态 import 都取不到，
+ *   而文档同样可能教 `import type { X }`）。为此付出约 0.8s 的建 program 成本，换两类都判得住；
+ * - 不用 `pnpm skill:api` 的生成物当事实来源：它由 dist 派生，拿它校验文档等于
+ *   「生成器若漏了某个名字，这道门禁也跟着一起漏」，形成自证。
+ *
+ * 覆盖 md 集合沿用 collectMarkdown（README / CONTRIBUTING / docs/** / skill 参考），
+ * 因为同一类漂移在 README 的 6 条 import 上同样成立。
+ */
+describe('文档门禁 G15：文档里的具名导入对真实出口面', () => {
+  /** 子路径（'' 表示主入口）→ 源入口文件的绝对路径 */
+  const sourceEntryOf = (sub: string): string => {
+    const key = sub === '' ? '.' : `./${sub}`
+    const cond = pkg.exports[key]
+    const target = typeof cond === 'string' ? cond : (cond as { default?: string } | undefined)?.default
+    if (typeof target !== 'string') {
+      // G6 已经钉住「文档里的子路径必须在 exports 里」，走到这里说明 exports 自身有洞
+      throw new Error(`exports["${key}"] 的 default 不是字符串（实际 ${JSON.stringify(cond)}），无法定位源入口`)
+    }
+    const rel = target
+      .replace(/^\.\//, '')
+      .replace(/^dist\//, 'src/')
+      .replace(/\.js$/, '.ts')
+    const abs = path.join(repoRoot, rel)
+    if (!existsSync(abs)) throw new Error(`exports["${key}"] 指向 ${target}，但推得的源入口 ${rel} 不存在`)
+    return abs
+  }
+
+  /** 懒建一次 program：枚举 14 个入口也只建一次，模块级缓存给同文件的其它用例复用 */
+  let checker: ts.TypeChecker | null = null
+  let program: ts.Program | null = null
+  const exportsOf = (sub: string): Set<string> => {
+    if (!program || !checker) {
+      const cfg = ts.readConfigFile(path.join(repoRoot, 'tsconfig.build.json'), ts.sys.readFile)
+      if (cfg.error) throw new Error(`tsconfig.build.json 解析失败：${ts.flattenDiagnosticMessageText(cfg.error.messageText, ' ')}`)
+      const parsed = ts.parseJsonConfigFileContent(cfg.config, ts.sys, repoRoot)
+      const entries = exportKeys.map((k) => sourceEntryOf(subOf(k)))
+      program = ts.createProgram(entries, { ...parsed.options, noEmit: true, skipLibCheck: true })
+      checker = program.getTypeChecker()
+    }
+    const sf = program.getSourceFile(sourceEntryOf(sub))
+    if (!sf) throw new Error(`源入口没进 program：${sourceEntryOf(sub)}`)
+    const symbol = checker.getSymbolAtLocation(sf)
+    if (!symbol) throw new Error(`源入口不是模块（拿不到 module symbol）：${sourceEntryOf(sub)}`)
+    return new Set(checker.getExportsOfModule(symbol).map((s) => s.getName()))
+  }
+
+  /**
+   * 抓出「形如 import { … } from '@openlide/geomstore[/sub]'」的具名导入。
+   * `[\s\S]*?` 而非 `[^}]*`：多行 import 声明在文档里是常态（prettier 会折行）。
+   * 具名清单按逗号切、取 `as` 之前的原始名，并剥掉内联的 `type` 修饰——
+   * 文档写 `import { type Foo }` 与 `import type { Foo }` 指的是同一个导出。
+   *
+   * 跳过 ```diff 围栏里以 `-` 开头的**删除侧**：那两处是「此前怎么写」的历史对照
+   * （FAQ 的包体积一节、MIGRATION 的 0.4.0 下沉一节），按定义就不该在今天的出口面上。
+   * `+` 侧是当前推荐写法，仍然要判——只豁免删除侧，不豁免整块围栏。
+   */
+  const collectDocImports = (): Array<{ file: string; sub: string; name: string }> => {
+    const re = /import\s+(?:type\s+)?\{([\s\S]*?)\}\s*from\s*['"]@openlide\/geomstore((?:\/[^'"]*)?)['"]/g
+    const found: Array<{ file: string; sub: string; name: string }> = []
+    for (const file of mdFiles) {
+      const src = read(file)
+      let m: RegExpExecArray | null
+      while ((m = re.exec(src)) !== null) {
+        const lineStart = src.lastIndexOf('\n', m.index) + 1
+        if (/^\s*-/.test(src.slice(lineStart))) continue
+        const sub = m[2].replace(/^\//, '').replace(/[.,;)\]]+$/, '')
+        for (const raw of m[1].split(',')) {
+          const name = raw
+            .trim()
+            .replace(/^type\s+/, '')
+            .split(/\s+as\s+/)[0]
+            .trim()
+          // 注释掉的行、占位符与聚合写法不是具名导入的断言对象
+          if (name && /^[A-Za-z_$][\w$]*$/.test(name)) found.push({ file, sub, name })
+        }
+      }
+    }
+    return found
+  }
+
+  it('文档教的每个具名导入都在对应子路径的出口面上（值与类型都算）', () => {
+    const imports = collectDocImports()
+    // 没有抓到任何导入 = 正则失效了，那本身就是要变红的（否则本用例恒真通过）
+    expect(imports.length).toBeGreaterThan(0)
+
+    const surfaceCache = new Map<string, Set<string>>()
+    const bad: string[] = []
+    for (const item of imports) {
+      let surface = surfaceCache.get(item.sub)
+      if (!surface) {
+        surface = exportsOf(item.sub)
+        surfaceCache.set(item.sub, surface)
+      }
+      if (!surface.has(item.name)) bad.push(`${item.file}：\`${item.name}\` 不在 @openlide/geomstore${item.sub ? `/${item.sub}` : ''} 的出口面上`)
+    }
+
+    expect([...new Set(bad)]).toEqual([])
+  })
+
+  it('抓取口径本身有效：GUIDE 那条具名 import 确实被解析到了（防止正则悄悄失效）', () => {
+    const imports = collectDocImports()
+    const guide = imports.filter((i) => i.file === 'docs/GUIDE.md' && i.sub === 'extras/snapshot')
+
+    // 这条正是 G15 的起因：文档教它、它此前不在出口面上，修好后必须仍然被抓到（证明在判、不豁免）
+    expect(guide.map((i) => i.name)).toEqual(expect.arrayContaining(['createSnapshot', 'compareSnapshots']))
+  })
+
+  it('每个 exports 子路径都能推得源入口（映射一旦断掉，上面两道会集体空转）', () => {
+    const mapped = exportKeys.map((k) => sourceEntryOf(subOf(k)))
+
+    expect(new Set(mapped).size).toBe(exportKeys.length)
   })
 })
 
