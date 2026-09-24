@@ -63,6 +63,28 @@ function normalizeDelay(value: number | undefined, fallback: number): number {
   return Number.isFinite(ms) && ms > 0 ? ms : 0
 }
 
+/**
+ * 剔掉显式为 `undefined` 的成员，再交给展开运算合并
+ *
+ * `{ ...defaults, ...options }` 会让「键存在但值为 undefined」击穿默认值：`tsconfig`
+ * 未开 `exactOptionalPropertyTypes`，`createSnapshot(data, { onError: undefined })`
+ * 完全合法，合出来的 `opts.onError` 却是 undefined，克隆出错时那句 `options.onError(...)`
+ * 于是抛 `TypeError: options.onError is not a function`，把真正的克隆错误盖掉；
+ * `customCloner: undefined` 更狠——每个对象节点都落进 cloneError。
+ * 「显式 undefined」在任何一条配置路径上都没有可用的语义（要禁用回调请传一个空实现），
+ * 故统一按「未提供」处理，与本文件既有的 `options.x ?? this.defaultOptions.x` 口径一致
+ */
+function withoutUndefined<T extends object>(source: T): Partial<T> {
+  const out: Partial<T> = {}
+  for (const key of Object.keys(source) as Array<keyof T>) {
+    const value = source[key]
+    if (value !== undefined) {
+      out[key] = value
+    }
+  }
+  return out
+}
+
 // ==================== 快照管理器 ====================
 
 /**
@@ -105,7 +127,7 @@ export class SnapshotManager {
       batchSize: DEFAULT_BATCH_SIZE,
       onProgress: () => {},
       onError: () => true,
-      ...options,
+      ...withoutUndefined(options),
     }
     // 兜底值本身必须先合法：createSnapshotAsync 在调用方传非法 batchSize 时回落到这里，
     // 构造期传 0/NaN/负数若原样留着，守卫就会把一个非法值当作「安全默认值」发出去
@@ -126,7 +148,7 @@ export class SnapshotManager {
    * ```
    */
   createSnapshot<T>(data: T, options: SnapshotOptions = {}): SnapshotResult<T> {
-    const opts = { ...this.defaultOptions, ...options }
+    const opts = { ...this.defaultOptions, ...withoutUndefined(options) }
     const startTime = Date.now()
     const id = this.generateSnapshotId()
 
@@ -225,7 +247,7 @@ export class SnapshotManager {
   async createSnapshotAsync<T>(data: T, options: Partial<AsyncSnapshotOptions> = {}): Promise<SnapshotResult<T>> {
     const opts: Required<AsyncSnapshotOptions> = {
       ...this.defaultOptions,
-      ...options,
+      ...withoutUndefined(options),
       async: true,
       // batchSize 守卫对**合并后**的值生效：只校验 options.batchSize 会让构造期传入的
       // 非法值经由回落分支绕过守卫。batchInterval / timeout 另走 normalizeDelay，

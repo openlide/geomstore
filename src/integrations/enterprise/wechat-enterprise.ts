@@ -6,7 +6,8 @@
  * - Store 管理器（账号切换 / LRU 清理）
  * - 热更新状态恢复
  * - 离线操作队列（支持 dispose 释放网络监听、syncQueue 互斥）
- * - 后台/前台状态同步（App.prototype 仅包装一次，多实例共享注册表）
+ * - 后台/前台状态同步（改写 App.prototype 既不触发生命周期钩子、也链不到用户回调，
+ *   故替换全局 App 构造器来拦截 options.onShow/onHide；仅包装一次，多实例共享注册表）
  */
 
 import type { Store, State } from '../../types/store.js'
@@ -57,12 +58,13 @@ export { initBackgroundSync, unregisterBackgroundSync } from './background-sync.
  * 据队列长度弹出的 loading 会在网络恢复回调那一轮仍在跑时被提前收起，
  * 两次 showLoading/hideLoading 抢同一个全局 toast（用户看到「转圈一闪就没、队列还在」）。
  *
- * 做法：覆写 `syncQueue()` 把基类的私有状态转成可查询信号。基类 344 行的网络恢复回调
- * 调的同样是实例方法（动态派发），所以那一轮也计入本计数；对基类「已释放/队列为空」的
+ * 做法：覆写 `syncQueue()` 把基类的私有状态转成可查询信号。基类 `initNetworkListener` 注册的
+ * `networkHandler` 里「离线→在线」那一支（`wasOffline && this.isOnline`）调的同样是实例方法
+ * （动态派发，故本覆写对它生效），所以那一轮也计入本计数；对基类「已释放/队列为空」的
  * 早退分支，本计数只在一个宏任务内为真，不会让 onShow 误跳过真正需要的同步。
  *
- * 一旦 `OfflineManager` 自己暴露 `isSyncing()`（当前 offline.ts 属另一分片），
- * 本类应整体删除、改读基类实现，保持单一事实来源
+ * 一旦 `OfflineManager` 自己暴露 `isSyncing()`，本类应整体删除、改读基类实现，
+ * 保持单一事实来源
  */
 class SyncAwareOfflineManager<S extends State> extends OfflineManager<S> {
   /** 在途轮次标记：>0 表示有一轮 syncQueue 正在跑（含基类网络恢复回调自行发起的那轮） */

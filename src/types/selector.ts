@@ -142,13 +142,25 @@ export interface SelectorComposerInput<
 }
 
 /**
- * 参数化选择器
+ * 参数化选择器的**入参**函数形态：`(state, params) => R`
  *
  * 泛型默认值与同族的 `Selector`（`S = Record<string, unknown>`）、`SelectorComposerInput` 对齐：
  * 此前 `S`/`P`/`R` 全部必填，未typed 场景要写满 `ParametricSelector<Record<string, unknown>, unknown, unknown>`，
  * 与公开面上其它选择器类型的口径不一致。补默认值只是放宽「可省略」，显式传参的既有用法不受影响。
+ *
+ * 它描述的是 `createParametricSelector` 的**入参**，不是该工厂的返回值——工厂先把 state
+ * 绑上去、返回 `(params: P) => R`，那一形态见 {@link ParametricSelectorFactory}。
+ * 两者混用会让使用者拿本类型标注工厂返回值时编译失败
  */
 export type ParametricSelector<S extends State = Record<string, unknown>, P = unknown, R = unknown> = (state: S, params: P) => R
+
+/**
+ * 参数化选择器工厂的**返回值**形态：先绑 state、再按参数求值
+ *
+ * 即 `createParametricSelector(selectorFn)` 的返回类型。该形态此前没有任何导出名字，
+ * 使用者想标注它只能手写 `(state: S) => (params: P) => R`
+ */
+export type ParametricSelectorFactory<S extends State = Record<string, unknown>, P = unknown, R = unknown> = (state: S) => (params: P) => R
 
 /**
  * 选择器结果类型

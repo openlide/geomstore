@@ -116,10 +116,41 @@ export function isSlotBearingBuiltin(value: unknown): boolean {
   return SLOT_BEARING_TAGS.has(Object.prototype.toString.call(value).slice(8, -1))
 }
 
-/** 数组的规范下标键（'0'、'1'…）：这类键由下标循环负责，附加属性循环需跳过 */
+/**
+ * 数组的规范下标键（'0'、'1'…）：这类键由下标循环负责，附加属性循环需跳过
+ *
+ * 上界 2^32-2 是规范里的最大合法数组下标（2^32-1 是 length 的哨兵值，不是下标）。
+ * 少了它，`a[4294967295] = 'x'` 会被当成下标交给下标循环——而循环只走到
+ * `value.length`，该属性既没被下标循环复制、又被附加属性循环跳过，
+ * 于是在克隆产物里静默消失
+ */
 export function isIndexKey(key: string): boolean {
   const index = Number(key)
-  return Number.isInteger(index) && index >= 0 && String(index) === key
+  return Number.isInteger(index) && index >= 0 && index < 2 ** 32 - 1 && String(index) === key
+}
+
+/**
+ * 对象自有可枚举键（字符串键 + 符号键）
+ *
+ * 不能用 `Object.keys`：它只给字符串键，符号键会被整条漏掉——而 Store 的写入链路
+ * （setState / $patch / 脏键表）本就接受符号键，只在克隆、合并与遍历这几步用 Object.keys
+ * 的话，符号键会「写进去了却没被克隆/合并/标脏」，退化成静默半途而废：
+ * 最直观的一处是通知载荷——可写订阅者拿到的深拷贝里没有符号键，
+ * 值在 `getState()` 里读得到、在通知里读不到。
+ * 过滤不可枚举键，与 `Object.keys` 的口径一致（Object.assign / 展开也只搬可枚举自有键）
+ *
+ * 住在 clone.ts 而不是 helpers.ts：本模块是依赖链的叶子（helpers 反过来依赖它），
+ * 判据族（isIndexKey / isSlotBearingBuiltin）也都在这一侧。
+ */
+export function ownEnumerableKeys(target: object): Array<string | symbol> {
+  // Object.keys 已只给「自有可枚举字符串键」，符号键另取再按可枚举性过滤（两者拼起来的
+  // 集合与 Reflect.ownKeys + 过滤逐项相同）。不用 Reflect.ownKeys 是因为它把不可枚举键
+  // 也一并物化，而这里的调用方在热路径上（deepCloneState 的每个节点、deepMerge 的每层遍历）
+  const symbols = Object.getOwnPropertySymbols(target)
+  if (symbols.length === 0) {
+    return Object.keys(target)
+  }
+  return [...Object.keys(target), ...symbols.filter((symbol) => Object.prototype.propertyIsEnumerable.call(target, symbol))]
 }
 
 /**
@@ -129,11 +160,12 @@ export function isIndexKey(key: string): boolean {
  * 注入的属性反而变成继承属性（deepMerge 的 defineProperty 防护也会因此失效）。
  * defineProperty 只定义自有数据属性，可安全承载任意键名。
  */
-function assignOwn(target: object, key: string, value: unknown): void {
+function assignOwn(target: object, key: string | symbol, value: unknown): void {
+  // 符号键不可能与原型链上的 accessor 同名，`__proto__` 这条防护只对字符串键有意义
   if (key === '__proto__') {
     Object.defineProperty(target, key, { value, writable: true, enumerable: true, configurable: true })
   } else {
-    const slot = target as Record<string, unknown>
+    const slot = target as Record<PropertyKey, unknown>
     slot[key] = value
   }
 }
@@ -196,10 +228,12 @@ function fallbackClone<T>(value: T, seen?: WeakMap<object, unknown>): T {
     }
     // 非下标的自有可枚举属性（`arr.meta = ...`）：deepEqual 比的是 Object.keys 键集，
     // 整体丢弃既是数据丢失也让副本与源恒不等。键数为 n 的数组多一趟 O(n) 遍历，
-    // 换来的是「克隆与源在比较器下等价」这条被选择器/快照依赖的不变量
-    for (const key of Object.keys(value as object)) {
-      if (!isIndexKey(key)) {
-        assignOwn(arr, key, fallbackClone((value as Record<string, unknown>)[key], visited))
+    // 换来的是「克隆与源在比较器下等价」这条被选择器/快照依赖的不变量。
+    // 键集取 ownEnumerableKeys 而非 Object.keys：符号键同样是「非下标自有键」，
+    // 漏掉它会让写进去的符号值在可写订阅者的载荷里凭空消失
+    for (const key of ownEnumerableKeys(value as object)) {
+      if (typeof key === 'string' && !isIndexKey(key)) {
+        assignOwn(arr, key, fallbackClone((value as Record<PropertyKey, unknown>)[key], visited))
       }
     }
     return arr as unknown as T
@@ -213,12 +247,14 @@ function fallbackClone<T>(value: T, seen?: WeakMap<object, unknown>): T {
 
   // 克隆进同类原型：Object.create(null) 的状态映射若克隆成 {}，副本会白得一份
   // Object.prototype（'toString' in clone / clone.hasOwnProperty 行为与源不一致）
-  const obj = Object.create(proto) as Record<string, unknown>
+  const obj = Object.create(proto) as Record<PropertyKey, unknown>
   visited.set(value as object, obj)
-  const keys = Object.keys(value as object)
+  // 键集含符号键：通知载荷、可写订阅者的深拷贝都走这里，只认字符串键的话
+  // 写进状态的符号值会在订阅者手里凭空消失（值在 getState() 里读得到、通知里读不到）
+  const keys = ownEnumerableKeys(value as object)
   for (let i = 0; i < keys.length; i++) {
     const key = keys[i]
-    assignOwn(obj, key, fallbackClone((value as Record<string, unknown>)[key], visited))
+    assignOwn(obj, key, fallbackClone((value as Record<PropertyKey, unknown>)[key], visited))
   }
   return obj as T
 }

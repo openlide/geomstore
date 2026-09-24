@@ -2,7 +2,7 @@
 
 > **本文件由 `scripts/generate-skill-api-reference.mjs` 从 `dist/**/*.d.ts` 生成，请勿手工编辑。**
 >
-> - 来源版本：`@openlide/geomstore@0.7.0`
+> - 来源版本：`@openlide/geomstore@0.8.0`
 > - 内容来源：构建产物类型声明（随 npm 包发布，与安装版本必然一致）
 > - 重新生成：`pnpm build && pnpm skill:api`
 > - 引入路径：`./core`
@@ -14,6 +14,7 @@
 - `ActionNames`
 - `Actions`
 - `AppOptions`
+- `AppThis`
 - `CacheOptions`
 - `CacheStats`
 - `CloneMode`
@@ -22,6 +23,7 @@
 - `ComponentThis`
 - `ComposeOptions`
 - `ComposedStore`
+- `ConfigState`
 - `ConnectOptions`
 - `ExtractPageData`
 - `Getters`
@@ -44,6 +46,7 @@
 - `State`
 - `StateListener`
 - `Store`
+- `StoreConfig`
 - `StoreOptions`
 - `StoreRegistry`
 - `StoreTreeNode`

@@ -34,11 +34,18 @@ type JsonBody = string & { readonly __jsonBodyBrand: 'JsonBody' }
  * HttpReporter 构造配置：标准 RequestInit 之外增加 `timeout`。
  *
  * fetch 规范无请求超时字段，小程序 wx.request 却有原生 `timeout`；不显式建模的话
- * 调用方只能靠 as 断言传入、且 wx 分支透传与否无从谈起。非小程序环境下 timeout
- * 作为未知键随 `{ ...options }` 进入 fetch 初始化并被忽略，无副作用
+ * 调用方只能靠 as 断言传入、且 wx 分支透传与否无从谈起。fetch 分支由本实现翻译成
+ * AbortController 中止（见 `createTimeoutSignal`），不再是「传了也没人管」的未知键
  */
 export interface HttpReporterOptions extends RequestInit {
-  /** 请求超时毫秒数（仅 wx.request 分支生效；fetch 分支请用 AbortController/外部实现） */
+  /**
+   * 请求超时毫秒数（两条默认请求路径均生效；`<= 0` 表示不超时）
+   *
+   * 未配置时 fetch 分支取 {@link DEFAULT_FETCH_TIMEOUT_MS}，与 ErrorMonitoring 的
+   * `reportTimeout` 默认值同口径：监控层超时只会放行 flush 并重入队批次，**不会**取消
+   * 底层请求（`Promise.race` 不终止输掉竞速的任务），故请求自身必须能真正结束，
+   * 否则一次超时会变成「同一批错误再投一次」的重复投递
+   */
   timeout?: number
 }
 
@@ -53,6 +60,88 @@ export type HttpRequestImpl = (url: string, body: string, method: string, header
 
 /** JSON 请求体的默认 content-type：body 恒为 JSON 文本，未显式配置时按此声明 */
 const JSON_CONTENT_TYPE = 'application/json'
+
+/**
+ * fetch 分支的默认请求超时，与 ErrorMonitoring 的 `reportTimeout` 默认值（10s）同口径
+ *
+ * 取同一数值不是为了「两层计时器对齐」，而是为了让两层在默认配置下先后落在同一刻：
+ * 内层真正中止请求，外层判定超时并把批次留给下一轮重试，语义才自洽
+ */
+const DEFAULT_FETCH_TIMEOUT_MS = 10_000
+
+/**
+ * 为 fetch 拼出一个「到点真的会中止请求」的 signal
+ *
+ * fetch 规范没有 `timeout` 字段，原实现把 `options` 整个展开进 `RequestInit`，
+ * `timeout` 作为未知键被静默忽略，请求没有任何中止路径：服务端接受连接却不响应时
+ * 该 Promise 永久挂起，监控层每轮 flush 再挂一个，且超时后重入队的批次会在原请求
+ * 迟到落地时造成重复投递。故这里用 AbortController 把超时翻译成真正的中止。
+ *
+ * 三条降级路径，保证「拿不到 AbortController」时退化成改动前的行为而不是抛错：
+ * - 无 AbortController（极老运行时）：不设 signal，仅透传调用方的 signal；
+ * - `timeout <= 0`：调用方显式要「不超时」，不起定时器；
+ * - 调用方自带 `signal`：两条中止路径合并（任一中止即中止），取消时摘掉监听器，
+ *   不在调用方的 signal 上留悬挂监听。
+ */
+function createTimeoutSignal(
+  timeoutMs: number,
+  externalSignal: AbortSignal | null | undefined,
+): { signal: AbortSignal | null | undefined; cancel: () => void; didTimeout: () => boolean; effectiveTimeout: number } {
+  if (typeof AbortController === 'undefined') {
+    return { signal: externalSignal, cancel: () => {}, didTimeout: () => false, effectiveTimeout: timeoutMs }
+  }
+
+  // 非有限值必须先归一，否则这个函数会精确地退回它要修的那个 bug：
+  // - `NaN > 0` 为 false → 定时器根本不起，挂起请求永远不结束（= 改动前）；
+  // - `Infinity > 0` 为 true → setTimeout 按规范把 Infinity 钳到 1ms，
+  //   于是每次上报都在 ~1ms 后自我中止，批次被反复重入队直到按 maxFlushRetries 丢弃。
+  // 配置常来自 parseInt(untrustedConfig) 一类输入，NaN 并不罕见；本仓库的容量类
+  // 入参（normalizeCapacity / normalizeMaxRetries / setMaxLogSize）都有同一道守卫。
+  const effectiveTimeout = Number.isFinite(timeoutMs) ? timeoutMs : DEFAULT_FETCH_TIMEOUT_MS
+
+  const controller = new AbortController()
+  let timedOut = false
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let detachExternal: (() => void) | undefined
+
+  if (externalSignal) {
+    if (externalSignal.aborted) {
+      controller.abort(externalSignal.reason)
+    } else {
+      const onExternalAbort = (): void => controller.abort(externalSignal.reason)
+      externalSignal.addEventListener('abort', onExternalAbort)
+      detachExternal = () => externalSignal.removeEventListener('abort', onExternalAbort)
+    }
+  }
+
+  if (effectiveTimeout > 0) {
+    timer = setTimeout(() => {
+      timedOut = true
+      controller.abort(new Error(`HTTP report request timed out after ${effectiveTimeout}ms`))
+    }, effectiveTimeout)
+    // 与 ErrorMonitoring.delay 同口径：超时定时器不应拖住 Node 进程/测试 worker 退出
+    const timerWithUnref = timer as unknown as { unref?: () => void }
+    if (typeof timerWithUnref.unref === 'function') {
+      timerWithUnref.unref()
+    }
+  }
+
+  return {
+    signal: controller.signal,
+    didTimeout: () => timedOut,
+    // 实际生效的值（含归一结果）：调用方拼超时文案必须用它，
+    // 否则会出现「文案写 NaNms、实际按 10s 中止」这种对不上的错报
+    effectiveTimeout,
+    cancel: () => {
+      if (timer !== undefined) {
+        clearTimeout(timer)
+        timer = undefined
+      }
+      detachExternal?.()
+      detachExternal = undefined
+    },
+  }
+}
 
 /**
  * 补上 JSON 内容类型（调用方已自带时原样保留）
@@ -182,7 +271,9 @@ function toWxRequestError(err: unknown): Error {
  *
  * 环境能力差异：wx.request 无 credentials/mode/keepalive 等概念（cookie 由平台
  * 自动携带），故 wx 分支仅生效 method/header/data/timeout，其余 RequestInit 字段
- * 被忽略；fetch 分支透传完整 RequestInit。需要精确控制请求行为时注入自定义 requestImpl。
+ * 被忽略；fetch 分支透传完整 RequestInit，并把 `timeout` 翻译为 AbortController 中止
+ * （fetch 本身不认这个字段）。需要精确控制请求行为时注入自定义 requestImpl——
+ * 此时中止语义由注入实现负责，见 {@link HttpReporterOptions} 的 timeout 说明。
  *
  * @param options - 构造函数传入的 {@link HttpReporterOptions} 配置
  */
@@ -197,9 +288,12 @@ function createDefaultRequest(options: HttpReporterOptions): HttpRequestImpl {
           method: method as 'POST',
           header: withJsonContentType(headers),
           // 透传 timeout：缺 timeout 的挂起请求只能靠监控层 race 释放 flush，
-          // wx.request 本体永不终止（泄漏平台请求资源）；未配置时不加键，
-          // 保持既有调用形态
-          ...(options.timeout !== undefined ? { timeout: options.timeout } : {}),
+          // wx.request 本体永不终止（泄漏平台请求资源）；未配置时不加键，保持既有调用形态。
+          // 注意这里**没有** fetch 分支那样的默认值：wx.request 的 timeout 是平台原生字段，
+          // 平台自身另有默认上限（小程序侧通常 60s 量级），由平台兜底即可；
+          // 需要与 fetch 分支同口径（默认 10s）请显式传 timeout。
+          // 非有限值同样归一——Infinity 会被平台/宿主钳成极短值，NaN 的行为未定义
+          ...(options.timeout !== undefined ? { timeout: Number.isFinite(options.timeout) ? options.timeout : DEFAULT_FETCH_TIMEOUT_MS } : {}),
           // body 恒为 buildRequestBody 产出的 JSON 文本（JsonBody 品牌），字符串
           // 原样发送即可，无需 parse 后让 wx 再序列化一次
           data: body,
@@ -221,13 +315,38 @@ function createDefaultRequest(options: HttpReporterOptions): HttpRequestImpl {
 
   return async (url, body, method, headers) => {
     // 透传全部 RequestInit 配置；method/headers/body 以归一化后的上报参数为准。
-    // 必须校验 ok：fetch 对 4xx/5xx 不 reject，不校验会把服务端拒绝当作上报成功
-    const response = (await fetch(url, { ...options, method, headers: withJsonContentType(headers), body })) as unknown as {
-      ok: boolean
-      status: number
-    }
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`)
+    // signal 必须排在展开之后：既覆盖调用方可能给出的同名字段，也与 createTimeoutSignal
+    // 合并了外部 signal 的中止语义。必须校验 ok：fetch 对 4xx/5xx 不 reject，
+    // 不校验会把服务端拒绝当作上报成功
+    const timeoutSignal = createTimeoutSignal(options.timeout ?? DEFAULT_FETCH_TIMEOUT_MS, options.signal)
+    try {
+      const response = (await fetch(url, {
+        ...options,
+        signal: timeoutSignal.signal,
+        method,
+        headers: withJsonContentType(headers),
+        body,
+      })) as unknown as {
+        ok: boolean
+        status: number
+      }
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`)
+      }
+    } catch (error) {
+      // fetch 的中止 rejection 是无信息的 DOMException（"The operation was aborted"），
+      // 换成本次超时值：监控层只能拿到 Error 消息，分类与排障全靠它。
+      // cause 用属性赋值补（target/lib 为 ES2020，Error 构造器无 cause 选项签名），
+      // 与本文件 toWxRequestError 同一做法
+      if (timeoutSignal.didTimeout()) {
+        const timeoutError = new Error(`HTTP report request timed out after ${timeoutSignal.effectiveTimeout}ms`)
+        ;(timeoutError as Error & { cause?: unknown }).cause = error
+        throw timeoutError
+      }
+      throw error
+    } finally {
+      // 请求先落地时清掉未到期的超时定时器与外部 signal 监听，否则每次上报都残留一份
+      timeoutSignal.cancel()
     }
   }
 }

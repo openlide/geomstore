@@ -651,9 +651,14 @@ export class ActionLoader {
     })
     const keysChanged = [this.options.loadingKey, this.options.errorKey, this.options.errorDataKey, this.options.perActionKeys].join('|') !== previousKeys
 
-    // 中途切换 autoLoading、或改任何一个状态键名，都会让进行中的调用「按旧键 increment、
-    // 按新键 decrement」：旧键的计数/错误条目既等不到归零写入，新键又走 `?? 1` 兜底，
-    // 结果旧键在 store 里永久停在 true。故两种情况都先给旧键补写复位值，再丢弃旧记账。
+    // 中途切换 autoLoading、或改任何一个状态键名，都让「按旧键已记账」的在飞调用失去归宿。
+    // 这里靠 `captureCallScope` 的快照 + 代际机制兜住，而不是靠键兜底：
+    // 每个调用在 `captureCallScope` 时把当时的键与 generation 一起快照，进行中的调用
+    // 全程只认这份旧快照。故 setOptions 先 `resetDerivedState()` 给仍在计数中的**旧键**
+    // 补写 false，再 `clearInternalRecords()` 丢弃旧记账并把 generation 自增——在飞调用
+    // 结算时 `settleCall` 见代际不符直接返回，既不会拿新键 decrement、也不会往新键写错误。
+    // 旧键的归零与新键的干净都由这两步保证，不依赖 `decrementLoading` 的 `?? 1` 兜底
+    // （该兜底早已移除，键缺失时现在直接 return）。
     // 代价：切换瞬间进行中的调用不再参与计数（切换本身即行为变更点）
     if (keysChanged || previousAutoLoading !== this.options.autoLoading) {
       this.resetDerivedState()

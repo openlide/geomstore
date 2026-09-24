@@ -56,7 +56,7 @@ const diff = new SnapshotManager().compareSnapshots(result, createSnapshot(next)
 
 它们与活状态是**同一个对象**：改 `snap.data.myMap` 会串回活状态，「快照即隔离」对这批值不成立。要真副本请自行 `slice(0)` / 结构化克隆，或用 `customCloner`——**`customCloner` 是宿主对象的唯一兜底出口**：没有内建 tag、状态又不在自有可枚举属性上的宿主对象（自定义 native 包装、部分 `wx` 返回值）引擎识别不到，会被重建成 `instanceof` 仍真却缺内部槽位的空壳。类实例仍按既有契约重建为**同类实例**（方法 / 继承链可用）。
 
-**两条同口径修正**：数组上的**附加自有键**（`arr.meta = 'v2'`）会被克隆；`includeNonEnumerable: true` 带进来的属性在产物里一律 `enumerable: true`（否则它不进 `Object.keys` / `JSON.stringify` / diff 键集，等于没有这个选项）。
+**两条同口径修正**：数组上的**附加自有键**（`arr.meta = 'v2'`）会被克隆，并且**参与差异比较**（`root.list.meta` 路径）；`includeNonEnumerable: true` 带进来的属性在产物里一律 `enumerable: true`（否则它不进 `Object.keys` / `JSON.stringify` / diff 键集，等于没有这个选项）。
 
 **与 Store 自身快照的区别**：`store.$snapshot()` 是深克隆 + 冻结纯对象 / 数组链（Date / RegExp / Map / Set 触达的节点仍可变），`store.$restore(snap)` 经 `$replaceState` 恢复、不重复深拷贝。
 
@@ -72,12 +72,13 @@ const diff = new SnapshotManager().compareSnapshots(result, createSnapshot(next)
 
 **差异路径**（`changes[].path`，与克隆账本 `errors[].path` 逐字一致）：
 
-| 容器  | 值差异                | 键 / 条目的增删                                                                                 |
-| ----- | --------------------- | ----------------------------------------------------------------------------------------------- |
-| `Map` | `root[<String(key)>]` | `root.key[<String(key)>]`（按键身份，可当条目身份用）                                           |
-| `Set` | —                     | `[removed:i]` / `[added:i]`（**报告序下标、不是身份**，跨快照配对请读 `oldValue` / `newValue`） |
+| 容器             | 值差异                          | 键 / 条目的增删                                                                                 |
+| ---------------- | ------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `Map`            | `root[<String(key)>]`           | `root.key[<String(key)>]`（按键身份，可当条目身份用）                                           |
+| `Set`            | —                               | `[removed:i]` / `[added:i]`（**报告序下标、不是身份**，跨快照配对请读 `oldValue` / `newValue`） |
+| 数组的附加自有键 | `root.list.version`（`.` 连接） | `added` / `removed`，与普通对象键同形                                                           |
 
-`Symbol` 键走 `String()`，`toString` 抛错的键退回 `<unstringifiable key>`。Date / RegExp / Map / Set / 装箱原始值按**内容**比较（`new Number(1)` vs `new Number(2)` 报 `changed: true`；同一引用仍短路）。
+`Symbol` 键走 `String()`，`toString` 抛错的键退回 `<unstringifiable key>`。Date / RegExp / Map / Set / 装箱原始值按**内容**比较（`new Number(1)` vs `new Number(2)` 报 `changed: true`；同一引用仍短路）。**其余住在内部槽位的值按引用比较**——`ArrayBuffer` / TypedArray / `DataView` / `Promise` / `WeakMap` / `WeakSet` / `Error` 在克隆时本就保留原引用（内容比不出来，引用是唯一可得的信号），换一个实例即记一次差异；同一实例被原地改字节则无从分辨，不报差异。
 
 ## 2. 选择器（`extras/selector`）
 
@@ -185,6 +186,8 @@ boundary.execute(() => riskyOperation()) // 未给 fallback 时默认 fail-loud�
 ### 报告器
 
 `reporters` 传非数组时 `report()` 不 reject，退回无报告器并 `console.warn` 留痕；`new ErrorMonitoring({ reporters: arr })` 之后库**不修改**调用方那个数组；批量 flush 对每个 reporter 做 `ok / fail / timeout` 三态判定（仅真正 resolve 才算成功）；容量类入参被下限裁剪（`maxQueueSize` 最小 1 默认 1000、`maxFlushRetries` 最小 0 默认 3）。`getGroups()` / `addError()` / `generateReport()` 交出的都是**副本**。`HttpReporter` 自动选择 `wx.request`（校验 `statusCode`）或 `fetch`（校验 `ok`），可注入自定义实现。
+
+**到点结束的方式两条路径不同**：`fetch` 规范没有 `timeout` 字段，由本实现翻译成 `AbortController` 中止，**缺省 10s**（与 `reportTimeout` 同口径），`<= 0` 表示不超时，并与调用方自带的 `signal` 合并（任一中止即中止；请求先落地时清掉定时器与外部监听器）。`wx.request` 走平台原生 `timeout`，**本库不注入默认值**（未配置时不加该键，由平台自身的请求上限兜底）——要与 fetch 侧同口径请显式传 timeout。两条路径都会把 `NaN` / `Infinity` 归一到默认 10s：`Infinity` 会被 `setTimeout` 钳成 1ms（每次上报瞬间自我中止），`NaN` 则让定时器根本不起（挂起请求永不结束）。**为什么必须能中止**：flush 层的 `reportTimeout` 只是 `Promise.race`，只放行 flush 而不终止输掉竞速的请求——底层请求若仍在飞，超时后重入队的批次就会与迟到落地的那次投递撞成重复上报。注入自定义 `ErrorReporter` 时可取消性由注入实现负责。
 
 ## 5. 性能监控（`extras/performance`）
 

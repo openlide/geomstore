@@ -46,6 +46,17 @@ export function isAsyncFunction(fn: unknown): boolean {
 }
 
 /**
+ * 宿主能否作为 WeakMap 键（对象/函数且非 null）。
+ *
+ * 装饰器族判定「`this` 能否跨调用持久化状态」的统一依据：宿主不可跟踪时三者一律降级
+ * 而不是抛错（节流直接放行、防抖各自定时、缓存一次性 Map），公开收尾入口对这种宿主
+ * 则是 no-op。由 withThrottle / withDebounce 等共用，避免各文件重复定义同一判据。
+ */
+export function isTrackableHost(host: unknown): host is object {
+  return (typeof host === 'object' || typeof host === 'function') && host !== null
+}
+
+/**
  * 装饰器选项
  *
  * @remarks 三个回调都可以写成 `async`（TS 允许 async 函数满足 `=> void` 签名）：
@@ -122,14 +133,15 @@ export function isThenable(value: unknown): value is PromiseLike<unknown> {
  * ```
  */
 export function createDecorator(options: DecoratorOptions = {}): MethodDecorator {
-  return function (_target: unknown, _propertyKey: string | symbol, descriptor: PropertyDescriptor): PropertyDescriptor {
-    const originalMethod = descriptor.value
-
-    // 访问器描述符（get/set）或 value 非函数：装饰无意义，早失败优于运行时
-    // `originalMethod.apply is not a function`
-    if (typeof originalMethod !== 'function') {
+  return function (_target: unknown, _propertyKey: string | symbol, descriptor: PropertyDescriptor | undefined): PropertyDescriptor {
+    // 访问器描述符（get/set）或 value 非函数：装饰无意义，早失败优于运行时的
+    // `originalMethod.apply is not a function`；descriptor 本身为 undefined 是旧式装饰器
+    // 误用在 class field 上的形态（只传两个实参），不先判会先炸在读 descriptor.value 上，
+    // 报出与真正原因无关的 `Cannot read properties of undefined`
+    if (descriptor === undefined || typeof descriptor.value !== 'function') {
       throw new TypeError('[createDecorator] can only decorate a method whose descriptor.value is a function')
     }
+    const originalMethod = descriptor.value
 
     /** 把抛出的值交给 onError，并保证回调自身的异常不顶替原始失败 */
     const reportError = (error: unknown): void => {

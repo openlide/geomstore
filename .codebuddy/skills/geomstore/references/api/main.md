@@ -2,7 +2,7 @@
 
 > **本文件由 `scripts/generate-skill-api-reference.mjs` 从 `dist/**/*.d.ts` 生成，请勿手工编辑。**
 >
-> - 来源版本：`@openlide/geomstore@0.7.0`
+> - 来源版本：`@openlide/geomstore@0.8.0`
 > - 内容来源：构建产物类型声明（随 npm 包发布，与安装版本必然一致）
 > - 重新生成：`pnpm build && pnpm skill:api`
 > - 引入路径：`.`
@@ -61,6 +61,49 @@ export interface AppOptions {
     /** 允许业务扩展自定义字段 */
     [key: string]: unknown;
 }
+```
+
+### `AppThis`
+
+```ts
+/**
+ * App 方法 this 类型（原生精确推导）
+ *
+ * 运行时注入（见 with-app-store.ts）：映射的 state / getters 写入 `this.globalData`，
+ * 映射的 action（bindActions）与 exposeStoreAPI 的调试方法直接挂在 App 实例上。
+ * 交叉 `Extra`（调用处传入用户配置类型 C）以保留 `globalData` 的自定义字段。
+ *
+ * 名字撞车时谁赢：`onLaunch` 先 `bindActions`（with-app-store.ts:242）后 `exposeStoreAPI`
+ * （同文件 :251，二者在同一个 try 块内按此顺序）。exposeStoreAPI 的七个键逐个经 `canOwnKey`
+ * 判定、再用 `defineOwnValue` 以 `Object.defineProperty` 写入（utils.ts；键集合与值同源于那张
+ * `members` 表，已无 `exposedKeys` 常量、也不再是 `Object.assign`），卸载时按**原描述符整体回放**
+ * （访问器成员不会被降级成数据属性），而不是「还原原值」。因此：
+ * - 宿主该键可重写（含同名 action 刚写入的那份）→ 留下的是调试 API。所以 action 名恰为
+ *   `store` / `getStore` / `getState` / `getCached` / `dispatch` / `subscribe` / `__store__`
+ *   之一时，实例上读到的仍是调试 API，本类型据此让映射 action 避让（`Omit` 掉
+ *   `keyof HostStoreApi<S>`），`HostStoreApi<S>` 保持完整。
+ * - 宿主该键**不可重定义**（非 configurable 且非 writable，或宿主被 seal/freeze）→ 两侧都留不下，
+ *   只剩一条 `[exposeStoreAPI] 宿主成员 "x" 不可重定义，已跳过暴露` 告警；
+ *   此时 `bindActions` 那份也有自己的同判据跳过分支（utils.ts 的
+ *   `[bindActions] 宿主成员 "x" 不可重定义…已跳过 action "y" 的绑定`）。
+ *   「撞名一定留下调试 API」只在该键可重写时成立，别把它当无条件保证。
+ * 此前两侧直接求交，同名成员变成
+ * 函数交叉（重载集）：`this.getState()` 会解析到先声明的那个签名，调用方拿到的返回类型与运行时
+ * 实际值不符。反过来 Omit 调试 API 既与运行时相反，又会把 `getCached<K extends keyof S>` 这种带泛型的
+ * 成员经过一次映射类型（精度另有一次损失风险）。
+ *
+ * `globalData` 一并加入避让清单，但方向相反：它是 `bindActions` 的**受害者**而非赢家
+ * （宿主 `globalData` 上的该键通常可重写，于是 `onLaunch` 刚写进去的映射 state/getters
+ * 会整包被那个函数顶掉，只剩一个可调用的 action；该键不可重定义时 `bindActions` 改为跳过并告警，
+ * 顶掉不成立、action 也没绑上）。
+ * 求交写法会把这种踩雷同时声成两种形状：`this.globalData()` 与 `this.globalData.count`
+ * 都能编译，前者才符合运行时——即本文件反复防范的「声明成员与运行时值不符」。
+ * 类型侧只保留数据形状（`this.globalData()` 报错），运行时另有 `bindActions` 的
+ * 「宿主已有成员将被覆盖」告警；本地名请改用别名形式避开：`mapActions: { setGlobalData: 'globalData' }`。
+ */
+export type AppThis<S extends State, A extends Actions, G extends Getters<S> = Getters<S>, M extends ConnectOptions<S, A, G> = ConnectOptions<S, A, G>, Extra extends object = object> = Extra & {
+    globalData: ExtractPageData<S, M, G>;
+} & Omit<ExtractMappedActions<A, M>, keyof HostStoreApi<S> | 'globalData'> & HostStoreApi<S>;
 ```
 
 ### `CacheOptions`
@@ -451,6 +494,25 @@ declare class ComposedStore<S extends State = State> implements Store<S> {
     $snapshot(): Readonly<S>;
     $restore(snapshot: Readonly<S>): void;
 }
+```
+
+### `ConfigState`
+
+```ts
+/**
+ * `StoreConfig.getters` 的 state 形参形状（#R5-326 把它从内联表达式提成命名口径）
+ *
+ * 与 {@link ResolvedState} 只差归一失败的兜底：这里退回 `Record<string, unknown>` 而不是
+ * `State`（= `object`）——getter 拿到的即使是没有键信息的退化状态，也仍要能按
+ * `state.count` 读值，`object` 会让每个 getter 的第一行都编译不过。
+ *
+ * 刻意**不**把它接到 `cacheKeys`（即报告建议的「两处共用」写法）：`Array<keyof ConfigState<S>>`
+ * 会让 `keyof <未展开的条件类型>` 参与 `factory.ts` 里 `new Store(options)` 的反向推断，
+ * S 的候选被污染成 `ConfigState<S | (() => S)>`，报 TS2322（实测；显式类型实参同样救不回，
+ * 因为 `Array<keyof ConfigState<…>>` 也无法赋给 `StoreOptions<S, …>` 的 `Array<keyof S>`）。
+ * 退化输入的 `cacheKeys` 改由 `StoreConfig` 的 S 默认值解决，见该接口文档。
+ */
+export type ConfigState<S> = ResolveState<S> extends State ? ResolveState<S> : Record<string, unknown>;
 ```
 
 ### `ConnectOptions`
@@ -1655,6 +1717,55 @@ export declare class Store<S extends State = State, A extends Actions = Actions,
     private _markDirtyKey;
     /** 通知状态变化 */
     private _notifyListeners;
+}
+```
+
+### `StoreConfig`
+
+```ts
+/**
+ * Store 自动推导配置类型（免泛型推导专用）
+ *
+ * `A` / `G` 的类型参数默认 `unknown`，使 TS 能从对象字面量**精确反推**，
+ * 不被泛型约束吸收为 `any`。`actions` 通过 `ThisType` 注入 `this` 上下文
+ * （基于推断出的 S/A）。共享选项见 `StoreOptionsBase`。
+ *
+ * `S` 的默认值是「没有状态类型可言」时的形状 `Record<string, unknown>`，与 {@link ConfigState}
+ * 的退化兜底同一口径（#R5-326）：默认值为 `unknown` 时 `state?: unknown` 什么都能装，
+ * 但 `cacheKeys?: Array<keyof ResolvedState<S>>` 退化成 `never[]`——裸写 `StoreConfig`
+ * 的人连 `cacheKeys: ['count']` 都写不出来，而同一份配置里的 `getters` 却能正常按键读状态。
+ * 走 `createStore` 的调用不受影响：它的 S 由重载签名显式传入本接口，默认值不参与推断。
+ */
+export interface StoreConfig<S = Record<string, unknown>, A = unknown, G = unknown> extends StoreOptionsBase<S> {
+    /** Actions（注入 this 上下文，字面量直接推断；action 内 this.dispatch 走类型安全泛型重载） */
+    actions?: A & ThisType<ActionContext<ResolvedState<S>, A extends Actions ? A : Actions>>;
+    /**
+     * Getters（字面量直接推断）
+     * 每个 getter 接收 `state` 作为首个参数，其类型由推断出的 State 提供上下文，
+     * 支持对象或工厂函数形式的 `state`（`ResolveState` 归一化），避免隐式 any。
+     *
+     * 归一失败时的兜底与 {@link ResolvedState} 不同：这里退化成 `Record<string, unknown>`
+     * 而不是 `State`（= `object`），使退化输入下 getter 仍能按键读状态
+     * （同一口径也是 `StoreConfig` 的 `S` 默认值，见该接口文档）。
+     */
+    getters?: G & Record<string, (state: ConfigState<S>, ...args: unknown[]) => unknown>;
+    /**
+     * 需要缓存的 state 键：**未提供（`undefined`）时缓存所有键；显式传空数组表示一个键都不缓存**
+     *
+     * 口径以实现为准（`StoreCache.enable`：`this._cacheKeys = keys ? new Set(keys) : undefined`，
+     * 见 `core/store/StoreCache.ts`）：空数组不是「全缓存」的另一种写法，它让 `get`/`set` 的键过滤
+     * 恒不命中，`enableCache` 形同关闭。实现为这个分歧专门加了告警
+     * （`cacheKeys 为空数组：缓存不会命中任何键，enableCache 形同关闭（需要缓存全部键请传 undefined）`），
+     * 但生产模式下 `isProduction()` 会把它吞掉，只剩「数据表现与配置不一致」。
+     * 由派生表达式给出本项时尤其注意（`Object.keys(state).filter((k) => PERSIST_KEYS.includes(k))`
+     * 白名单为空/改名失配即得 `[]`）：要「缓存全部键」请**不写这一项**，而不是写 `[]`。
+     * 该语义另有运行时锁：`tests/unit/regression/ocr-medium-wave.test.ts` 的
+     * 「#153 cacheKeys 为空数组时告警并保持「不缓存任何键」语义」用例。
+     *
+     * 退化输入（裸写 `StoreConfig`、不传类型参数）下 S 即 `Record<string, unknown>`，
+     * 键集随之是 `string | number`，任何字符串键都接受（#R5-326）。
+     */
+    cacheKeys?: Array<keyof ResolvedState<S>>;
 }
 ```
 

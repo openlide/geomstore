@@ -31,6 +31,8 @@
  * 但等待期必须有个可结算的替身，所以包装函数的返回值**恒为 Promise**（见 `withDebounce`
  * 的 remarks）——装饰同步方法时这一点无法在类型上表达，旧式方法装饰器改不了声明签名。
  */
+import { isTrackableHost } from './common.js'
+
 type DecoratedMethod = (this: unknown, ...args: unknown[]) => unknown
 
 /** 单个 (宿主, 方法) 的防抖状态 */
@@ -75,17 +77,6 @@ const DEFAULT_DELAY = 300
  *   公开入口对它无从下手（防抖本身在该场景也已失效，见 `getDebounceState`）。
  */
 const debounceStates = new WeakMap<object, Map<symbol, DebounceState>>()
-
-/**
- * 宿主能否作为 WeakMap 键（对象/函数且非 null）。
- *
- * 与 `withThrottle` 侧的同名判据同口径：宿主不可跟踪时装饰器一律降级而不是抛错。
- * 两处各自定义而不抽到 common.ts，是因为本波次只允许改 throttle/debounce 两个文件
- * （抽出后两者都要改 import，属于另一波次的整理）。
- */
-function isTrackableHost(host: unknown): host is object {
-  return (typeof host === 'object' || typeof host === 'function') && host !== null
-}
 
 /** 防抖状态的初始值：单一构造点避免形状漂移 */
 function createDebounceState(host: unknown, methodKey: string | symbol, originalMethod: DecoratedMethod): DebounceState {

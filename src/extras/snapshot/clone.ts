@@ -594,7 +594,11 @@ export function cloneDeep<T>(
           stats,
           counters,
         )
-        // 被丢弃的元素保留位置（留洞），与异步路径不填充该索引同语义
+        // 被丢弃的元素（下标不被赋值）不是「留洞」：洞只在中段出现——后续元素照常
+        // 按下标写入，把它前面的空位顶成真实的稀疏位；被丢弃的若是末尾元素则没人再写那个
+        // 下标，克隆品直接比源数组短（`[{a:1},{a:2},{a:3}]` 丢第三项 → `length === 2`）。
+        // 后果是这份长度差会被 compareSnapshots 的数组分支读成调用方从未做过的
+        // `[removed:i]` 变更；异步路径的 target:index 写法同此语义（同样不预分配长度）
         if (clonedItem !== SKIP_CLONE_NODE) {
           cloned[i] = clonedItem
         }

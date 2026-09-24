@@ -51,6 +51,15 @@ type EdgeChange = typeof EDGE_STABLE | typeof EDGE_ADDED | typeof EDGE_REMOVED
  * 已声明的契约外裸写，不在追踪范围内。
  */
 export function createDirtyTrackingProxy(root: object, cache: DirtyTrackingCache, onMutate: (rootKeys: Iterable<string | symbol>) => void): object {
+  // 快路径：根代理已建过就直接返回，不必先把下面整套闭包（约 13 个）建出来再发现
+  // `wrap(root)` 会在 cache.proxies 上命中。action 体内每次 `this.state` 访问都走这里，
+  // 一个 action 读三次状态就是三轮闭包构造换回同一个代理。
+  // 与 wrap 的判定等价：wrap 对内建对象（Date/RegExp/WeakMap/WeakSet）直接返回原引用、
+  // 从不写进 proxies，故此处不会对内建值误命中；root 本身是代理时本快路径不命中、
+  // 落回 wrap 的 unwrap 路径，结论不变
+  const cachedRoot = cache.proxies.get(root)
+  if (cachedRoot) return cachedRoot
+
   const unwrap = (value: unknown): unknown => (value !== null && typeof value === 'object' ? (cache.targets.get(value) ?? value) : value)
   const isObject = (value: unknown): value is object => value !== null && typeof value === 'object'
   /** 属性/集合成员当前实际存着的对象（存的是代理时解包），非对象返回 undefined */

@@ -374,18 +374,26 @@ export class ErrorHandlerImpl {
     byLevel: Partial<Record<ErrorLevel, number>>
     byOperation: Record<string, number>
   } {
-    const stats = {
-      total: this.errorLog.length,
-      byLevel: {} as Partial<Record<ErrorLevel, number>>,
-      byOperation: {} as Record<string, number>,
-    }
+    // byOperation 的键来自 `ErrorContext.operation`：类型上它是 OperationType，
+    // 但 handle() 对 JS 调用方接受任意字符串（返回类型是 Record<string, number> 即因为这个），
+    // 开放域的值会落进 `{}` 的原型链：`'__proto__'` 触发 Object.prototype 的 setter
+    // （值是数字时被静默忽略，计数丢失），`'constructor'` / `'toString'` 则让
+    // `stats.byOperation[k] ?? 0` 读出继承来的函数而不是计数。
+    // 累计阶段用无原型对象承载（与本模块的 strategies 一致，ErrorRecovery 那边直接用 Map），
+    // 但**返回普通对象**：对外的返回类型是 Record<string, number>，调用方
+    // `stats.byOperation.hasOwnProperty(k)` 在类型上完全合法，把无原型对象直接交出去
+    // 会让它在运行时抛 `hasOwnProperty is not a function`——修好统计却弄坏既有调用方。
+    // 展开用 CreateDataProperty 语义（不触发 setter），故 `__proto__` 这个键搬回普通对象
+    // 仍然是自有数据属性，不会改写原型
+    const byOperation = Object.create(null) as Record<string, number>
+    const byLevel = Object.create(null) as Partial<Record<ErrorLevel, number>>
 
     for (const ctx of this.errorLog) {
-      stats.byLevel[ctx.level] = (stats.byLevel[ctx.level] || 0) + 1
-      stats.byOperation[ctx.operation] = (stats.byOperation[ctx.operation] || 0) + 1
+      byLevel[ctx.level] = (byLevel[ctx.level] || 0) + 1
+      byOperation[ctx.operation] = (byOperation[ctx.operation] || 0) + 1
     }
 
-    return stats
+    return { total: this.errorLog.length, byLevel: { ...byLevel }, byOperation: { ...byOperation } }
   }
 }
 

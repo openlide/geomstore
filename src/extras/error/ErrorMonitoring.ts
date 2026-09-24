@@ -253,7 +253,14 @@ export class ErrorMonitoring {
       // 经 Promise.resolve().then 包装消除同步抛点，避免异常绕过 try/finally 使
       // isFlushing 永久为 true，之后所有 flush（周期/阈值/shutdown）静默失效。
       // 三态判定：只有任务真正 resolve 才算成功；超时不是成功——否则弱网/服务端
-      // 黑洞（最需要重试的场景）下批次既不算失败也不确认送达，被直接丢弃
+      // 黑洞（最需要重试的场景）下批次既不算失败也不确认送达，被直接丢弃。
+      //
+      // 超时后重入队的前提是**请求已真正结束**：Promise.race 只放行 flush，不终止
+      // 输掉竞速的 reporter 任务，若底层请求仍在飞，迟到落地就会与重试形成重复投递。
+      // 内置 HttpReporter 的 fetch 路径会自行到点结束（AbortController 中止，默认 10s）；
+      // wx 路径只在调用方显式配了 timeout 时才自行结束，否则依赖平台自身的请求上限。
+      // 注入自定义 ErrorReporter 时该责任在注入方，需由其自行保证请求可取消——
+      // 这是本层 race 之外的约定，不在此处强制
       let anyReporterSucceeded = false
       const promises = this.reporters.map((reporter) => {
         const task = Promise.resolve()

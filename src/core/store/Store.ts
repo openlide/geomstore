@@ -37,6 +37,7 @@ import type {
 import type { Plugin as PluginType } from '../../types/plugin.js'
 import { HookSystem } from '../hooks/index.js'
 import { deepMerge, isPlainObject, PROTO_SENSITIVE_KEYS, defineOwnProperty } from '../utils/helpers.js'
+import { ownEnumerableKeys } from '../utils/clone.js'
 import { LRUCache } from '../cache/LRUCache.js'
 
 // 子模块导入
@@ -66,9 +67,9 @@ const STORE_NAME_PREFIX = 'store-'
  * （`setState` 与 `$patch` 共用这一条判据——两处各写一遍就会漂移成「一侧挡住、另一侧没挡」，
  * 与 deepMerge / defineOwnProperty 的既定口径同源，见 R6-007）。
  */
-function readOwnValue(target: Record<string, unknown>, key: string): unknown {
-  if (!PROTO_SENSITIVE_KEYS.has(key)) {
-    return target[key]
+function readOwnValue(target: object, key: string | symbol): unknown {
+  if (typeof key !== 'string' || !PROTO_SENSITIVE_KEYS.has(key)) {
+    return (target as Record<PropertyKey, unknown>)[key]
   }
   const descriptor = Object.getOwnPropertyDescriptor(target, key)
   return descriptor ? descriptor.value : undefined
@@ -420,15 +421,19 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
     // 逐键取出「真正要合并的键」。两侧都经 `readOwnValue`：原型链敏感键
     // （`state.__proto__` / `partial.__proto__`）按 [[Get]] 拿到的是原型而不是写入值，
     // 拿它做等值比对会得出与合并结果相反的结论（与 setState 同一份判据）
-    const stateRecord = this._state as unknown as Record<string, unknown>
-    const patchRecord = partialState as unknown as Record<string, unknown>
-    const effective: Record<string, unknown> = {}
-    for (const key of Object.keys(patchRecord)) {
+    // 键集用 ownEnumerableKeys 而非 Object.keys：符号键也是 setState 的一等写入键
+    // （脏键表、isStateKeyDirty 都按 symbol 收集），只在 $patch 这条路上被 Object.keys
+    // 静默丢弃的话，`$patch({ [sym]: 1 })` 会照常发钩子、照常返回，却什么都没写
+    const stateRecord = this._state as unknown as Record<PropertyKey, unknown>
+    const patchRecord = partialState as unknown as Record<PropertyKey, unknown>
+    const effective: Record<PropertyKey, unknown> = {}
+    const effectiveKeys: Array<string | symbol> = []
+    for (const key of ownEnumerableKeys(patchRecord)) {
       const patchValue = readOwnValue(patchRecord, key)
       if (Object.is(readOwnValue(stateRecord, key), patchValue)) {
         continue
       }
-      const protoSensitive = PROTO_SENSITIVE_KEYS.has(key)
+      const protoSensitive = typeof key === 'string' && PROTO_SENSITIVE_KEYS.has(key)
       // 敏感键以 defineProperty 承载：`effective['__proto__'] = value` 走 [[Set]]，
       // 会把这份中间对象的原型换掉并把该键整条丢掉，补丁就静默不生效了
       if (protoSensitive) {
@@ -436,9 +441,10 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
       } else {
         effective[key] = patchValue
       }
+      effectiveKeys.push(key)
     }
 
-    if (Object.keys(effective).length === 0) {
+    if (effectiveKeys.length === 0) {
       this._hooks.emit('afterPatch', partialState)
       return
     }
@@ -453,7 +459,9 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
 
     this._mutationCount++
 
-    const changedKeys = Object.keys(effective) as Array<keyof S>
+    // changedKeys 走 effectiveKeys 而非 Object.keys(effective)：后者同样只给字符串键，
+    // 符号键会漏掉缓存失效与脏键标记——值已经写进状态却对订阅者不可见
+    const changedKeys = effectiveKeys as Array<keyof S>
     changedKeys.forEach((key) => {
       // 缓存应写入 deepMerge 后的最终状态值：嵌套对象被递归合并后，
       // this._state[key] 与 partialState[key] 可能不同（如 {a:{x:1}} patch {a:{y:2}}），
@@ -1115,7 +1123,7 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
    *
    * 本方法是那条判据在 Store 侧的镜像，改 deepMerge 的合并条件时必须同步改这里。
    */
-  private _collectInPlaceMergedObjects(dst: Record<string, unknown>, src: Record<string, unknown>): object[] {
+  private _collectInPlaceMergedObjects(dst: Record<PropertyKey, unknown>, src: Record<PropertyKey, unknown>): object[] {
     const out: object[] = []
     // 守卫与 deepMerge 的 seenPairs 逐字同构（键=补丁节点，值=已合并进该补丁的目标节点集），
     // 目的有二：状态与补丁各自成环时（`state.a.self === state.a` 且补丁写了 `a.self`）递归必须终止；
@@ -1123,7 +1131,7 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
     // 按「目标节点最多下沉一次」去重会漏收：`state.a === state.b`（别名）且补丁同时写了 a、b 时，
     // 第二个补丁键的子树被整段跳过，那段子树里的嵌套别名就永久不标脏——漏收的方向是漏报
     const mergedPairs = new WeakMap<object, Set<object>>()
-    const walk = (target: Record<string, unknown>, patch: Record<string, unknown>): void => {
+    const walk = (target: Record<PropertyKey, unknown>, patch: Record<PropertyKey, unknown>): void => {
       let mergedInto = mergedPairs.get(patch)
       if (!mergedInto) {
         mergedInto = new Set()
@@ -1132,7 +1140,9 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
         return
       }
       mergedInto.add(target)
-      for (const key of Object.keys(patch)) {
+      // ownEnumerableKeys 与 deepMerge 的键集同源：这里少走一步，符号键下的嵌套别名
+      // 就不会被标脏，而值已经被就地改写
+      for (const key of ownEnumerableKeys(patch)) {
         const patchValue = patch[key]
         if (!isPlainObject(patchValue)) {
           continue
@@ -1141,9 +1151,9 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
         if (!isPlainObject(targetValue)) {
           continue
         }
-        const nested = targetValue as Record<string, unknown>
+        const nested = targetValue as Record<PropertyKey, unknown>
         out.push(nested)
-        walk(nested, patchValue as Record<string, unknown>)
+        walk(nested, patchValue as Record<PropertyKey, unknown>)
       }
     }
     walk(dst, src)

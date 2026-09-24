@@ -2,7 +2,7 @@
 
 > **本文件由 `scripts/generate-skill-api-reference.mjs` 从 `dist/**/*.d.ts` 生成，请勿手工编辑。**
 >
-> - 来源版本：`@openlide/geomstore@0.7.0`
+> - 来源版本：`@openlide/geomstore@0.8.0`
 > - 内容来源：构建产物类型声明（随 npm 包发布，与安装版本必然一致）
 > - 重新生成：`pnpm build && pnpm skill:api`
 > - 引入路径：`./extras/error`
@@ -1773,7 +1773,10 @@ export interface RecoveryConfig {
      *
      * 缺省默认 3（ErrorRecovery.configure / executeRetryStrategy 静默补值，读本接口即知实际额度）。
      * 取值范围：正整数。0 会使首次失败直接命中「Max retries exceeded」分支而完全放弃重试；
-     * 负数与 0 同（`currentAttempt >= maxRetries` 恒成立），均非「无限重试」语义
+     * 负数与 0 同（`currentAttempt >= maxRetries` 恒成立），均非「无限重试」语义。
+     * 小数向下取整；**非有限值（NaN / Infinity）回落到默认 3**——`currentAttempt >= NaN`
+     * 恒为 false会让上限彻底失效、Infinity 则永远达不到，两者都会让重试按调用方的失败
+     * 循环一路跑下去，正是本字段要防的重试风暴
      */
     maxRetries?: number;
     /**

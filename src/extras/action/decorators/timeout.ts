@@ -63,14 +63,18 @@ export function withTimeout(timeout: number = 5000): MethodDecorator {
   // Infinity 被宿主钳制为 1ms，三者都会以「与真实原因无关的即时失败」暴露给调用方
   const delay = normalizeTimeout(timeout, 'withTimeout')
 
-  return function (_target: unknown, _propertyKey: string | symbol, descriptor: PropertyDescriptor): PropertyDescriptor {
-    const originalMethod = descriptor.value
-
-    // 访问器描述符（get/set）的 value 是 undefined：晚到失败只会抛出
-    // `originalMethod.apply is not a function`，故在装饰阶段拒绝
-    if (typeof originalMethod !== 'function') {
+  return function (_target: unknown, _propertyKey: string | symbol, descriptor: PropertyDescriptor | undefined): PropertyDescriptor {
+    // 两种误用都要在装饰阶段就拒绝，否则报错点与原因都对不上：
+    // - 访问器描述符（get/set）的 value 是 undefined，晚到失败只会抛
+    //   `originalMethod.apply is not a function`；
+    // - descriptor 本身为 undefined 是旧式装饰器误用在 class field 上的形态（只传两个实参），
+    //   直接读 descriptor.value 抛的是 `Cannot read properties of undefined`，
+    //   把「用错装饰目标」这条真正原因藏掉。
+    // 与 withRetry / withDebounce / withThrottle 同一形态（见 debounce.ts 的同类守卫）
+    if (descriptor === undefined || typeof descriptor.value !== 'function') {
       throw new TypeError('[withTimeout] can only decorate a method, but the descriptor.value is not a function')
     }
+    const originalMethod = descriptor.value
 
     descriptor.value = async function (this: unknown, ...args: unknown[]) {
       // 复用公共内核，与 AsyncActionSupport.executeWithTimeout 同一实现。

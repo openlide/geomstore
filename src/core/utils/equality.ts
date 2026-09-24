@@ -186,9 +186,15 @@ function compareWithSeenPairs(a: unknown, b: unknown, comparison: Comparison, pa
     // `new Number(1)` 与 `new Number(2)` 判等。先比内部的原始值；**不 continue**——
     // 装箱类的子类实例可以另带自有属性，那些仍要走下面的通用键比较。
     // 判定本身（含 BigInt/Symbol 的能力探测）见 {@link isBoxedPrimitive}。
+    // 比较口径必须是 SameValueZero（`===` 兜 NaN），与本函数快速路径的
+    // `a === b || Object.is(a, b)` 逐字一致：直接用 Object.is 会让
+    // `deepEqual(new Number(-0), new Number(0))` 为 false，而未装箱的
+    // `deepEqual(-0, 0)` 为 true——同一个值只因有没有装箱就得出相反结论
     if (isBoxedPrimitive(currentA)) {
       const other = currentB as { valueOf(): unknown }
-      if (!Object.is(currentA.valueOf(), other.valueOf())) {
+      const valueA = currentA.valueOf()
+      const valueB = other.valueOf()
+      if (!(valueA === valueB || Object.is(valueA, valueB))) {
         return false
       }
     }
