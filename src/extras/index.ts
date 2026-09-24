@@ -42,8 +42,10 @@ export type { PerformanceMetrics, PerformanceOptions, PerformanceStats, MetricTy
 export { SnapshotManager, createSnapshot, createSnapshotAsync } from './snapshot.js'
 export type {
   SnapshotOptions,
+  CloneContext,
   SnapshotProgress,
   SnapshotError,
+  SnapshotErrorContext,
   SnapshotResult,
   SnapshotMetadata,
   SnapshotStats,

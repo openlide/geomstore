@@ -7,6 +7,7 @@
  */
 
 import type { State } from '../../types/store.js'
+import type { ParametricSelectorFactory } from '../../types/selector.js'
 import { deepEqual, clone } from '../../core/utils/helpers.js'
 import { getStateVersion } from '../../core/store/stateVersion.js'
 
@@ -87,7 +88,7 @@ function isWeakMapKey(value: unknown): value is object {
 export function createParametricSelector<S extends State, P, R>(
   selectorFn: (state: S, params: P) => R,
   options: { ttl?: number; maxEntries?: number } = {},
-): (state: S) => (params: P) => R {
+): ParametricSelectorFactory<S, P, R> {
   const { ttl = 5000 } = options
   // maxEntries 归一化，口径同 SelectorFactory 的 cacheSize（Number.isFinite 守卫 + 夹到 >= 1）：
   // 0 / 负数不夹的话 `cacheMap.size < maxEntries` 恒假 → 淘汰循环一路删到空表，随后的 set 仍

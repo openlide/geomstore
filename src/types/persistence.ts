@@ -35,7 +35,15 @@ export interface StorageBackend {
  * 持久化选项
  */
 export interface PersistenceOptions<S extends State = State> {
-  /** 存储key（字符串或函数） */
+  /**
+   * 存储key（字符串或函数）
+   *
+   * 缺省为 `geomstore_${store.name}`：键必须在跨会话、跨进程重启后保持稳定，否则
+   * restore 永远读不回上次的数据，故默认键**刻意**不含随机后缀。代价是两个 store
+   * 落到同一键时互相覆盖——未命名 store 的名字来自模块级计数器（`store-0`…），
+   * 而多份 bundle 各有一份计数器（微信构建里重复打包本包是常态）。
+   * 稳定与唯一不可兼得：需要隔离时请显式传 key
+   */
   key?: string | ((storeName: string) => string)
   /** 存储后端 */
   storage?: StorageBackend

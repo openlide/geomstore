@@ -351,9 +351,18 @@ export class MetricsCollector {
 
     if (this._count === 0) return 0
 
+    // 非有限耗时先滤掉再排序：同文件的 computePerformanceStats / summarizeByOperation
+    // 都经 isMeasurableDuration 过滤，唯独这里不滤——`a - b` 比较器拿到 NaN 返回 NaN
+    // （等价于「不移动」），NaN 元素可能停在任何位置，index 落上去就返回 NaN，
+    // 而同一份数据在 calculateStats() 里是确定性地被排除的
     const sorted = this._ordered()
       .map((m) => m.duration)
+      .filter(isMeasurableDuration)
       .sort((a, b) => a - b)
+
+    // 过滤后可能为空（采到的全是非有限耗时），与「采集器为空」同口径返回 0，
+    // 否则 sorted.length - 1 会是 -1，读出 undefined
+    if (sorted.length === 0) return 0
 
     const index = Math.min(Math.floor((percentile / 100) * sorted.length), sorted.length - 1)
     return sorted[index]

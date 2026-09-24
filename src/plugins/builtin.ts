@@ -147,6 +147,13 @@ function installPersistence<S extends State>(store: Store<S>, rawOptions?: Persi
     console.log(`[GeomStore] Plugin "persistence" installed`)
   }
 
+  // 默认键只由 store.name 派生，**刻意不加随机后缀**：持久化的意义就是下次启动读回
+  // 同一份数据，键必须在跨会话、跨进程重启后保持稳定，随机后缀会让 restore 永远落空。
+  // 代价是两个 store 共享同一键时会互相覆盖：未命名 store 的名字来自模块级计数器
+  // （`store-0`、`store-1`…），多份 bundle 各有一份计数器，而微信构建里重复打包本包是常态
+  // （core 的 GEOMSTORE_BRAND / stateVersion 的 STATE_VERSION 都用 Symbol.for 跨副本兜底）。
+  // 稳定与唯一在默认键这个层面不可兼得，故把选择权交回调用方：需要隔离就显式传 key，
+  // 见 PersistenceOptions.key 的说明
   const { key = `geomstore_${store.name}`, filter, validate, restore: shouldRestore = true, debounce: debounceMs = 0, clearOnUninstall = false } = options
 
   const storageKey = typeof key === 'function' ? key(store.name) : key

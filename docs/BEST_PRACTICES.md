@@ -164,7 +164,7 @@
 - **`ErrorRecovery` 的 operation 命名要稳定**：额度按 `code:storeName:operation` 计量。见 [CONCEPTS §10](./CONCEPTS.md#恢复errorrecovery)。
   - 动态 id（`fetchUser:${id}`）会不断产生新键、让「同一操作的退避策略」失去意义；按「操作类型」而非「操作对象」命名。
   - `recover()` 的 `error` / `config` / `attempt` 由库内写入，第二参数换不到策略。
-- **额度用尽不会重新领一份**：`maxRetries` 用尽后计数与周期窗都保留，同一故障周期内的后续 `recover()` 持续抛 `Max retries (n) exceeded`，只有时间窗过期才开新周期。
+- **额度用尽不会重新领一份**：`maxRetries` 用尽后计数与周期窗都保留，同一故障周期内的后续 `recover()` 持续抛 `Max retries (n) exceeded`，只有时间窗过期才开新周期。别把未经校验的外部输入直接塞进 `maxRetries`：`NaN` / `Infinity` 会让上限彻底失效（库在写入时已归一到默认 3、小数向下取整、负数夹到 0，但依赖归一不如别传）。
   - 要区分「额度被谁用满」读抛出物 `context.retryKey`（两个来源都缺时是 `<code>:unattributed`）。
   - 策略内部失败抛的是 `GeomStoreError`（`code: INTERNAL_ERROR`、`cause` 是原始错误），按 `instanceof` / `code` 分支处理比匹配文案可靠。
   - 见 [CONCEPTS §10](./CONCEPTS.md#恢复errorrecovery)。

@@ -21,7 +21,7 @@
  *
  */
 
-import { isAsyncFunction, isThenable } from './common.js'
+import { isAsyncFunction, isThenable, isTrackableHost } from './common.js'
 
 /**
  * 节流选项
@@ -85,16 +85,6 @@ const TRAILING_FAILURE_LOG = '[withThrottle] trailing invocation failed:'
  *   清不掉副本 B 排程的定时器——与库内其它模块级状态同限制，非新增缺陷。
  */
 const throttleStates = new WeakMap<object, Map<symbol, ThrottleState>>()
-
-/**
- * 宿主能否作为 WeakMap 键（对象/函数且非 null）。
- *
- * 与 `withDebounce` 侧的同名判据同口径：宿主不可跟踪时三者一律降级而不是抛错
- * （节流直接放行、防抖各自定时、缓存一次性 Map），公开入口对这种宿主则是 no-op。
- */
-function isTrackableHost(host: unknown): host is object {
-  return (typeof host === 'object' || typeof host === 'function') && host !== null
-}
 
 /** 取（首次时创建）某宿主的状态表 */
 function getSlotMap(host: object): Map<symbol, ThrottleState> {

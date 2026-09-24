@@ -716,7 +716,14 @@ class ComposedStore<S extends State = State> implements Store<S> {
       if (!readOnly) {
         this._composedWritableCount -= 1
       }
-      throw error
+      // 这里**不**降级放行：组合层通知完全依赖子 store 订阅，放行等于交给调用方一个
+      // 永不触发的监听器，比抛错更难排查（其他公开方法只告警跳过，是因为它们读写的
+      // 是本次调用自身的数据，不依赖通知链）。改抛带归因的错——裸抛子 store 的
+      // 「Cannot call subscribe on a destroyed Store」看不出是谁发的订阅
+      const reason = error instanceof Error ? error.message : String(error)
+      const attributed = new Error(`[composeStore] 无法为组合 store「${this.name}」建立子 store 订阅：${reason}`)
+      ;(attributed as Error & { cause?: unknown }).cause = error
+      throw attributed
     }
 
     // 与普通 Store.subscribe 保持一致：订阅时不立即回调，

@@ -9,6 +9,7 @@
 
 import type { ActionLoaderOptions } from '../../types/action.js'
 import { ActionLoader, normalizeActionLoaderOptions } from './ActionLoader.js'
+import { isTrackableHost } from './decorators/common.js'
 
 /**
  * 模块级 loader 注册表：宿主 → 选项签名 → ActionLoader。
@@ -38,10 +39,7 @@ const loadingCountRegistry = new WeakMap<object, Map<string, Map<string, number>
  */
 type LoadingHost = { setState?: (key: string, value: unknown) => void }
 
-/** 宿主能否作为 WeakMap 键（对象/函数且非 null） */
-function isTrackableHost(host: unknown): host is object {
-  return (typeof host === 'object' || typeof host === 'function') && host !== null
-}
+/** 宿主能否作为 WeakMap 键（对象/函数且非 null）——判据与 throttle / debounce 共用 common 里那一份 */
 
 /**
  * 计算选项签名（缺省值与 `ActionLoader` 构造器同源：都走
@@ -120,7 +118,15 @@ function getSharedLoadingCounts(host: object, options: ActionLoaderOptions): Map
 export function withLoading(options: ActionLoaderOptions = {}): MethodDecorator {
   const signature = resolveLoaderSignature(options)
 
-  return function (_target: unknown, propertyKey: string | symbol, descriptor: PropertyDescriptor): PropertyDescriptor {
+  return function (_target: unknown, propertyKey: string | symbol, descriptor: PropertyDescriptor | undefined): PropertyDescriptor {
+    // 与 withRetry / withTimeout / withThrottle / withCache 同一形态的守卫：
+    // 访问器描述符（get/set）的 value 是 undefined，误用在 class field 上则根本没有
+    // descriptor（只传两个实参）。不判的话前者把 `Cannot read properties of undefined
+    // (reading 'bind')` 推迟到首次调用、后者在类定义时就抛同名 TypeError，
+    // 两处报错都指不到「用错装饰目标」这个真正原因
+    if (descriptor === undefined || typeof descriptor.value !== 'function') {
+      throw new TypeError('[withLoading] can only decorate a method whose descriptor.value is a function')
+    }
     const originalMethod = descriptor.value
 
     descriptor.value = async function (this: LoadingHost | null | undefined, ...args: unknown[]) {

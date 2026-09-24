@@ -288,6 +288,13 @@ export const timeTravelPlugin = <S extends State = State>(options: TimeTravelOpt
         recordSnapshot(state)
       }
 
+      // 立即记录初始状态
+      // 必须在建立订阅**之前**：recordSnapshot 会调用用户传入的 filter，filter 抛错时
+      // install 会带着异常退出，而此时 Store.use 尚未拿到 disposer、无法退订——
+      // 先订阅再记录会留下一个终生挂在 store 上的死监听器（此后每次通知都在 filter 里
+      // 抛错），重试安装还会再叠一个
+      recordSnapshot(store.getState() as S)
+
       // 监控状态变化
       // 只读订阅：仅读取状态做快照，不修改载荷（快照自身仍需独立深拷贝，
       // 否则会与后续变更共享活引用），避免额外引入一份整树深拷贝
@@ -299,9 +306,6 @@ export const timeTravelPlugin = <S extends State = State>(options: TimeTravelOpt
         },
         { readOnly: true },
       )
-
-      // 立即记录初始状态
-      recordSnapshot(store.getState() as S)
 
       // 时间旅行API
       const api = {

@@ -17,7 +17,7 @@
  */
 
 import { deepEqual } from '../../core/utils/helpers.js'
-import { isSlotBearingBuiltin } from '../../core/utils/clone.js'
+import { isIndexKey, isSlotBearingBuiltin } from '../../core/utils/clone.js'
 import type { SnapshotResult } from './types.js'
 
 /**
@@ -30,6 +30,19 @@ import type { SnapshotResult } from './types.js'
  * 由下面的引用级索引与就近命中消化掉，超出的部分本来就属于粗粒度场景
  */
 const MAX_STRUCTURAL_DIFF_COMPARISONS = 2000
+
+/**
+ * 槽位内建值中「该按内容判」的那一类：装箱原语
+ *
+ * 用 `Object.prototype.toString` 的 tag 而非 `instanceof` 判，与 core/utils/clone.ts 的
+ * `SLOT_BEARING_TAGS` 同一口径（跨 realm 的宿主对象上 `instanceof Number` 会落空）
+ */
+const BOXED_PRIMITIVE_TAGS = new Set(['Number', 'String', 'Boolean', 'Symbol', 'BigInt'])
+
+/** 是否为装箱原语（内容住在内部槽位、但两个等价装箱对象的引用不同） */
+function isBoxedPrimitiveValue(value: object): boolean {
+  return BOXED_PRIMITIVE_TAGS.has(Object.prototype.toString.call(value).slice(8, -1))
+}
 
 /** 无序结构配对的结果 */
 interface UnorderedPairing {
@@ -284,13 +297,19 @@ export function compareSnapshots<T1, T2>(snapshot1: SnapshotResult<T1>, snapshot
       return
     }
 
-    // 其余「内容不住在自有可枚举键上」的内建值一律单独判：`Object.keys` 对它们恒为空，
-    // 落到下面的通用对象分支会把两份不同的值判成无差异——`new Number(1)` 与 `new Number(2)`
-    // 原型相同、键集同为空，字面缓冲/`Error`/不同引用的 Promise 同理被吞。
-    // 交 deepEqual 按各自语义判（装箱比 `valueOf`、字节缓冲比内容、其余按引用/身份），
-    // 只有内容确实不同才记账，与 Date/RegExp/Map/Set 那几条同一写法。
+    // 内容不住在自有可枚举键上的内建值：`Object.keys` 对它们恒为空，落到下面的通用
+    // 对象分支会把两份不同的值判成无差异。分两类判，不能一律交 deepEqual——
+    // 它对 ArrayBuffer / SharedArrayBuffer / Promise / WeakMap / WeakSet / DataView /
+    // Error 同样只剩通用键比较（键集恒空），`new ArrayBuffer(8)` 与 `new ArrayBuffer(64)`
+    // 会被判成无差异；也不能一律比引用——装箱原语（`new Number(1)` 对 `new Number(1)`）
+    // 判的是内容，换成引用比较就成了每次快照都报 changed 的新误报。
+    // 缓冲/视图/弱引用/Promise/Error 走引用：克隆引擎对它们本就保留原引用
+    // （clone.ts / clone-async.ts 的 isSlotBearingBuiltin 分支直接 return value），
+    // 引用相等是快照层面唯一可得的信号——原地改字节无从分辨，但「换了一个缓冲区」
+    // 必须被记成一次 changed
     if (isSlotBearingBuiltin(obj1)) {
-      if (!deepEqual(obj1, obj2, Number.POSITIVE_INFINITY)) {
+      const unchanged = isBoxedPrimitiveValue(obj1) ? deepEqual(obj1, obj2, Number.POSITIVE_INFINITY) : obj1 === obj2
+      if (!unchanged) {
         changes.push({ path, oldValue: obj1, newValue: obj2 })
       }
       return
@@ -403,6 +422,29 @@ export function compareSnapshots<T1, T2>(snapshot1: SnapshotResult<T1>, snapshot
           changes.push({ path: `${path}[removed:${i}]`, oldValue: arr1[i], newValue: undefined, kind: 'removed' })
         } else {
           compare(arr1[i], arr2[i], `${path}[${i}]`, depth + 1)
+        }
+      }
+      // 附加属性（`list.version = 2` 这类非索引自有可枚举键）同样要进差异：
+      // 两个克隆引擎都刻意保留它们（clone.ts / clone-async.ts 的「非索引键」循环），
+      // 只比下标等于把「克隆费心保留的那部分」排除在比较之外——`list.version`
+      // 从 1 改成 2 会得到 changed:false。键名与通用对象分支同形（`parent.key`），
+      // 故沿用 `.` 连接而不是 `["key"]`，与 Map/Set 的下标形态保持可区分
+      const extraKeys = new Set<string>()
+      for (const key of [...Object.keys(arr1), ...Object.keys(arr2)]) {
+        if (!isIndexKey(key)) {
+          extraKeys.add(key)
+        }
+      }
+      for (const key of extraKeys) {
+        const newPath = path ? `${path}.${key}` : key
+        const has1 = Object.prototype.hasOwnProperty.call(arr1, key)
+        const has2 = Object.prototype.hasOwnProperty.call(arr2, key)
+        if (!has1) {
+          changes.push({ path: newPath, oldValue: undefined, newValue: (arr2 as unknown as Record<string, unknown>)[key], kind: 'added' })
+        } else if (!has2) {
+          changes.push({ path: newPath, oldValue: (arr1 as unknown as Record<string, unknown>)[key], newValue: undefined, kind: 'removed' })
+        } else {
+          compare((arr1 as unknown as Record<string, unknown>)[key], (arr2 as unknown as Record<string, unknown>)[key], newPath, depth + 1)
         }
       }
       return

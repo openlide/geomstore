@@ -216,11 +216,12 @@
 
 - **先读 `inputTrusted`**：任一侧 `success: false` 时为 `false`，此时不逐路径比对，只交付一条 `path: 'root'` 的整体差异且 `changed` 恒 `true`——那表示「输入不可信」，**不表示内容真有差异**。做回滚 / 去重时应按「保守认为有差异」处理或回上游重取。
 - `inputTrusted` 是**必填字段**：`SnapshotDiff` 只由库产出，声明「一定带这个字段」比可选更诚实；代价是自己构造该对象字的调用方（测试夹具）要补一项。
-- **路径方言**：`Map` 条目按**键身份**而不是迭代下标——值差异 `root.<String(key)>`、键增删 `root.key.<String(key)>`，与克隆引擎给 `errors[].path` 用的是同一套 scheme。`Symbol` 键串是 `String(key)`，`toString` 抛错的键退回 `<unstringifiable key>`。**`Set` 的 `[removed:i]` / `[added:i]` 里的 `i` 是报告序下标、不是条目身份**（集合元素没有可当身份的键），跨快照配对 `Set` 变化请读 `oldValue` / `newValue`。
+- **路径方言**：`Map` 条目按**键身份**而不是迭代下标——值差异 `root.<String(key)>`、键增删 `root.key.<String(key)>`，与克隆引擎给 `errors[].path` 用的是同一套 scheme。`Symbol` 键串是 `String(key)`，`toString` 抛错的键退回 `<unstringifiable key>`。**`Set` 的 `[removed:i]` / `[added:i]` 里的 `i` 是报告序下标、不是条目身份**（集合元素没有可当身份的键），跨快照配对 `Set` 变化请读 `oldValue` / `newValue`。**数组的附加自有键**（`arr.version = 2`）按下标之外的普通键比较，路径是 `root.list.version`（`.` 连接，与对象键同形），增删同样报 `kind`——克隆刻意保留这些键，比较层若只走下标就会把它们排除在差异之外。
 - 按活动对象对识别循环，共享子对象仍在各路径比较。
 - 自有 `undefined` 属性的新增 / 删除与键缺失不同，分别报告 `kind: 'added' | 'removed'`。
 - `Map` 键与 `Set` 元素的无序配对共用同一实现与同一套护栏：预算按**结构比较次数**计（不是按项数），超预算才退化为整体差异；结构配对一律以无限深度预算调 `deepEqual`，故超深的等价键不会成对误报「一删一增」；原型不同的对象在任意深度都判为有差异。
 - Date / RegExp / Map / Set / 装箱原始值按**内容**比较（同一引用仍短路）。
+- **其余住在内部槽位的值按引用比较**：`ArrayBuffer` / TypedArray / `DataView` / `Promise` / `WeakMap` / `WeakSet` / `Error` 自有可枚举键恒为空，按内容比会把任意两个实例判成无差异；而克隆对它们本就保留原引用，引用相等是唯一可得的信号。换一个实例即记一次差异；同一实例被原地改字节在快照层面无从分辨，不报差异。
 
 ### 不要混淆时间旅行契约
 

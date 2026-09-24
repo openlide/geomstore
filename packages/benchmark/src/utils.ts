@@ -155,9 +155,8 @@ export class BenchmarkUtils implements BenchmarkUtilsContract {
    * 中位数 = 第 50 百分位
    *
    * 走百分位的下标口径，偶数长度取「下中位数」而非两中值平均（`[1,2,3,4]` → 2）。
-   * `ResultBuilder.calculateMedian` 取的是平均（同一输入给 2.5）——两处口径确实不同，
-   * 但 BenchmarkResult 的 median/p95/p99 必须同源可比，这里保持百分位口径不动，
-   * 只把差异写清楚，免得有人把两份数当成同一回事对比。
+   * 这是为了让 BenchmarkResult 的 median/p95/p99 同源可比：三者都经同一套百分位下标
+   * 口径得出，median 单独改用「两中值平均」会让它在同源结果里失去与 p95/p99 的一致性。
    */
   calculateMedian(values: number[]): number {
     return this.calculatePercentile(values, 50)

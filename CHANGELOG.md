@@ -7,7 +7,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-暂无（0.7.0 已定稿，见下节）。
+暂无（0.8.0 已定稿，见下节）。
+
+## [0.8.0] - 2026-09-24
+
+本版本汇总**第七轮全库复审**（用 `@alibaba-group/open-code-review` 的 delegate 模式跑，LLM 为 ZCode Agent 自带）：第一轮全库扫描 105 个源文件 + benchmark / 脚本 / 配置，**26 条候选 = high 1 / medium 10 / low 15，逐条复核后判误报 1、确认 25**；第二轮改为**只评审第一轮的修复本身**（工作区 diff 模式，32 个文件），**7 条候选、确认 5 条要修、1 条驳回、1 条降级为已知取舍**。本节只列**用户可感知**的语义变化，内部健壮性 / 注释 / 文档类修复不逐条重复。
+
+> **本版含行为变更，因此按 0.x 的语义升 minor（0.7.0 → 0.8.0）**：`compareSnapshots` 的差异口径、`HttpReporter` 的默认超时、`maxRetries` 的归一三处会改变既有调用方的可观察结果。按 `^0.7.0`（展开为 `>=0.7.0 <0.8.0`）锁定的宿主**不会被自动升级**，改依赖前请照本节 + [docs/MIGRATION.md](./docs/MIGRATION.md) 逐条核对。**无破坏性类型面变更**：本版只增类型导出，不删、不收紧。
+
+### Breaking（对外契约）
+
+无。本版**没有**删除或收紧任何公开类型；下面的 Changed 里三处行为差异不需要调用方改代码，但依赖旧行为的断言 / 监控需要复核。
+
+### Changed（行为变更）
+
+- **`HttpReporter` 的 fetch 路径新增默认 10s 请求超时**（本轮唯一 high）：此前 `options.timeout` 被展开进 `RequestInit` 后被 fetch 静默忽略，服务端接受连接却不响应时该请求**永不结束**——每个 flush 周期新增一个悬挂 Promise，且 `ErrorMonitoring` 的 `reportTimeout` 判超时后会把批次重入队、原请求迟到落地即造成**同一批错误重复投递**。现在 `timeout` 由本实现翻译成 `AbortController` 中止，**缺省 10s**（与 `reportTimeout` 同口径），`<= 0` 表示不超时，并与调用方自带的 `signal` 合并（任一中止即中止，请求先落地时清掉定时器与监听器）。`NaN` / `Infinity` 归一到默认 10s（`Infinity` 会被 `setTimeout` 钳成 1ms、`NaN` 让定时器根本不起）。**慢于 10s 的上报端需要显式调大或传 `timeout: 0`**。`wx.request` 路径不注入默认值（走平台原生 `timeout`，未配置时由平台自身上限兜底），要同口径请显式传。
+- **`compareSnapshots` 的差异口径两处收紧**（`diff.ts`）：① **数组的非索引自有键**（`arr.version = 2`）现在参与比较，路径是 `root.list.version`（`.` 连接，与普通对象键同形）、增删同样报 `kind`——此前只按下标比较，而克隆引擎刻意保留这些键，等于「克隆费心保留的部分不参与比较」，`list.version` 从 1 改成 2 会得到 `changed: false`。② **住在内部槽位的值改为按引用比较**（`ArrayBuffer` / TypedArray / `DataView` / `Promise` / `WeakMap` / `WeakSet` / `Error`）：它们自有可枚举键恒为空，此前恒被判成无差异（`new ArrayBuffer(8)` vs `new ArrayBuffer(64)` 得到 `changed: false`）；克隆对它们本就保留原引用，引用相等是唯一可得的信号，现在**换一个实例即记一次差异**。**按 `changed` 做回滚 / 去重的消费方要复核**：状态里含这两类值时，`changed` 现在更可能为 `true`（此前漏报）。同一实例被原地改字节在快照层面仍无从分辨，不报差异；装箱原语（`new Number(1)` vs `new Number(1)`）仍按内容判，不受影响。
+- **`ErrorRecovery` 的 `maxRetries` 写入时归一**：小数向下取整、负数夹到 `0`、**非有限值（`NaN` / `Infinity`）回落到默认 3**。末条是防重试风暴的前提——`currentAttempt >= NaN` 恒为假会让上限彻底失效、`Infinity` 则永远达不到，两者都会让重试跟着调用方的失败循环一路跑下去（配置常来自 `parseInt(untrustedConfig)` 一类输入）。`0` 仍是「首次失败即放弃」的既有语义，未变。
+- **`deepEqual` 对装箱 `-0` 与未装箱口径一致**：`deepEqual(new Number(-0), new Number(0))` 从 `false` 变成 `true`，与 `deepEqual(-0, 0)` 相同（此前一个用 SameValueZero、一个用 `Object.is`，同一个值只因有没有装箱就得出相反结论）。选器缓存的命中判定依赖它，命中集合因此略有变化。
+
+### Fixed
+
+- **`$patch` 的符号键补丁从「静默丢弃」变成真的生效**（`Store.ts` + `deepMerge` + `deepCloneState`）：`$patch({ [sym]: v })` 此前照常发钩子、照常返回，却什么都没写——键集用 `Object.keys`（只给字符串键），而 `setState` / 脏键表 / `isStateKeyDirty` 本来就接受符号键。现在键集统一为 `ownEnumerableKeys`（字符串键 + 符号键），`deepMerge`、别名归因收集与 `deepCloneState` 一并跟上，**可写订阅者拿到的深拷贝载荷里也有符号键**（此前值在 `getState()` 里读得到、在通知载荷里读不到）。状态工厂与 `$replaceState` 里的符号键同样保留。
+- **`getErrorStats()` 正确统计原型链敏感的 operation 值**（`ErrorHandler.ts`）：`operation` 为 `'__proto__'` 时计数被静默丢弃（`Object.prototype` 的 setter 收到数字值不报错也不生效），`'constructor'` / `'toString'` 则让读操作取到继承来的函数而不是计数。现在累计阶段用无原型对象承载、**返回时展开回普通对象**（展开用 CreateDataProperty 语义、不触发 setter），统计正确的同时不改变对外返回值的原型，`hasOwnProperty` 之类的既有调用不受影响。
+- **`timeTravelPlugin` 安装失败不再留下无法退订的监听器**：初始快照记录（会调用用户传入的 `filter`）此前排在订阅建立**之后**，`filter` 抛错时安装带着异常退出而 disposer 永远拿不到，store 上挂着一个每次通知都抛错的死监听器，重试安装还会再叠一个。现在先记录初始快照、再建立订阅。
+- **快照选项的显式 `undefined` 不再击穿默认值**（`SnapshotManager`）：`createSnapshot(data, { onError: undefined })` 此前会击穿默认值，出错时那句 `options.onError(...)` 抛 `TypeError: options.onError is not a function`，把真正的克隆错误盖掉；`customCloner: undefined` 更狠——每个对象节点都落进 `cloneError`。三处合并（构造期 / 同步 / 异步）统一按「显式 `undefined` 等于未提供」处理。
+- **克隆保留超出最大合法下标的数组属性**：`arr[4294967295]` 这类属性此前被下标判据误当成数组元素交给下标循环（而循环只走到 `length`），既没被复制也没被附加属性循环捡走，在克隆产物里静默消失。现在下标判据带上 `2^32-2` 上界。
+- **装饰器误用在 class field 上时给出指名错误**：`withLoading` / `withTimeout` / `createDecorator` 此前读 `descriptor.value` 时抛裸的 `Cannot read properties of undefined`，把「用错装饰目标」这个真正原因藏掉；现在统一抛点名装饰器的 `TypeError`。
+- **`build:weapp` 的目录判据与两个姊妹脚本对齐**（`scripts/build-weapp.mjs`）：`classifyEntry` 的参照系改为与 `clean-dist.mjs` / `minify-dist.mjs` 同一份正本，消除三个脚本间的口径漂移。**本条在当前平台上未必可复现**（`projectRoot` 取自 `import.meta.url`，Node 已解析过重解析点；产物目录自身是链接的场景又由 `rejectUntrustedTarget` 提前中止），属预防性对齐。
+
+### Added（纯增量）
+
+- **公开类型面补齐 6 个导出**（都是新增，不影响既有代码）：`StoreConfig` / `ConfigState`（此前 `docs/API.md` 按导出类型介绍，但 `package.json` 的 `exports` 无深路径通配，精选面不列就等于发布包里不可达）、`AppThis`（与 `PageThis` / `ComponentThis` 同组三件套）、`ParametricSelectorFactory`（`createParametricSelector` 的**返回值**形态 `(state) => (params) => R`，此前没有导出名字，使用者只能手写柯里化签名）、`CloneContext` / `SnapshotErrorContext`（`extras` 聚合入口此前漏了这两个，`extras/snapshot` 子入口有）。
+- **性能**：`createDirtyTrackingProxy` 增加缓存快路径——action 体内每次读 `this.state` 都会先构造约 13 个闭包再在 `wrap` 上命中同一份代理，现在直接返回。
+
+### Docs
+
+- 十处文档与 skill 语义参考同步本轮行为变更：`compareSnapshots` 的路径方言表补「数组附加自有键」行与「槽位内建值按引用」判据、`HttpReporter` 的两条路径到点结束方式（**并纠正了 fetch/wx 两侧默认值的差异**）、`deepCloneState` 载荷覆盖符号键、`maxRetries` 归一规则、`$patch` 符号键（`API.md` 新增注 1）、`ParametricSelectorFactory` 与 `StoreConfig` / `ConfigState` 的可达性表述。
+
+### Tooling（工程链）
+
+- 新增两批回归锁共 **31 条用例**（`tests/unit/r7-ocr-full-review-fixes.test.ts` 30 条 + `tests/unit/r7-ocr-build-weapp-classify.test.ts` 1 条），覆盖本轮每条真改过行为的修复。测试总数 3839 → **3845**、套数 184 → **186**。
+- `isTrackableHost` 从 `debounce.ts` / `throttle.ts` / `withLoading.ts` 的三份重复收敛到 `decorators/common.ts` 一处；`ownEnumerableKeys` 落在 `core/utils/clone.ts`（依赖链叶子，与 `isIndexKey` / `isSlotBearingBuiltin` 同族），`helpers.ts` 反向 import 而非相反——避免循环依赖。
+
+### 明确不修与待拍板（避免后人重复踩）
+
+- **`persistencePlugin` 默认存储键不加随机后缀**（评审建议加，**本轮明确不做**）：默认键是 `geomstore_${store.name}`，而未命名 store 的名字来自模块级计数器（`store-0`、`store-1`…），多份 bundle 各有一份计数器时会撞键、互相覆盖持久化载荷。但持久化的意义就是**下次启动读回同一份数据**，键必须跨会话稳定——加随机后缀会让 restore 永远落空，是破坏性变更。「稳定」与「唯一」在默认键这一层不可兼得，取舍写进了 `PersistenceOptions.key` 的文档：需要隔离请显式传 `key`。
+- **`ComposedStore.subscribe` 在子 store 订阅失败时仍然抛错**（评审建议降级放行，**本轮明确不做**）：组合层通知完全依赖子 store 订阅，静默放行等于交给调用方一个**永不触发的监听器**，比抛错更难排查。保留 fail-fast，只把裸错误换成带归因与 `cause` 的新错误。
+- **`ownEnumerableKeys` 在 `deepCloneState` 每个节点上的分配开销**（实测比 `Object.keys` 慢约 3.4 倍，绝对值约 40ns / 对象）：为了符号键不再半途而废而接受。状态规模到「这几十纳秒可感知」时再优化（入口层收一次符号键是可行方向），本轮不做。
+- **`build-weapp` 的 `classifyEntry` 判据修复无法在当前平台构造出触发用例**（已实测：把判据改回旧写法，新写的回归测试照样通过）。修复保留为预防性对齐，代码注释与测试头已改成符合事实的表述，不再宣称「构建会中止」。
 
 ## [0.7.0] - 2026-09-23
 
@@ -699,7 +747,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [0.1.1]: https://github.com/openlide/GeomStore/releases/tag/v0.1.1
 [0.1.2]: https://github.com/openlide/GeomStore/releases/tag/v0.1.2
 [0.2.0]: https://github.com/openlide/GeomStore/releases/tag/v0.2.0
-[Unreleased]: https://github.com/openlide/geomstore/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/openlide/geomstore/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/openlide/geomstore/releases/tag/v0.8.0
 [0.7.0]: https://github.com/openlide/geomstore/releases/tag/v0.7.0
 [0.6.1]: https://github.com/openlide/geomstore/releases/tag/v0.6.1
 [0.6.0]: https://github.com/openlide/geomstore/releases/tag/v0.6.0

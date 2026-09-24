@@ -28,6 +28,22 @@ function withCause<T extends Error>(meta: T, original: unknown): T {
 }
 
 /**
+ * 重试次数的合法化：非有限值与小数一律归到安全区间
+ *
+ * `currentAttempt >= maxRetries` 这条上限判定对 NaN 恒为 false、对 Infinity 恒为 true
+ * 但永远达不到——两种输入都会让「防重试风暴」的上限形同虚设，重试循环按调用方的
+ * 失败循环一路跑下去（配置常来自 `parseInt(untrustedConfig)` 之类，NaN 并不罕见）。
+ * 负数/小数同样没有可用语义：负数等同 0（首次即判超限），小数会让上限随计数漂移。
+ * 归一口径与 ErrorMonitoring 的 `normalizeCapacity` 一致：非法值回落到默认 3
+ */
+function normalizeMaxRetries(value: number | undefined, fallback = 3): number {
+  if (value === undefined) {
+    return fallback
+  }
+  return Number.isFinite(value) ? Math.max(0, Math.floor(value)) : fallback
+}
+
+/**
  * 错误恢复器类
  *
  * @class ErrorRecovery
@@ -105,9 +121,9 @@ export class ErrorRecovery {
     for (const [errorCode, config] of Object.entries(strategies)) {
       this.strategies.set(errorCode, {
         ...config,
-        // 为RETRY策略添加默认值
+        // 为RETRY策略添加默认值（maxRetries 经归一：NaN/Infinity 会让上限判定失效）
         ...(config.strategy === RecoveryStrategy.RETRY && {
-          maxRetries: config.maxRetries !== undefined ? config.maxRetries : 3,
+          maxRetries: normalizeMaxRetries(config.maxRetries),
           retryDelay: config.retryDelay !== undefined ? config.retryDelay : 1000,
           exponentialBackoff: config.exponentialBackoff !== undefined ? config.exponentialBackoff : true,
         }),
@@ -275,7 +291,9 @@ export class ErrorRecovery {
    */
   private async executeRetryStrategy(context: RecoveryContext): Promise<unknown> {
     const { error, config } = context
-    const maxRetries = config.maxRetries !== undefined ? config.maxRetries : 3
+    // 二次归一：strategies 可经 getConfig 之外的路径被直接改写（Map 由实例持有），
+    // 归一放在读取侧才能保证上限判定与 cycleSpan/cycleWindow 的退避计算都拿到合法值
+    const maxRetries = normalizeMaxRetries(config.maxRetries)
     const baseDelay = config.retryDelay !== undefined ? config.retryDelay : 1000
     const useExponentialBackoff = config.exponentialBackoff !== undefined ? config.exponentialBackoff : true
 

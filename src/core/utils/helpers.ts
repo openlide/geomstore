@@ -8,7 +8,7 @@
  * - 克隆操作函数
  */
 
-import { deepCloneState } from './clone.js'
+import { deepCloneState, ownEnumerableKeys } from './clone.js'
 import { deepEqual } from './equality.js'
 
 // ==================== 类型判断 ====================
@@ -137,8 +137,9 @@ export const PROTO_SENSITIVE_KEYS = new Set(['__proto__', 'constructor', 'protot
  *
  * Object.assign 走 [[Set]] 语义，键为 `__proto__` 时会触发原型 setter 改写对象原型；
  * defineProperty 只定义自有数据属性，不触发任何 setter，可安全承载任意键名。
+ * 键为 symbol 时同样安全：符号不可能与原型链上的 accessor 同名。
  */
-export function defineOwnProperty(target: Record<string, unknown>, key: string, value: unknown): void {
+export function defineOwnProperty(target: object, key: string | symbol, value: unknown): void {
   Object.defineProperty(target, key, {
     value,
     writable: true,
@@ -172,7 +173,7 @@ export function deepMerge<T extends Record<string, unknown>>(target: T, ...sourc
   // 以「源对象 → 目标对象集合」记录，菱形共享的源对象合并进不同目标不受影响
   const seenPairs = new WeakMap<object, Set<object>>()
 
-  const mergeInto = (dst: Record<string, unknown>, src: Record<string, unknown>): void => {
+  const mergeInto = (dst: Record<PropertyKey, unknown>, src: Record<PropertyKey, unknown>): void => {
     let dsts = seenPairs.get(src)
     if (!dsts) {
       dsts = new Set()
@@ -182,10 +183,10 @@ export function deepMerge<T extends Record<string, unknown>>(target: T, ...sourc
     }
     dsts.add(dst)
 
-    for (const key of Object.keys(src)) {
+    for (const key of ownEnumerableKeys(src)) {
       const sourceVal = src[key]
 
-      if (PROTO_SENSITIVE_KEYS.has(key)) {
+      if (typeof key === 'string' && PROTO_SENSITIVE_KEYS.has(key)) {
         // 原型链敏感键：深拷贝后作为普通自有属性覆盖，绝不递归合并
         defineOwnProperty(dst, key, clone(sourceVal))
         continue
@@ -195,7 +196,7 @@ export function deepMerge<T extends Record<string, unknown>>(target: T, ...sourc
       if (isPlainObject(sourceVal)) {
         if (isPlainObject(existing)) {
           // 纯对象 → 纯对象：递归合并
-          mergeInto(existing as Record<string, unknown>, sourceVal as Record<string, unknown>)
+          mergeInto(existing as Record<PropertyKey, unknown>, sourceVal as Record<PropertyKey, unknown>)
         } else {
           // 目标位置为非纯对象（原语/null/数组/Map/Set/Date 等）：类型冲突时整体替换为深拷贝，
           // 避免递归合并被静默跳过导致 source 数据丢失

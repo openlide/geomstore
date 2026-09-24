@@ -21,6 +21,11 @@
 export { Store, isGeomStore } from './store/index.js'
 export type {
   StoreOptions,
+  // StoreConfig / ConfigState 与 StoreOptions 同属「构造 store 的配置类型」：
+  // docs/API.md 按导出类型介绍它们，而 package.json 的 exports 没有深路径通配，
+  // 精选面不列就等于该类型在发布包里不可达（文档与实际可导入面不符）
+  StoreConfig,
+  ConfigState,
   State,
   Actions,
   Getters,
@@ -66,6 +71,9 @@ export type {
   ConnectOptions,
   PageThis,
   ComponentThis,
+  // AppThis 与 PageThis / ComponentThis 是同一组三件套（描述集成后方法内的 this），
+  // docs/API.md 也把它与另两个并列介绍；精选面漏了它，App 侧就只剩裸 this 可用
+  AppThis,
   PageConfig,
   ComponentConfig,
   ExtractPageData,

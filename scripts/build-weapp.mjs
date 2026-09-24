@@ -96,7 +96,19 @@ function classifyEntry(full) {
   } catch {
     return 'link'
   }
-  return samePath(real, path.resolve(full)) ? 'dir' : 'link'
+  // 参照系必须同源（与 clean-dist.mjs / minify-dist.mjs 的 classifyEntry 同一份正本）：
+  // `path.resolve(full)` 只把路径绝对化、不解析重解析点，两侧口径不同。
+  // 本脚本里这条差异当下未必可达——projectRoot 取自 import.meta.url（Node 已解析过
+  // 重解析点），而 dist-weapp 自身是链接的场景又被 rejectUntrustedTarget 提前中止；
+  // 但三个脚本共用同一个判据时，留在旧写法上等于等着下一个调用方踩它
+  // （minify-dist 就踩过：dist 经 junction 抵达时整棵树被判成 link，压缩「成功」而产物原样未动）
+  let realParent
+  try {
+    realParent = fs.realpathSync(path.dirname(full))
+  } catch {
+    return 'link'
+  }
+  return samePath(real, path.join(realParent, path.basename(full))) ? 'dir' : 'link'
 }
 
 /**
