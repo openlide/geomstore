@@ -34,4 +34,11 @@ export type {
 
 export type { SnapshotDiff } from './diff.js'
 
+// compareSnapshots 作为独立函数再导出（此前只在 SnapshotManager 的实例方法上可达）：
+// docs/GUIDE.md 教的就是 `import { compareSnapshots } from '@openlide/geomstore/extras/snapshot'`，
+// 而这个名字从未出现在任何子路径的出口面上——照文档写的代码编译/运行都拿不到它
+// （0.7.0 与 0.8.0 的实际导出面均为 SnapshotManager / createSnapshot / createSnapshotAsync / default）。
+// 纯增量：实例方法保持原样、签名逐字相同，多出来的只是那个不依赖管理器实例的纯函数入口
+export { compareSnapshots } from './diff.js'
+
 export { default } from './SnapshotManager.js'

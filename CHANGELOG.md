@@ -7,7 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-暂无（0.8.0 已定稿，见下节）。
+暂无（0.8.1 已定稿，见下节）。
+
+## [0.8.1] - 2026-09-24
+
+修 0.8.0 发布后验证时撞到的一个**出口面缺陷**，并补上让它溜过去的那道门禁。本版是纯增量（patch）：不删、不收紧、不改任何既有行为。
+
+### Fixed
+
+- **`compareSnapshots` 现在真的能从子路径导入**（`extras/snapshot` 与聚合入口 `extras` 均已再导出）：`docs/GUIDE.md` 与 skill 语义参考教的就是 `import { createSnapshot, createSnapshotAsync, compareSnapshots } from '@openlide/geomstore/extras/snapshot'`，而这个名字**从未出现在任何子路径的出口面上**——0.7.0 与 0.8.0 的实际导出都只有 `SnapshotManager / createSnapshot / createSnapshotAsync / default`。照文档写的代码拿不到它（`TypeError: compareSnapshots is not a function`）。它此前只作为 `SnapshotManager` 的实例方法可达（`new SnapshotManager().compareSnapshots(a, b)` 一直可用，语义与实例状态无关）。本版把那个纯函数补进出口面，**实例方法原样保留、签名逐字相同**，纯增量、不影响任何既有代码。此前受影响的写法现在可用；若你当初绕开了它、改用深路径或类方法，可以直接换回来。
+
+### Tooling（工程链）
+
+- **新增文档门禁 G15：文档教的每个具名导入都必须真的在出口面上**（`tests/unit/docs-gates.test.ts`）。起因是上述缺陷的**性质**：既有的 G6 只校验「子路径存在」，缺了「子路径里有没有这个名字」这一维——`@openlide/geomstore/extras/snapshot` 确实存在，于是 G6 全程放行。
+  - 判据反查**真实出口面**：子路径 → 源入口的映射走 `package.json` 的 `exports`（`./dist/a/b.js` → `src/a/b.ts`，与构建同一条映射），导出名用 TypeScript checker 的 `getExportsOfModule` 取——能穿过 `export *`，也能取到**纯类型导出**（`export type { X }` 在运行时不存在，正则与动态 import 都取不到，而文档同样可能教 `import type { X }`）。为此付出约 0.8s 建 program 的成本，换值与类型两类都判得住。
+  - 刻意**不用** `pnpm skill:api` 的生成物当事实来源：它由 dist 派生，拿它校验文档等于「生成器若漏了某个名字，这道门禁也跟着一起漏」，形成自证。
+  - 覆盖 md 集合沿用既有 `collectMarkdown`（README / CONTRIBUTING / `docs/**` / skill 参考），并跳过 ```diff 围栏里以 `-` 开头的**删除侧**（FAQ 的包体积一节、MIGRATION 的 0.4.0 下沉一节是「此前怎么写」的历史对照，按定义不该在今天的出口面上；`+` 侧仍要判）。
+  - 门禁上线时**当场又抓到 2 处**同类漂移（`docs/FAQ.md` 与 `docs/MIGRATION.md` 里的 diff 删除侧），说明这类问题此前不止一处。
+  - 有效性已实测：把 `compareSnapshots` 的再导出撤掉后，G15 精确点名 `docs/GUIDE.md` 与 skill 语义参考两处并变红。
 
 ## [0.8.0] - 2026-09-24
 
@@ -747,7 +764,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [0.1.1]: https://github.com/openlide/GeomStore/releases/tag/v0.1.1
 [0.1.2]: https://github.com/openlide/GeomStore/releases/tag/v0.1.2
 [0.2.0]: https://github.com/openlide/GeomStore/releases/tag/v0.2.0
-[Unreleased]: https://github.com/openlide/geomstore/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/openlide/geomstore/compare/v0.8.1...HEAD
+[0.8.1]: https://github.com/openlide/geomstore/releases/tag/v0.8.1
 [0.8.0]: https://github.com/openlide/geomstore/releases/tag/v0.8.0
 [0.7.0]: https://github.com/openlide/geomstore/releases/tag/v0.7.0
 [0.6.1]: https://github.com/openlide/geomstore/releases/tag/v0.6.1

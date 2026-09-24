@@ -39,7 +39,9 @@ export { PerformanceMonitor, MetricsCollector, PerformanceAnalyzer, analyzerPlug
 export type { PerformanceMetrics, PerformanceOptions, PerformanceStats, MetricType } from './performance.js'
 
 // ==================== 快照系统（同 `./snapshot.js` 子入口） ====================
-export { SnapshotManager, createSnapshot, createSnapshotAsync } from './snapshot.js'
+// 显式名单而非 `export *`：本入口要策展公共面，compareSnapshots 与子入口同名单保持一致
+// （漏了它就会出现「子入口能 import、聚合入口不能」的面漂移）
+export { SnapshotManager, createSnapshot, createSnapshotAsync, compareSnapshots } from './snapshot.js'
 export type {
   SnapshotOptions,
   CloneContext,
