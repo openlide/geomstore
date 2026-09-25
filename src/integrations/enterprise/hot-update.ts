@@ -21,7 +21,7 @@ declare const wx: WxApi
  * 在收口之前请勿把它当作可信的版本门禁。
  * **发版时必须与 `package.json` 一起改**——清单见 CONTRIBUTING 的「构建与发布」
  */
-const LIBRARY_VERSION = '0.8.1'
+const LIBRARY_VERSION = '0.8.2'
 
 /**
  * 热更新前保存的状态备份

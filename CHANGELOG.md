@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+暂无（0.8.2 已定稿，见下节）。
+
+## [0.8.2] - 2026-09-26
+
+发布链与文档面的一次复审收口：把 `CHANGELOG.md` 移出 npm 包（tarball -20.6%）、更正「构建 npm 整目录拷贝」相关的四处文档、补齐本包安装却从未声明的四个全局调试表类型、新增 G18 / G19 / G20 三道文档门禁。**运行时零变化**——5 个 ts 文件的可执行代码一行未动，`declare global` 不产生任何 JS；类型面为纯增量（新增 `AnalyzerGlobalApi` / `TimeTravelGlobalApi` 两个导出接口与四个全局声明）。改动经 open-code-review 两轮评审（第二轮全量覆盖被 OCR 按扩展名排除的文件），四道新门禁均经变异测试确认会红。
+
 ### Changed
 
 - **`CHANGELOG.md` 不再随 npm 包发布**（`package.json` 的 `files` 白名单与 `.npmignore` 的兜底规则两处同步移除）。它对包使用者零价值——完整历史在仓库与 GitHub 上——体积却实打实地计入每个安装者的下载与 CI 缓存成本，发它下去是纯亏。运行时与类型面无任何变更。
@@ -816,7 +822,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [0.1.3]: https://github.com/openlide/GeomStore/releases/tag/v0.1.3
 [0.2.0]: https://github.com/openlide/GeomStore/releases/tag/v0.2.0
 [0.2.1]: https://github.com/openlide/GeomStore/releases/tag/v0.2.1
-[Unreleased]: https://github.com/openlide/geomstore/compare/v0.8.1...HEAD
+[Unreleased]: https://github.com/openlide/geomstore/compare/v0.8.2...HEAD
+[0.8.2]: https://github.com/openlide/geomstore/releases/tag/v0.8.2
 [0.8.1]: https://github.com/openlide/geomstore/releases/tag/v0.8.1
 [0.8.0]: https://github.com/openlide/geomstore/releases/tag/v0.8.0
 [0.7.0]: https://github.com/openlide/geomstore/releases/tag/v0.7.0
