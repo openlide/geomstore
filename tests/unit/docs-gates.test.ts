@@ -106,6 +106,91 @@ function countIn(relDir: string, accept: (name: string) => boolean, recursive = 
 const countJs = (relDir: string): number => countIn(relDir, (name) => name.endsWith('.js'))
 const countSrcModules = (): number => countIn('src', (name) => name.endsWith('.ts') && !name.endsWith('.d.ts'))
 
+/**
+ * `src/**` 下的实现模块（仓库根相对路径、正斜杠），不含 `.d.ts`。
+ *
+ * 排除 `.d.ts` 是防御性的：当前仓库一个都没有，真出现也只会是手写声明、
+ * 描述的是类型面而非可执行模块图。
+ *
+ * G18 与 G19 都要遍历它：前者在源码的 JSDoc `@example` 里找被教给用户的 import 路径，
+ * 后者拿它建引用图。注意 `src/types/**` 是普通 `.ts`、**在**图里——G19 刻意放行
+ * core → types（公共契约集中一处是设计意图，见该门禁的注释），挡的是 core → extras
+ * 与 core → plugins。
+ */
+const srcTsFiles: string[] = (() => {
+  const out: string[] = []
+  const walk = (relDir: string): void => {
+    for (const e of readdirSync(path.join(repoRoot, relDir), { withFileTypes: true })) {
+      const rel = `${relDir}/${e.name}`
+      if (e.isDirectory()) walk(rel)
+      else if (e.name.endsWith('.ts') && !e.name.endsWith('.d.ts')) out.push(rel)
+    }
+  }
+  walk('src')
+  return out.sort()
+})()
+
+/**
+ * `src/**` 的模块引用图：`相对路径 → 它 import 的仓库内相对路径集合`。
+ *
+ * 解析用 TypeScript 的 AST（`ts.createSourceFile`，只要语法不要类型），不用正则：
+ * 正则分不清 `import x from './a'`、动态 `import('./a')` 与 `export … from './a'`，
+ * 也会被字符串字面量与注释里的同形文本骗到——而"core 不得依赖 extras"这条不变量
+ * 一旦被绕过，门禁必须是真的红，不能是靠正则碰运气。
+ *
+ * 相对说明符按 NodeNext 的写法还原：源码写的是 `./x.js`，磁盘上是 `x.ts`；
+ * 目录说明符落到该目录的 `index.ts`。解析不到就**不记边**（跨包的 specifier、
+ * 以及写错的路径都不构成本仓库内部的依赖），但入口完整性由 G7 另行兜住。
+ */
+const srcImportGraph = (): Map<string, Set<string>> => {
+  const graph = new Map<string, Set<string>>()
+  for (const rel of srcTsFiles) {
+    const sf = ts.createSourceFile(path.join(repoRoot, rel), read(rel), ts.ScriptTarget.ESNext, /* setParentNodes */ false)
+    const specs: string[] = []
+    const visit = (node: ts.Node): void => {
+      if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)) {
+        specs.push(node.moduleSpecifier.text)
+      } else if (
+        ts.isCallExpression(node) &&
+        node.expression.kind === ts.SyntaxKind.ImportKeyword &&
+        node.arguments.length === 1 &&
+        ts.isStringLiteral(node.arguments[0])
+      ) {
+        specs.push(node.arguments[0].text)
+      }
+      ts.forEachChild(node, visit)
+    }
+    visit(sf)
+
+    const deps = new Set<string>()
+    const addResolved = (dir: string, base: string): void => {
+      for (const cand of [`${dir}/${base}.ts`, `${dir}/${base}/index.ts`]) {
+        if (existsSync(path.join(repoRoot, cand))) {
+          // 必须 posix 归一：`../../extras/snapshot.js` 从 src/core/store 拼出来是
+          // `src/core/store/../../extras/snapshot.ts`，existsSync 会替我们解析掉 `..`，
+          // 但存进图里的若是不归一的原串，G19 的 `startsWith('src/extras/')` 就永远判不中
+          // —— 门禁会在真有人违反分层时静默放行。变异测试实测过这条。
+          deps.add(path.posix.normalize(cand))
+          break
+        }
+      }
+    }
+    for (const spec of specs) {
+      // tsconfig 的 `@/*` 别名映射到 `src/*`（jest 的 moduleNameMapper 同一口径），
+      // tsc 会放行这种写法。不解析它，core 里写 `from '@/extras/…'` 就能绕过分层判据
+      // —— 本门禁存在的意义正是抓主动违规，所以别名必须与相对路径同权解析。
+      if (spec.startsWith('@/')) {
+        addResolved('src', spec.slice(2).replace(/\.js$/, ''))
+        continue
+      }
+      if (!spec.startsWith('.')) continue
+      addResolved(path.posix.dirname(rel), spec.replace(/^\.\//, '').replace(/\.js$/, ''))
+    }
+    graph.set(rel, deps)
+  }
+  return graph
+}
+
 describe('文档门禁 G1 / G2：标题结构', () => {
   it.each(mdFiles)('%s 只有一个 h1', (rel) => {
     let inFence = false
@@ -604,6 +689,26 @@ describe('文档门禁 G12：ARCHITECTURE 的目录树与现实一致', () => {
     const block = /## 3\. 目录结构与职责[\s\S]*?```([^`]*)```/.exec(src)![1]
     expect(block).not.toMatch(/\d+\s*(文件|行)/)
   })
+
+  /**
+   * 「Store 门面的职责分工」表点名的每个协作者文件都必须真实存在。
+   *
+   * 与上面「目录树点名的子目录」同一类判据、同一份理由：那张树是导航入口，
+   * 这张表是「改某个语义该动哪个文件」的导航入口，两者都会随拆分失真，而失真后的
+   * 代价是**照着一条不存在的路径去找实现**。协作者改名或挪目录时这张表必须跟着改，
+   * 判据就取「表里写的路径在磁盘上有没有」。
+   *
+   * 只取表内第一列的反引号路径（`` `core/store/ActionManager.ts` `` 形状）：
+   * 第二、三列写的是方法名与语义描述，不是路径，混进来会全是噪声。
+   */
+  it('Store 职责分工表点名的每个协作者文件都真实存在', () => {
+    const section = /### Store 门面的职责分工[\s\S]*?(?=\n#{2,3} |\n```|$)/.exec(read('docs/ARCHITECTURE.md'))
+    expect(section).not.toBeNull()
+    const paths = new Set([...section![0].matchAll(/`(core\/[A-Za-z][\w/.-]*\.ts)`/g)].map((m) => `src/${m[1]}`))
+    // 表本身退化成一个字面量都没有时，这条判据会恒真通过——先确认它真抓到了东西
+    expect(paths.size).toBeGreaterThanOrEqual(8)
+    expect([...paths].filter((p) => !existsSync(path.join(repoRoot, p)))).toEqual([])
+  })
 })
 
 /**
@@ -758,5 +863,249 @@ describe('文档门禁 G17：错误码与钩子名对源码', () => {
   it('每个钩子名都在文档里出现过（加了钩子忘了写文档会变红）', () => {
     const missing = hookNames.filter((h) => !corpus.includes(h))
     expect(missing).toEqual([])
+  })
+})
+
+/**
+ * 文档门禁 G18：源码 JSDoc 里教给用户的 import 路径
+ *
+ * 起因是一个**已经躺在源码里**的缺陷。`src/plugins/devtools/timeTravelPlugin.ts`、
+ * `src/plugins/performance/analyzerPlugin.ts` 与 `src/plugins/performance/index.ts`
+ * 的 `@example` 教的是 `@geomstore/core` / `@geomstore/plugins` / `@geomstore/plugins/performance`——
+ * **包名 scope 还是改名前的 `@geomstore`，子路径也不在 `exports` 里**。照抄直接
+ * `ERR_MODULE_NOT_FOUND`。
+ *
+ * 真正的盲区不是这三行，而是**它们能活下来这件事**：G6 与 G15 都只遍历 `mdFiles`
+ * （`collectMarkdown` 收集 README / CONTRIBUTING / docs/** / skill 参考），
+ * 而 `src/**` 的 JSDoc `@example` 从来不在任何判据的阅读范围内。实测 `src/**` 里有
+ * 22 处以包名书写的 import 示例，此前一处都没被校验过——漏出三处失效路径是必然结果，
+ * 不是偶然。
+ *
+ * 判据与 G6 同源同口径：合法子路径 = `exports` 的键 ∪ 转发目录（`stubDirs`）。
+ * 另加 G6 没有的一维——**包名 scope 本身**。`@geomstore/*` 不是"子路径不存在"，
+ * 它是"包名都写错了"，两种错法要给出两种可读的诊断，否则后来人只会照着改子路径、
+ * 留下一个仍然装不上的 scope。
+ *
+ * `@module` 只校验**带包名 scope** 的那几条：仓库里绝大多数 `@module` 是内部标识符
+ * （`@module cache/types`、`@module plugins/WxStorageBackend`），拿 exports 去判它们
+ * 会把 30 条正确的内部标注全判成错。只盯 `@` 开头的，是把判据对准"会被用户照抄"的那一类。
+ */
+describe('文档门禁 G18：源码 JSDoc 里的 import 路径', () => {
+  const legal = new Set([...exportKeys.map(subOf), ...stubDirs])
+
+  it('src JSDoc 教给用户的 import 示例都指向真实子路径，且用的是当前包名', () => {
+    const bad = new Set<string>()
+    let seen = 0
+    for (const rel of srcTsFiles) {
+      const src = read(rel)
+      // 与 G6 同一条正则形态，只是把语料从 md 换成 src；旧 scope 单独一组。
+      // 动词锚必须含 `import(`：extras 的文档把动态 `await import('…')` 当作"按需加载、
+      // 不进主包"的推荐写法在教（src/extras/index.ts / enterprise.ts 就各有一处），
+      // 只认 from/require 会让这种形态的失效子路径静默放行（变异测试实测过）。
+      for (const m of src.matchAll(/(?:from|require\(|import\()\s*['"]@(openlide\/)?geomstore(?:\/([^'"]*))?['"]\)?/g)) {
+        seen += 1
+        const where = `${rel}:${src.slice(0, m.index).split('\n').length}`
+        if (!m[1]) {
+          bad.add(`${where} 用了改名前的包名 scope @geomstore（应为 @openlide/geomstore）`)
+          continue
+        }
+        const sub = (m[2] ?? '').replace(/[.,;)\]]+$/, '')
+        if (sub.includes('*') || sub.includes('{')) continue // 聚合写法不是子路径断言
+        if (!legal.has(sub)) bad.add(`${where} 教了 @openlide/geomstore${sub ? `/${sub}` : ''}，该子路径不存在`)
+      }
+      // @module 只看带包名 scope 的；裸内部标识符（@module cache/types）不参与判定
+      for (const m of src.matchAll(/@module\s+@(openlide\/)?geomstore(?:\/(\S*))?/g)) {
+        seen += 1
+        const where = `${rel}:${src.slice(0, m.index).split('\n').length}`
+        if (!m[1]) {
+          bad.add(`${where} 的 @module 用了改名前的包名 scope @geomstore`)
+          continue
+        }
+        const sub = (m[2] ?? '').replace(/[.,;:!?)\]。、：；（）]+$/, '')
+        if (!legal.has(sub)) bad.add(`${where} 的 @module 指向 @openlide/geomstore${sub ? `/${sub}` : ''}，该子路径不存在`)
+      }
+    }
+    // 一处都没抓到 = 正则失效了，否则本用例恒真通过（与 G15 的抓取自检同一动机）
+    expect({ seen, offenders: [...bad] }).toEqual({ seen: expect.any(Number), offenders: [] })
+    expect(seen).toBeGreaterThan(5)
+  })
+})
+
+/**
+ * 文档门禁 G19：ARCHITECTURE 的分层不变量对真实引用图
+ *
+ * `docs/ARCHITECTURE.md` 与 `CONTRIBUTING.md` 都把「`extras/*` 的实现不得被核心反向依赖」
+ * 写成硬约束，`docs/ARCHITECTURE.md` 的「体积模型」整节又建立在它之上（主入口闭包
+ * 不含 extras，是分层换来体积分层的前提）。但这条约束此前**只存在于文字里**：
+ * 谁在 `core/store` 里 `import` 一个 `extras/*`，没有任何东西会变红。
+ *
+ * 这与 G12 同一类：ARCHITECTURE 声明的树状结构由门禁反查现实，声明的依赖方向也该如此。
+ * 判据走 `srcImportGraph()`（TypeScript AST，不用正则），方向取 `core/**` 的**出边**——
+ * 「不得依赖」是出边性质，反向遍历只会把同一件事判反。
+ *
+ * 只判 `core → 可选能力实现`。可选能力的实现面是**两个目录**：`src/extras/**` 之外，
+ * `src/plugins/**` 也是——`plugins/performance` 与 `plugins/devtools` 正是
+ * `extras/performance`、`extras/plugins` 的实现（`src/plugins/index.ts` 自述其对外
+ * 发布路径就是后者），core 依赖它们同样会让主入口闭包含进可选能力。
+ * `core → types` 是设计意图（公共契约集中一处）故放行；`extras/*` 之间「尽量不互相
+ * 依赖」是取舍建议而非规则；`index.ts → integrations` 也是（主入口本就导出小程序集成）。
+ * 把这些也判死只会逼出例外名单，而例外名单是漂移的温床。
+ */
+describe('文档门禁 G19：core 不得依赖可选能力实现（extras 与 plugins）', () => {
+  /** core 不得依赖的实现目录；`src/plugins/**` 与 `src/extras/**` 同属可选能力实现面 */
+  const FORBIDDEN = ['src/extras/', 'src/plugins/']
+
+  it('core/** 的出边里没有 extras/** 与 plugins/**', () => {
+    const graph = srcImportGraph()
+    const violations: string[] = []
+    for (const [from, deps] of graph) {
+      if (!from.startsWith('src/core/')) continue
+      for (const to of deps) {
+        for (const dir of FORBIDDEN) {
+          if (to.startsWith(dir)) violations.push(`${from} → ${to}`)
+        }
+      }
+    }
+    expect(violations).toEqual([])
+  })
+
+  it('引用图本身建起来了（core 与 extras 都有模块，且 core 的出边非空）', () => {
+    const graph = srcImportGraph()
+    const core = [...graph.keys()].filter((f) => f.startsWith('src/core/'))
+    const extras = [...graph.keys()].filter((f) => f.startsWith('src/extras/'))
+    // 这道自检防的是"图建空了，上面那道恒真通过"——与 G15 抓取自检同一动机
+    expect(core.length).toBeGreaterThan(20)
+    expect(extras.length).toBeGreaterThan(20)
+    expect([...graph.values()].filter((d) => d.size > 0).length).toBeGreaterThan(20)
+  })
+})
+
+/**
+ * 文档门禁 G20：SKILL.md「只装了 npm 包」一节与真实发布面一致
+ *
+ * 起因是一个已经发出去、且**没有任何门禁会红**的错误：那一节原写
+ * 「同目录的 `CHANGELOG.md` 与包根 `README.md`（两者都在 `files` 白名单 /
+ * npm 无条件补发的清单里）」。本包随后把 `CHANGELOG.md` 移出了 `files`，
+ * 那句话变假——而 SKILL.md 恰恰是在 `collectMarkdown()` 的范围内
+ * （G5 链接锚点、G6 子路径、G10 覆盖率、G3/G4 占位符全都管它），
+ * **唯独没有一条问「你说使用者能拿到的这个东西，真的在包里吗」**。
+ *
+ * 判据取真实发布面：跑 `npm pack --dry-run` 拿文件清单，逐行核对该节里的
+ * 路径声明。极性按行判定——行内出现「不存在 / 不在 / 没有 / 查不到 / 不随 /
+ * 不带」之一，该行的路径都必须是**缺席**的；否则都是**在场**的。
+ * 同一行的路径共享极性是一条成文契约：要在一行里同时说"有"和"没有"，
+ * 拆成两行（这也是本仓库其它文档的既有写法）。
+ *
+ * 两条设计取舍：
+ * - **用 `--ignore-scripts`**：prepack 会生成 14 个转发 stub 目录并在 postpack
+ *   清掉，跑带脚本的 pack 会在测试期间短暂改动工作树（与并行 worker 读仓库打架），
+ *   且 npm 在 `--dry-run` 下确实会跑 postpack、事后干净但过程不干净。
+ *   代价是**stub 目录量不到**（清单 319 而非 333）。本节不声称任何 stub 目录，
+ *   故不受影响；真要在这里提 stub，那是另一类声明（`files` 白名单而非打包结果），
+ *   由 `generate-subpath-stubs.mjs` 的白名单校验负责。
+ * - **只认行首反引号里的路径 token**，且必须带 `/` 或已知扩展名（md/json/ts/js/mjs/cjs），
+ *   于是 `exports` / `files` 这类 package.json 字段名不会被误当成路径。白名单外的
+ *   扩展名会被跳过——这是一处已知的假阴性面：未来若该节声明了 `.wxs` 之类的新类型
+ *   且名字写错，本门禁不会红。
+ */
+describe('文档门禁 G20：SKILL.md 的 npm-only 一节与真实发布面一致', () => {
+  const PACKAGE_NAME = '@openlide/geomstore'
+  const SECTION = '### 3）在其他小程序项目内'
+  const SKILL_REL = '.codebuddy/skills/geomstore/SKILL.md'
+
+  const packFiles = (): string[] => {
+    const out = execFileSync('npm', ['pack', '--dry-run', '--json', '--ignore-scripts'], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      maxBuffer: 64 * 1024 * 1024,
+    })
+    const json = JSON.parse(out.slice(out.indexOf('{'))) as Record<string, { files: Array<{ path: string }> }>
+    const first = Object.values(json)[0]
+    if (!first || !Array.isArray(first.files)) {
+      throw new Error(`npm pack --dry-run --json 的输出解析不出文件清单（原始输出前 200 字：${out.slice(0, 200)}）`)
+    }
+    return first.files.map((f) => f.path)
+  }
+
+  /** 反引号 token → 包内相对路径；不是路径（字段名之类）返回 null */
+  const toPackPath = (token: string): string | null => {
+    let t = token.trim()
+    if (t.startsWith(`${PACKAGE_NAME}/`)) t = t.slice(PACKAGE_NAME.length + 1)
+    if (t.startsWith('node_modules/')) {
+      const scoped = /^node_modules\/@[^/]+\/[^/]+\/(.*)$/.exec(t)
+      if (!scoped) return null
+      t = scoped[1]
+    }
+    if (!t || !/[/]|\.(?:md|json|ts|js|mjs|cjs)$/.test(t)) return null
+    return t
+  }
+
+  /**
+   * glob → RegExp，支持段内通配（`*.d.ts`）与 `**`。
+   *
+   * 两个容易写错的点，都是实测踩出来的：
+   * - **段内星号不是字面量**。只把「整段恰好一个星号」当通配的话，`*.d.ts` 会落进
+   *   字面量转义分支、星号变成字面星号，于是「dist 下任意深度的 .d.ts」一条都匹配
+   *   不上（门禁首次运行就报了这条假阴性）。
+   * - **双星段要连同其后的斜杠整体可选**。glob 语义下「dist 下任意深度（含零级）
+   *   的 .d.ts」必须匹配 `dist/index.d.ts`，朴素的任意匹配会要求 dist 之后至少
+   *   还有一级。
+   */
+  const globRe = (p: string): RegExp => {
+    const segs = p.split('/')
+    let src = ''
+    for (let i = 0; i < segs.length; i += 1) {
+      const seg = segs[i]
+      if (seg === '**') {
+        src += i === segs.length - 1 ? '.*' : '(?:.*/)?'
+        continue
+      }
+      if (i > 0 && segs[i - 1] !== '**') src += '/'
+      src += seg
+        .split('*')
+        .map((part) => part.replace(/[.+?^${}()|[\]\\]/g, '\\$&'))
+        .join('[^/]*')
+    }
+    return new RegExp(`^${src}$`)
+  }
+
+  const isInPack = (files: string[], p: string): boolean => {
+    if (p.includes('*')) {
+      const re = globRe(p)
+      return files.some((f) => re.test(f))
+    }
+    if (p.endsWith('/')) return files.some((f) => f.startsWith(p))
+    return files.includes(p)
+  }
+
+  const ABSENT_WORDS = /不存在|不在|没有|查不到|不随|不带/
+
+  it('该节声称在包内的路径都在发布面里，声称不在的都不在', () => {
+    const src = read(SKILL_REL)
+    const start = src.indexOf(SECTION)
+    if (start < 0) throw new Error(`SKILL.md 找不到小节标题：${SECTION}（小节改名/删除会让本用例失去判据，请同步本文件）`)
+    const rest = src.slice(start + SECTION.length)
+    const end = rest.search(/\n#{2,3} /)
+    const lines = (end < 0 ? rest : rest.slice(0, end)).split('\n')
+
+    const files = packFiles()
+    const claims: Array<{ line: number; path: string; wantPresent: boolean }> = []
+    lines.forEach((text, i) => {
+      const wantPresent = !ABSENT_WORDS.test(text)
+      for (const m of text.matchAll(/`([^`]+)`/g)) {
+        const p = toPackPath(m[1])
+        if (p) claims.push({ line: i + 1, path: p, wantPresent })
+      }
+    })
+    // 抓取自检：一条都没解析出来 = 判据整体空转，否则上面那轮是恒真通过
+    expect(claims.length).toBeGreaterThanOrEqual(4)
+
+    const bad = claims
+      .filter((c) => isInPack(files, c.path) !== c.wantPresent)
+      .map((c) => {
+        const actual = isInPack(files, c.path) ? '在' : '不在'
+        return `SKILL.md「${SECTION}」第 ${c.line} 行：${c.path} —— 文档称其${c.wantPresent ? '在' : '不在'}包内，实际${actual}`
+      })
+    expect(bad).toEqual([])
   })
 })

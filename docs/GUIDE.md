@@ -404,7 +404,7 @@ const monitoring = new ErrorMonitoring({
 
 - **只缓存热点键**：`enableCache(['visibleRows'])`；缓存只对 `getCached()` 生效，想主动清用 `invalidateCache()`——口径见 [CONCEPTS §6](./CONCEPTS.md#6-缓存cache)
 - **`cacheConfig.enableStats` 默认开启**，方向是按需**关闭**：性能敏感场景传 `false` 省掉计数，代价是 `getCacheStats()` 的 `hits` / `misses` 恒为 0——见 [CONCEPTS §6](./CONCEPTS.md#6-缓存cache)
-- **按需引入 extras**：没 import 的能力不要进模块图；体积收益取决于宿主有没有打包器（微信「构建 npm」按包内 `miniprogram` 目录整目录计，子路径分层换来的是运行时按需加载）——见 [README · 小程序环境适配](../README.md#小程序环境适配)
+- **按需引入 extras**：没 import 的能力不要进模块图；体积收益取决于宿主有没有打包器（微信「构建 npm」把本包当「小程序 npm 包」整目录拷贝 `miniprogram` 目录，子路径分层换来的只是运行时按需加载，上传体积不变；此时能做的只有把构建输出挪进分包）——见 [README · 小程序环境适配](../README.md#小程序环境适配) 与 [把构建结果放进分包](../README.md#把构建结果放进分包)
 - **大对象用异步快照**：`batchSize`（默认 100）控制单批工作量，批间让出控制权避免长任务卡顿；非法值的归一化与超时口径见 [API.md](./API.md)
 - **独立缓存**：需要自有策略时直接用 `LRUCache`（容量淘汰 + TTL）——见 [CONCEPTS §6](./CONCEPTS.md#6-缓存cache)
 - **列表写入倾向「追加 / 换引用」**：删边类写入（原地替换对象值、`delete`、`Map` / `Set` 删除）会触发脏键归属索引的一次全量重建——见 [CONCEPTS §2 脏跟踪的覆盖面](./CONCEPTS.md#脏跟踪的覆盖面)

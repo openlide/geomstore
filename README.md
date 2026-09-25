@@ -115,8 +115,43 @@ import { persistencePlugin } from '@openlide/geomstore/extras/plugins'
 
 ## 小程序环境适配
 
-- **体积收益取决于宿主有没有打包器**：走 webpack / vite / esbuild 的宿主会把没 import 的子入口摇掉；只靠 npm + 开发者工具「构建 npm」的宿主按包内 `miniprogram` 目录整目录计体积，此时子路径分层换来的是**运行时按需加载**，不是上传体积变小。主包额度紧张时可只引主入口并自行裁剪该目录，或改走自带打包器的方案。产物体积请以 `pnpm build:weapp` 的输出为准，本文不抄实测数字
+- **体积收益取决于宿主有没有打包器**：走 webpack / vite / esbuild 的宿主会把没 import 的子入口摇掉；只靠 npm + 开发者工具「构建 npm」的宿主则完全不是按需的——本包带 `miniprogram` 字段，微信把它当**小程序 npm 包**处理，构建时**整目录拷贝** `dist-weapp/`，既不看你的 `import` 也不做可达性分析，此时子路径分层换来的只是**运行时按需加载**，上传体积分文不省。产物体积请以 `pnpm build:weapp` 的输出为准，本文不抄实测数字
 - 环境差异（`wx.request` / `fetch` 上报、同步存储后端、基础库缺失的 `console.group`、定时器 `unref`）与生产模式的信号出口（需要被监控发现的问题统一走 `onError`）都已适配，具体契约见 [docs/CONCEPTS.md §11](./docs/CONCEPTS.md#调试表与持久化)，按症状排查见 [docs/FAQ.md](./docs/FAQ.md)
+
+### 把构建结果放进分包
+
+上一条说的「整目录拷贝」是微信的既定行为，库这一侧改不动——**手改 `node_modules` 里的文件去"裁剪"是跟安装器对抗，下次 `npm i` 会被覆盖回去，不要这么做**。官方给的使用者侧手段只有一类：**让 `miniprogram_npm` 落在分包**——或用配置指定输出位置（下文），或在分包目录各放一份自己的依赖（见本节末尾）。两个路径都从官方文档「npm 支持」而来，字段名以官方 project.config.json 的 schema 为准。
+
+在 `project.config.json` 的 `setting` 下（开发者工具 1.03.2006302 起）：
+
+```json
+{
+  "miniprogramRoot": "./miniprogram/",
+  "setting": {
+    "packNpmManually": true,
+    "packNpmRelationList": [
+      {
+        "packageJsonPath": "./package.json",
+        "miniprogramNpmDistDir": "./miniprogram/subPackages/store/"
+      }
+    ]
+  }
+}
+```
+
+四个容易踩的点：
+
+- **每项只有 `packageJsonPath` 和 `miniprogramNpmDistDir` 两个字段，且都必填。** 没有 `path` 字段——官方 schema 未声明禁止未知字段，写错**不会报错**（未知字段如何处理官方文档未记载；实测与社区反馈均指向被静默忽略）。看起来"配了没效果"通常就是这个原因。
+- **`miniprogramNpmDistDir` 是 `miniprogram_npm` 的父目录**，工具会自己在这下面再创建一层 `miniprogram_npm`。主包写 `./miniprogram/`，分包写 `./miniprogram/subPackages/store/`。
+- **两个路径都相对项目根**（`project.config.json` 所在目录）解析。
+- **触发方式没变**，仍是菜单「工具 → 构建 npm」；`packNpmManually` 里的"手动"指的是手动**指定路径**，不是手动触发构建。
+
+同一目标的另外两种做法，按适用场景挑：
+
+- **只是想挪出主包、不想碰 `setting`**：在分包目录下各放一份自己的 `package.json` + `node_modules`，构建 npm 会在该分包下自动生成一份 `miniprogram_npm`。这是官方构建行为直接支持的做法（官方原文：为每一个 `package.json` 对应的 `node_modules` 构建一份 `miniprogram_npm`），连 `packNpmManually` 都不用开。
+- **构建 npm 报「没有找到可以构建的 NPM 包」**：多半是 `miniprogramRoot` 指向子目录、而 `package.json` 与 `node_modules` 在项目根，默认方式只在 `miniprogramRoot` 内找、因此找不到。此时 `packNpmManually` 正是官方给的解法（见上面示例），与体积无关也会用到它。
+
+**要清楚这解决的是什么、没解决什么**：它把整份 `dist-weapp/` 从主包额度挪进分包额度，**总字节数一点没少**，也不按能力细分——`extras/*` 用没用全都一起挪。真正想把上传体积压到"实际用到的那部分"，只有让宿主带打包器（走上一条的摇树路径）；否则本包的子路径分层对上传体积无能为力，这是形态决定的，不是配置问题。
 
 ## 开发
 
@@ -136,7 +171,7 @@ import { persistencePlugin } from '@openlide/geomstore/extras/plugins'
 | [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md)                                 | 分层架构、目录职责与设计取舍                         |
 | [docs/MIGRATION.md](./docs/MIGRATION.md)                                       | 版本迁移与行为变更对照（历史只写在这里）             |
 | [examples/](./examples)                                                        | 可运行示例五类                                       |
-| [CHANGELOG.md](./CHANGELOG.md)                                                 | 完整变更记录（随包发布）                             |
+| [CHANGELOG.md](./CHANGELOG.md)                                                 | 完整变更记录（**不随包发布**，见 GitHub 仓库）       |
 | [CONTRIBUTING.md](./CONTRIBUTING.md)                                           | 脚本、门禁清单、构建与发版流程                       |
 | [.codebuddy/skills/geomstore/SKILL.md](./.codebuddy/skills/geomstore/SKILL.md) | 供 AI 编码助手读取的库使用规程（仓库内，不随包发布） |
 

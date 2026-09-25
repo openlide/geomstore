@@ -3,7 +3,9 @@
  *
  * 提供开发者工具相关的插件，包括时间旅行等功能
  *
- * @module @openlide/geomstore/extras/plugins（timeTravelPlugin 亦经该入口再导出）
+ * @module @openlide/geomstore/extras/plugins
+ *
+ * @remarks timeTravelPlugin 亦经该入口再导出。
  *
  * @example
  * ```typescript

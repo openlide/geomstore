@@ -65,6 +65,13 @@ function jsonStringifySafe(value: unknown, space?: number): string {
  *
  * @example
  * ```typescript
+ * import type { TimeTravelOptions } from '@openlide/geomstore/extras/plugins'
+ *
+ * interface MyState {
+ *   isDirty: boolean
+ *   hasChanges: boolean
+ * }
+ *
  * const options: TimeTravelOptions<MyState> = {
  *   maxSize: 100,                      // 最多保留100个快照
  *   filter: (state) => {               // 只记录特定状态的快照
@@ -90,6 +97,57 @@ export interface TimeTravelOptions<S extends State = State> {
 
 /** 全局调试表的键名：注册与日志提示必须同源，否则日志会指向一个不存在的路径 */
 const TIME_TRAVEL_GLOBAL_KEY = '__GEOMSTORE_TIME_TRAVEL__'
+
+/**
+ * `globalThis.__GEOMSTORE_TIME_TRAVEL__[storeName]` 上那个调试入口的形状。
+ *
+ * 与 `install()` 里构造的 `api` 对象逐字段对应（键名、参数、返回值），
+ * 改动那边必须同步改这里——两处各写一份是这个形状唯一的失真来源。
+ *
+ * `getSnapshots` 的返回类型刻意收成 `Record<string, unknown>` 而不是 `S`：
+ * 这里的 S 是**装插件时**那份 state 类型，而表是按 `store.name` 建的全局字典，
+ * 读表的人手上没有、也不该有这个 S。收窄到 `S` 等于逼调用方断言，而快照本身
+ * 已经被克隆过、键集合就是 `timestamp` + 当时的 state 键，结构上本就无法静态确定。
+ */
+export interface TimeTravelGlobalApi {
+  /** 快照列表（`timestamp` 在前、状态字段展开在后；仅顶层为纯对象的 state 能完整回显） */
+  getSnapshots(): Array<Record<string, unknown>>
+  getSnapshotCount(): number
+  getCurrentIndex(): number
+  goTo(index: number): void
+  goToTime(timestamp: number): void
+  undo(): void
+  redo(): void
+  canUndo(): boolean
+  canRedo(): boolean
+  clear(): void
+  /**
+   * 手动记一个快照。
+   *
+   * `state` **省略或传 falsy 值**（`0` / `''` / `false` / `null` / `NaN`）时都取当前
+   * state——实现是 `state || getState()`，无法与省略区分。要记录 falsy 状态请把它
+   * 包进对象。表是按 `store.name` 建的、拿不到装插件时那份 S，故形参收成 `unknown`。
+   */
+  record(state?: unknown): void
+  /** 导出 `{ snapshots, currentIndex }` 为 JSON 文本（缩进 2） */
+  exportHistory(): string
+  /** 导入 JSON 文本；畸形数据按本插件契约静默跳过，不抛 */
+  importHistory(json: string): void
+}
+
+declare global {
+  /**
+   * 时间旅行插件在**非生产环境**挂载的全局调试表，键为 `store.name`。
+   *
+   * 声明位置与理由同 `analyzerPlugin.ts` 里的同名块：它是本插件安装的东西，
+   * 经 `extras/plugins` 的既有 exports 图到达消费者。
+   *
+   * 注意与 `store.__timeTravel__` 区分：后者是**内部字段，不在公共 Store 类型上**、
+   * 没有对外契约、不要按它写业务代码（见本文件 `@example` 后的 `@remarks`）。
+   * 支持的访问路径是这张全局表。生产构建下它是 `undefined`，读取方必须判空。
+   */
+  var __GEOMSTORE_TIME_TRAVEL__: Record<string, TimeTravelGlobalApi> | undefined
+}
 
 /** `maxSize` 缺省值，同时是非法取值（非有限数 / 小于 1）的回退值 */
 const DEFAULT_MAX_SIZE = 50
@@ -145,13 +203,14 @@ function isImportableObject(value: unknown): boolean {
  *
  * @example
  * ```typescript
- * import { createStore } from '@geomstore/core'
- * import { timeTravelPlugin } from '@geomstore/plugins'
+ * import { createStore } from '@openlide/geomstore'
+ * import { timeTravelPlugin } from '@openlide/geomstore/extras/plugins'
  *
  * const store = createStore({
  *   name: 'todo',
  *   state: {
- *     items: [],
+ *     // 空数组字面量会被推成 never[]，后续 push / 读属性即报错，这里显式标注元素类型
+ *     items: [] as Array<{ text: string; done: boolean }>,
  *     filter: 'all'
  *   },
  *   actions: {
@@ -172,8 +231,8 @@ function isImportableObject(value: unknown): boolean {
  * // 使用默认配置安装
  * store.use(timeTravelPlugin())
  *
- * // 使用自定义配置安装
- * store.use(timeTravelPlugin({
+ * // 使用自定义配置安装（state 是泛型参数，不显式给出会退化成 object，filter 里就读不到字段）
+ * store.use(timeTravelPlugin<{ items: Array<{ text: string; done: boolean }>; filter: string }>({
  *   maxSize: 100,                    // 保留100个快照
  *   autoRecord: true,                 // 自动记录
  *   filter: (state) => {              // 只记录有修改的状态
@@ -186,35 +245,35 @@ function isImportableObject(value: unknown): boolean {
  * // store.__timeTravel__ 是内部字段（不参与类型检查），不要按它写业务代码
  * const api = globalThis.__GEOMSTORE_TIME_TRAVEL__?.['todo']
  *
- * // 获取所有快照
- * const snapshots = api.getSnapshots()
- * console.log(`Total snapshots: ${snapshots.length}`)
+ * if (api) {
+ *   // 获取所有快照
+ *   const snapshots = api.getSnapshots()
+ *   console.log(`Total snapshots: ${snapshots.length}`)
  *
- * // 撤销操作
- * if (api.canUndo()) {
- *   api.undo()
+ *   // 撤销操作
+ *   if (api.canUndo()) {
+ *     api.undo()
+ *   }
+ *
+ *   // 重做操作
+ *   if (api.canRedo()) {
+ *     api.redo()
+ *   }
+ *
+ *   // 跳转到指定快照（索引从0开始）
+ *   api.goTo(5)
+ *
+ *   // 手动记录快照
+ *   api.record()
+ *
+ *   // 导出 / 导入历史
+ *   const historyJSON = api.exportHistory()
+ *   console.log(historyJSON)
+ *   api.importHistory(historyJSON)
+ *
+ *   // 清除历史
+ *   api.clear()
  * }
- *
- * // 重做操作
- * if (api.canRedo()) {
- *   api.redo()
- * }
- *
- * // 跳转到指定快照
- * api.goTo(5)  // 跳转到第6个快照（索引从0开始）
- *
- * // 手动记录快照
- * api.record()
- *
- * // 导出历史
- * const historyJSON = api.exportHistory()
- * console.log(historyJSON)
- *
- * // 导入历史
- * api.importHistory(historyJSON)
- *
- * // 清除历史
- * api.clear()
  * ```
  */
 export const timeTravelPlugin = <S extends State = State>(options: TimeTravelOptions<S> = {}): Plugin => {

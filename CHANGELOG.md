@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+暂无（0.8.2 已定稿，见下节）。
+
+## [0.8.2] - 2026-09-26
+
+发布链与文档面的一次复审收口：把 `CHANGELOG.md` 移出 npm 包（tarball -20.6%）、更正「构建 npm 整目录拷贝」相关的四处文档、补齐本包安装却从未声明的四个全局调试表类型、新增 G18 / G19 / G20 三道文档门禁。**运行时零变化**——5 个 ts 文件的可执行代码一行未动，`declare global` 不产生任何 JS；类型面为纯增量（新增 `AnalyzerGlobalApi` / `TimeTravelGlobalApi` 两个导出接口与四个全局声明）。改动经 open-code-review 两轮评审（第二轮全量覆盖被 OCR 按扩展名排除的文件），四道新门禁均经变异测试确认会红。
+
+### Changed
+
+- **`CHANGELOG.md` 不再随 npm 包发布**（`package.json` 的 `files` 白名单与 `.npmignore` 的兜底规则两处同步移除）。它对包使用者零价值——完整历史在仓库与 GitHub 上——体积却实打实地计入每个安装者的下载与 CI 缓存成本，发它下去是纯亏。运行时与类型面无任何变更。
+
 ### Tooling（工程链）
 
 0.8.1 发布后做了一轮**门禁盲区审计**：把现有门禁逐条摊开，找「它保护的那个声明，比它实际校验的更强」这一类缺口（G15 修的 `compareSnapshots` 就是它的原型——G6 钉「子路径存在」，而「子路径里有那个名字」没人管）。审计结论与本节改动如下，**无任何运行时或类型面变更**。
@@ -15,9 +25,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **G15 加一维：纯类型导出必须用 type-only 语法导入**。G15 原先只判「这个名字在不在」，而 `export type { X }` 的 X **在运行时并不存在**：文档若用值语法（`import { X }`）去导纯类型，在 `verbatimModuleSyntax` / `isolatedModules` 下消费方直接编译失败，这两种情况都拦不住「名字存在」这一维。配了一条分类口径自检（`Store` 判值、`StoreConfig` 判类型），避免分类整体退化成恒真。
 - **G6 反向收紧：「被提及」→「被教过」**。原判据只查 corpus 里含不含 `@openlide/geomstore/<sub>`，于是一句「本版移除了 X」也能让计数 +1 而放行。收紧为两个可判的教学信号：有 import 示范，或有以该子路径命名的专节。
 - **新增 G17：错误码与钩子名对源码**。`ErrorCode` 的 21 个成员与 `HookName` 的 9 个字面量此前无任何门禁与文档对齐。正向判文档里的 `ErrorCode.XXX` 必须是真成员（形态唯一、零误报），反向判每个钩子名都必须出现在文档里（新增钩子忘写文档当场变红；反向不做错误码是因为 21 个码里有一部分属内部实现细节，强行要求会把门禁逼成清单复制）。两向都从 AST 取，不用正则猜源码。
+- **新增 G18：源码 JSDoc 里教给用户的 import 路径**。`src/plugins/devtools/timeTravelPlugin.ts`、`src/plugins/performance/analyzerPlugin.ts` 与 `src/plugins/performance/index.ts` 的 `@example` 教的是 `@geomstore/core` / `@geomstore/plugins` / `@geomstore/plugins/performance`——**包名 scope 还是改名前的 `@geomstore`，子路径也不在 `exports` 里**，照抄直接 `ERR_MODULE_NOT_FOUND`。已修（`analyzerPlugin` 归位到 `extras/performance` 而非 `extras/plugins`——原先那行连子路径都指错了）。真正的盲区是它们**能活下来**这件事：G6 / G15 只遍历 `mdFiles`，`src/**` 的 JSDoc 从来不在任何判据的阅读范围内，实测那里有 22 处包名 import 示例而此前一处都没被校验过，漏出三处是必然不是偶然。G18 把同一套判据（合法子路径 = `exports` 键 ∪ 转发目录）施于源码，并**新增包名 scope 这一维**——`@geomstore/*` 是"包名写错"而非"子路径不存在"，两种错法给两种诊断，否则后来人只会照着改子路径、留下一个仍然装不上的 scope。`@module` 只校验带包名 scope 的那几条：其余三十来条是内部标识符（`@module cache/types`），拿 exports 去判会全判成错。
+- **新增 G19：core 不得依赖 extras（对真实引用图）**。ARCHITECTURE 与 CONTRIBUTING 都把「`extras/*` 不得被核心反向依赖」写成硬约束，ARCHITECTURE 整节「体积模型」还建立在它之上（主入口闭包不含 extras 是分层换来体积分层的前提），但此前**只存在于文字里**——谁在 `core/store` 里 import 一个 `extras/*`，没有任何东西会变红。判据走 TypeScript AST 建的模块引用图（不用正则：正则分不清静态 import / 动态 import / `export … from`，也会被字符串字面量与注释里的同形文本骗到），取 `core/**` 的出边（「不得依赖」是出边性质，反向遍历只会把同一件事判反）。只判这一条，因为它是 ARCHITECTURE 唯一写成硬约束的：`extras/*` 之间「尽量不互相依赖」是取舍建议，`core → types` 是设计意图，`index.ts → integrations` 也是（主入口本就导出小程序集成）；把这些一并判死只会逼出例外名单，而例外名单是漂移的温床。
+- **G12 加一维：Store 职责分工表点名的协作者文件必须存在**。ARCHITECTURE 新增「Store 门面的职责分工」一节——`Store.ts` 的公开方法横跨状态读写 / 订阅 / 缓存 / 批量 / 状态保护 / 生命周期几组，但其中绝大多数只是把请求转交给 11 个专职协作者，真正的问题是「改某个语义该动哪个文件」此前只能靠通读 `core/store/` 全目录（四千余行）才能定位。表点名的每个 `core/**` 路径由 G12 反查磁盘存在性（与目录树同一道判据、同一份理由），协作者改名或挪目录时当场变红。
+- **新增 G20：SKILL.md「只装了 npm 包」一节与真实发布面一致**。起因就是上面那条 CHANGELOG 出包的直接后果：那一节原写「同目录的 `CHANGELOG.md` 与包根 `README.md`（两者都在 `files` 白名单 / npm 无条件补发的清单里）」，CHANGELOG 出包后变假——而 SKILL.md 明明在 `collectMarkdown()` 范围内（G5 链接锚点、G6 子路径、G10 覆盖率、G3/G4 占位符全都管它），**唯独没有一条问「你说使用者能拿到的这个东西，真的在包里吗」**。G20 跑 `npm pack --dry-run` 拿真实文件清单，逐行核对该节的路径声明；极性按行判定（行内出现「不存在 / 不在 / 没有 / 查不到 / 不随 / 不带」即视为缺席声明），同一行的路径共享极性，要混说就拆两行。
+  - 用 `--ignore-scripts`：带脚本的 pack 会在测试期间生成 14 个 stub 目录再由 postpack 清掉，过程会短暂改动工作树、与并行 worker 读仓库打架。代价是 stub 目录量不到（清单 319 而非 333），本节不声称任何 stub 目录故不受影响；真要提 stub 那是 `files` 白名单类声明，由 `generate-subpath-stubs.mjs` 负责。
+  - 通配匹配踩了两个坑，都写进了注释：段内星号（`*.d.ts`）不能当字面量转义，否则整条 glob 一条都匹配不上；双星段要连同其后的斜杠整体可选，否则 `dist/index.d.ts` 这种零级路径匹配不到。首次运行就靠前者报出一条假阴性。
+  - 已做变异测试：把 SKILL.md 还原成改动前那句错误表述，门禁立刻报红并指名 `CHANGELOG.md —— 文档称其在包内，实际不在`。
+- **第二轮全量评审的修订**（open-code-review 选 7 个文件 + 排除 11 个，两侧都覆盖；三个独立评审代理并行 + 关键结论逐条复验）。按严重度：
+  - **README 的文档清单表仍写 `CHANGELOG.md`「随包发布」**——CHANGELOG 出包后这句变假，且 G20 只反查 SKILL.md 那一节、README 这句无门禁覆盖，恰是本分支自己定义的「声明比校验强」盲区的又一实例。已改为「不随包发布，见 GitHub 仓库」。
+  - **G18 漏掉动态 `import()` 形态**：动词锚只有 `from` / `require(`，而 extras 的文档正把 `await import('…')` 当作「按需加载、不进主包」的推荐写法在教（`src/extras/index.ts`、`enterprise.ts` 各一处）。变异实测注入失效子路径不红。已加 `import(` 交替分支并复测变红。
+  - **G19 可经 tsconfig 别名绕过**：`paths` 配了 `"@/*": ["./src/*"]`（jest 的 moduleNameMapper 同口径），tsc 会放行 `from '@/extras/…'`，原判据只认相对说明符、变异实测不红。已让别名与相对路径同权解析。
+  - **G19 的禁入面补上 `src/plugins/**`**：`plugins/performance`、`plugins/devtools`正是`extras/performance`、`extras/plugins`的实现，core 依赖它们同样破坏「主入口闭包不含可选能力」的体积模型。判据从单前缀改为`['src/extras/', 'src/plugins/']`，变异实测变红。
+  - **ARCHITECTURE 与 CHANGELOG 的「`Store.ts` 有 40 余个公开方法」失实**（AST 实数：公开成员声明 34 处 / 去重 30 个，当初把私有方法一并计入）。ARCHITECTURE 侧改成按职责组描述、并写明不写方法数的理由（与目录树不写文件数同一条）；CHANGELOG 侧的「通读四千余行」补上主语 `core/store/` 全目录（单文件 `Store.ts` 是一千三百余行，且 ARCHITECTURE 同节明说不要通读它）。
+  - **`TimeTravelGlobalApi.record` 的 JSDoc 过度承诺**：原文「调用方传的仍会被原样存进快照」，实现是 `state || getState()`——falsy 值（`0` / `''` / `false` / `null` / `NaN`）会静默回退到当前 state，而形参声明成 `unknown` 让 `api.record(0)` 类型检查通过。已改写为如实描述；**不改实现**（那是行为变更，需另立测试）。
+  - **两处对微信行为的断言超出官方文本的确定度**：「schema 允许未知字段所以被静默忽略」（schema 未声明禁止未知字段是代码级事实，「静默忽略」是工具行为推断，官方未记载）、「官方推荐的分包做法」（官方原文只说构建行为，无「推荐」字样）。均改为带限定的表述，README / SKILL / CHANGELOG 三处同步。另修 README「手段只有一个」与后文「还有两条路子」的自相矛盾（统一为「一类：让构建结果落在分包」）。
+  - **门禁自身的小修**：G20 的扩展名白名单补 `.js` / `.mjs` / `.cjs`（否则未来声明 `dist/**/*.js` 写错名会静默跳过而非报红）；G18 的 `@module` 标点剥离补全角标点（防止 `。` 被吞进子路径造成误报）；`srcTsFiles` 的注释改写——原文称「排除 `.d.ts` 因为 types 是纯类型契约」，但 src 下 0 个 `.d.ts`、`types/*.ts` 其实在图里且被 G19 刻意放行，理由链不成立。
+  - 全部四处门禁改动均重新做过变异测试并确认变红：动态 `import()` 失效子路径、`@/` 别名注入 extras、core → `plugins/builtin`、SKILL.md 声明 `dist/**/*.jss`。
 
 ### Fixed
 
+- **文档把「按需引入」说成能省小程序上传体积，对只有 npm + 开发者工具「构建 npm」的宿主是错的**（`README.md` / `docs/FAQ.md` / `docs/GUIDE.md` / `docs/BEST_PRACTICES.md`）。本包带 `miniprogram` 字段，微信按「小程序 npm 包」处理，构建时**整目录拷贝** `dist-weapp/`，既不看使用方的 `import` 也不做可达性分析——「从聚合入口改成 `extras/*` 子路径」对上传体积**一点不变**，换来的是运行时按需加载。原文只笼统说「整目录计体积」，却仍在 FAQ 建议「改为按需子路径」，两句放在一起会读成"改了就能省"。现在按宿主是否带打包器分成两条互斥路径。
+- **补上本包此前完全缺失的一条：主包额度紧张时怎么办**。`packNpmRelationList` / `packNpmManually` 是官方唯一的使用者侧手段，作用是**把 `miniprogram_npm` 的输出位置**从主包改到分包（注意：它**不是**依赖裁剪开关——字段只有 `packageJsonPath` 与 `miniprogramNpmDistDir` 且都必填，没有 `path` 字段；写错不报错，官方未记载未知字段的处理，实测与社区反馈均指向被静默忽略）。README 新增「把构建结果放进分包」一节，给出可照抄的 `project.config.json` 配置、四个易踩点、官方构建行为直接支持的分包做法，以及「构建 npm 找不到 NPM 包」这个同源报错的解法。并写明这条**挪的是额度不是字节**、且不按能力细分——想真正压到"实际用到的量"只能让宿主带打包器。顺手删掉原 README 那句会误导人的「自行裁剪该目录」（手改 `node_modules` 会被下次安装覆盖）。
+
+- **三处源码 JSDoc 里的 `@example` 教的是装不上的 import 路径**：`src/plugins/devtools/timeTravelPlugin.ts` 与 `src/plugins/performance/analyzerPlugin.ts` 教 `@geomstore/core` + `@geomstore/plugins`，`src/plugins/performance/index.ts` 的 `@module` 与 `@example` 教 `@geomstore/plugins/performance`——包名 scope 是改名前的 `@geomstore`，子路径也不在 `exports` 里，照抄直接 `ERR_MODULE_NOT_FOUND`。已改为 `@openlide/geomstore` 与对应的 `extras/*`；`analyzerPlugin` 归位到 `extras/performance`（原行的子路径本身就指错了，它不在 `extras/plugins` 上）。
+- **本包安装的四个全局调试表此前一个都没在类型上声明**，用户在示例与文档里用到它们时只能断言（严格模式下直接 TS7017）。本版补齐，四张表一律带 `| undefined`（生产构建下 `registerGlobalEntry` 是 no-op，读取方必须判空）：
+  - `__GEOMSTORE_ANALYZER__[storeName]` → 新增 `AnalyzerGlobalApi`（`monitor` / `getMetrics` / `getStats` / `analyzeBottlenecks` / `clear`），逐字段对应 `install()` 里构造的 `analyzerAPI`。
+  - `__GEOMSTORE_TIME_TRAVEL__[storeName]` → 新增 `TimeTravelGlobalApi`（13 个方法），逐字段对应 `install()` 里构造的 `api`。
+  - `__GEOMSTORE_STORES__` / `__GEOMSTORE_DEVTOOLS__` → 刻意只声明到「存在」这一层（`Record<string, unknown>`）：devtools 入口是一组随调试需求增删的方法，在没有稳定契约前钉死等于把内部调试面固化成公开类型义务；写 `unknown` 而非不声明，是让「这张表存在」在类型上可见，读取方拿到必须显式收窄的值。
+  - 声明**放在各插件自己文件里**而非 `src/types/global.ts`：`types/plugin.ts` 写明依赖方向是 plugins → core → types、禁止反向依赖，而 `TimeTravelOptions` 住在 impl 文件里。各插件经既有 exports 图（`extras/plugins`、`extras/performance`）把增强带进消费者程序，无需新增接线。**纯类型面增量，运行时零变化**（`declare global` 不产生任何 JS）。
+  - 顺带核过一处曾被误判为缺口的地方：`src/types/global.ts` 的 `__DEV__` 增强**没有被任何文件 import**，但这不是缺陷、也不该「修」——`core/store/utils.ts` 运行时真的读它（删掉声明会让 `typecheck` 直接 TS2304），而它是**消费方打包器**注入的构建期常量，泄漏到消费者全局反而可能与消费方自己的 `__DEV__` 声明冲突。它到不了消费者是正确行为。
+- **`SKILL.md` 两处同步**（`.codebuddy/skills/geomstore/SKILL.md`）：①「在其他小程序项目内」一节原称 `CHANGELOG.md` 与 `README.md` 都在包内，本包移除 CHANGELOG 后该句变假，已改为「变更史不在包内、去 GitHub 查」；②「使用规则」第 9 条原只说整目录计体积、不给出路，已补上 `packNpmRelationList` 把 `miniprogram_npm` 输出改到分包这一唯一可操作手段，并写明它挪的是额度不是字节、不按能力细分。
+  - 核实过 skill 语义参考**无需改动**：`references/core-semantics.md` §6 早就写明「调试入口一律是 `globalThis` 上的表」且「`store.__timeTravel__` / `store.__performanceMonitor__` 是内部字段、不在 `Store` 类型上、也没有对外契约」——与本次示例改向完全一致，是该判断的独立佐证；四张全局表的清单也早已齐全，新增类型声明与之吻合而非冲突。
+- **示例改走受支持的访问路径，不再依赖内部字段**：`analyzerPlugin` 的示例原本读 `store.__performanceMonitor__`，而 `devtools/index.ts` 的 `@remarks` 明确写着「`store.__timeTravel__` ……不在 `Store` 公共类型上、也不参与类型检查，更没有对外契约，不要按它写业务代码」，插件安装时打印的也是全局表路径。示例已改用 `globalThis.__GEOMSTORE_ANALYZER__?.['user']?.monitor`，**没有给 `Store` 加内部字段**——那会与仓库既有决策相反。
+- **三处源码 JSDoc 里的 `@example` 照抄即失败**（`tsc --strict` 实测，不是推断）：调用了从未 import 的 `createAnalyzerPlugin`；用了从未定义的 `api`，补上后又与同一代码围栏里原有的 `const api` 重名（整段 `SyntaxError`）；空数组 / `null` 字面量被推成 `never[]` / `null` 导致后续 `setState` 与属性读取报错；`timeTravelPlugin` 的 state 泛型不给时退化成 `object`、`filter` 回调读不到字段。另有一处**真 bug**：`analyzerPlugin` 示例先装 `analyzerPlugin` 再装 `createAnalyzerPlugin(...)`，`use()` 的去重按插件实例判而 `createAnalyzerPlugin` 每次返回新对象，会真装两个分析器、各包一层 `dispatch`/`getter`、指标翻倍——已改为显式二选一。
 - **`REGR-ENT-003` 不再是一颗定时炸弹**（`tests/integration/enterprise.test.ts`）：该用例把 `version: '0.9.0'` 硬编码成「与库版本不一致」的备份样本，**库一旦真发到 0.9.0 它就会失败**（备份版本等于库版本 → 不再产生告警 → `stringContaining('不一致')` 落空），而报错指向的是「备份版本告警语义坏了」，与真实原因（夹具撞上了真实版本）完全无关。改为非 semver 字面量 `0.0.0-legacy-fixture`：可读，且永远不可能等于 `x.y.z` 形状的 `LIBRARY_VERSION`。
 
 ### 明确不修（避免后人重复踩）
@@ -781,7 +822,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [0.1.3]: https://github.com/openlide/GeomStore/releases/tag/v0.1.3
 [0.2.0]: https://github.com/openlide/GeomStore/releases/tag/v0.2.0
 [0.2.1]: https://github.com/openlide/GeomStore/releases/tag/v0.2.1
-[Unreleased]: https://github.com/openlide/geomstore/compare/v0.8.1...HEAD
+[Unreleased]: https://github.com/openlide/geomstore/compare/v0.8.2...HEAD
+[0.8.2]: https://github.com/openlide/geomstore/releases/tag/v0.8.2
 [0.8.1]: https://github.com/openlide/geomstore/releases/tag/v0.8.1
 [0.8.0]: https://github.com/openlide/geomstore/releases/tag/v0.8.0
 [0.7.0]: https://github.com/openlide/geomstore/releases/tag/v0.7.0

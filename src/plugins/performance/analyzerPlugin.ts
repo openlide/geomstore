@@ -21,6 +21,35 @@ import { isProduction } from '../../core/store/utils.js'
 const ANALYZER_GLOBAL_KEY = '__GEOMSTORE_ANALYZER__'
 
 /**
+ * `globalThis.__GEOMSTORE_ANALYZER__[storeName]` 上那个调试入口的形状。
+ *
+ * 与 `install()` 里构造的 `analyzerAPI` 对象逐字段对应（键名、参数、返回值），
+ * 改动那边必须同步改这里——两处各写一份是这个形状唯一的失真来源。
+ */
+export interface AnalyzerGlobalApi {
+  /** 本 store 的监控器实例；类方法比 `types/performance.ts` 的同名接口多（分组筛选 / 导出等） */
+  monitor: PerformanceMonitor
+  getMetrics(): ReturnType<PerformanceMonitor['getMetrics']>
+  getStats(): ReturnType<PerformanceMonitor['getStats']>
+  analyzeBottlenecks(threshold?: number): ReturnType<(typeof PerformanceAnalyzer)['analyzeBottlenecks']>
+  clear(): void
+}
+
+declare global {
+  /**
+   * 性能分析插件在**非生产环境**挂载的全局调试表，键为 `store.name`。
+   *
+   * 声明在这里（而不是 `src/types/global.ts`）是因为它是本插件安装的东西，
+   * 且 `extras/performance` → `plugins/performance/index` → 本文件这条既有 exports 图
+   * 会把本增强带进消费者程序——放进 types/ 反而要先解决「types 不得反向依赖 plugins」。
+   *
+   * 生产构建下 `registerGlobalEntry` 是 no-op，读到的是 `undefined`，
+   * 因此类型带 `| undefined`，**读取方必须可选链或先判空**。
+   */
+  var __GEOMSTORE_ANALYZER__: Record<string, AnalyzerGlobalApi> | undefined
+}
+
+/**
  * 性能分析插件
  *
  * 自动监控所有Store操作的性能，并提供分析工具
@@ -29,22 +58,29 @@ const ANALYZER_GLOBAL_KEY = '__GEOMSTORE_ANALYZER__'
  *
  * @example
  * ```typescript
- * import { createStore } from '@geomstore/core'
- * import { analyzerPlugin } from '@geomstore/plugins'
+ * import { createStore } from '@openlide/geomstore'
+ * import { analyzerPlugin, createAnalyzerPlugin } from '@openlide/geomstore/extras/performance'
+ *
+ * // userApi 是你自己的请求层，与本插件无关；这里用桩以便示例自洽
+ * const userApi = {
+ *   getUser: (id: number) => Promise.resolve({ id }),
+ *   getPosts: (userId: number) => Promise.resolve([{ id: 1, title: 'hello' }])
+ * }
  *
  * const store = createStore({
  *   name: 'user',
  *   state: {
- *     userInfo: null,
- *     posts: []
+ *     // null 与空数组字面量分别会被推成 null / never[]，后续 setState 即报错，这里显式标注
+ *     userInfo: null as { id: number } | null,
+ *     posts: [] as Array<{ id: number; title: string }>
  *   },
  *   actions: {
  *     async fetchUser(id) {
- *       const user = await api.getUser(id)
+ *       const user = await userApi.getUser(id)
  *       this.setState('userInfo', user)
  *     },
  *     async fetchPosts(userId) {
- *       const posts = await api.getPosts(userId)
+ *       const posts = await userApi.getPosts(userId)
  *       this.setState('posts', posts)
  *     }
  *   },
@@ -53,64 +89,67 @@ const ANALYZER_GLOBAL_KEY = '__GEOMSTORE_ANALYZER__'
  *   }
  * })
  *
- * // 使用默认配置安装
+ * // 默认配置
  * store.use(analyzerPlugin)
  *
- * // 使用自定义配置安装
- * store.use(createAnalyzerPlugin({
- *   sampleRate: 1.0,      // 100%采样
- *   threshold: 16,        // 16ms阈值
- *   trackMemory: true,    // 跟踪内存
- *   maxSize: 1000         // 最多1000条记录
- * }))
+ * // 自定义配置：与上面**二选一**。两个都装会在同一个 store 上得到两个分析器
+ * // （use() 的去重按插件实例判，createAnalyzerPlugin 每次返回新对象），
+ * // dispatch / getter 会被各包一层，指标翻倍、__performanceMonitor__ 被后者覆盖。
+ * // store.use(createAnalyzerPlugin({
+ * //   sampleRate: 1.0,      // 100%采样
+ * //   threshold: 16,        // 16ms阈值
+ * //   trackMemory: true,    // 跟踪内存
+ * //   maxSize: 1000         // 最多1000条记录
+ * // }))
  *
- * // 访问性能监控器
- * const monitor = store.__performanceMonitor__
- *
- * // 获取所有指标
- * const metrics = monitor.getMetrics()
- * console.log(`Total metrics: ${metrics.length}`)
- *
- * // 获取统计信息
- * const stats = monitor.getStats()
- * console.log(`平均耗时: ${stats.avgDuration.toFixed(2)}ms`)
- * console.log(`最大耗时: ${stats.maxDuration.toFixed(2)}ms`)
- * console.log(`超阈值次数: ${stats.thresholdExceeded}`)
- *
- * // 按类型筛选
- * const dispatchMetrics = monitor.getMetricsByType('dispatch')
- * const getterMetrics = monitor.getMetricsByType('getter')
- *
- * // 按操作筛选
- * const fetchUserMetrics = monitor.getMetricsByOperation('fetchUser')
- *
- * // 获取最近的指标
- * const recentMetrics = monitor.getRecentMetrics(10)
- *
- * // 导出为JSON
- * const report = monitor.exportJSON()
- *
- * // 访问全局API（仅在非生产环境注册；未安装插件或 store 名不符时为 undefined）
+ * // 访问性能分析入口。这张全局表只在非生产环境挂载，读到 undefined 时先判空。
+ * // 不要改用 store.__performanceMonitor__：那是内部字段，不在公共 Store 类型上、
+ * // 没有对外契约；插件安装时打印的也是上面这个路径
  * const api = globalThis.__GEOMSTORE_ANALYZER__?.['user']
  *
- * // 获取指标
- * const allMetrics = api?.getMetrics()
- * const allStats = api?.getStats()
+ * if (api) {
+ *   // api.monitor 是监控器实例；类方法比 types 里的同名接口多（分组筛选 / 导出等）
+ *   const monitor = api.monitor
  *
- * // 分析性能瓶颈
- * const bottlenecks = api?.analyzeBottlenecks(16) ?? []
- * bottlenecks.forEach(b => {
- *   console.log(`${b.operation}:`)
- *   console.log(`  Severity: ${b.severity}`)
- *   console.log(`  Avg: ${b.avgDuration.toFixed(2)}ms`)
- *   console.log(`  Max: ${b.maxDuration.toFixed(2)}ms`)
- * })
+ *   // 获取所有指标
+ *   const metrics = monitor.getMetrics()
+ *   console.log(`Total metrics: ${metrics.length}`)
  *
- * // 清除指标
- * api?.clear()
+ *   // 获取统计信息
+ *   const stats = monitor.getStats()
+ *   console.log(`平均耗时: ${stats.avgDuration.toFixed(2)}ms`)
+ *   console.log(`最大耗时: ${stats.maxDuration.toFixed(2)}ms`)
+ *   console.log(`超阈值次数: ${stats.thresholdExceeded}`)
  *
- * // 在控制台直接访问（自行判空）
- * // globalThis.__GEOMSTORE_ANALYZER__?.['user']?.getStats()
+ *   // 按类型筛选（内置插桩只产出 setState / patch / replaceState / dispatch / getter）
+ *   const dispatchMetrics = monitor.getMetricsByType('dispatch')
+ *   const getterMetrics = monitor.getMetricsByType('getter')
+ *
+ *   // 按操作筛选
+ *   const fetchUserMetrics = monitor.getMetricsByOperation('fetchUser')
+ *
+ *   // 获取最近的指标
+ *   const recentMetrics = monitor.getRecentMetrics(10)
+ *
+ *   // 导出为 JSON
+ *   const report = monitor.exportJSON()
+ *
+ *   // 表上的便捷方法与 monitor 上的同名方法等价
+ *   const allMetrics = api.getMetrics()
+ *   const allStats = api.getStats()
+ *
+ *   // 分析性能瓶颈（返回项自带类型，无需手动标注）
+ *   const bottlenecks = api.analyzeBottlenecks(16)
+ *   for (const b of bottlenecks) {
+ *     console.log(`${b.operation}:`)
+ *     console.log(`  Severity: ${b.severity}`)
+ *     console.log(`  Avg: ${b.avgDuration.toFixed(2)}ms`)
+ *     console.log(`  Max: ${b.maxDuration.toFixed(2)}ms`)
+ *   }
+ *
+ *   // 清除指标
+ *   api.clear()
+ * }
  * ```
  */
 export function createAnalyzerPlugin(options: PerformanceOptions = {}): Plugin {

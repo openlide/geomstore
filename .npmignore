@@ -2,8 +2,12 @@
 # 因此本文件不复制文件数/清单（那个数字会漂移：`npm pack --dry-run --ignore-scripts` 里
 # --ignore-scripts 让 prepack 钩子根本不执行，store/ hooks/ 等 stub 目录一个都量不到）；
 # 要看发布面就读 package.json > files。能确定的是「仅 dist」并不准确：
-# 白名单里另有 dist-weapp（微信「构建 npm」专用产物，`miniprogram` 字段指向它）、
-# CHANGELOG.md 与 11 个子路径 stub 目录，npm 自己再无条件补 README/LICENSE。
+# 白名单里另有 dist-weapp（微信「构建 npm」专用产物，`miniprogram` 字段指向它）
+# 与 11 个子路径 stub 目录，npm 自己再无条件补 README/LICENSE。
+# CHANGELOG.md **刻意不在白名单里**：它对包使用者零价值（完整历史在仓库与 GitHub 上），
+# 体积却实打实地计入每个安装者的下载与 CI 缓存成本——发它下去是纯亏。这里不写具体占比：
+# 那个数会随发版历史增长与产物比例一起漂移，写死等于给后来人埋一个假事实。
+# 本文件下方的兜底规则同样不把它捞回来，两处口径一致，改一处必须改另一处。
 # 下列规则只有一种情形下生效：files 字段被删除或放宽时的兜底排除（含类型解析说明：
 # 类型完全由 dist 内 .d.ts 经 exports 映射提供，src 不随包发布）。
 src/
@@ -25,7 +29,7 @@ eslint.config.js
 # Documentation
 *.md
 !README.md
-!CHANGELOG.md
+# CHANGELOG.md 不在此放行：与上方 files 白名单同口径（见文件头注）
 
 # Test files
 **/*.test.ts

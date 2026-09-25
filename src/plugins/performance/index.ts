@@ -3,25 +3,30 @@
  *
  * 提供性能监控和分析相关的插件
  *
- * @module @geomstore/plugins/performance
+ * @module @openlide/geomstore/extras/performance
  *
  * @example
  * ```typescript
- * import { analyzerPlugin } from '@geomstore/plugins/performance'
+ * import { createStore } from '@openlide/geomstore'
+ * import { analyzerPlugin, createAnalyzerPlugin } from '@openlide/geomstore/extras/performance'
  *
- * // 安装性能分析插件（默认配置）
+ * const store = createStore({ name: 'order', state: { count: 0 } })
+ *
+ * // 默认配置
  * store.use(analyzerPlugin)
  *
- * // 或使用自定义配置
- * store.use(createAnalyzerPlugin({
- *   sampleRate: 1.0,
- *   threshold: 16,
- *   trackMemory: true
- * }))
+ * // 自定义配置：与上面**二选一**。两个都装会在同一个 store 上得到两个分析器
+ * // （use() 的去重按插件实例判，createAnalyzerPlugin 每次返回新对象），
+ * // dispatch / getter 会被各包一层，指标翻倍、__performanceMonitor__ 被后者覆盖。
+ * // store.use(createAnalyzerPlugin({
+ * //   sampleRate: 1.0,
+ * //   threshold: 16,
+ * //   trackMemory: true
+ * // }))
  *
- * // 访问性能分析API：全局表只在非生产环境挂载（且要插件已安装、store 名对得上），
+ * // 访问性能分析 API：全局表只在非生产环境挂载（且要插件已安装、store 名对得上），
  * // 其余情况读到 undefined，直接调用会抛 TypeError
- * const api = globalThis.__GEOMSTORE_ANALYZER__?.['store-name']
+ * const api = globalThis.__GEOMSTORE_ANALYZER__?.order
  * const stats = api?.getStats()
  * const bottlenecks = api?.analyzeBottlenecks() ?? []
  * ```

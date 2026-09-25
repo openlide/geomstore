@@ -16,13 +16,14 @@ pnpm test          # 全量测试
 
 本仓库 `src/` 的树与各子目录职责的正本在 [ARCHITECTURE.md「目录结构与职责」](./docs/ARCHITECTURE.md#3-目录结构与职责)，本文件不复制第二份。其余顶层目录：
 
-| 目录                 | 作用                                                                                                                                                                  |
-| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `tests/`             | `unit`（按领域分目录）+ `integration`                                                                                                                                 |
-| `examples/`          | 可运行示例。它是**仓库源码**、随 CI 的 `typecheck:examples` 全量编译                                                                                                  |
-| `docs/`              | 文档。**不随 npm 包发布**（`files` 白名单里没有它）                                                                                                                   |
-| `scripts/`           | `clean-dist` / `postbuild-dist` / `minify-dist` / `build-weapp` / `verify-weapp-bundle` / `weapp-entries` / `generate-subpath-stubs` / `generate-skill-api-reference` |
-| `packages/benchmark` | 性能基准。**不是 pnpm 工作区成员**（`pnpm-workspace.yaml` 无 `packages:` 键），根目录的 `pnpm` 命令与 `--filter` 都不作用于它                                         |
+| 目录                 | 作用                                                                                                                                                                                                          |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `tests/`             | `unit`（按领域分目录）+ `integration`                                                                                                                                                                         |
+| `examples/`          | 可运行示例。它是**仓库源码**、随 CI 的 `typecheck:examples` 全量编译                                                                                                                                          |
+| `docs/`              | 文档。**不随 npm 包发布**（`files` 白名单里没有它）                                                                                                                                                           |
+| `CHANGELOG.md`       | 发版记录。**刻意不随 npm 包发布**：对包使用者零价值（完整历史在仓库与 GitHub 上），体积却实打实地计入每个安装者的下载与 CI 缓存成本。`files` 白名单与 `.npmignore` 的兜底规则两处都不放行，改一处必须改另一处 |
+| `scripts/`           | `clean-dist` / `postbuild-dist` / `minify-dist` / `build-weapp` / `verify-weapp-bundle` / `weapp-entries` / `generate-subpath-stubs` / `generate-skill-api-reference`                                         |
+| `packages/benchmark` | 性能基准。**不是 pnpm 工作区成员**（`pnpm-workspace.yaml` 无 `packages:` 键），根目录的 `pnpm` 命令与 `--filter` 都不作用于它                                                                                 |
 
 **分层原则**：`extras/*` 的实现不得被核心反向依赖；核心只保留运行必需 API。若某能力只有部分用户需要，它就应该出现在 `extras`。
 

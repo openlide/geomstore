@@ -2,7 +2,7 @@
 
 > **本文件由 `scripts/generate-skill-api-reference.mjs` 从 `dist/**/*.d.ts` 生成，请勿手工编辑。**
 >
-> - 来源版本：`@openlide/geomstore@0.8.1`
+> - 来源版本：`@openlide/geomstore@0.8.2`
 > - 内容来源：构建产物类型声明（随 npm 包发布，与安装版本必然一致）
 > - 重新生成：`pnpm build && pnpm skill:api`
 > - 引入路径：`./extras/plugins`
@@ -99,6 +99,13 @@ export interface StorageBackend {
  *
  * @example
  * ```typescript
+ * import type { TimeTravelOptions } from '@openlide/geomstore/extras/plugins'
+ *
+ * interface MyState {
+ *   isDirty: boolean
+ *   hasChanges: boolean
+ * }
+ *
  * const options: TimeTravelOptions<MyState> = {
  *   maxSize: 100,                      // 最多保留100个快照
  *   filter: (state) => {               // 只记录特定状态的快照

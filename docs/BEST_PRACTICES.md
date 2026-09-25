@@ -181,8 +181,8 @@
 
 ## 9. 小程序实践
 
-- **主包体积**：只用到的能力才引入 `extras/*`；不要为了省一行而引入聚合入口 `@openlide/geomstore/extras`（它会把全部可选能力拉进产物）。分层的体积收益取决于宿主有没有打包器，见 [README 的引入方式与体积分层](../README.md#引入方式与体积分层)。
-- **分包**：企业集成（`extras/enterprise`）、调试插件（`extras/plugins` 的 devtools / timeTravel）建议放进分包；体积口径同见 [README](../README.md#引入方式与体积分层)。
+- **主包体积**：只用到的能力才引入 `extras/*`；不要为了省一行而引入聚合入口 `@openlide/geomstore/extras`（它会把全部可选能力拉进产物）。分层的体积收益取决于宿主有没有打包器——宿主只有 npm +「构建 npm」时，本包整目录被拷贝，改子路径不省上传体积，见 [README 的引入方式与体积分层](../README.md#引入方式与体积分层)。
+- **分包**：企业集成（`extras/enterprise`）、调试插件（`extras/plugins` 的 devtools / timeTravel）建议放进分包。注意「把能力放进分包」和「省下上传体积」是两件事：构建 npm 整目录拷贝本包，**不按子路径拆**，所以还得把 `miniprogram_npm` 的输出位置也指到该分包（配置见 [README · 把构建结果放进分包](../README.md#把构建结果放进分包)），否则代码进了分包、字节还留在主包。
 - **`setData` 优化**：集成层已按 `isStateKeyDirty` 跳过未变化的映射键，前提是映射粒度合理——映射整个大对象（`mapState: { whole: 'list' }`）会让任何内部变化都触发全量传输。映射到具体字段。见 [CONCEPTS §13](./CONCEPTS.md#映射)。
 - **`undefined` 不是合法值**：`setData` 不接受 `undefined`，集成层会过滤掉该字段。要「清空」用 `null`。
 - **持久化后端必须同步且三方法齐备**：`getItem` / `setItem` / `removeItem` 缺项在 `store.use()` 安装期即抛 `TypeError`；不传 `storage` 时用的就是内置 `WxStorageBackend`，残缺环境下走内存降级并给一次降级信号。见 [CONCEPTS §11](./CONCEPTS.md#调试表与持久化)。
