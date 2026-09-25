@@ -46,7 +46,8 @@ GeomStore 是轻量级微信小程序状态管理库，提供类 Pinia 的 API�
 6. **getter 没有任何结果缓存**：每次 `store.getter(name)`、每次读 `store.getters.x` 都按当前状态重算一遍。要「依赖未变则复用」请用 `extras/selector` 的 `createSelector` → [`§3`](./references/core-semantics.md#3-getter)
 7. **`getCached(key)` 是缓存的唯一读取入口**：`getState()` / `store.state` 完全不查缓存，拿它验证缓存会让 `hits` / `misses` 恒为 0；`setState` / `$patch` 是**写穿**（更新条目）而不是失效 → [`§4`](./references/core-semantics.md#4-内置缓存)
 8. **订阅是引用计数，`maxSubscribers` 是硬上界**：同一函数注册 N 次就通知 N 次、每个退订句柄只抵消自己那次；额度对每一次注册都过（重复注册同样占额度）。监听器签名只有 `(state) => void`，没有 `prevState` → [`§2`](./references/core-semantics.md#2-订阅与通知)
-9. **可选能力按需引入，但包体积收益看宿主**：有打包器（webpack / vite / esbuild）才摇得掉未 import 的子入口；只用 npm + 开发者工具「构建 npm」时，体积按包内 `miniprogram` 目录（**全部子入口都在**）整目录计，子路径分层只换来运行时按需加载。
+9. **可选能力按需引入，但包体积收益看宿主**：有打包器（webpack / vite / esbuild）才摇得掉未 import 的子入口；只用 npm + 开发者工具「构建 npm」时，体积按包内 `miniprogram` 目录（**全部子入口都在**）整目录计，子路径分层只换来运行时按需加载——那种宿主下改子路径**不省任何上传体积**。
+   - **主包额度紧张时唯一能做的**：把 `miniprogram_npm` 的**输出位置**从主包改到分包（`project.config.json` 的 `setting.packNpmManually` + `setting.packNpmRelationList`，每项只有 `packageJsonPath` 与 `miniprogramNpmDistDir` 两个必填字段，**没有 `path` 字段**——写错不报错，官方未记载未知字段的处理，实测与社区反馈均指向被静默忽略）。这挪的是**额度不是字节**，且不按能力细分：`extras/*` 用没用全都一起挪；想真正压到"实际用到的量"只有让宿主带打包器。配置与四个易踩点见仓库 `README.md` 的「把构建结果放进分包」。
 10. **组合 Store**：`ComposeOptions` 只有 `namespace` / `strict` 真在生效，`lazy` / `tree` / `NamespaceConfig` 是「已声明、未实现」（写了编译通过、静默无效）；命名空间模式下 `store.name` 同时是路由键，空串或含 `/` 在构造期抛错 → [`§5`](./references/core-semantics.md#5-store-组合)
 
 > 各条背后的完整边界语义（状态保护豁免清单、通知载荷分配、脏键追踪、持久化后端契约、全局调试表、集成细节、extras 逐项语义）见 [`references/core-semantics.md`](./references/core-semantics.md) 与 [`references/extras-semantics.md`](./references/extras-semantics.md)。
@@ -324,5 +325,6 @@ const diff = new SnapshotManager().compareSnapshots(result, createSnapshot(next)
 `docs/` 与 `src/` 都不存在——**`docs/` 不在包的 `files` 白名单里**。可用的只有：
 
 - `node_modules/@openlide/geomstore/dist/**/*.d.ts` —— 与你装的版本必然一致的原始声明
-- 同目录的 `CHANGELOG.md` 与包根 `README.md`（两者都在 `files` 白名单 / npm 无条件补发的清单里）
+- 包根 `README.md` —— npm 无条件补发，一定在
 - 包内 `package.json` 的 `exports` —— 合法子路径的最终事实来源
+- ⚠️ **变更史不在包内**：`CHANGELOG.md` 刻意不随包发布（`files` 白名单里没有它——对包使用者零价值，却是发布体积的实打实开销）。要查版本对照与迁移说明，去 GitHub 仓库；装好的包里查不到。

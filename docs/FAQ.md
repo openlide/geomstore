@@ -262,7 +262,9 @@ withComponentStore(store, { mapState: ['count'] })({
 
 ### 主包体积变大了
 
-最常见原因是引入了聚合入口 `@openlide/geomstore/extras`（它会把全部可选能力拉进产物）。改为按需子路径：
+先分清宿主是哪一种，两者的答案相反：
+
+**宿主带打包器**（webpack / vite / esbuild，典型是 Taro、uni-app 等一站式方案）：最常见原因是引入了聚合入口 `@openlide/geomstore/extras`，它会把全部可选能力拉进产物。改为按需子路径，打包器会摇掉没 import 的：
 
 ```diff
 - import { createSnapshot, createSelector, withThrottle } from '@openlide/geomstore/extras'
@@ -271,7 +273,9 @@ withComponentStore(store, { mapState: ['count'] })({
 + import { withThrottle } from '@openlide/geomstore/extras/action'
 ```
 
-「按需」与包体积的边界（打包器摇树 vs 微信「构建 npm」整目录拷贝）见 [README 引入方式与体积分层](../README.md#引入方式与体积分层)。
+**宿主只有 npm + 开发者工具「构建 npm」**：改子路径**不会**让上传体积变小。本包带 `miniprogram` 字段，微信按「小程序 npm 包」处理，构建时整目录拷贝 `dist-weapp/`，既不看你的 `import` 也不做可达性分析——引聚合入口和逐个子路径拷进去的字节完全一样。这时候能做的只有把构建输出挪进**分包**，换取主包额度，配置见 [README · 把构建结果放进分包](../README.md#把构建结果放进分包)。
+
+顺带一提：手改 `node_modules` 里的产物去「裁剪」体积是跟安装器对抗，`npm i` 或重新构建 npm 就会覆盖回去；真要按需，路径是让宿主带打包器。「按需」与包体积的边界（打包器摇树 vs 整目录拷贝）见 [README 引入方式与体积分层](../README.md#引入方式与体积分层)。
 
 ### 报错 `Cannot call … on a destroyed Store`
 

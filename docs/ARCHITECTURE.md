@@ -166,6 +166,28 @@ extras/enterprise         需要账号态 / 离线 / 热更新时引入
 extras（聚合）            仅调试或全都要用；会把以上全部拉入产物
 ```
 
+### Store 门面的职责分工
+
+`Store.ts` 的公开方法横跨状态读写 / 订阅 / 缓存 / 批量 / 状态保护 / 生命周期几组，但**它不是一个大坨**：绝大多数方法只是把请求转交给一个专职协作者，协作者各自独立成文件。想知道「改某个语义该动哪里」，按下表定位，不要在 `Store.ts` 里通读。（本文件不写方法数：那种计数没有谁据以行动，却保证随每次增删失真——与上文目录树不写文件数是同一条理由。）
+
+| 协作者文件                               | 承担                                                                                                                                 | `Store` 上的门面方法                                                            |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------- |
+| `core/store/ActionManager.ts`            | action 与 getter 的注册、调用、参数绑定；`GetterManager` 也在此文件内                                                                | `actions`、`dispatch`、`getter`、`getGetterNames`                               |
+| `core/store/SubscriptionManager.ts`      | 订阅登记、驱逐上限（默认 50）、通知分发                                                                                              | `subscribe`                                                                     |
+| `core/store/StateProxy.ts`               | 响应式代理：`getState()` 的深层访问、`Map` / `Set` / 内建对象的读写拦截                                                              | `getState`、`_rebuildStateProxyManager`                                         |
+| `core/store/dirtyTracking.ts`            | 脏键归属：判定「哪些键真的被改过」，供映射粒度与 `$patch` 剪枝使用                                                                   | `isStateKeyDirty`、`$patch`、`$replaceState`                                    |
+| `core/store/BatchManager.ts`             | 批量写入的计数与嵌套语义                                                                                                             | `startBatch`、`endBatch`、`batch`                                               |
+| `core/store/StoreCache.ts`               | LRU 缓存的创建、失效与统计；底层容器是 `core/cache/LRUCache.ts`                                                                      | `getCached`、`enableCache` / `disableCache`、`invalidateCache`、`getCacheStats` |
+| `core/store/pluginSupport.ts`            | 插件品牌标记与卸载器的构造                                                                                                           | `use`、`destroy`（卸载链）                                                      |
+| `core/store/stateVersion.ts`             | 状态版本号，供 `$snapshot` / `$restore` 与外部（如 timeTravel、selector）比对                                                        | `$snapshot`、`$restore`                                                         |
+| `core/store/utils.ts`                    | `deepCloneState` / `deepFreezeState` / 生产模式判定；被全库 20 个文件复用                                                            | `$snapshot`、`$restore`、状态保护                                               |
+| `core/performance/AsyncBatchNotifier.ts` | 异步批量通知的排队与让出；**注意** `core/performance` 只有这一个文件进核心闭包，指标采集（`PerformanceMonitor` / `metrics`）不在其中 | `_scheduleNotify`、`_notifyListeners`                                           |
+| `core/hooks/HookSystem.ts`               | 插件运行时的钩子派发                                                                                                                 | `hooks`                                                                         |
+
+`Store.ts` 自己保留的是**跨协作者的编排**：写路径的顺序（合并 → 脏键 → 缓存失效 → 通知）、销毁时的插件卸载排空、批量结束后的统一通知。改动这些顺序前先读 `docs/CONCEPTS.md`——通知时机与合并口径在那里是成文契约，本文件不复述第二份。
+
+本表点名的每个 `core/**` 路径由文档门禁 **G12** 反查存在性（与目录树同一道判据），所以协作者改名或挪走时这里会当场变红。
+
 ## 6. 集成层（integrations）
 
 `with-store.ts` / `with-app-store.ts` 共用 `resolveMappings`（解析 `mapState` / `mapGetters` / `mapActions` / `inject` 的数组与对象两种写法），差异只在生命周期接线：

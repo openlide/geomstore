@@ -19,6 +19,24 @@ import { registerGlobalEntry } from './globalRegistry.js'
 const STORES_GLOBAL_KEY = '__GEOMSTORE_STORES__'
 const DEVTOOLS_GLOBAL_KEY = '__GEOMSTORE_DEVTOOLS__'
 
+declare global {
+  /**
+   * devtools 插件在**非生产环境**挂载的两张全局调试表，键均为 `store.name`。
+   *
+   * 形状刻意**只声明到「存在」这一层**（`unknown` 而非具体 api），与
+   * `__GEOMSTORE_ANALYZER__` / `__GEOMSTORE_TIME_TRAVEL__` 的精确声明形成对照：
+   * 那两张表的形状短且稳定，值得钉成接口；devtools 入口是一组随调试需求增删的方法
+   * （`getState` / `setState` / `$patch` / `subscribe` / `use` / `destroy` …），
+   * 在没有稳定契约之前先钉死等于把内部调试面固化成公开类型义务。
+   * 写 `unknown` 而非不声明，是为了让「这张表存在」这件事在类型上可见，
+   * 且读取方拿到的是必须显式收窄的 `unknown`，而不是编译期完全看不见的错。
+   *
+   * 生产构建下二者都是 `undefined`，读取方必须判空。
+   */
+  var __GEOMSTORE_STORES__: Record<string, unknown> | undefined
+  var __GEOMSTORE_DEVTOOLS__: Record<string, unknown> | undefined
+}
+
 /**
  * 恢复入口的载荷准入判定。
  *

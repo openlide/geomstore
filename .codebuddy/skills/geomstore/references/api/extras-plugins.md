@@ -99,6 +99,13 @@ export interface StorageBackend {
  *
  * @example
  * ```typescript
+ * import type { TimeTravelOptions } from '@openlide/geomstore/extras/plugins'
+ *
+ * interface MyState {
+ *   isDirty: boolean
+ *   hasChanges: boolean
+ * }
+ *
  * const options: TimeTravelOptions<MyState> = {
  *   maxSize: 100,                      // 最多保留100个快照
  *   filter: (state) => {               // 只记录特定状态的快照
