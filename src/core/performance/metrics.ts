@@ -328,7 +328,14 @@ export class MetricsCollector {
    */
   sortByDuration(ascending: boolean = false): MetricsCollector {
     const collector = new MetricsCollector(this._maxSize)
-    const sorted = this._ordered().sort((a, b) => (ascending ? a.duration - b.duration : b.duration - a.duration))
+    // 非有限耗时先滤掉再排序：`a.duration - b.duration` 比较器拿到 NaN 返回 NaN
+    // （等价于「不移动」），NaN 样本可停在任意位置，「最慢 N 个」不可复现。
+    // 与 getPercentile / calculateStats 的 isMeasurableDuration 过滤同口径
+    // （那两处早已过滤，唯独排序路径遗漏）。过滤后为空集时收集器为空，
+    // 与「采集器本来为空」同形态
+    const sorted = this._ordered()
+      .filter((m) => isMeasurableDuration(m.duration))
+      .sort((a, b) => (ascending ? a.duration - b.duration : b.duration - a.duration))
     collector.collectBatch(sorted)
     return collector
   }
