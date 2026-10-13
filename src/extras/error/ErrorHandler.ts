@@ -25,9 +25,22 @@ export const DEFAULT_MAX_LOG_SIZE = 100
  * 只认 Promise 实例会让它们的 rejection 无人接收（unhandledRejection）。
  *
  * 导出仅供同目录复用（`ErrorBoundary` 的装饰器需要同一判据）；未经 barrel 再导出，不是公开 API。
+ *
+ * 读 `.then` 本身是用户代码可执行的入口：取值即抛的 getter / Proxy get 陷阱都能让它炸掉。
+ * 本模块的口径是「错误处理自身不得抛错」——那会让 handleError 在归因一条错误的路上再抛
+ * 第二条，调用方拿到的是与原始故障无关的异常。故与 `decorators/common.ts` 的 isThenable
+ * 同口径：抛错按「非 thenable」降级（同步路径处理），只损失「这条错误恰好是 thenable」
+ * 这一种观测，不外溢
  */
 export function isThenable(value: unknown): value is PromiseLike<unknown> {
-  return value !== null && (typeof value === 'object' || typeof value === 'function') && typeof (value as { then?: unknown }).then === 'function'
+  if (value === null || (typeof value !== 'object' && typeof value !== 'function')) {
+    return false
+  }
+  try {
+    return typeof (value as { then?: unknown }).then === 'function'
+  } catch {
+    return false
+  }
 }
 
 /**

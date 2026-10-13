@@ -44,6 +44,29 @@ function normalizeCapacity(value: number | undefined, fallback: number, min: num
 }
 
 /**
+ * setTimeout 上限（2^31-1 ms ≈ 24.8 天）：更大值会被宿主静默钳制为 ~1ms 并触发溢出告警
+ *
+ * 与 `ErrorRecovery` / `async-core` 的同一常量取值相同，各包各自声明一份：
+ * 错误能力包不应对 action 能力包引入运行时依赖（否则 `extras/error` 会连带装载 action 侧文件）
+ */
+const MAX_TIMER_DELAY = 2 ** 31 - 1
+
+/**
+ * 计时/阈值类配置的归一化：非有限值回落默认，0 的合法语义原样保留
+ *
+ * 与 {@link normalizeCapacity} 的分工：容量字段有「下限 + 取整」需求（0 条容量没有意义），
+ * 而 batchInterval / batchThreshold / reportTimeout 的 0 是合法语义（立即/无延迟、
+ * 立即上报、不建超时定时器），不能抬下限；但 NaN 同样必须挡掉（见构造函数处的三条后果）。
+ * 小数原样保留：setInterval 的毫秒参数不要求整数
+ */
+function finiteOr(value: number | undefined, fallback: number): number {
+  if (value === undefined || !Number.isFinite(value)) {
+    return fallback
+  }
+  return value
+}
+
+/**
  * 报告器列表归一化：非数组退回空数组并出声，数组则收一份**私有副本**
  *
  * 两点各挡一类事故：
@@ -134,13 +157,16 @@ export class ErrorMonitoring {
     // 归一化 + 收私有副本：见 `normalizeReporters`（它同时堵上「显式 undefined 顶掉默认值」
     // 与「与调用方共享同一个数组」两个缺口）
     this.reporters = normalizeReporters(config.reporters)
-    // 用 ?? 而非 ||：batchInterval / batchThreshold / reportTimeout 的 0 是合法语义
-    // （立即/无延迟、立即上报、不超时），|| 会把显式传入的 0 静默替换为默认值
-    this.batchInterval = config.batchInterval ?? 5000
-    this.batchThreshold = config.batchThreshold ?? 10
+    // 计时/阈值三件套用 finiteOr 而非 ??：?? 只替换 null/undefined，NaN 会原样进入下游——
+    // batchInterval=NaN 时 setInterval 被宿主夹成 ~1ms（调度器高频空转），
+    // reportTimeout=NaN 时 `> 0` 判假、不建超时定时器（挂起的 reporter 让 Promise.allSettled
+    // 永不 resolve），batchThreshold=NaN 时 `length >= NaN` 恒假（阈值刷新永不触发）。
+    // 与下方容量字段的 normalizeCapacity 同口径：非法值回落默认，0 的合法语义保留
+    this.batchInterval = finiteOr(config.batchInterval, 5000)
+    this.batchThreshold = finiteOr(config.batchThreshold, 10)
     this.enableAggregation = config.enableAggregation ?? true
     this.enableConsoleLog = config.enableConsoleLog ?? true
-    this.reportTimeout = config.reportTimeout ?? 10000
+    this.reportTimeout = finiteOr(config.reportTimeout, 10000)
     // 容量类字段走归一化而非 ??：见 normalizeCapacity
     this.maxQueueSize = normalizeCapacity(config.maxQueueSize, DEFAULT_MAX_QUEUE_SIZE, 1)
     this.maxFlushRetries = normalizeCapacity(config.maxFlushRetries, DEFAULT_MAX_FLUSH_RETRIES, 0)
@@ -544,7 +570,11 @@ export class ErrorMonitoring {
   private delay(ms: number): { promise: Promise<void>; cancel: () => void } {
     let timer: ReturnType<typeof setTimeout> | undefined
     const promise = new Promise<void>((resolve) => {
-      timer = setTimeout(resolve, ms)
+      // 钳到 setTimeout 上限：reportTimeout 经有限性归一后仍可远超 2^31-1（如 5e9），
+      // 而 setTimeout 超界会被宿主静默夹成 ~1ms——本该「给上报留够时间」的超时在下一个宏任务
+      // 就判定超时，每次 flush 把所有在途报告器判成失败：监控数据整批丢失，且归因显示为
+      // 「报告器恒失败」而非「超时配置越界」。非正值无从等待，按 0 处理（既有语义）
+      timer = setTimeout(resolve, ms > 0 ? Math.min(ms, MAX_TIMER_DELAY) : 0)
       // unref()：退避等待定时器不应阻止 Node.js 进程/测试 worker 退出
       // （与 batchTimer 的 unref 处理一致，小程序/浏览器环境无 unref 时跳过）
       const timerWithUnref = timer as unknown as { unref?: () => void }

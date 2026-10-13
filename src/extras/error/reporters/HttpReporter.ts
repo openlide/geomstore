@@ -20,9 +20,10 @@ import type { ErrorContext, ErrorReporter } from '../../../types/error.js'
  * 两者的结果至少为 `'{}'`——`JSON.stringify` 只在顶层值为 undefined（含顶层自带 `toJSON`
  * 返回 undefined）时才返回 undefined，而这里顶层永远是对象，所以「body 恒为非空合法 JSON
  * 文本」这一前提由类型而非注释承载。嵌套层的 `toJSON` 返回 undefined 只会让那个键被丢掉
- * （数组元素则写成 `null`），body 仍是合法 JSON；会真正抛错的层（BigInt / 循环引用）在投影
- * 阶段就挡掉了（标量字段走 `toSerializableScalar`、payload 走 `toSerializablePayload`），
- * 兜底则是一条上下文序列化失败时它自己被换成标记片段（`serializeContextItem`），
+ * （数组元素则写成 `null`），body 仍是合法 JSON；会真正抛错的层（BigInt / 循环引用）由
+ * 快慢两级兜底挡掉——快路径整体串化一次（常见条目只此一次遍历），失败才转入慢路径逐字段
+ * 降级（标量字段走 `toSerializableScalar`、payload 走 `toSerializablePayload`），
+ * 最终兜底则是一条上下文两条路径都失败时它自己被换成标记片段（`serializeContextItem`），
  * 批次其余条目照常交付。
  * wx.request 分支直接把该 JSON 字符串作为 data 发送（wx 对字符串 data 原样发送），免去
  * parse→再序列化往返；content-type 由 `withJsonContentType` 兜底为 application/json。
@@ -163,14 +164,39 @@ function withJsonContentType(headers: Record<string, string>): Record<string, st
 }
 
 /**
- * 把 payload 收成 JSON 可表示的值
+ * 把 payload 收成「JSON 可表示或至少可降级」的值（**全函数**，不跑序列化）
+ *
+ * 快路径专用：只挡「一定进不了 JSON」的三类原始值（bigint/symbol/function），
+ * 对象/数组原样透传，可序列化性交给 {@link HttpReporter.buildRequestBody} 那一次
+ * 真正序列化去检验。常见路径下每条上下文因此只有一次整树遍历。
+ * 慢路径的逐字段降级（含试用串化与专名标记）见 {@link toSerializablePayload}
+ */
+function toCoerciblePayload(payload: unknown): unknown {
+  if (payload === undefined || payload === null) {
+    return payload
+  }
+  const type = typeof payload
+  // bigint / symbol / function 在 JSON 里要么直接抛、要么被静默丢弃，
+  // 统一字符串化以保留诊断信息（String(symbol) 合法，`'' + symbol` 才会抛）
+  if (type === 'bigint' || type === 'symbol' || type === 'function') {
+    return `[${type} ${String(payload)}]`
+  }
+  return payload
+}
+
+/**
+ * 把 payload 收成 JSON 可表示的值（**慢路径**：带试用串化与专名降级标记）
  *
  * `ErrorContext.payload` 是 `unknown`，而请求体由 `JSON.stringify` 产出：BigInt 与循环引用
  * 会让 stringify 抛 TypeError，该 rejection 与网络失败无从区分，监控层会按 maxFlushRetries
  * 把一份**永远发不出去**的批次反复重入队（重试风暴 + 长期占满队列，连带挤掉正常错误）。
  * 故在投影阶段就降级为字符串标记：坏载荷只影响它自己那一条上下文，不再让整个批次 reject。
  * 「只影响它自己那一条」如今还有第二层兜底——每条上下文各自序列化一次（见 `serializeContextItem`），
- * 这里挡不住的（例如只在第二次取值才抛的非幂等 getter）只会让那一条换成标记片段
+ * 这里挡不住的（例如只在第二次取值才抛的非幂等 getter）只会让那一条换成标记片段。
+ *
+ * 本函数只在 `serializeContextItem` 的**慢路径**被调用：快路径整体串化就失败才进来逐字段
+ * 定位。把它从常见路径上移除，是消掉「试用串一遍 + 正式串一遍」双倍遍历的关键——
+ * payload 为百 KB 级状态快照时，那一遍遍历与中间字符串构造都是可测量的上报阻塞
  */
 function toSerializablePayload(payload: unknown): unknown {
   if (payload === undefined || payload === null) {
@@ -197,7 +223,7 @@ function toSerializablePayload(payload: unknown): unknown {
 /**
  * 把「按契约是标量」的字段（storeName / operation / level / timestamp）收成 JSON 安全值
  *
- * 这四个字段此前原样透传，而 `ErrorContext` 可由调用方手搓（见 `serializeContext` 的注释）：
+ * 这四个字段此前原样透传，而 `ErrorContext` 可由调用方手搓（见 `projectContext` 的注释）：
  * `timestamp` 写成 BigInt（`process.hrtime.bigint()` / `wx.getPerformance` 一类计时器的返回值）、
  * `level` 写成 Symbol 时，`toSerializablePayload` 管不到它们，外层 `JSON.stringify` 直接抛
  * TypeError——而这一次抛错在**批次**层面，同批其余上下文一起陪葬。
@@ -415,18 +441,48 @@ export class HttpReporter implements ErrorReporter {
   }
 
   /**
-   * 单个 ErrorContext 的上报投影（**未**序列化）
+   * 单个 ErrorContext 的上报投影（**快路径**，未序列化）
    *
-   * 单条与批量两条路径共用：两处各写一份字段映射时，新增/改名字段只会落到其中一条，
-   * 服务端收到的单条与批量负载就会静默漂移。
+   * 与 {@link serializeContextDegraded} 的差别只在 payload 的 coercian：本版本用全函数的
+   * {@link toCoerciblePayload}（不跑试用串化），可序列化性交给 `buildRequestBody` 那一次
+   * 真正序列化去检验。常见路径下每条上下文只有一次整树遍历——此前 `toSerializablePayload`
+   * 会先试用串一遍（结果丢弃）、正式串化再走一遍，payload 大时即为可测量的双倍开销。
+   * 快路径串化失败（循环引用 / BigInt 值 / 非幂等 getter）由 `serializeContextItem`
+   * 的 catch 转入慢路径逐字段定位，降级语义逐字保留
    *
    * 本方法**允许抛错**（例如某字段是只在第二次取值才失效的非幂等 getter），
-   * 兜底在 {@link serializeContextItem}；序列化口径见 {@link toSerializableScalar}
-   * 与 {@link toSerializablePayload}。
+   * 兜底在 {@link serializeContextItem}
    *
    * @private
    */
-  private serializeContext(context: ErrorContext) {
+  private serializeContextFast(context: ErrorContext) {
+    return this.projectContext(context, toCoerciblePayload)
+  }
+
+  /**
+   * 单个 ErrorContext 的上报投影（**慢路径**，未序列化）
+   *
+   * 仅由 `serializeContextItem` 的快路径 catch 进入：逐字段试用串化定位坏字段并降级
+   * （payload 走 {@link toSerializablePayload}，含 `[Unserializable payload: ...]` 专名标记），
+   * 语义与快路径设立前的 `serializeContext` 逐字一致。代价是多一次失败尝试 + 一次试用
+   * 串化，但只为畸形条目付出——常见路径永远不走这里
+   *
+   * @private
+   */
+  private serializeContextDegraded(context: ErrorContext) {
+    return this.projectContext(context, toSerializablePayload)
+  }
+
+  /**
+   * 两条投影路径共用的字段映射（单条与批量两条上报路径也共用同一份形状）
+   *
+   * 两处各写一遍字段映射时，新增/改名字段只会落到其中一条，服务端收到的单条与批量负载
+   * 就会静默漂移；快慢路径各写一遍则会让「降级语义」在重构中悄悄失真，故收敛到此，
+   * 仅 payload 的 coercian 由参数注入
+   *
+   * @private
+   */
+  private projectContext(context: ErrorContext, coercePayload: (payload: unknown) => unknown) {
     // `ErrorContext.error` 只是契约上的 Error：JS 允许 `throw null` / `throw 'msg'` /
     // 抛普通对象，上下文也可由调用方手搓交进来。裸读 `.message` 会让一条畸形上下文抛
     // TypeError，从而整个 reportBatch 一起 reject——同批其余上下文全部陪葬，
@@ -443,7 +499,7 @@ export class HttpReporter implements ErrorReporter {
       storeName: toSerializableScalar(context?.storeName),
       operation: toSerializableScalar(context?.operation),
       level: toSerializableScalar(context?.level),
-      payload: toSerializablePayload(context?.payload),
+      payload: coercePayload(context?.payload),
       timestamp: toSerializableScalar(context?.timestamp),
     }
   }
@@ -451,26 +507,34 @@ export class HttpReporter implements ErrorReporter {
   /**
    * 一条上下文的完整序列化结果（单条上报的 body、批量上报的一个片段）
    *
-   * 「不可序列化」的防线到这里才算闭合：投影阶段挡得住 BigInt / 循环引用，但挡不住
-   * 只在**第二次**取值才失效的非幂等 getter / `toJSON`（先验证串一遍、再把原值交给外层
-   * 重串，两次之间没有任何保证）。故每条上下文各自序列化**一次**，并单独兜底：
-   * 本条导致整体不可序列化时只把这一条换成标记片段，批次其余条目照常交付，
-   * `reportBatch` 不因单条畸形而 reject（那会被监控层判成网络失败并按 maxFlushRetries
-   * 重入队，最终把整批丢弃，且丢弃原因显示为「报告器恒失败」而非「这条上下文畸形」）
+   * 两级兜底，代价按「条目是否畸形」分配：
+   * 1. **快路径**：投影 + 一次 `JSON.stringify`。常见条目（含大 payload）只付一次遍历；
+   * 2. **慢路径**：快路径抛错才进入——逐字段试用串化定位坏字段并降级，只让这一条换成
+   *    标记片段，批次其余条目照常交付，`reportBatch` 不因单条畸形而 reject（那会被监控层
+   *    判成网络失败并按 maxFlushRetries 重入队，最终把整批丢弃，且丢弃原因显示为
+   *    「报告器恒失败」而非「这条上下文畸形」）；
+   * 3. **最终兜底**：慢路径也失败（两条路径都抛的病态条目）时交出一条纯字面量标记片段，
+   *    它本身不可能再抛。
+   * 「不可序列化」的防线到此闭合：投影阶段挡得住 BigInt / 循环引用，慢路径挡得住
+   * 只在**第二次**取值才失效的非幂等 getter / `toJSON`
    */
   private serializeContextItem(context: ErrorContext): JsonBody {
     try {
-      return this.buildRequestBody(this.serializeContext(context))
+      return this.buildRequestBody(this.serializeContextFast(context))
     } catch (error) {
       const reason = error instanceof Error && typeof error.message === 'string' ? error.message : ''
-      // 标记片段本身只含字符串字面量，不可能再抛；原始原因留在 message 里供排查
-      return this.buildRequestBody({
-        error: {
-          message: `[Unserializable error context${reason ? `: ${reason}` : ''}]`,
-          stack: '',
-          name: 'Error',
-        },
-      })
+      try {
+        return this.buildRequestBody(this.serializeContextDegraded(context))
+      } catch {
+        // 标记片段本身只含字符串字面量，不可能再抛；原始原因留在 message 里供排查
+        return this.buildRequestBody({
+          error: {
+            message: `[Unserializable error context${reason ? `: ${reason}` : ''}]`,
+            stack: '',
+            name: 'Error',
+          },
+        })
+      }
     }
   }
 

@@ -44,6 +44,27 @@ function normalizeMaxRetries(value: number | undefined, fallback = 3): number {
 }
 
 /**
+ * 重试延迟的合法化：非有限值归到默认 1000
+ *
+ * `retryDelay` 此前的两处取值都只写 `config.retryDelay !== undefined ? config.retryDelay : 1000`，
+ * NaN 原样穿透后：`cycleSpan = NaN * …`、`cycleWindow = Math.max(60_000, NaN) = NaN`、
+ * `cycleEnd = now + NaN = NaN`，而周期过期判定 `now > cycleEnd` 对 NaN 恒为 false——
+ * 周期永不过期，计数只增不减。额度耗尽后该 (code, store, operation) 键的每一次 recover
+ * 都立即抛「Max retries exceeded」，重试能力被一次 NaN 配置永久焊死（maxRetries 走
+ * normalizeMaxRetries 早已挡下同类输入，唯独 delay 漏了）。口径与 normalizeMaxRetries 一致：
+ * 非法值回落默认 1000；0 与负数保留（立即重试的既有语义）
+ */
+function normalizeRetryDelay(value: number | undefined, fallback = 1000): number {
+  if (value === undefined) {
+    return fallback
+  }
+  return Number.isFinite(value) ? Math.max(0, value) : fallback
+}
+
+/** setTimeout 上限（2^31-1 ms）：指数退避的 delay 随 attempt 指数增长，越界后宿主静默夹成 ~1ms */
+const MAX_TIMER_DELAY = 2 ** 31 - 1
+
+/**
  * 错误恢复器类
  *
  * @class ErrorRecovery
@@ -124,7 +145,9 @@ export class ErrorRecovery {
         // 为RETRY策略添加默认值（maxRetries 经归一：NaN/Infinity 会让上限判定失效）
         ...(config.strategy === RecoveryStrategy.RETRY && {
           maxRetries: normalizeMaxRetries(config.maxRetries),
-          retryDelay: config.retryDelay !== undefined ? config.retryDelay : 1000,
+          // retryDelay 与 maxRetries 同口径归一：NaN 会让周期窗/退避延迟全部变 NaN，
+          // 周期永不过期 ⇒ 额度永久锁死（见 normalizeRetryDelay 的文档）
+          retryDelay: normalizeRetryDelay(config.retryDelay),
           exponentialBackoff: config.exponentialBackoff !== undefined ? config.exponentialBackoff : true,
         }),
       })
@@ -294,7 +317,7 @@ export class ErrorRecovery {
     // 二次归一：strategies 可经 getConfig 之外的路径被直接改写（Map 由实例持有），
     // 归一放在读取侧才能保证上限判定与 cycleSpan/cycleWindow 的退避计算都拿到合法值
     const maxRetries = normalizeMaxRetries(config.maxRetries)
-    const baseDelay = config.retryDelay !== undefined ? config.retryDelay : 1000
+    const baseDelay = normalizeRetryDelay(config.retryDelay)
     const useExponentialBackoff = config.exponentialBackoff !== undefined ? config.exponentialBackoff : true
 
     // 获取重试计数（键按 Store/操作隔离，缺省取会话内嵌 context）
@@ -308,7 +331,9 @@ export class ErrorRecovery {
     // 周期判定是启发式：调用方自身重试耗时若使间隔超出窗口，会被视为新周期重新计额
     const now = Date.now()
     const cycleSpan = useExponentialBackoff ? baseDelay * (Math.pow(2, maxRetries) - 1) : baseDelay * maxRetries
-    const cycleWindow = Math.max(60_000, cycleSpan * 2)
+    // cycleSpan 可能为 Infinity（maxRetries 极大时 2^maxRetries 溢出）：此时周期同样不能
+    // 按 Infinity 计（now > Infinity 恒 false ⇒ 永不过期），夹到计时器上限量级即可
+    const cycleWindow = Number.isFinite(cycleSpan) ? Math.max(60_000, cycleSpan * 2) : MAX_TIMER_DELAY
     const cycleEnd = this.retryCycleEnd.get(retryKey)
     if (cycleEnd === undefined || now > cycleEnd) {
       // 先 delete 再 set：`Map.set` 对已存在的键**不刷新插入顺序**，而下面的容量守卫正是
@@ -381,7 +406,14 @@ export class ErrorRecovery {
     }
 
     // 计算延迟
-    const delay = useExponentialBackoff ? baseDelay * Math.pow(2, currentAttempt) : baseDelay
+    const rawDelay = useExponentialBackoff ? baseDelay * Math.pow(2, currentAttempt) : baseDelay
+    // 钳到 setTimeout 上限：attempt ≥ ~22（baseDelay=1000）时指数结果溢出为 Infinity，
+    // 宿主会把 Infinity 静默夹成 ~1ms，指数退避退化为紧贴重试；负值同样没有可等待语义。
+    // Infinity 一律取上限而非 0：那一刻的真实意图是「能等多久等多久」，折成 0 等于把
+    // 最后几次重试变成无间隔连发（与 async-core 的 retryWithBackoff 同口径）；
+    // NaN 亦如此：baseDelay 经归一不会再产出 NaN，取 0 那支反倒是把「无从等待」写成等 0ms。
+    // 让两种非有限输入都落到上限，判定就不需要区分它们是 NaN 还是 Infinity
+    const delay = Number.isFinite(rawDelay) ? Math.min(Math.max(0, rawDelay), MAX_TIMER_DELAY) : MAX_TIMER_DELAY
 
     // 等待延迟
     await this.delay(delay)

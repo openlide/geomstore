@@ -213,9 +213,14 @@ export class ErrorAggregator {
     this.groupIdByFingerprint.set(fingerprint, groupId)
 
     // 限制组数量：被驱逐那组的条数转入 evictedErrors（见 cleanupOldGroups），
-    // 因此 totalErrors 只增不减，「聚合丢过数据」也从此有账可查
+    // 因此 totalErrors 只增不减，「聚合丢过数据」也从此有账可查。
+    // 传入新组 ID 让它不参与本轮驱逐首选：其 lastSeen 取自 context.timestamp，
+    // 调用方传入过去时间戳（重放/回放的错误）时新组反而是全场最旧，会在同一次
+    // addError 里被立刻驱逐——而本方法的返回契约是「新建则返回该组」，交出去的
+    // 会是一份已不在 Map 里的拷贝。全场只剩它可驱逐的退化配置下仍会淘汰它
+    // （见 cleanupOldGroups 的 fallback 分支），size 收敛性不受影响
     if (this.groups.size > this.maxGroups) {
-      this.cleanupOldGroups()
+      this.cleanupOldGroups(newGroup.groupId)
     }
 
     // 交给调用方的是副本：返回内部引用的话，调用方（ErrorMonitoring 之外也有直接使用者）
@@ -316,22 +321,39 @@ export class ErrorAggregator {
    *
    * @private
    */
-  private cleanupOldGroups(): void {
+  private cleanupOldGroups(keepGroupId?: string): void {
     while (this.groups.size > this.maxGroups) {
       let victimId: string | undefined
       let victim: GroupEntry | undefined
       let oldest = Infinity
+      // 受保护组（本次新建的那组）单独记一份最旧候选：它不参与首选，但全场只剩它
+      // 可驱逐时（退化配置 maxGroups=0）仍要按原口径淘汰，否则 size 永不收敛、
+      // 保护反而造成无界增长
+      let keptVictimId: string | undefined
+      let keptVictim: GroupEntry | undefined
+      let keptOldest = Infinity
       for (const [groupId, entry] of this.groups) {
         // 严格小于：lastSeen 同分（同一毫秒内高发）时取 Map 迭代顺序里更早的一组，
         // 即「同样久未出现就先淘汰建组更早的那组」，方向确定且与插入顺序一致
+        if (groupId === keepGroupId) {
+          if (entry.group.lastSeen < keptOldest) {
+            keptOldest = entry.group.lastSeen
+            keptVictimId = groupId
+            keptVictim = entry
+          }
+          continue
+        }
         if (entry.group.lastSeen < oldest) {
           oldest = entry.group.lastSeen
           victimId = groupId
           victim = entry
         }
       }
+      // 排除受保护组后无人可驱逐（只剩它）才退到全场最旧——含受保护组自己
+      const finalVictimId = victimId ?? keptVictimId
+      const finalVictim = victim ?? keptVictim
       /* istanbul ignore if -- groups.size > maxGroups(>=1) 时循环体必然非空 */
-      if (victimId === undefined || victim === undefined) {
+      if (finalVictimId === undefined || finalVictim === undefined) {
         return
       }
       if (!this.evictionWarned) {
@@ -343,11 +365,11 @@ export class ErrorAggregator {
       // 驱逐留痕：组本体（含其 count 与 affectedStores）就此消失，不记账的话
       // getStats() 只能对存活组求和，totalErrors 会随新错误的发生而倒退
       this.evictedGroups++
-      this.evictedErrors += victim.group.count
-      this.groups.delete(victimId)
+      this.evictedErrors += finalVictim.group.count
+      this.groups.delete(finalVictimId)
       // 指纹索引与组同生命周期：留下条目会让该指纹此后一直解析到这个已释放的 ID，
       // 而删掉它则与「组已不存在、下次出现即新建一组」的语义一致
-      this.groupIdByFingerprint.delete(victim.fingerprint)
+      this.groupIdByFingerprint.delete(finalVictim.fingerprint)
     }
   }
 
