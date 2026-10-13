@@ -19,9 +19,26 @@
  * `this` 定位不到任何槽位、静默 no-op），详见 `./debounce.js` 模块头。装饰 store action 时
  * 请在业务侧自判存活标记。
  *
+ * 与 `withCache` 的叠加顺序：**节流必须在外、缓存在内**（`@withThrottle` 写在 `@withCache`
+ * 上方）。此时 leading/trailing 两次真实执行都经由缓存包装，限频与缓存两种能力完整生效；
+ * 反向叠加（缓存在外）时，被抑制调用返回的占位 Promise 带 {@link PLACEHOLDER_RESULT} 品牌，
+ * 缓存见标即原样返回——该路径退化为「不缓存、不去重」，而不会把占位值写进缓存键
+ * （否则 TTL 内同参调用持续拿到 undefined，真实方法不再执行）。
+ *
  */
 
-import { isAsyncFunction, isThenable, isTrackableHost } from './common.js'
+import { isAsyncFunction, isThenable, isTrackableHost, markPlaceholder } from './common.js'
+import { MAX_TIMER_DELAY } from '../async-core.js'
+
+/**
+ * 被抑制调用的共享占位 Promise（已结算为 undefined）
+ *
+ * 打上 {@link PLACEHOLDER_RESULT} 品牌：它的值不对应任何一次真实执行，叠在它外面的
+ * 装饰器（典型是 withCache）不得把它归因到本次调用的键上。模块级共享而非每次调用新建：
+ * 抑制路径在滚动/输入场景下每事件一次，新建 Promise 是白付分配；已结算的 Promise 被多个
+ * 调用方 `.then` 各自派生，互不影响，也无法被改写
+ */
+const SUPPRESSED_PROMISE = markPlaceholder(Promise.resolve(undefined))
 
 /**
  * 节流选项
@@ -258,7 +275,11 @@ export function withThrottle(interval: number = DEFAULT_INTERVAL, options: Throt
           }
           firePendingTrailing(hostState)
         },
-        Math.max(0, delay),
+        // 钳到 setTimeout 上限：interval > 2^31-1（≈24.8 天）时窗口内被抑制的调用
+        // 算出的 trailing delay ≈ interval，原样交给宿主会被静默夹成 ~1ms 并打
+        // TimeoutOverflowWarning——补发在窗口开始后立刻执行，节流被完全击穿。
+        // 与 async-core 的 timeout/退避同一道钳制（MAX_TIMER_DELAY 的出处）
+        Math.min(Math.max(0, delay), MAX_TIMER_DELAY),
       )
       hostState.timer = timer
     }
@@ -301,7 +322,8 @@ export function withThrottle(interval: number = DEFAULT_INTERVAL, options: Throt
         hostState.lastCallTime = now
         hostState.pendingArgs = args
         scheduleTrailingAt(hostState, intervalMs)
-        return isAsyncMethod || hostState.sawPromise || assumeAsync ? Promise.resolve(undefined) : undefined
+        // 占位 Promise 带品牌（见 SUPPRESSED_PROMISE 注释）：本次没有执行，值不可归因
+        return isAsyncMethod || hostState.sawPromise || assumeAsync ? SUPPRESSED_PROMISE : undefined
       }
 
       // 窗口内被抑制
@@ -310,7 +332,9 @@ export function withThrottle(interval: number = DEFAULT_INTERVAL, options: Throt
         hostState.pendingArgs = args
         scheduleTrailingAt(hostState, hostState.lastCallTime + intervalMs - now)
       }
-      return isAsyncMethod || hostState.sawPromise || assumeAsync ? Promise.resolve(undefined) : undefined
+      // 同步方法仍返回 undefined：原始值无法承载品牌，这也是 throttle 的公开契约
+      // （「被抑制调用的返回值不回传」）——依赖它的调用方本就在契约之外，见模块头
+      return isAsyncMethod || hostState.sawPromise || assumeAsync ? SUPPRESSED_PROMISE : undefined
     }
 
     return descriptor
