@@ -2,7 +2,7 @@
 
 > **本文件由 `scripts/generate-skill-api-reference.mjs` 从 `dist/**/*.d.ts` 生成，请勿手工编辑。**
 >
-> - 来源版本：`@openlide/geomstore@0.8.2`
+> - 来源版本：`@openlide/geomstore@0.8.3`
 > - 内容来源：构建产物类型声明（随 npm 包发布，与安装版本必然一致）
 > - 重新生成：`pnpm build && pnpm skill:api`
 > - 引入路径：`./extras/error`
@@ -1623,27 +1623,55 @@ export declare class HttpReporter implements ErrorReporter {
      */
     private buildRequestBody;
     /**
-     * 单个 ErrorContext 的上报投影（**未**序列化）
+     * 单个 ErrorContext 的上报投影（**快路径**，未序列化）
      *
-     * 单条与批量两条路径共用：两处各写一份字段映射时，新增/改名字段只会落到其中一条，
-     * 服务端收到的单条与批量负载就会静默漂移。
+     * 与 {@link serializeContextDegraded} 的差别只在 payload 的 coercian：本版本用全函数的
+     * {@link toCoerciblePayload}（不跑试用串化），可序列化性交给 `buildRequestBody` 那一次
+     * 真正序列化去检验。常见路径下每条上下文只有一次整树遍历——此前 `toSerializablePayload`
+     * 会先试用串一遍（结果丢弃）、正式串化再走一遍，payload 大时即为可测量的双倍开销。
+     * 快路径串化失败（循环引用 / BigInt 值 / 非幂等 getter）由 `serializeContextItem`
+     * 的 catch 转入慢路径逐字段定位，降级语义逐字保留
      *
      * 本方法**允许抛错**（例如某字段是只在第二次取值才失效的非幂等 getter），
-     * 兜底在 {@link serializeContextItem}；序列化口径见 {@link toSerializableScalar}
-     * 与 {@link toSerializablePayload}。
+     * 兜底在 {@link serializeContextItem}
      *
      * @private
      */
-    private serializeContext;
+    private serializeContextFast;
+    /**
+     * 单个 ErrorContext 的上报投影（**慢路径**，未序列化）
+     *
+     * 仅由 `serializeContextItem` 的快路径 catch 进入：逐字段试用串化定位坏字段并降级
+     * （payload 走 {@link toSerializablePayload}，含 `[Unserializable payload: ...]` 专名标记），
+     * 语义与快路径设立前的 `serializeContext` 逐字一致。代价是多一次失败尝试 + 一次试用
+     * 串化，但只为畸形条目付出——常见路径永远不走这里
+     *
+     * @private
+     */
+    private serializeContextDegraded;
+    /**
+     * 两条投影路径共用的字段映射（单条与批量两条上报路径也共用同一份形状）
+     *
+     * 两处各写一遍字段映射时，新增/改名字段只会落到其中一条，服务端收到的单条与批量负载
+     * 就会静默漂移；快慢路径各写一遍则会让「降级语义」在重构中悄悄失真，故收敛到此，
+     * 仅 payload 的 coercian 由参数注入
+     *
+     * @private
+     */
+    private projectContext;
     /**
      * 一条上下文的完整序列化结果（单条上报的 body、批量上报的一个片段）
      *
-     * 「不可序列化」的防线到这里才算闭合：投影阶段挡得住 BigInt / 循环引用，但挡不住
-     * 只在**第二次**取值才失效的非幂等 getter / `toJSON`（先验证串一遍、再把原值交给外层
-     * 重串，两次之间没有任何保证）。故每条上下文各自序列化**一次**，并单独兜底：
-     * 本条导致整体不可序列化时只把这一条换成标记片段，批次其余条目照常交付，
-     * `reportBatch` 不因单条畸形而 reject（那会被监控层判成网络失败并按 maxFlushRetries
-     * 重入队，最终把整批丢弃，且丢弃原因显示为「报告器恒失败」而非「这条上下文畸形」）
+     * 两级兜底，代价按「条目是否畸形」分配：
+     * 1. **快路径**：投影 + 一次 `JSON.stringify`。常见条目（含大 payload）只付一次遍历；
+     * 2. **慢路径**：快路径抛错才进入——逐字段试用串化定位坏字段并降级，只让这一条换成
+     *    标记片段，批次其余条目照常交付，`reportBatch` 不因单条畸形而 reject（那会被监控层
+     *    判成网络失败并按 maxFlushRetries 重入队，最终把整批丢弃，且丢弃原因显示为
+     *    「报告器恒失败」而非「这条上下文畸形」）；
+     * 3. **最终兜底**：慢路径也失败（两条路径都抛的病态条目）时交出一条纯字面量标记片段，
+     *    它本身不可能再抛。
+     * 「不可序列化」的防线到此闭合：投影阶段挡得住 BigInt / 循环引用，慢路径挡得住
+     * 只在**第二次**取值才失效的非幂等 getter / `toJSON`
      */
     private serializeContextItem;
     private serializeErrorBatch;

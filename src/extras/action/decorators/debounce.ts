@@ -22,6 +22,12 @@
  * （action 体内先确认页面/store 仍存活再落状态），与「`withCache` / `withRetry` 没有对应的
  * 收尾入口」同一口径。`withThrottle` 的三个同名入口受同一条限制，见其模块头。
  *
+ * 与 `withCache` 的叠加顺序：**防抖必须在外、缓存在内**（`@withDebounce` 写在 `@withCache`
+ * 上方）。此时每次真实执行都经由缓存包装，合并执行与缓存两种能力完整生效；反向叠加
+ * （缓存在外）时，本装饰器返回的每个 Promise 都带 {@link PLACEHOLDER_RESULT} 品牌
+ * （窗口内所有调用共享最新参数那一次执行的结果），缓存见标即原样返回——该路径退化为
+ * 「不缓存、不去重」，而不会把别种参数的结果写进缓存键。
+ *
  */
 
 /**
@@ -31,7 +37,8 @@
  * 但等待期必须有个可结算的替身，所以包装函数的返回值**恒为 Promise**（见 `withDebounce`
  * 的 remarks）——装饰同步方法时这一点无法在类型上表达，旧式方法装饰器改不了声明签名。
  */
-import { isTrackableHost } from './common.js'
+import { isTrackableHost, markPlaceholder } from './common.js'
+import { MAX_TIMER_DELAY } from '../async-core.js'
 
 type DecoratedMethod = (this: unknown, ...args: unknown[]) => unknown
 
@@ -293,11 +300,21 @@ export function withDebounce(delay: number = DEFAULT_DELAY): MethodDecorator {
       // 已知取舍：排程中的定时器回调持有状态（以及状态持有的宿主）直到延迟到期，
       // 期间宿主不可被回收；宿主生命周期短于延迟时，请在卸载点调用
       // `cancelDebouncedCalls(this)`（丢弃）或 `flushDebouncedCalls(this)`（立即执行一次）
-      state.timeoutId = setTimeout(() => {
-        void runPendingCalls(state)
-      }, wait)
+      state.timeoutId = setTimeout(
+        () => {
+          void runPendingCalls(state)
+          // 钳到 setTimeout 上限：delay > 2^31-1（≈24.8 天）时原样交给宿主会被静默夹成
+          // ~1ms 并打 TimeoutOverflowWarning——防抖退化成「下一宏任务立即执行」。
+          // 与 async-core 的 timeout/退避、throttle 的 trailing 排程同一道钳制
+        },
+        Math.min(Math.max(0, wait), MAX_TIMER_DELAY),
+      )
 
-      return promise
+      // 打上 PLACEHOLDER_RESULT 品牌：窗口内所有调用的 Promise 共享「最新参数那一次执行」
+      // 的结果（见 runPendingCalls 的 pendingResolves.forEach），单个调用的结算值可能来自
+      // 完全不同的参数——叠在外面的缓存不得把它归因到本次调用的键上（否则键 A 会缓存进
+      // 参数 B 的结果，静默返回错值）
+      return markPlaceholder(promise)
     }
 
     return descriptor

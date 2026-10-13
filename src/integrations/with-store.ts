@@ -22,7 +22,7 @@ import type {
   WithPageThis,
   WithComponentThis,
 } from '../types/integration.js'
-import { resolveMappings, createStoreSubscriber, bindMappings, bindActions, cleanupBindings, performAutoInject } from './utils.js'
+import { resolveMappings, createStoreSubscriber, createMapper, subscribeMappers, bindActions, cleanupBindings, performAutoInject } from './utils.js'
 
 export type { ConnectOptions } from '../types/integration.js'
 export type { Actions } from '../types/store.js'
@@ -188,30 +188,38 @@ export function withPageStore<S extends State, A extends Actions, G extends Gett
       const subscribeStore = createStoreSubscriber(store)
 
       try {
+        // state 与 getters 两类映射共享**同一条**订阅（每个页面实例一条）：
+        // 订阅粒度曾是「每次 bindMappings 一条」，同时配两类映射的实例占 2 份额度；
+        // 列表组件/多页面场景下共享 store 的 maxSubscribers（默认 50）会被先耗尽，
+        // 最早注册的实例被 evict-oldest 静默驱逐（症状「某些实例不刷新」）
+        const mappers: Array<{ update: () => void }> = []
+
         // 绑定 state
         if (options.mapState) {
-          const unbindState = bindMappings(
-            this.data,
-            stateMapping,
-            (key) => store.state[key as keyof S],
-            (updates) => this.setData(updates),
-            subscribeStore,
-            (storeKey) => store.isStateKeyDirty(storeKey),
+          mappers.push(
+            createMapper(
+              this.data,
+              stateMapping,
+              (key) => store.state[key as keyof S],
+              (updates) => this.setData(updates),
+              (storeKey) => store.isStateKeyDirty(storeKey),
+            ),
           )
-          unbindFunctions.push(...unbindState)
         }
 
         // 绑定 getters
         if (options.mapGetters) {
-          const unbindGetters = bindMappings(
-            this.data,
-            gettersMapping,
-            (key) => store.getter(key),
-            (updates) => this.setData(updates),
-            subscribeStore,
+          mappers.push(
+            createMapper(
+              this.data,
+              gettersMapping,
+              (key) => store.getter(key),
+              (updates) => this.setData(updates),
+            ),
           )
-          unbindFunctions.push(...unbindGetters)
         }
+
+        unbindFunctions.push(subscribeMappers(subscribeStore, mappers))
 
         // 绑定 actions（复用 integrations/utils 的 bindActions，与 App 集成同一实现）
         if (options.mapActions) {
@@ -403,30 +411,38 @@ export function withComponentStore<S extends State, A extends Actions, G extends
             this.methods = { ...this.methods, ...boundMethods }
           }
 
+          // state 与 getters 两类映射共享**同一条**订阅（每个组件实例一条）：
+          // 订阅粒度曾是「每次 bindMappings 一条」，同时配两类映射的实例占 2 份额度；
+          // 列表项组件（每项一个 Component）场景下共享 store 的 maxSubscribers
+          // （默认 50）会被先耗尽，最早注册的实例被 evict-oldest 静默驱逐
+          const mappers: Array<{ update: () => void }> = []
+
           // 绑定 state
           if (options.mapState) {
-            const unbindState = bindMappings(
-              this.data,
-              stateMapping,
-              (key) => store.state[key as keyof S],
-              (updates) => this.setData(updates),
-              subscribeStore,
-              (storeKey) => store.isStateKeyDirty(storeKey),
+            mappers.push(
+              createMapper(
+                this.data,
+                stateMapping,
+                (key) => store.state[key as keyof S],
+                (updates) => this.setData(updates),
+                (storeKey) => store.isStateKeyDirty(storeKey),
+              ),
             )
-            unbindFunctions.push(...unbindState)
           }
 
           // 绑定 getters
           if (options.mapGetters) {
-            const unbindGetters = bindMappings(
-              this.data,
-              gettersMapping,
-              (key) => store.getter(key),
-              (updates) => this.setData(updates),
-              subscribeStore,
+            mappers.push(
+              createMapper(
+                this.data,
+                gettersMapping,
+                (key) => store.getter(key),
+                (updates) => this.setData(updates),
+              ),
             )
-            unbindFunctions.push(...unbindGetters)
           }
+
+          unbindFunctions.push(subscribeMappers(subscribeStore, mappers))
 
           // 自动注入（使用getCached）
           if (options.autoInject && hasInjectMapping) {

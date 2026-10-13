@@ -9,6 +9,14 @@
 import type { Selector } from '../../types/selector.js'
 import type { State } from '../../types/store.js'
 
+/**
+ * setTimeout 上限（2^31-1 ms ≈ 24.8 天）：更大值会被宿主静默钳制为 ~1ms
+ *
+ * 与 `extras/action/async-core` 的同名常量取值相同，此处各自声明一份：选择器能力包刻意
+ * 不对 action 能力包引入运行时依赖（见 {@link toRetryError} 的同款说明）
+ */
+const MAX_TIMER_DELAY = 2 ** 31 - 1
+
 /** `shouldRetry` 的函数形状，供选项契约与共用的 `shouldRetryMore` 同源引用 */
 type RetryPredicate = (error: Error, attempt: number) => boolean
 
@@ -305,7 +313,10 @@ export function createRetrySelectorAsync<S extends State, R>(selector: Selector<
         }
         const waitMs = resolveDelayMs(delay, attempt + 1)
         if (waitMs > 0) {
-          await new Promise((resolve) => setTimeout(resolve, waitMs))
+          // 钳到 setTimeout 上限：退避函数返回超界值（`(a) => 1e10`、指数写法在 attempt
+          // 较大时溢出为 Infinity）会被宿主夹成 ~1ms，退避静默退化成紧贴重试，
+          // 而用户看到的仍是「我配了退避」
+          await new Promise((resolve) => setTimeout(resolve, Math.min(waitMs, MAX_TIMER_DELAY)))
         }
       }
     }

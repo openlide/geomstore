@@ -527,7 +527,10 @@ export class ActionLoader {
    * ```
    */
   getAllLoading(): Record<string, boolean> {
-    const states: Record<string, boolean> = {}
+    // 空原型容器：loadingKey 可合法为 '__proto__'，普通对象字面量上给它赋值会命中
+    // Object.prototype 的访问器 setter——布尔值入参下是静默 no-op，该键从返回对象中
+    // 消失（内部计数与 store 侧写入均正常发生，唯独这里读不到）。getAllStats 同口径
+    const states = Object.create(null) as Record<string, boolean>
     for (const [key, count] of this.loadingRefCounts) {
       states[key] = count > 0
     }
@@ -641,7 +644,7 @@ export class ActionLoader {
    */
   setOptions(options: Partial<ActionLoaderOptions>): void {
     const previousAutoLoading = this.options.autoLoading
-    const previousKeys = [this.options.loadingKey, this.options.errorKey, this.options.errorDataKey, this.options.perActionKeys].join('|')
+    const previousKeys = JSON.stringify([this.options.loadingKey, this.options.errorKey, this.options.errorDataKey, this.options.perActionKeys])
     Object.assign(this.options, {
       loadingKey: options.loadingKey ?? this.options.loadingKey,
       errorKey: options.errorKey ?? this.options.errorKey,
@@ -649,7 +652,7 @@ export class ActionLoader {
       autoLoading: options.autoLoading ?? this.options.autoLoading,
       perActionKeys: options.perActionKeys ?? this.options.perActionKeys,
     })
-    const keysChanged = [this.options.loadingKey, this.options.errorKey, this.options.errorDataKey, this.options.perActionKeys].join('|') !== previousKeys
+    const keysChanged = JSON.stringify([this.options.loadingKey, this.options.errorKey, this.options.errorDataKey, this.options.perActionKeys]) !== previousKeys
 
     // 中途切换 autoLoading、或改任何一个状态键名，都让「按旧键已记账」的在飞调用失去归宿。
     // 这里靠 `captureCallScope` 的快照 + 代际机制兜住，而不是靠键兜底：

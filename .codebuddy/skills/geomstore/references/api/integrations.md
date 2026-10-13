@@ -2,7 +2,7 @@
 
 > **本文件由 `scripts/generate-skill-api-reference.mjs` 从 `dist/**/*.d.ts` 生成，请勿手工编辑。**
 >
-> - 来源版本：`@openlide/geomstore@0.8.2`
+> - 来源版本：`@openlide/geomstore@0.8.3`
 > - 内容来源：构建产物类型声明（随 npm 包发布，与安装版本必然一致）
 > - 重新生成：`pnpm build && pnpm skill:api`
 > - 引入路径：`./integrations`
@@ -168,6 +168,16 @@ export declare class OfflineManager<S extends State = State> {
     private syncFailed;
     private syncNextIndex;
     private disposed;
+    /**
+     * 读取失败的存储键集合：这些键的磁盘内容不可信，禁止随后的覆写。
+     *
+     * 成因是 storage 适配层的三态被压成两态：`storage.get` 对「键不存在」与「读取抛错」
+     * 同返 null（env.ts 的 catch 记日志后 return null）。读失败时内存队列为空而磁盘队列
+     * 仍在，此后任何一次 saveQueue/appendDeadLetter 都会把磁盘旧数据整体覆写——那些操作
+     * 从内存与磁盘同时消失，重启也回不来，直接违背 at-least-once 契约。
+     * 读取成功时随手摘除该键，瞬时故障可自愈
+     */
+    private readonly unreadableKeys;
     /** 网络监听回调引用，dispose 时用于精确移除。参数类型同时兼容 wx.on/offNetworkStatusChange 两种签名 */
     private networkHandler;
     private readonly maxRetryCount;
@@ -292,6 +302,15 @@ export declare class OfflineManager<S extends State = State> {
      * 同 store 名的新实例会继续往里追加，旧实例的一次清空会抹掉新实例记录的死信
      */
     clearDeadLetters(): void;
+    /**
+     * 从存储读取一个键，区分「读到值 / 键不存在 / 读取失败」三种结局
+     *
+     * 三态由 storage 适配器直接给出（{@link storage.getWithStatus}），不再用
+     * `wx.getStorageInfoSync().keys` 探测键存在性——那只对 wx 后端有效、多一次系统调用，
+     * 且自定义存储后端（env.storage 之外的实现）完全失效。读失败时内存队列不得被当成
+     * 全量：磁盘队列仍在，此后任何覆写都会把盘上旧操作整体抹掉
+     */
+    private readStorageKey;
     /**
      * 从存储加载队列
      */
@@ -484,36 +503,6 @@ export declare function bindActions<S extends State = State>(target: Record<stri
 ### `bindMappings`
 
 ```ts
-/**
- * 绑定状态映射到目标对象
- *
- * 将 Store 的状态或 getters 映射到 Page/Component/App 实例，
- * 并自动订阅变化以实现双向同步。
- *
- * 所有映射的更新合并为一次批量 setter 调用：小程序 setData 调用开销较大，
- * 逐键调用会引发 N 次视图更新，合并后仅需一次。
- *
- * @template S - 状态类型
- * @param _target - 目标对象（Page/Component/App 实例）
- * @param mappings - 映射关系（本地键 → Store键）
- * @param getValue - 获取 Store 值的函数
- * @param setter - 批量设置本地值的函数（接收全部映射键的更新对象；
- *   载荷的键即用户配置的本地键，可能含 `'__proto__'`，宿主侧需按自有属性语义写入，
- *   见 copyOwnEntries / Page & Component 的 setData）
- * @param subscribeStore - 订阅 Store 变化的函数
- * @returns 取消绑定函数数组
- *
- * @example
- * ```typescript
- * const unbinds = bindMappings(
- *   pageInstance,
- *   { count: 'counter', name: 'userName' },
- *   (storeKey) => store.state[storeKey],
- *   (updates) => pageInstance.setData(updates),
- *   (callback) => store.subscribe(callback)
- * )
- * ```
- */
 export declare function bindMappings(_target: unknown, mappings: Record<string, string>, getValue: (storeKey: string) => unknown, setter: (updates: Record<string, unknown>) => void, subscribeStore: (callback: () => void, options?: {
     readOnly?: boolean;
 }) => () => void, 

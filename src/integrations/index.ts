@@ -38,6 +38,8 @@ export type {
 
 // ==================== 集成工具函数 ====================
 
+// createMapper / subscribeMappers 是集成入口（withPageStore 等）内部复用的绑定原语，
+// 不属于公开导出面（导出键集受 docs-gates 的文档清单门禁约束），故不在此转发
 export { parseMapping, bindMappings, bindActions, performAutoInject, exposeStoreAPI, cleanupBindings } from './utils.js'
 
 // ==================== 类型导出 ====================

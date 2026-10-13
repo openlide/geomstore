@@ -70,11 +70,51 @@ import { computePerformanceStats } from './metrics.js'
  */
 export class PerformanceMonitor implements PerformanceMonitorInterface {
   /**
-   * 性能指标数组
+   * 指标环形缓冲：未满时尾部追加，满后从 `_head` 起原地覆盖最旧条目。
+   *
+   * 替代此前的「有序数组 + 满员 splice(0, overflow)」：稳态下每次 record 只超限一条，
+   * splice 要前移近整个缓冲区（maxSize 默认 1000 ⇒ 每条指标一次 O(maxSize) memmove），
+   * 而 record 正踩在 analyzerPlugin 插桩的每次 setState/$patch/dispatch/getter 收尾上。
+   * 本仓的 MetricsCollector（metrics.ts）早已因同一论证改用环形缓冲，此处对齐。
+   * 写入 O(1)、读取经 {@link _ordered} 展开（与原先的 map/filter/slice 同阶）。
+   *
+   * 不变量：`_ring.length <= options.maxSize`，且 `_head !== 0` 仅可能出现在满环
+   * （长度 === maxSize）时；append 分支（未满）要求头在下标 0，由 trimToMaxSize 复位。
+   *
    * @private
-   * @type {PerformanceMetrics[]}
    */
-  private metrics: PerformanceMetrics[] = []
+  private _ring: PerformanceMetrics[] = []
+  /** 环内最旧条目下标（未满时恒 0） @private */
+  private _head = 0
+
+  /**
+   * 指标的有序视图（最旧在前）：环形缓冲按时间正序展开。
+   *
+   * 同时充当 `metrics` 内部字段的兼容读取面——历史代码与既有测试按 `monitor.metrics`
+   * 直接触达缓冲区，经此 getter 仍能拿到**同一批对象引用**（不是副本），身份断言不受影响。
+   *
+   * @private
+   */
+  private _ordered(): PerformanceMetrics[] {
+    if (this._head === 0) {
+      return this._ring.slice()
+    }
+    return [...this._ring.slice(this._head), ...this._ring.slice(0, this._head)]
+  }
+
+  /**
+   * 指标缓冲区（兼容读取面，语义见 {@link _ordered}）
+   *
+   * 保留 `private` 而不是随字段改成 public getter：`metrics` 原本是私有字段，公开会让
+   * 调用方拿到这批未复制的指标对象引用（`m.duration = 0` 就能污染内部数据与后续统计）。
+   * 内部读取早已全部改走 {@link _ordered}，保留本访问面只为历史代码与既有测试
+   * （它们按 `(monitor as unknown as { metrics: … })` 触达，不受成员可见性影响）
+   *
+   * @private
+   */
+  private get metrics(): PerformanceMetrics[] {
+    return this._ordered()
+  }
 
   /**
    * 监控器配置
@@ -363,11 +403,15 @@ export class PerformanceMonitor implements PerformanceMonitorInterface {
 
     // 记录指标
     if (sampled) {
-      this.metrics.push(metricRecord)
-
-      // 限制数量：一次性 splice 裁剪（容量已由构造器/setOptions 规范化，
-      // 这里不再需要 while+shift 逐步收敛）
-      this.trimToMaxSize()
+      // 环形缓冲写入：未满直接追加；已满则原地覆盖最旧条目并前推头游标——O(1)，
+      // 不再有「满员后每条指标前移整个缓冲区」的 O(maxSize) 开销（见 _ring 注释）。
+      // maxSize 为 0（调用方显式关闭留存）时两者都不满足，指标只参与阈值预警
+      if (this._ring.length < this.options.maxSize) {
+        this._ring.push(metricRecord)
+      } else if (this._ring.length > 0) {
+        this._ring[this._head] = metricRecord
+        this._head = this._head + 1 === this._ring.length ? 0 : this._head + 1
+      }
     }
 
     // 日志记录：threshold 的契约是「超过此值会触发警告」，若与采样同生灭，
@@ -381,15 +425,28 @@ export class PerformanceMonitor implements PerformanceMonitorInterface {
   }
 
   /**
-   * 超出容量上限时淘汰最旧条目
+   * 把缓冲区收敛到容量上限（仅 setOptions 改容量时调用；record 热路径靠环形覆盖自收敛）
+   *
+   * 缩小容量时按有序视图截尾；容量未变小时只做一件事——把头游标复位为 0，
+   * 使后续 record 的 append 分支（`_ring.length < maxSize` 时 push 到尾部）语义正确：
+   * 满环且 `_head !== 0` 时若直接 append，新条目会排在「较新的一半」之后，
+   * 被 `_ordered()` 当作最旧条目，时间序颠倒。
    *
    * @private
    */
   private trimToMaxSize(): void {
-    const overflow = this.metrics.length - this.options.maxSize
-    if (overflow > 0) {
-      this.metrics.splice(0, overflow)
+    const capacity = this.options.maxSize
+    if (this._ring.length <= capacity) {
+      if (this._head !== 0) {
+        this._ring = this._ordered()
+        this._head = 0
+      }
+      return
     }
+    const ordered = this._ordered()
+    // capacity 为 0 时 slice(-0) 会退化成 slice(0)（整表复制），必须显式判空
+    this._ring = capacity > 0 ? ordered.slice(ordered.length - capacity) : []
+    this._head = 0
   }
 
   /**
@@ -410,7 +467,8 @@ export class PerformanceMonitor implements PerformanceMonitorInterface {
    * ```
    */
   getMetrics(): PerformanceMetrics[] {
-    // 元素逐个复制：数组浅拷贝仍指向内部同一批指标对象，
+    // 经 `metrics` 兼容访问面读取（它与 getMetrics 的有序语义同源），顺带把它保留在活跃
+    // 调用路径上：该访问面只为历史代码与既有测试存在，完全无人调用时会被当成死代码删除
     // 调用方改 m.duration 会污染内部数据与后续 getStats()/exportJSON()
     return this.metrics.map((m) => ({ ...m }))
   }
@@ -456,7 +514,7 @@ export class PerformanceMonitor implements PerformanceMonitorInterface {
    * ```
    */
   getStats(): PerformanceStats {
-    return computePerformanceStats(this.metrics)
+    return computePerformanceStats(this._ordered())
   }
 
   /**
@@ -477,7 +535,8 @@ export class PerformanceMonitor implements PerformanceMonitorInterface {
    * ```
    */
   clear(): void {
-    this.metrics = []
+    this._ring = []
+    this._head = 0
     this.currentOperations.clear()
   }
 
@@ -546,7 +605,9 @@ export class PerformanceMonitor implements PerformanceMonitorInterface {
    */
   getMetricsByType(type: MetricType): PerformanceMetrics[] {
     // 元素副本：filter 只复制数组外壳，返回原对象会让调用方改写内部指标
-    return this.metrics.filter((m) => m.type === type).map((m) => ({ ...m }))
+    return this._ordered()
+      .filter((m) => m.type === type)
+      .map((m) => ({ ...m }))
   }
 
   /**
@@ -576,7 +637,9 @@ export class PerformanceMonitor implements PerformanceMonitorInterface {
    */
   getMetricsByOperation(operation: string): PerformanceMetrics[] {
     // 元素副本：filter 只复制数组外壳，返回原对象会让调用方改写内部指标
-    return this.metrics.filter((m) => m.operation === operation).map((m) => ({ ...m }))
+    return this._ordered()
+      .filter((m) => m.operation === operation)
+      .map((m) => ({ ...m }))
   }
 
   /**
@@ -605,7 +668,9 @@ export class PerformanceMonitor implements PerformanceMonitorInterface {
     if (!Number.isFinite(count) || n <= 0) {
       return []
     }
-    return this.metrics.slice(-n).map((m) => ({ ...m }))
+    return this._ordered()
+      .slice(-n)
+      .map((m) => ({ ...m }))
   }
 
   /**

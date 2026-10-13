@@ -388,6 +388,21 @@ export const timeTravelPlugin = <S extends State = State>(options: TimeTravelOpt
 
         // 跳转到指定快照
         goTo: (index: number): void => {
+          // 重入守卫：默认 notify.async=false 下 $replaceState 的通知是**同步**的，
+          // 订阅回调（用户 subscribe / withPageStore 映射回调）内再次调用 undo/redo/goTo
+          // 会形成嵌套回放。内层帧回放成功后把自己的 currentIndex 写回去，外层帧
+          // unwind 时又无条件覆盖为自己的 index——最终 currentIndex 与真实状态分属
+          // 不同快照，canUndo/canRedo 失真、后续跳转从错误分支点起跳、
+          // recordSnapshot 按错误索引截断 redo 历史。同步通知下这本就是「一次回放
+          // 未完成就发起下一次」的竞态，直接忽略内层调用（traveling 标志的既有用途
+          // 在 recordFromNotification：回放期间不记录快照）
+          if (traveling) {
+            if (!isProduction()) {
+              console.warn('[timeTravel] 检测到重入的时间旅行调用（回放通知回调内再次 undo/redo/goTo），已忽略本次调用')
+            }
+            return
+          }
+
           // 整数是取到快照的前提，而裸的 `< 0 / >= length` 两个比较对 NaN 恒为 false、
           // 对小数也放行：snapshots[NaN] / snapshots[1.5] 得 undefined，下一行的
           // `snapshot.state` 抛裸 TypeError『Cannot read properties of undefined』，

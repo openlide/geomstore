@@ -361,9 +361,12 @@ export class ActionExecutor<A extends Actions = AsyncActions> {
     // reject，但 action 已因实参求值被真实启动（副作用照发），且它拿不到任何处理器
     // （Promise.race 还没装上就抛了），迟到 reject 会成 unhandledRejection；
     // 这条纯配置错误的 RangeError 还会经 recordOutcome 记成一次 action 失败、污染 getStats
-    normalizeTimeout(timeout, 'executeWithTimeout')
+    const delay = normalizeTimeout(timeout, 'executeWithTimeout')
 
-    return this.recordOutcome(actionName, () => raceWithTimeout(this.run(actions, actionName, args), timeout, `Action timeout after ${timeout}ms`))
+    // 消息用钳制后的 delay 而非原始入参：> 2^31-1 的值被 raceWithTimeout 夹到上限后
+    // 真正等待的是钳制值，用原始值写文案会让「按数字记日志/匹配」的调用方永远对不上
+    // （与 withTimeout 装饰器的同一修复同口径）
+    return this.recordOutcome(actionName, () => raceWithTimeout(this.run(actions, actionName, args), delay, `Action timeout after ${delay}ms`))
   }
 
   /**

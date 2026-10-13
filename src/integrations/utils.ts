@@ -172,20 +172,18 @@ export function createStoreSubscriber<S extends State>(store: Store<S>): (callba
  * )
  * ```
  */
-export function bindMappings(
+export function createMapper(
   _target: unknown,
   mappings: Record<string, string>,
   getValue: (storeKey: string) => unknown,
   setter: (updates: Record<string, unknown>) => void,
-  subscribeStore: (callback: () => void, options?: { readOnly?: boolean }) => () => void,
   /** 判断某状态键自上次通知以来是否变更（仅 state 映射可传入；getters 不提供，缺失时对象值保持「宁多勿漏」始终发送） */
   changedKeys?: (storeKey: string) => boolean,
-): Array<() => void> {
+): { update: () => void } {
   const entries = Object.entries(mappings)
-  const unbinds: Array<() => void> = []
 
   if (entries.length === 0) {
-    return unbinds
+    return { update: () => {} }
   }
 
   // 记录上一次各映射键的值，用于跳过无变化的 setData。
@@ -201,8 +199,29 @@ export function bindMappings(
   const updateAll = () => {
     const updates: Record<string, unknown> = {}
     let changed = false
+    // 单键取值失败的延迟抛出：坏键先跳过（见循环内 catch），其余键照常合并进本轮
+    // setData，批次结束后再把第一个错误原样抛给订阅通道——SubscriptionManager 会经
+    // onListenerError 上报到 store 的 onError 钩子，可见性与「整批中断」时代一致
+    let deferredError: unknown
+    let hasDeferredError = false
     for (const [localKey, storeKey] of entries) {
-      const next = getValue(storeKey)
+      let next: unknown
+      try {
+        next = getValue(storeKey)
+      } catch (error) {
+        // 单键 getValue 抛错（状态依赖型 getter，如 `s.user.firstName` 而 user 变 null）
+        // 不得拖垮同批次其余映射键：跳过该键且**不更新** prevValues——状态恢复后的下次
+        // 通知会把它当「仍有变化」重新交付，自愈不需要额外机制。
+        // 之所以不在就地吞掉：本仓口径「吞掉不等于丢失」，生产静默会让一个持续抛错的
+        // 映射键无声失效；也不新增上报参数——抛出即可免费复用 SubscriptionManager
+        // 既有的 onListenerError → store onError 上报链（bindMappings 是公开导出函数，
+        // 加形参会波及三个集成入口）
+        if (!hasDeferredError) {
+          deferredError = error
+          hasDeferredError = true
+        }
+        continue
+      }
       const isObjectValue = next !== null && typeof next === 'object'
       let include: boolean
       if (isObjectValue) {
@@ -229,6 +248,11 @@ export function bindMappings(
     if (changed) {
       setter(updates)
     }
+    // 批次结束后抛出：此时好键的 setData 已经发生，抛出只影响「本订阅者本轮上报」，
+    // 不会让已交付的更新回滚；SubscriptionManager 的契约也保证其余订阅者不受影响
+    if (hasDeferredError) {
+      throw deferredError
+    }
   }
 
   // 立即设置初始值（过滤 undefined，理由同 updateAll）。
@@ -244,13 +268,74 @@ export function bindMappings(
     setter(initialValues)
   }
 
+  return { update: updateAll }
+}
+
+/**
+ * 把多个映射更新器合并进**同一条**只读订阅（每个宿主实例一条，而非每类映射一条）
+ *
+ * 订阅份额此前按「每次 bindMappings 一条」计时：同时配 mapState + mapGetters 的实例
+ * 占 2 份额度，列表项组件/多页面场景下会先把共享 store 的 maxSubscribers（默认 50）
+ * 耗尽，最早注册的实例被 evict-oldest 静默驱逐——症状是「某些页面/列表项不刷新」，
+ * 而生产环境没有任何控制台输出，因果链在现场几乎无法归因。
+ * 回调标记只读：更新器仅读取状态写入 data，使 Store 走零拷贝路径（只读保护 Proxy），
+ * 避免每次通知的整树深拷贝
+ */
+export function subscribeMappers(
+  subscribeStore: (callback: () => void, options?: { readOnly?: boolean }) => () => void,
+  mappers: ReadonlyArray<{ update: () => void }>,
+): () => void {
+  if (mappers.length === 0) {
+    return () => {}
+  }
+  return subscribeStore(
+    () => {
+      // 每个更新器单独容错：合并到同一条订阅后，若某个更新器（典型是 mapState 某键的
+      // getter 抛错）直接把错误抛出，排在它后面的更新器就再也收不到本轮通知——
+      // 「共享订阅」这个本为省订阅额度的改动，等于把一个映射键的失败重新放大成
+      // 同实例其余映射的丢更新，与 createMapper 内部刚刚确立的「单键失败不得拖垮
+      // 同批其余键」口径恰好相反。故与其同构：先跑完所有更新器，再抛出本轮第一个错误，
+      // 由 SubscriptionManager 的 onListenerError → store onError 照常上报
+      let deferredError: unknown
+      let hasDeferredError = false
+      for (const mapper of mappers) {
+        try {
+          mapper.update()
+        } catch (error) {
+          if (!hasDeferredError) {
+            deferredError = error
+            hasDeferredError = true
+          }
+        }
+      }
+      if (hasDeferredError) {
+        throw deferredError
+      }
+    },
+    { readOnly: true },
+  )
+}
+
+export function bindMappings(
+  _target: unknown,
+  mappings: Record<string, string>,
+  getValue: (storeKey: string) => unknown,
+  setter: (updates: Record<string, unknown>) => void,
+  subscribeStore: (callback: () => void, options?: { readOnly?: boolean }) => () => void,
+  /** 判断某状态键自上次通知以来是否变更（仅 state 映射可传入；getters 不提供，缺失时对象值保持「宁多勿漏」始终发送） */
+  changedKeys?: (storeKey: string) => boolean,
+): Array<() => void> {
+  if (Object.keys(mappings).length === 0) {
+    return []
+  }
+  // 单映射场景保持「一次绑定一条订阅」；同一宿主同时配 state + getters 两类映射时，
+  // 集成层（withPageStore / withComponentStore / withAppStore）改走 createMapper +
+  // subscribeMappers 共享一条订阅，不再经过本函数
+  const { update } = createMapper(_target, mappings, getValue, setter, changedKeys)
   // 订阅 Store 变化（单个订阅覆盖全部映射，进一步减少回调数）
   // 标记只读：updateAll 只读取状态写入 data，从不修改载荷，
   // 使 Store 走零拷贝路径（传只读保护 Proxy），避免每次通知的整树深拷贝
-  const unsubscribe = subscribeStore(() => updateAll(), { readOnly: true })
-  unbinds.push(unsubscribe)
-
-  return unbinds
+  return [subscribeStore(() => update(), { readOnly: true })]
 }
 
 /**

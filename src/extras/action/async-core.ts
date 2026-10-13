@@ -5,8 +5,14 @@
  * 与执行器（AsyncActionSupport）中各自实现的逻辑，避免同一语义多份拷贝长期漂移。
  */
 
-/** setTimeout 上限（2^31-1 ms ≈ 24.8 天）：更大值会被宿主静默钳制为 1ms 并触发溢出告警 */
-const MAX_TIMER_DELAY = 2 ** 31 - 1
+/**
+ * setTimeout 上限（2^31-1 ms ≈ 24.8 天）：更大值会被宿主静默钳制为 1ms 并触发溢出告警。
+ *
+ * 导出供 throttle / debounce 的排程路径复用：那两处此前的 `setTimeout(fn, 原始间隔)`
+ * 在间隔越界后被宿主夹成 ~1ms，节流/防抖静默失效（见各自文件内的修复注释）。
+ * timeout 竞速与退避重试早已走这道钳制，导出常量避免第三份字面量各自漂移。
+ */
+export const MAX_TIMER_DELAY = 2 ** 31 - 1
 
 /** 抛出的对象里非原始值字段的占位文本（内容不外泄） */
 const ELIDED_PLACEHOLDER = '[details omitted]'

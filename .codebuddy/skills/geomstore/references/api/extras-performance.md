@@ -2,7 +2,7 @@
 
 > **本文件由 `scripts/generate-skill-api-reference.mjs` 从 `dist/**/*.d.ts` 生成，请勿手工编辑。**
 >
-> - 来源版本：`@openlide/geomstore@0.8.2`
+> - 来源版本：`@openlide/geomstore@0.8.3`
 > - 内容来源：构建产物类型声明（随 npm 包发布，与安装版本必然一致）
 > - 重新生成：`pnpm build && pnpm skill:api`
 > - 引入路径：`./extras/performance`
@@ -315,11 +315,42 @@ export interface PerformanceMetrics {
  */
 export declare class PerformanceMonitor implements PerformanceMonitorInterface {
     /**
-     * 性能指标数组
+     * 指标环形缓冲：未满时尾部追加，满后从 `_head` 起原地覆盖最旧条目。
+     *
+     * 替代此前的「有序数组 + 满员 splice(0, overflow)」：稳态下每次 record 只超限一条，
+     * splice 要前移近整个缓冲区（maxSize 默认 1000 ⇒ 每条指标一次 O(maxSize) memmove），
+     * 而 record 正踩在 analyzerPlugin 插桩的每次 setState/$patch/dispatch/getter 收尾上。
+     * 本仓的 MetricsCollector（metrics.ts）早已因同一论证改用环形缓冲，此处对齐。
+     * 写入 O(1)、读取经 {@link _ordered} 展开（与原先的 map/filter/slice 同阶）。
+     *
+     * 不变量：`_ring.length <= options.maxSize`，且 `_head !== 0` 仅可能出现在满环
+     * （长度 === maxSize）时；append 分支（未满）要求头在下标 0，由 trimToMaxSize 复位。
+     *
      * @private
-     * @type {PerformanceMetrics[]}
      */
-    private metrics;
+    private _ring;
+    /** 环内最旧条目下标（未满时恒 0） @private */
+    private _head;
+    /**
+     * 指标的有序视图（最旧在前）：环形缓冲按时间正序展开。
+     *
+     * 同时充当 `metrics` 内部字段的兼容读取面——历史代码与既有测试按 `monitor.metrics`
+     * 直接触达缓冲区，经此 getter 仍能拿到**同一批对象引用**（不是副本），身份断言不受影响。
+     *
+     * @private
+     */
+    private _ordered;
+    /**
+     * 指标缓冲区（兼容读取面，语义见 {@link _ordered}）
+     *
+     * 保留 `private` 而不是随字段改成 public getter：`metrics` 原本是私有字段，公开会让
+     * 调用方拿到这批未复制的指标对象引用（`m.duration = 0` 就能污染内部数据与后续统计）。
+     * 内部读取早已全部改走 {@link _ordered}，保留本访问面只为历史代码与既有测试
+     * （它们按 `(monitor as unknown as { metrics: … })` 触达，不受成员可见性影响）
+     *
+     * @private
+     */
+    private get metrics();
     /**
      * 监控器配置
      * @private
@@ -468,7 +499,12 @@ export declare class PerformanceMonitor implements PerformanceMonitorInterface {
      */
     record(metrics: PerformanceMetrics): void;
     /**
-     * 超出容量上限时淘汰最旧条目
+     * 把缓冲区收敛到容量上限（仅 setOptions 改容量时调用；record 热路径靠环形覆盖自收敛）
+     *
+     * 缩小容量时按有序视图截尾；容量未变小时只做一件事——把头游标复位为 0，
+     * 使后续 record 的 append 分支（`_ring.length < maxSize` 时 push 到尾部）语义正确：
+     * 满环且 `_head !== 0` 时若直接 append，新条目会排在「较新的一半」之后，
+     * 被 `_ordered()` 当作最旧条目，时间序颠倒。
      *
      * @private
      */

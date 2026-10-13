@@ -73,7 +73,7 @@ describe('R6-049 不可序列化的防线覆盖到标量字段与批次组装', 
     expect(JSON.parse(calls[0].body)).toMatchObject({ storeName: '[object]' })
   })
 
-  it('非幂等 toJSON（第二次取值才抛）只降级它自己那一条', async () => {
+  it('非幂等 toJSON：首次取值即可序列化的条目照常交付（不再被自己的第二次取值拖垮）', async () => {
     const { calls, impl } = captureImpl()
     const reporter = new HttpReporter(ENDPOINT, {}, impl)
     let accesses = 0
@@ -95,9 +95,38 @@ describe('R6-049 不可序列化的防线覆盖到标量字段与批次组装', 
     expect(body.errors).toHaveLength(3)
     expect(body.errors[0].storeName).toBe('first')
     expect(body.errors[2].storeName).toBe('third')
-    // 出问题的那条被换成标记片段，原因仍可排查
-    expect(String(body.errors[1].error.message)).toContain('[Unserializable error context')
-    expect(String(body.errors[1].error.message)).toContain('second pass boom')
+    // 行为变更（快路径序列化，R6-049 第二层防线的触发条件随之改变）：此前投影阶段会先用
+    // 一次试用 stringify 消耗掉「首次取值」，正式序列化撞上「第二次取值抛错」，该条被换成
+    // `[Unserializable error context]` 标记片段——首过本就成功、可交付的上下文被白白降级。
+    // 现在常见路径只序列化一次，首过成功即交付原值；慢路径（快路径串化失败才进入）仍保留
+    // 逐字段降级，见下一条用例
+    expect(body.errors[1].storeName).toBe('flaky-store')
+    expect((body.errors[1].payload as { ok?: number }).ok).toBe(1)
+    expect(accesses).toBe(1)
+  })
+
+  it('首次取值即抛的 toJSON 走慢路径降级，只影响它自己那一条', async () => {
+    const { calls, impl } = captureImpl()
+    const reporter = new HttpReporter(ENDPOINT, {}, impl)
+    const thrower = {
+      toJSON: () => {
+        throw new TypeError('first pass boom')
+      },
+    }
+
+    await expect(
+      reporter.reportBatch([context({ storeName: 'first' }), context({ storeName: 'throw-store', payload: thrower }), context({ storeName: 'third' })]),
+    ).resolves.toBeUndefined()
+
+    const body = JSON.parse(calls[0].body) as BatchBody
+    expect(body.errors).toHaveLength(3)
+    expect(body.errors[0].storeName).toBe('first')
+    expect(body.errors[2].storeName).toBe('third')
+    // 出问题的那条被换成专名标记，原因仍可排查；批次不 reject（否则监控层会按网络失败
+    // 反复重入队，最终整批丢弃且原因显示为「报告器恒失败」）
+    expect(String(body.errors[1].payload)).toContain('[Unserializable payload:')
+    expect(String(body.errors[1].payload)).toContain('first pass boom')
+    expect(body.errors[1].storeName).toBe('throw-store')
   })
 
   it('reportBatch 收到非数组时按空批次处理（与 ConsoleReporter 同口径）', async () => {

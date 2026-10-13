@@ -19,6 +19,14 @@ import { registerGlobalEntry } from './globalRegistry.js'
 const STORES_GLOBAL_KEY = '__GEOMSTORE_STORES__'
 const DEVTOOLS_GLOBAL_KEY = '__GEOMSTORE_DEVTOOLS__'
 
+/**
+ * setTimeout 上限（2^31-1 ms ≈ 24.8 天）：更大值会被宿主静默钳制为 ~1ms
+ *
+ * 与 `extras/action/async-core` 的同名常量取值相同，此处各自声明一份：插件层不应对
+ * action 能力包引入运行时依赖（否则内置插件会连带装载 extras 侧文件）
+ */
+const MAX_TIMER_DELAY = 2 ** 31 - 1
+
 declare global {
   /**
    * devtools 插件在**非生产环境**挂载的两张全局调试表，键均为 `store.name`。
@@ -344,15 +352,21 @@ function installPersistence<S extends State>(store: Store<S>, rawOptions?: Persi
           clearTimeout(debounceTimer)
         }
         pendingState = stateToSave
-        debounceTimer = setTimeout(() => {
-          // 先复位句柄再判卸载：定时器已经触发，`debounceTimer` 就必须回到 null，
-          // 否则后面的 `if (debounceTimer)` 不再表示「确有落盘待触发」
-          debounceTimer = null
-          // 卸载后不再执行保存操作
-          if (isUninstalled) return
-          pendingState = null
-          saveState(stateToSave)
-        }, debounceMs)
+        debounceTimer = setTimeout(
+          () => {
+            // 先复位句柄再判卸载：定时器已经触发，`debounceTimer` 就必须回到 null，
+            // 否则后面的 `if (debounceTimer)` 不再表示「确有落盘待触发」
+            debounceTimer = null
+            // 卸载后不再执行保存操作
+            if (isUninstalled) return
+            pendingState = null
+            saveState(stateToSave)
+            // 钳到 setTimeout 上限：配置值越界（如把 300 写成 3e9）会被宿主静默夹成 ~1ms，
+            // 「落盘防抖」退化成下一次宏任务立刻写——高频变更场景下等于每帧一次
+            // JSON.stringify(整棵状态树) + 同步 wx.setStorageSync（小程序里是阻塞 I/O）
+          },
+          Math.min(debounceMs, MAX_TIMER_DELAY),
+        )
       } else {
         saveState(stateToSave)
       }

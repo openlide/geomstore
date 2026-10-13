@@ -24,7 +24,8 @@ const ASYNC_FUNCTION_PROTOTYPE = Object.getPrototypeOf(async () => {})
  * @returns 是 `async` 语法函数时为 true
  *
  * @remarks 本判定只看**语法**：非 async 但返回 Promise 的方法（包装函数、手写 thenable）
- * 会判为 false。装饰器另以「运行时观测首次调用结果」兜底（observesPromise），
+ * 会判为 false。装饰器另以「运行时观测调用结果」兜底（throttle 按宿主状态记录 sawPromise、
+ * withCache 按缓存条目记录 fromPromise），
  * 并对「首次调用即被抑制、无从观测」的场景提供 `assumeAsync` 选项显式声明。
  * 跨 realm（iframe/worker）创建的 async 函数与本 realm 的 `AsyncFunction.prototype`
  * 不是同一个对象，同样落回该兜底；误判代价只是被抑制的调用少返回一个 Promise，
@@ -37,7 +38,7 @@ export function isAsyncFunction(fn: unknown): boolean {
   }
   // getPrototypeOf 本身可抛：`Proxy` 的 getPrototypeOf 陷阱可以随意抛错。
   // 本函数在装饰器求值与调用路径上被复用，为它崩掉整个方法不划算，
-  // 抛错时按「判不出异步性」降级，交给上面的 observesPromise / assumeAsync 兜底
+  // 抛错时按「判不出异步性」降级，交给上面的运行时观测 / assumeAsync 兜底
   try {
     return Object.getPrototypeOf(fn) === ASYNC_FUNCTION_PROTOTYPE
   } catch {
@@ -54,6 +55,57 @@ export function isAsyncFunction(fn: unknown): boolean {
  */
 export function isTrackableHost(host: unknown): host is object {
   return (typeof host === 'object' || typeof host === 'function') && host !== null
+}
+
+/**
+ * 「结算内容不对应本次调用参数」的返回值品牌
+ *
+ * 两个生产者、一个消费者：
+ * - `withThrottle` 的**被抑制调用**返回一个已结算为 `undefined` 的 Promise——那个值不对应
+ *   任何一次真实执行（本窗口的执行属于别的调用，或压根被丢弃）；
+ * - `withDebounce` 的**每次调用**各自拿到一个 Promise，但窗口内所有 Promise 共享「最新参数
+ *   那一次执行」的结果（见 debounce 的 `pendingResolves.forEach`）——单个调用的结算值可能
+ *   来自完全不同的参数。
+ * 消费者是 `withCache`：见到该品牌即**原样返回**——不建在途占位、不参与同参去重、不写缓存。
+ *
+ * 没有它，把缓存叠在节流/防抖**外层**时（错序）会把占位/共享结算归因到本次调用的缓存键上：
+ * throttle 场景整键被写成 `undefined`（TTL 内同参调用持续返回空值、真实方法不再执行）；
+ * debounce 场景键 A 被写成参数 B 的结果（静默返回错值）。两者都不抛不错，只是数据不对。
+ * 有了它，错序叠加的行为降级为「该路径不缓存」——这正是文档契约推荐的顺序（节流/防抖在
+ * 外、缓存在内）之外的安全网：正序叠加时 throttle/debounce 的 originalMethod 就是缓存包装，
+ * 每次真实执行都进缓存，两种能力完整生效。
+ *
+ * 用 `Symbol.for` 而非模块级 `Symbol()`：`extras/action` 是独立子路径，小程序构建产物里
+ * 同一包常有重复副本（分包各自打包、宿主把库打进去），模块级键会让副本 A 生产的品牌在
+ * 副本 B 的缓存侧读不到——那等于静默退回污染旧行为。与 `stateVersion` 的 STATE_VERSION、
+ * `pluginSupport` 的 GEOMSTORE_BRAND 同一取舍。该键不是安全边界：伪造它只会让自己的
+ * 返回值不进缓存（宁多勿漏的方向），不破坏正确性
+ */
+export const PLACEHOLDER_RESULT = Symbol.for('geomstore.placeholderResult')
+
+/** 给返回值打上「不可归因」品牌（非对象原值无法承载符号属性，原样返回） */
+export function markPlaceholder<T>(value: T): T {
+  if (value !== null && (typeof value === 'object' || typeof value === 'function')) {
+    // 普通赋值而非 defineProperty：符号键本就不进 JSON.stringify / Object.keys /
+    // 展开运算，无需再付一次描述符构造；promise 上多一个不可见符号键无观测影响
+    const slot = value as Record<symbol, unknown>
+    slot[PLACEHOLDER_RESULT] = true
+  }
+  return value
+}
+
+/** 返回值是否带有「不可归因」品牌（读取本身不得抛错：与 isThenable 同口径的降级） */
+export function isPlaceholder(value: unknown): boolean {
+  if (value === null || (typeof value !== 'object' && typeof value !== 'function')) {
+    return false
+  }
+  try {
+    return (value as Record<symbol, unknown>)[PLACEHOLDER_RESULT] === true
+  } catch {
+    // 取值即抛的 getter / Proxy 陷阱：判不出品牌，按「不是占位」处理——
+    // 缓存会把它当普通结果处理（可能写入占位值），但错误处理自身不得抛错
+    return false
+  }
 }
 
 /**

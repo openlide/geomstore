@@ -9,7 +9,7 @@
  */
 
 import { isProduction } from '../../../core/store/utils.js'
-import { isAsyncFunction, isThenable } from './common.js'
+import { isAsyncFunction, isThenable, isPlaceholder } from './common.js'
 
 /**
  * 缓存装饰器选项
@@ -239,11 +239,14 @@ function sortKeysDeep(value: unknown): unknown {
   return ['__obj', typeTag, sorted, keyValuePairs(record, symbolKeys)]
 }
 
-/** 缓存条目：`pending` 非空即在途占位（同参并发复用它，值由结算后回填） */
+/** 缓存条目：`pending` 非空即在途占位（同参并发复用它，值由结算后回填）；
+ *  `fromPromise` 记录本条目值来自 Promise 结算——非 async 方法一旦观测到 thenable
+ *  返回值，该键的后续命中必须保持 Promise 语义（见命中路径注释） */
 interface CacheEntry {
   value: unknown
   expiry: number
   pending?: Promise<unknown>
+  fromPromise?: boolean
 }
 
 /** 单宿主的缓存容器 + 写入计数（过期回收按写入次数摊销，见 {@link SWEEP_EVERY_WRITES}） */
@@ -389,6 +392,14 @@ function userKeyFn(keyFn: (...args: unknown[]) => string, args: unknown[]): stri
  * @remarks `keyFn` 抛错（典型是其内部的 `JSON.stringify` 遇到循环引用/BigInt）不会让被装饰
  * 方法失败：该次调用退化为一次性唯一键、直接执行原方法且不入缓存，与内置默认键生成器的
  * 失败口径一致。开发期会有一条 `[Cache] keyFn threw...` 的 `console.debug` 点名原因。
+ *
+ * 与 `withThrottle` / `withDebounce` 的叠加顺序：**节流/防抖必须在外、缓存在内**
+ * （`@withThrottle @withCache`，节流写在上方）。此时被缓存包装的是每次真实执行，限频/合并
+ * 与缓存两种能力完整生效。反向叠加（缓存在外）时，上游给出的占位 Promise 带
+ * {@link PLACEHOLDER_RESULT} 品牌（throttle 的被抑制调用结算为 undefined；debounce 的
+ * 所有调用共享最新参数那一次执行的结果），本装饰器见标即原样返回——该路径退化为
+ * 「不缓存、不去重」，而不会把占位值或别种参数的结果写进缓存键（那会是 TTL 内持续返回
+ * 空值/错值、且不抛不错的静默数据故障）。
  * @returns {MethodDecorator} 方法装饰器
  *
  * @example
@@ -413,10 +424,26 @@ function userKeyFn(keyFn: (...args: unknown[]) => string, args: unknown[]): stri
  *
  * // 第二次调用：直接从缓存返回（60秒内）
  * const user2 = await userComponent.getUser('user-123')
+ *
+ * // 与节流叠加：节流在外、缓存在内——每次真实执行都进缓存
+ * class SearchComponent {
+ *   @withThrottle(200)
+ *   @withCache({ ttl: 5000 })
+ *   async search(keyword: string) {
+ *     return await fetchSearch(keyword)
+ *   }
+ * }
  * ```
  */
 export function withCache(options: CacheDecoratorOptions = {}): MethodDecorator {
-  const { ttl = 5000, keyFn } = options
+  // ttl 归一化：NaN 会同时击穿缓存与在途去重——`expiry = at + NaN` 恒为 NaN，
+  // `cached.expiry > now` 与回收判据 `expiry <= at` 双双恒假，值条目永不命中、
+  // 占位条目永不回收，同参并发每次都重复执行原方法。口径与 withThrottle /
+  // withDebounce 的 interval/delay 守卫一致：非有限值回退默认 5000；
+  // 0 与负数保留既有语义（立即过期 = 不缓存）
+  const rawTtl = options.ttl ?? 5000
+  const ttl = Number.isFinite(rawTtl) ? Math.max(0, rawTtl) : 5000
+  const { keyFn } = options
   // 在途占位条目的过期时刻：至少给到 MIN_IN_FLIGHT_TTL，短 TTL 不应让在途请求提前失去去重
   const inFlightExpiry = Math.max(ttl, MIN_IN_FLIGHT_TTL)
 
@@ -452,11 +479,10 @@ export function withCache(options: CacheDecoratorOptions = {}): MethodDecorator 
     const methodKey = `${++nextMethodId}::`
     // 静态判别原方法异步性（原型比较，压缩安全）；运行时观测兜底非 async 但返回 Promise 的方法
     const isAsyncMethod = isAsyncFunction(originalMethod)
-    let observesPromise = false
 
-    const writeCache = (cache: HostCache, key: string, value: unknown, at: number): unknown => {
+    const writeCache = (cache: HostCache, key: string, value: unknown, at: number, fromPromise = false): unknown => {
       beforeWrite(cache, at)
-      cache.entries.set(key, { value, expiry: at + ttl })
+      cache.entries.set(key, { value, expiry: at + ttl, fromPromise })
       return value
     }
 
@@ -478,22 +504,31 @@ export function withCache(options: CacheDecoratorOptions = {}): MethodDecorator 
         if (!isProduction()) {
           console.debug(`[Cache] Hit for ${String(propertyKey)}`)
         }
-        // 异步方法（或已观测到返回 Promise 的方法）命中时恢复 Promise 语义：
-        // 保证两次调用返回类型一致，避免调用方 .then()/Promise.all 在第二次调用时崩溃
-        return isAsyncMethod || observesPromise ? Promise.resolve(cached.value) : cached.value
+        // 异步方法（或该条目值来自 Promise 结算）命中时恢复 Promise 语义：
+        // 保证同一键的两次调用返回类型一致，避免调用方 .then()/Promise.all 在第二次调用时崩溃。
+        // 判据按**条目**而非装饰器闭包记录：闭包标记一旦被任一宿主的任一次调用置位，
+        // 之后所有宿主、所有键的命中都会被包上 Promise——同步方法在别处观测到 thenable
+        // 之后，自己这里的缓存命中也会静默变成 Promise（返回值随调用历史翻转）。
+        // withThrottle 的 sawPromise 按宿主状态存放是同一思路，这里按条目更精细
+        return isAsyncMethod || cached.fromPromise ? Promise.resolve(cached.value) : cached.value
       }
 
       // 执行方法：同步方法同步返回，异步方法保持 Promise 语义
       const result = originalMethod.apply(this, args)
+      // 上游装饰器（节流被抑制调用 / 防抖共享结算）给出的占位：其结算值不对应本次调用的
+      // 参数，原样返回——不建在途占位、不参与同参去重、不写缓存。错序叠加（缓存在外）时
+      // 该路径退化为「不缓存」，而不是把占位值/别种参数的结果写进缓存键造成静默错值
+      if (isPlaceholder(result)) {
+        return result
+      }
       // isThenable 而非 `instanceof Promise`：手写 thenable 与跨 realm（iframe/worker、
       // ESM+CJS 双副本）的 Promise 都会被判为同步结果，于是
       // 1) 占位条目不再写入、`pending` 分支失效，同参并发失去去重；
       // 2) rejection 没人接管，变成 unhandledRejection；
-      // 3) 结果被当成同步值直接缓存，`observesPromise` 也永不置位。
+      // 3) 结果被当成同步值直接缓存，该键的 Promise 语义也无从恢复。
       // 统一过 Promise.resolve 才拿到真正的 Promise 来当占位（thenable 自身的 then
       // 返回值可能是任意值，不能直接在它上面调用 .then 的结果）
       if (isThenable(result)) {
-        observesPromise = true
         const pending = Promise.resolve(result).then(
           (value) => {
             // 乱序完成保护：仅在条目仍是本次调用的占位（或已被淘汰）时回填。
@@ -501,7 +536,8 @@ export function withCache(options: CacheDecoratorOptions = {}): MethodDecorator 
             // 「旧请求慢、新请求快」会让缓存退回更早的数据
             const entry = cache.entries.get(key)
             if (entry === undefined || entry.pending === pending) {
-              writeCache(cache, key, value, Date.now())
+              // fromPromise: 该键的值确由 Promise 产出，后续命中保持 Promise 语义
+              writeCache(cache, key, value, Date.now(), true)
             }
             return value
           },
