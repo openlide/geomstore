@@ -2,7 +2,7 @@
 
 > **本文件由 `scripts/generate-skill-api-reference.mjs` 从 `dist/**/*.d.ts` 生成，请勿手工编辑。**
 >
-> - 来源版本：`@openlide/geomstore@0.8.2`
+> - 来源版本：`@openlide/geomstore@0.8.3`
 > - 内容来源：构建产物类型声明（随 npm 包发布，与安装版本必然一致）
 > - 重新生成：`pnpm build && pnpm skill:api`
 > - 引入路径：`./extras/action`
@@ -1132,6 +1132,12 @@ TIMEOUT_ERROR_CODE: "ACTION_TIMEOUT"
  * `this` 定位不到任何槽位、静默 no-op），详见 `./debounce.js` 模块头。装饰 store action 时
  * 请在业务侧自判存活标记。
  *
+ * 与 `withCache` 的叠加顺序：**节流必须在外、缓存在内**（`@withThrottle` 写在 `@withCache`
+ * 上方）。此时 leading/trailing 两次真实执行都经由缓存包装，限频与缓存两种能力完整生效；
+ * 反向叠加（缓存在外）时，被抑制调用返回的占位 Promise 带 {@link PLACEHOLDER_RESULT} 品牌，
+ * 缓存见标即原样返回——该路径退化为「不缓存、不去重」，而不会把占位值写进缓存键
+ * （否则 TTL 内同参调用持续拿到 undefined，真实方法不再执行）。
+ *
  */
 /**
  * 节流选项
@@ -1359,6 +1365,14 @@ export declare function flushThrottledCalls(host: unknown, method?: string | sym
  * @remarks `keyFn` 抛错（典型是其内部的 `JSON.stringify` 遇到循环引用/BigInt）不会让被装饰
  * 方法失败：该次调用退化为一次性唯一键、直接执行原方法且不入缓存，与内置默认键生成器的
  * 失败口径一致。开发期会有一条 `[Cache] keyFn threw...` 的 `console.debug` 点名原因。
+ *
+ * 与 `withThrottle` / `withDebounce` 的叠加顺序：**节流/防抖必须在外、缓存在内**
+ * （`@withThrottle @withCache`，节流写在上方）。此时被缓存包装的是每次真实执行，限频/合并
+ * 与缓存两种能力完整生效。反向叠加（缓存在外）时，上游给出的占位 Promise 带
+ * {@link PLACEHOLDER_RESULT} 品牌（throttle 的被抑制调用结算为 undefined；debounce 的
+ * 所有调用共享最新参数那一次执行的结果），本装饰器见标即原样返回——该路径退化为
+ * 「不缓存、不去重」，而不会把占位值或别种参数的结果写进缓存键（那会是 TTL 内持续返回
+ * 空值/错值、且不抛不错的静默数据故障）。
  * @returns {MethodDecorator} 方法装饰器
  *
  * @example
@@ -1383,6 +1397,15 @@ export declare function flushThrottledCalls(host: unknown, method?: string | sym
  *
  * // 第二次调用：直接从缓存返回（60秒内）
  * const user2 = await userComponent.getUser('user-123')
+ *
+ * // 与节流叠加：节流在外、缓存在内——每次真实执行都进缓存
+ * class SearchComponent {
+ *   @withThrottle(200)
+ *   @withCache({ ttl: 5000 })
+ *   async search(keyword: string) {
+ *     return await fetchSearch(keyword)
+ *   }
+ * }
  * ```
  */
 export declare function withCache(options?: CacheDecoratorOptions): MethodDecorator;
@@ -1414,6 +1437,12 @@ export declare function withCache(options?: CacheDecoratorOptions): MethodDecora
  * 照样到点执行并往（可能已销毁的）store 里写。装饰 store action 时请在业务侧自判存活标记
  * （action 体内先确认页面/store 仍存活再落状态），与「`withCache` / `withRetry` 没有对应的
  * 收尾入口」同一口径。`withThrottle` 的三个同名入口受同一条限制，见其模块头。
+ *
+ * 与 `withCache` 的叠加顺序：**防抖必须在外、缓存在内**（`@withDebounce` 写在 `@withCache`
+ * 上方）。此时每次真实执行都经由缓存包装，合并执行与缓存两种能力完整生效；反向叠加
+ * （缓存在外）时，本装饰器返回的每个 Promise 都带 {@link PLACEHOLDER_RESULT} 品牌
+ * （窗口内所有调用共享最新参数那一次执行的结果），缓存见标即原样返回——该路径退化为
+ * 「不缓存、不去重」，而不会把别种参数的结果写进缓存键。
  *
  */
 /**

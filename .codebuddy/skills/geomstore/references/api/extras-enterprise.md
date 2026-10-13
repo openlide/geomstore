@@ -2,7 +2,7 @@
 
 > **本文件由 `scripts/generate-skill-api-reference.mjs` 从 `dist/**/*.d.ts` 生成，请勿手工编辑。**
 >
-> - 来源版本：`@openlide/geomstore@0.8.2`
+> - 来源版本：`@openlide/geomstore@0.8.3`
 > - 内容来源：构建产物类型声明（随 npm 包发布，与安装版本必然一致）
 > - 重新生成：`pnpm build && pnpm skill:api`
 > - 引入路径：`./extras/enterprise`
@@ -128,6 +128,16 @@ export declare class OfflineManager<S extends State = State> {
     private syncFailed;
     private syncNextIndex;
     private disposed;
+    /**
+     * 读取失败的存储键集合：这些键的磁盘内容不可信，禁止随后的覆写。
+     *
+     * 成因是 storage 适配层的三态被压成两态：`storage.get` 对「键不存在」与「读取抛错」
+     * 同返 null（env.ts 的 catch 记日志后 return null）。读失败时内存队列为空而磁盘队列
+     * 仍在，此后任何一次 saveQueue/appendDeadLetter 都会把磁盘旧数据整体覆写——那些操作
+     * 从内存与磁盘同时消失，重启也回不来，直接违背 at-least-once 契约。
+     * 读取成功时随手摘除该键，瞬时故障可自愈
+     */
+    private readonly unreadableKeys;
     /** 网络监听回调引用，dispose 时用于精确移除。参数类型同时兼容 wx.on/offNetworkStatusChange 两种签名 */
     private networkHandler;
     private readonly maxRetryCount;
@@ -252,6 +262,15 @@ export declare class OfflineManager<S extends State = State> {
      * 同 store 名的新实例会继续往里追加，旧实例的一次清空会抹掉新实例记录的死信
      */
     clearDeadLetters(): void;
+    /**
+     * 从存储读取一个键，区分「读到值 / 键不存在 / 读取失败」三种结局
+     *
+     * 三态由 storage 适配器直接给出（{@link storage.getWithStatus}），不再用
+     * `wx.getStorageInfoSync().keys` 探测键存在性——那只对 wx 后端有效、多一次系统调用，
+     * 且自定义存储后端（env.storage 之外的实现）完全失效。读失败时内存队列不得被当成
+     * 全量：磁盘队列仍在，此后任何覆写都会把盘上旧操作整体抹掉
+     */
+    private readStorageKey;
     /**
      * 从存储加载队列
      */
