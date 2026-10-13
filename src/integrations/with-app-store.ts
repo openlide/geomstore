@@ -15,7 +15,8 @@ import type { AppThis, ConnectOptions, WithPageThis } from '../types/integration
 import {
   resolveMappings,
   createStoreSubscriber,
-  bindMappings,
+  createMapper,
+  subscribeMappers,
   bindActions,
   cleanupBindings,
   copyOwnEntries,
@@ -225,24 +226,30 @@ export function withAppStore<S extends State, A extends Actions, G extends Gette
       }
 
       try {
+        // state 与 getters 两类映射共享**同一条**订阅（App 实例全程仅一条）：
+        // 订阅粒度曾是「每次 bindMappings 一条」，同时配两类映射占 2 份额度。
+        // App 订阅贯穿运行期不随 onHide 清理，多 store 共存的宿主里同样会挤占额度
+        const mappers: Array<{ update: () => void }> = []
+
         // 绑定 state 到 globalData
         if (options.mapState) {
-          const unbindState = bindMappings(
-            this.globalData,
-            stateMapping,
-            (storeKey) => store.state[storeKey as keyof S],
-            writeGlobalData,
-            subscribeStore,
-            (storeKey) => store.isStateKeyDirty(storeKey),
+          mappers.push(
+            createMapper(
+              this.globalData,
+              stateMapping,
+              (storeKey) => store.state[storeKey as keyof S],
+              writeGlobalData,
+              (storeKey) => store.isStateKeyDirty(storeKey),
+            ),
           )
-          unbindFunctions.push(...unbindState)
         }
 
         // 绑定 getters 到 globalData
         if (options.mapGetters) {
-          const unbindGetters = bindMappings(this.globalData, gettersMapping, (storeKey) => store.getter(storeKey), writeGlobalData, subscribeStore)
-          unbindFunctions.push(...unbindGetters)
+          mappers.push(createMapper(this.globalData, gettersMapping, (storeKey) => store.getter(storeKey), writeGlobalData))
         }
+
+        unbindFunctions.push(subscribeMappers(subscribeStore, mappers))
 
         // 绑定 actions 到 App 实例方法（复用 bindActions）。
         // 退订凭证一并登记：否则重复 onLaunch 会把自家上一轮绑定的 action 当成「宿主已有成员」
