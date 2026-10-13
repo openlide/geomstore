@@ -14,6 +14,14 @@ import { createRetrySelector, createRetrySelectorAsync, type AsyncRetrySelectorO
 export type { AsyncRetrySelectorOptions, RetrySelectorOptions } from './retrySelector.js'
 
 /**
+ * setTimeout 上限（2^31-1 ms ≈ 24.8 天）：更大值会被宿主静默钳制为 ~1ms
+ *
+ * 与 `retrySelector` / `extras/action/async-core` 的同名常量取值相同，此处各自声明一份：
+ * 跨能力包的运行时依赖会连带装载整个下游包（见 retrySelector 的同款说明）
+ */
+const MAX_TIMER_DELAY = 2 ** 31 - 1
+
+/**
  * 选择器组合器类
  *
  * 提供静态方法用于组合、管道和创建高级选择器
@@ -414,7 +422,10 @@ export class SelectorComposer {
         })
       }
 
-      // 设置定时器
+      // 设置定时器。延迟钳到 setTimeout 上限：越界的 delay（含 Infinity）会被宿主静默
+      // 夹成 ~1ms，防抖窗口退化成「下一次宏任务立即执行」，调用方看到的却是自己配了超长窗口；
+      // NaN / 负数按 0（既有语义：setTimeout 对两者同样按 ~0ms 处理）
+      const waitMs = Number.isFinite(delay) && delay > 0 ? Math.min(delay, MAX_TIMER_DELAY) : 0
       timeoutId = setTimeout(() => {
         // 记下触发本次回调的定时器 id：回调里的 selector(state) 可能经宿主副作用（store
         // 订阅等）同步重入本选择器，那次调用会另起一个定时器并覆盖 timeoutId。
@@ -448,7 +459,7 @@ export class SelectorComposer {
             timeoutId = null
           }
         }
-      }, delay)
+      }, waitMs)
 
       return currentPromise
     }
