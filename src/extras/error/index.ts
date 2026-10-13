@@ -20,10 +20,9 @@
  */
 
 // 同一模块的再导出集中在一条语句里：拆成两条会让改动 ErrorHandler 导出时漏改其中一条。
-// 注意 `defaultErrorHandler` / `createErrorContext` 的**定义在 `../../types/error.js`**
-// （那里同时承载 ErrorContext 等契约类型与这两个运行时值），ErrorHandler.ts 只是转发
-// 以保持深导入路径 `extras/error/ErrorHandler.js` 可用——把本行的来源改成
-// './ErrorHandler.js' 会让人以为它们住在那里
+// `defaultErrorHandler` / `createErrorContext` 定义在 `../../types/error.js`，
+// ErrorHandler.ts 从那里导入并转发，以保持深导入路径 `extras/error/ErrorHandler.js` 可用。
+// 此处直接从 ErrorHandler.ts 再导出，调用方按路径习惯选择即可
 export { ErrorHandlerImpl, defaultErrorHandler, createErrorContext } from './ErrorHandler.js'
 export { ErrorBoundary, withErrorBoundary } from './ErrorBoundary.js'
 export type { ErrorContext, ErrorHandler, ErrorLevel, OperationType, ErrorBoundaryOptions, ErrorFallback } from '../../types/error.js'

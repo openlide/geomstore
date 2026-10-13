@@ -1083,22 +1083,13 @@ describe('ErrorRecovery 模块', () => {
       consoleSpy.mockRestore()
     })
 
-    it('RECOVERY-067: VALIDATION_ERROR 默认 onRecoveryFailed 回调', async () => {
-      const consoleSpy = jest.spyOn(console, 'error').mockImplementation()
-
+    it('RECOVERY-067: VALIDATION_ERROR 默认 onRecoveryFailed 回调（不可达，已移除）', async () => {
       const recovery = createDefaultErrorRecovery()
 
-      // 获取默认配置并手动调用 onRecoveryFailed
+      // VALIDATION_ERROR 的 fallback 显式为 undefined，executeFallbackStrategy 直接返回 undefined，
+      // 不会抛错，因此 onRecoveryFailed 永远不会被调用。该回调已从默认配置中移除
       const config = recovery.getConfig(ErrorCode.VALIDATION_ERROR)
-      const error = new GeomStoreError('Validation failed', ErrorCode.VALIDATION_ERROR)
-
-      if (config?.onRecoveryFailed) {
-        config.onRecoveryFailed(error, new Error('Recovery failed'))
-      }
-
-      expect(consoleSpy).toHaveBeenCalledWith('[ErrorRecovery] Validation error recovery failed:', 'Validation failed')
-
-      consoleSpy.mockRestore()
+      expect(config?.onRecoveryFailed).toBeUndefined()
     })
 
     it('RECOVERY-068: 应该验证默认恢复器的 ACTION_TIMEOUT 策略', async () => {
@@ -1119,7 +1110,8 @@ describe('ErrorRecovery 模块', () => {
       const config = recovery.getConfig(ErrorCode.VALIDATION_ERROR)
       expect(config?.strategy).toBe(RecoveryStrategy.FALLBACK)
       expect(config?.fallback).toBeUndefined()
-      expect(config?.onRecoveryFailed).toBeDefined()
+      // onRecoveryFailed 不可达（fallback 显式为 undefined 时 executeFallbackStrategy 不抛错），已移除
+      expect(config?.onRecoveryFailed).toBeUndefined()
     })
   })
 

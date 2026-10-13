@@ -122,7 +122,6 @@ export class SnapshotManager {
       detectCircular: true,
       includeNonEnumerable: false,
       customCloner: () => undefined,
-      async: false,
       // 异步模式的批大小：合法值校验统一走 normalizeBatchSize（构造期与逐次调用同一口径）
       batchSize: DEFAULT_BATCH_SIZE,
       onProgress: () => {},
@@ -190,21 +189,11 @@ export class SnapshotManager {
 
       stats.duration = Date.now() - startTime
 
-      const metadata: SnapshotMetadata = {
-        id,
-        timestamp: startTime,
-        dataType: this.getDataType(data),
-        size: counters.estimatedSize,
-        nodeCount: counters.nodeCount,
-        maxDepth: counters.maxDepthReached,
-        hasCircular: counters.hasCircular,
-      }
-
       return {
         // 根节点的自定义克隆器失败且 onError 允许继续时，cloneDeep 返回丢弃哨兵：
         // 与异步路径（哨兵被 processQueue 跳过、rootResult 保持 undefined）保持同一语义
         data: clonedData === SKIP_CLONE_NODE ? undefined : (clonedData as T),
-        metadata,
+        metadata: this.buildMetadata(id, startTime, data, counters),
         // errors 为空时 some 必然为 false，无需先判 length（去掉冗余短路分支）
         success: !errors.some((e) => e.type === 'cloneError'),
         errors,
@@ -313,10 +302,19 @@ export class SnapshotManager {
     const MAX_ESTIMATE_DEPTH = 10
     const estimateNodeCount = (obj: unknown, depth = 0): number => {
       if (depth > MAX_ESTIMATE_DEPTH || obj === null || typeof obj !== 'object') return 1
-      if (Array.isArray(obj)) {
+      // Array.isArray 对已 revoke 的 Proxy 抛 TypeError（同 getDataType 所述坑），
+      // 而本函数在 createSnapshotAsync 的 try 之外被调用：抛出会让整个异步快照 reject
+      // 而不是交付失败结果，故此处按叶子计数兜底
+      let isArray = false
+      try {
+        isArray = Array.isArray(obj)
+      } catch {
+        return 1
+      }
+      if (isArray) {
         // 数组元素读取同样可能触发 Proxy 陷阱抛错：与对象分支同口径按叶子计数
         try {
-          return obj.reduce((sum, item) => sum + estimateNodeCount(item, depth + 1), 1)
+          return (obj as unknown[]).reduce((sum: number, item: unknown) => sum + estimateNodeCount(item, depth + 1), 1)
         } catch {
           return 1
         }
@@ -563,19 +561,6 @@ export class SnapshotManager {
       // 更新共享 stats 的持续时间
       stats.duration = Date.now() - startTime
 
-      const metadata: SnapshotMetadata = {
-        id,
-        timestamp: startTime,
-        dataType: this.getDataType(data),
-        size: counters.estimatedSize,
-        // 与同步路径同口径取 counters.nodeCount：此前用 processedCount，它按「处理过的任务数」
-        // 计数，会把 maxDepth 截断（clonePrelude 在自增 nodeCount 之前返回）与克隆失败的节点
-        // 一并算进来，同一份输入两条路径的 metadata.nodeCount 对不上
-        nodeCount: counters.nodeCount,
-        maxDepth: counters.maxDepthReached,
-        hasCircular: counters.hasCircular,
-      }
-
       // 超时只在「本轮确有未交付的工作」时成立：定时器在最后一个批次之后翻位时（例如 timeout
       // 给得接近实际耗时），队列已排空、一个任务都没被入队守卫丢掉，交付的是**完整**克隆，
       // 而占位清理循环（上方 for 循环）一次也没跑。把它判为失败会让按 types.ts「先判 success」
@@ -587,7 +572,7 @@ export class SnapshotManager {
         // rootResult 只在根任务产出非哨兵值时才不是 undefined：超时/根节点被丢弃时它是
         // undefined 或半成品，故断言只到 `T | undefined`，不冒充完整的 T
         data: clonedData as T | undefined,
-        metadata,
+        metadata: this.buildMetadata(id, startTime, data, counters),
         // 与同步路径同口径：仅 cloneError 视为失败，circular/maxDepth 属可恢复降级
         success: !timedOut && !errors.some((e) => e.type === 'cloneError'),
         errors: timedOut ? [...errors, { type: 'timeout', message: 'Snapshot creation timed out', path: 'root' }] : errors,
@@ -625,6 +610,34 @@ export class SnapshotManager {
   }
 
   // ==================== 私有方法 ====================
+
+  /**
+   * 构造快照元数据（同步 / 异步两条成功路径共用）
+   *
+   * 两条路径此前各写一份 metadata 构造（约 10 行），字段完全一致：id / timestamp / dataType /
+   * size / nodeCount / maxDepth / hasCircular。拆出后只留一份口径，改字段只改一处。
+   *
+   * @param id 快照 ID
+   * @param timestamp 起始时间戳
+   * @param source 原始数据（只用于 dataType 判定）
+   * @param counters 节点计数器
+   */
+  private buildMetadata(
+    id: string,
+    timestamp: number,
+    source: unknown,
+    counters: { nodeCount: number; maxDepthReached: number; estimatedSize: number; hasCircular: boolean },
+  ): SnapshotMetadata {
+    return {
+      id,
+      timestamp,
+      dataType: this.getDataType(source),
+      size: counters.estimatedSize,
+      nodeCount: counters.nodeCount,
+      maxDepth: counters.maxDepthReached,
+      hasCircular: counters.hasCircular,
+    }
+  }
 
   /**
    * 失败结果的统一构造（同步 / 异步两条 catch 共用）

@@ -7,7 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-暂无（0.8.3 已定稿，见下节）。
+### Fixed
+
+**集成层低优先级缺陷修复（OCR 扫描报告）**
+
+- `withAppStore` / `withComponentStore`：`writeGlobalData` 闭包与 `onShow` 包装器的内联回调重复定义自有属性拷贝逻辑，提取为 `createGlobalDataWriter` 工厂函数，消除漂移风险。
+- `withComponentStore`：`this.methods` 合并原在 `try` 块内，后续绑定步骤抛错时 `catch` 只回滚订阅、不还原 `methods`，半初始化实例带着合并后的方法活到 `detached`。移至 `try` 外（合并本身不会抛错），`catch` 职责收敛为只清理订阅。
+- `withComponentStore` 类型：`ComponentOptions` 声明了顶层 `onShow`，但微信组件无此生命周期（只有 `pageLifetimes.show`），类型接受却运行时永不调用。移除该声明，避免误导。
+- `wechat-enterprise` 的 `login()`：此前不校验 `userId` 直接调用 `storeManager.switchUser()`，空串/非字符串会让 `createUserStore` 入口抛错，且错误在 `globalData.store` 已指向新值后才发生，状态不一致。现与冷启动同口径先 `isValidUserId` 校验、再 `try/catch` 包裹 `switchUser`，失败时透传错误且不污染 `globalData`。
+- `wechat-enterprise`：`syncInFlight` 标记在 `logout()` 与 `login()` 中未重置，旧实例的在途同步若未结束，新会话的 `onShow` 会误判为「仍有同步在跑」并跳过队列同步。两处 teardown 路径均显式重置。
+- `initBackgroundSync`：全局 App 首次就位（`installedAppWrapper === null`）与外部替换的告警文案相同，前者并非「被替换」。区分两种场景，首次就位用「已就位」、外部替换用「已被替换」。
+
+### Changed
+
+- **`withComponentStore` 参数命名**：返回函数的入参由 `ComponentConfig` 改为 `componentConfig`（camelCase），避免遮蔽同名导入类型 `ComponentConfig`。纯内部重命名，调用方代码不受影响。
+
+### Testing
+
+- `tests/setup.ts`：环境诊断日志（Node 版本、平台等）改为 `DEBUG=test-setup` 环境变量门控，避免每个测试文件执行时都污染 Jest 输出与 CI 日志。
+- `tests/types/action-context-collision.typecheck.ts`：注释「下面两条 @ts-expect-error」改为「三条」，与实际指令数量一致。
 
 ## [0.8.3] - 2026-10-13
 

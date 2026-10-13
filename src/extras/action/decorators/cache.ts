@@ -9,7 +9,7 @@
  */
 
 import { isProduction } from '../../../core/store/utils.js'
-import { isAsyncFunction, isThenable, isPlaceholder } from './common.js'
+import { isAsyncFunction, isThenable, isPlaceholder, isTrackableHost } from './common.js'
 
 /**
  * 缓存装饰器选项
@@ -49,6 +49,10 @@ let nextSymbolId = 0
  *  WeakMap 可随参数回收，无需像 symbolIds 那样设上限 */
 const identityIds = new WeakMap<object, number>()
 let nextIdentityId = 0
+
+/** uncacheableKey 用的单调递增计数器：避免依赖 Date.now() + Math.random()，
+ *  在 fake timers 或 Math.random 被 stub 的测试环境下仍保证唯一性 */
+let nextUncacheableId = 0
 
 /** 取得（或分配）某个按身份标记对象的唯一序号 */
 function identityId(value: object): number {
@@ -327,7 +331,7 @@ function beforeWrite(cache: HostCache, at: number): void {
  * @private
  */
 function uncacheableKey(): string {
-  return `__uncacheable__${Date.now()}_${Math.random()}`
+  return `__uncacheable__${++nextUncacheableId}`
 }
 
 /**
@@ -454,14 +458,14 @@ export function withCache(options: CacheDecoratorOptions = {}): MethodDecorator 
   let nextMethodId = 0
 
   const getCache = (host: unknown): HostCache => {
-    if ((typeof host !== 'object' && typeof host !== 'function') || host === null) {
+    if (!isTrackableHost(host)) {
       // 宿主不是对象或函数时返回一次性容器（不跨调用串扰）
       return { entries: new Map(), writes: 0 }
     }
-    let cache = store.get(host)
+    let cache = store.get(host as object)
     if (!cache) {
       cache = { entries: new Map(), writes: 0 }
-      store.set(host, cache)
+      store.set(host as object, cache)
     }
     return cache
   }
@@ -560,7 +564,8 @@ export function withCache(options: CacheDecoratorOptions = {}): MethodDecorator 
         cache.entries.set(key, { value: undefined, expiry: now + inFlightExpiry, pending })
         return pending
       }
-      return writeCache(cache, key, result, now)
+      // 以写入时刻计算过期，与异步路径（Date.now()）口径一致，避免方法自身耗时吃掉 TTL
+      return writeCache(cache, key, result, Date.now())
     }
 
     return descriptor

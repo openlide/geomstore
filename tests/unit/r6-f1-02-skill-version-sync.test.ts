@@ -21,7 +21,7 @@ const { name: pkgName, version: pkgVersion } = JSON.parse(readFileSync(path.join
   version: string
 }
 
-const skillDir = path.join(repoRoot, '.codebuddy/skills/geomstore')
+const skillDir = path.join(repoRoot, 'skills/geomstore')
 
 /** 取正则的第一个捕获组；锚点找不到就抛错，不让版本漂移伪装成「无此条目」 */
 function firstMatch(source: string, pattern: RegExp, label: string): string {

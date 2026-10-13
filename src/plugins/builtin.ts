@@ -266,6 +266,8 @@ function installPersistence<S extends State>(store: Store<S>, rawOptions?: Persi
   // 否则安装后立即覆写同一 tick 内其他实例写入的新数据，且每次启动都重写磁盘
   // （lastSaved 去重被绕过）。仅在首次通知且内容与恢复结果一致时吸收一次
   let absorbedSerialized: string | null = null
+  // lastSaved 提前到恢复块之前：恢复成功后需要用它种子化，让卸载 flush 的去重覆盖恢复载荷
+  let lastSaved: string | null = null
 
   /**
    * 「恢复被主动跳过」的出口：控制台留痕 + 转投 `onError`。
@@ -301,6 +303,9 @@ function installPersistence<S extends State>(store: Store<S>, rawOptions?: Persi
           // 用序列化比较而非状态版本：克隆/只读代理等载荷形态下版本号不可见
           try {
             absorbedSerialized = JSON.stringify(filter ? filter(store.getState()) : store.getState())
+            // 种子化 lastSaved：卸载 flush 的去重据此跳过恢复载荷的冗余写回，
+            // 避免共享键场景下 stale payload 覆写另一实例的更新数据
+            lastSaved = absorbedSerialized
           } catch {
             // 序列化失败（循环引用等）：放弃吸收，维持「通知即落盘」的原有行为
             absorbedSerialized = null
@@ -323,10 +328,7 @@ function installPersistence<S extends State>(store: Store<S>, rawOptions?: Persi
   // 防抖窗口内最近一次待写入的状态：卸载时用于同步补写，避免最后一次变更丢失
   let pendingState: Partial<S> | null = null
   // 最近一次成功落盘的序列化结果：卸载补写时据此跳过无变化的重复写入。
-  // 必须声明在下面的 subscribe 之前（#374）：saveState 是提升的函数声明并闭包引用它，
-  // 一旦订阅改为同步回调（或在注册与声明之间插入任何会 notify 的逻辑），
-  // 回调里的 saveState 就会读到 TDZ 中未初始化的 lastSaved 而直接抛 ReferenceError
-  let lastSaved: string | null = null
+  // lastSaved 已在恢复块之前声明（提前到 absorbedSerialized 旁），此处不再重复
 
   // 只读订阅：仅序列化后落盘，不修改载荷，避免为持久化引入整树深拷贝
   const unsubscribe = store.subscribe(

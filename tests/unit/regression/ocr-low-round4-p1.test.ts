@@ -150,7 +150,7 @@ describe('compose 分发的自有键判定与空值容忍（#110 / #114）', () 
     const stores = [fakeStore('a', { x: 1 }), fakeStore('b', { y: 2 })]
     let n = 0
     // 旧实现在此抛 TypeError: Cannot convert undefined or null to object
-    const merged = mergeStateMaps(stores, () => (n++ === 0 ? null : { z: 3 }), new Set<string>())
+    const merged = mergeStateMaps(stores, () => (n++ === 0 ? null : { z: 3 }), new Map<string, Set<string>>())
     expect(merged).toEqual({ z: 3 })
   })
 })

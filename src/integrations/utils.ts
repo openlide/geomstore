@@ -494,7 +494,7 @@ export function exposeStoreAPI<S extends State = State>(target: Record<string, u
     // 让 persistence/logger 等只读订阅者一并承担每次通知的整树深拷贝。
     // 确需就地改载荷的调用方显式传 { readOnly: false }
     subscribe: (callback: (state: S) => void, options?: { readOnly?: boolean }) => {
-      return store.subscribe(callback, options ?? { readOnly: true })
+      return store.subscribe(callback, { readOnly: options?.readOnly ?? true })
     },
   }
 

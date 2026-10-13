@@ -357,8 +357,7 @@ export function withErrorBoundary(options?: ErrorBoundaryOptions) {
   const boundaryByHost = new WeakMap<object, ErrorBoundary<unknown, unknown>>()
 
   const getBoundary = (host: unknown): ErrorBoundary<unknown, unknown> => {
-    if (typeof host !== 'object' || host === null) {
-      // 宿主非对象（罕见）：每次调用一次性实例，不跨调用串扰
+    if (host === null || (typeof host !== 'object' && typeof host !== 'function')) {
       return new ErrorBoundary(options)
     }
     let boundary = boundaryByHost.get(host)

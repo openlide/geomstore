@@ -122,7 +122,7 @@ describe('compose helpers / merge', () => {
     const warnSpy = jest.spyOn(console, 'warn').mockImplementation()
     const stores = [fakeStore('A', { k: 1 }), fakeStore('B', { k: 2 }), fakeStore('C', { k: 3 })]
 
-    mergeStateMaps(stores, (s) => s.getState() as Record<string, unknown>, new Set<string>())
+    mergeStateMaps(stores, (s) => s.getState() as Record<string, unknown>, new Map<string, Set<string>>())
 
     const messages = warnSpy.mock.calls.map((c) => String(c[0]))
     expect(messages.some((m) => m.includes('(A, B)'))).toBe(true)
@@ -133,7 +133,7 @@ describe('compose helpers / merge', () => {
 
   it("#113 合并结果保留 '__proto__' 自有键而不改写出对象原型", () => {
     const source = JSON.parse('{"__proto__":{"polluted":true}}') as Record<string, unknown>
-    const merged = mergeStateMaps([fakeStore('a', source)], () => source, new Set<string>())
+    const merged = mergeStateMaps([fakeStore('a', source)], () => source, new Map<string, Set<string>>())
 
     expect(Object.prototype.hasOwnProperty.call(merged, '__proto__')).toBe(true)
     expect(Object.getPrototypeOf(merged)).toBe(Object.prototype)
@@ -339,15 +339,18 @@ describe('ActionManager', () => {
 
   it('#138 action 已返回后收尾步骤抛错，不再二次复位 dispatch 计数', () => {
     const hooks = {
-      emit: jest.fn((name: string) => {
+      emit: jest.fn((name: string, ...args: unknown[]) => {
         if (name === 'afterDispatch') throw new Error('after boom')
       }),
     }
     const { manager, setDispatching } = makeManager(hooks, { run: jest.fn() })
 
-    expect(() => manager.execute('run')).toThrow('after boom')
+    // afterDispatch 抛错不再外溢：错误经 onError 上报，缓存刷新与通知补发照常进行
+    expect(() => manager.execute('run')).not.toThrow()
     expect(manager.dispatchDepth).toBe(0)
     expect(setDispatching.mock.calls.map((c) => c[0])).toEqual([true, false])
+    // 错误经 onError 钩子上报
+    expect(hooks.emit).toHaveBeenCalledWith('onError', expect.objectContaining({ message: 'after boom' }))
   })
 
   it('#140 跨 realm / 自定义 thenable 走异步补发路径', async () => {

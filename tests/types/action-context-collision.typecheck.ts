@@ -49,7 +49,7 @@ const normal = createStore({
       // 跨 action 调用仍走类型安全的 dispatch 重载
       this.dispatch('bump', 1)
       // 反例：宽松基座签名 `dispatch(actionName: string, ...args: unknown[])` 一旦回流，
-      // 下面两条 @ts-expect-error 会同时变成 unused，typecheck:tests 立刻失败
+      // 下面三条 @ts-expect-error 会同时变成 unused，typecheck:tests 立刻失败
       // @ts-expect-error 未声明的 action 名必须被拒绝
       this.dispatch('missing', 1)
       // @ts-expect-error 实参类型必须按已声明的 action 签名校验

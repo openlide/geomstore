@@ -173,7 +173,7 @@ import { persistencePlugin } from '@openlide/geomstore/extras/plugins'
 | [examples/](./examples)                                                        | 可运行示例五类                                       |
 | [CHANGELOG.md](./CHANGELOG.md)                                                 | 完整变更记录（**不随包发布**，见 GitHub 仓库）       |
 | [CONTRIBUTING.md](./CONTRIBUTING.md)                                           | 脚本、门禁清单、构建与发版流程                       |
-| [.codebuddy/skills/geomstore/SKILL.md](./.codebuddy/skills/geomstore/SKILL.md) | 供 AI 编码助手读取的库使用规程（仓库内，不随包发布） |
+| [skills/geomstore/SKILL.md](./skills/geomstore/SKILL.md) | 供 AI 编码助手读取的库使用规程（仓库内，不随包发布） |
 
 ## 许可
 

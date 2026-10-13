@@ -136,7 +136,13 @@ function encodeForBackup(value: unknown, path: string, lossy: string[], stack: W
     const record = object as Record<string, unknown>
     const encoded: Record<string, unknown> = {}
     for (const key of Object.keys(record)) {
-      encoded[key] = encodeForBackup(record[key], `${path}.${key}`, lossy, stack)
+      // 使用 defineProperty 避免 __proto__ 键触发原型 setter（JSON.parse 可产出该键）
+      Object.defineProperty(encoded, key, {
+        value: encodeForBackup(record[key], `${path}.${key}`, lossy, stack),
+        enumerable: true,
+        writable: true,
+        configurable: true,
+      })
     }
     // 用户数据自带标记键：整层套信封，解码时对信封内容不再做标记判定，编码因此是单射
     return Object.prototype.hasOwnProperty.call(record, GS_TYPE) ? { [GS_TYPE]: 'raw', v: encoded } : encoded
@@ -220,7 +226,13 @@ function decodeFromBackup(value: unknown, path: string, skipTag = false): unknow
 
   const restored: Record<string, unknown> = {}
   for (const key of Object.keys(record)) {
-    restored[key] = decodeFromBackup(record[key], `${path}.${key}`)
+    // 使用 defineProperty 避免 __proto__ 键触发原型 setter（JSON.parse 可产出该键）
+    Object.defineProperty(restored, key, {
+      value: decodeFromBackup(record[key], `${path}.${key}`),
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    })
   }
   return restored
 }
@@ -416,14 +428,16 @@ export function initHotUpdate<S extends State = State>(config: HotUpdateConfig<S
 export function restoreFromHotUpdate<S extends State = State>(store: Store<S>, backupKey?: string): boolean {
   const resolvedBackupKey = resolveBackupKey(store, backupKey)
   const markerKey = pendingLaunchKey(resolvedBackupKey)
-  const backup = storage.get<BackupData>(resolvedBackupKey)
-  if (!backup) {
-    // 备份不存在时顺带清理可能残留的孤儿标记。刻意不走 clearBackup：本分支的前提是
-    // 「读不到备份」，而读取抛错也会被归一为 null——此时备份可能仍在存储里，
-    // 连它一起删会把一次瞬态读失败变成确定的数据丢失（只删标记最多让恢复能力作废）
+  const read = storage.getWithStatus<BackupData>(resolvedBackupKey)
+  if (read.status === 'error') {
+    logger.warn('HotUpdate', `备份读取失败（保留备份与标记，等下次冷启动重试）: ${resolvedBackupKey}`)
+    return false
+  }
+  if (read.status === 'miss') {
     storage.remove(markerKey)
     return false
   }
+  const backup = read.value!
 
   // payload 来自 storage，形状不可信：timestamp 缺失/非有限值时 age 为 NaN，
   // 而 NaN > BACKUP_EXPIRY_MS 为 false，过期门禁会被损坏备份静默绕过——

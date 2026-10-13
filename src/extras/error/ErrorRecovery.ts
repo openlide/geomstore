@@ -140,6 +140,11 @@ export class ErrorRecovery {
     // 为每个策略补默认值后写进 Map：不再先组一个 `{}` 中间对象，
     // 那层中间对象正是 `__proto__` 键会触发原型 setter 的地方
     for (const [errorCode, config] of Object.entries(strategies)) {
+      // 防御性校验：JS 调用方或 JSON 反序列化可能传入 null/undefined，
+      // 避免后续解构时抛出不透明的 "Cannot read properties of undefined"
+      if (!config || typeof config !== 'object') {
+        continue
+      }
       this.strategies.set(errorCode, {
         ...config,
         // 为RETRY策略添加默认值（maxRetries 经归一：NaN/Infinity 会让上限判定失效）
@@ -250,7 +255,9 @@ export class ErrorRecovery {
       return result
     } catch (recoveryError) {
       // 恢复失败回调
-      if (config.onRecoveryFailed) {
+      // RETRY 策略的 executeRetryStrategy 会故意抛出原错误以信号调用方重试（line 422），
+      // 此时 recoveryError === error，不是真正的恢复失败，不应触发 onRecoveryFailed
+      if (config.onRecoveryFailed && recoveryError !== error) {
         try {
           config.onRecoveryFailed(error, recoveryError as Error)
         } catch (callbackError) {
@@ -535,8 +542,9 @@ export class ErrorRecovery {
     // recover() 的第二个参数与会话内嵌 context 都是合法来源：单看 error.context 会让
     // 「错误对象未内嵌 context、由调用方按 Store/操作传入」的场景全部落到未归因桶，
     // 不同 Store 的重试额度互相挤占（A 用满后 B 也被判超限）
-    const storeName = context?.storeName || error.context?.storeName
-    const operation = context?.operation || error.context?.operation
+    // 使用 ?? 而非 ||：空字符串也是合法的 storeName/operation，不应被误判为"缺失"
+    const storeName = context?.storeName ?? error.context?.storeName
+    const operation = context?.operation ?? error.context?.operation
     if (storeName === undefined && operation === undefined) {
       return `${error.code}:unattributed`
     }
@@ -615,9 +623,8 @@ export function createDefaultErrorRecovery(strategies?: RecoveryStrategyMap): Er
     [ErrorCode.VALIDATION_ERROR]: {
       strategy: RecoveryStrategy.FALLBACK,
       fallback: undefined,
-      onRecoveryFailed: (error) => {
-        console.error('[ErrorRecovery] Validation error recovery failed:', error.message)
-      },
+      // onRecoveryFailed 不可达：fallback 显式为 undefined 时 executeFallbackStrategy
+      // 直接返回 undefined，不会抛错，故该回调永远不会被调用
     },
   }
 

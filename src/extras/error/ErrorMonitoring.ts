@@ -355,6 +355,7 @@ export class ErrorMonitoring {
           `[ErrorMonitoring] 连续 ${this.consecutiveFlushFailures} 次上报全部失败` +
             `（当前报告器数: ${this.reporters.length}），丢弃本批 ${batch.length} 条错误以避免无限重入队`,
         )
+        this.droppedErrors += batch.length
         this.consecutiveFlushFailures = 0
         return
       }
@@ -551,7 +552,7 @@ export class ErrorMonitoring {
       this.flushReports().catch((error) => {
         console.error('[ErrorMonitoring] Error in batch scheduler:', error)
       })
-    }, this.batchInterval)
+    }, Math.min(this.batchInterval, MAX_TIMER_DELAY))
     // 调用 unref() 让定时器不阻止 Node.js 进程退出（解决测试/小程序环境句柄泄漏）
     const timerWithUnref = timer as unknown as { unref?: () => void }
     if (timer && typeof timerWithUnref.unref === 'function') {

@@ -275,7 +275,7 @@ const diff = new SnapshotManager().compareSnapshots(result, createSnapshot(next)
 
 ## 性能与最佳实践
 
-本文件不重复性能建议——它们按主题分散在上面的「使用规则」与「常见任务」里，完整清单的正本是仓库 [`docs/BEST_PRACTICES.md`](../../../docs/BEST_PRACTICES.md)（含上线检查清单）。
+本文件不重复性能建议——它们按主题分散在上面的「使用规则」与「常见任务」里，完整清单的正本是仓库 [`docs/BEST_PRACTICES.md`](../../docs/BEST_PRACTICES.md)（含上线检查清单）。
 
 只有一条值得在这里再写一遍，因为它决定通知次数：**多字段一起更新用 `$patch` 或 `batch()`**，不要连着写多次 `setState`。
 
@@ -314,9 +314,9 @@ const diff = new SnapshotManager().compareSnapshots(result, createSnapshot(next)
 
 这里能读到生成物里没有的东西——默认值、设计意图、契约的完整表述：
 
-- [`docs/CONCEPTS.md`](../../../docs/CONCEPTS.md) —— **机制语义的唯一正本**（本文件「使用规则」指向的完整边界大多在这里）
-- [`docs/API.md`](../../../docs/API.md) —— 入口一览、选项默认值、逐 API 契约与易误用点
-- [`docs/GUIDE.md`](../../../docs/GUIDE.md) / [`docs/FAQ.md`](../../../docs/FAQ.md) / [`docs/BEST_PRACTICES.md`](../../../docs/BEST_PRACTICES.md) / [`docs/MIGRATION.md`](../../../docs/MIGRATION.md) —— 接入教程 / 症状排查 / 结论清单 / 变更史
+- [`docs/CONCEPTS.md`](../../docs/CONCEPTS.md) —— **机制语义的唯一正本**（本文件「使用规则」指向的完整边界大多在这里）
+- [`docs/API.md`](../../docs/API.md) —— 入口一览、选项默认值、逐 API 契约与易误用点
+- [`docs/GUIDE.md`](../../docs/GUIDE.md) / [`docs/FAQ.md`](../../docs/FAQ.md) / [`docs/BEST_PRACTICES.md`](../../docs/BEST_PRACTICES.md) / [`docs/MIGRATION.md`](../../docs/MIGRATION.md) —— 接入教程 / 症状排查 / 结论清单 / 变更史
 - `examples/` —— 可运行示例（basic / cache / weapp / advanced / extras），纳入 `pnpm typecheck:examples`
 - `src/types/*.ts` —— 完整类型定义
 

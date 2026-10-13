@@ -134,7 +134,8 @@ try {
   )
 
   /** 缺陷 B 的正面防线：相对 require 的目标必须存在 */
-  const relRequire = /require\("(\.{1,2}\/[^"]+)"\)/g
+  // 同时匹配单/双引号与可选空白，避免格式化/压缩差异导致漏检
+  const relRequire = /require\(\s*['"](\.{1,2}\/[^'"]+)['"]\s*\)/g
   const unresolved = []
   let requireCount = 0
   for (const rel of weappFiles) {
@@ -219,7 +220,7 @@ try {
     }
     check(
       `跨入口单例 ${pair.key} 同一对象（${pair.a} vs ${pair.b}）`,
-      a[pair.key] != null && a[pair.key] === b[pair.key],
+      a[pair.key] !== null && a[pair.key] !== undefined && a[pair.key] === b[pair.key],
       `${pair.why}；bundle 化的产物这里是 false`,
     )
   }
@@ -254,7 +255,11 @@ try {
     } catch (error) {
       check('主入口真实用例通过', false, error instanceof Error ? error.message : String(error))
     }
+  } else {
+    check('主入口已加载', false, 'loaded 中未找到 \'.\' 键，主入口验证被跳过')
   }
+} catch (error) {
+  failures.push(`未预期异常：${error instanceof Error ? (error.stack ?? error.message) : String(error)}`)
 } finally {
   // 唯一能同时兜住「断言途中抛错」与「cpSync / readFileSync 因文件被占用或并发删除失败」
   // 的收尾位置；下面的汇总不依赖加载区仍然存在

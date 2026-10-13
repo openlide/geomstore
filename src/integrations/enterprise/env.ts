@@ -88,6 +88,7 @@ export const CURRENT_USER_KEY = 'current_user_id'
  * 宿主/旧版本直接 `wx.getStorageSync` 读到的仍是裸文本
  */
 function needsQuoteEnvelope(value: string): boolean {
+  if (value === '') return true
   let parsed: unknown
   try {
     parsed = JSON.parse(value)

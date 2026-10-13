@@ -15,8 +15,8 @@ const STACK_FINGERPRINT_CHARS = 100
 /**
  * 存活错误组的默认上限（`maxGroups` 缺省值）
  *
- * 上限本身可调（构造参数），但把它接进 `MonitoringConfig` 需要改契约层
- * `src/types/error.ts`，本轮未动（见 `ErrorMonitoring` 构造器）。
+ * 上限本身可调（构造参数），已接进 `MonitoringConfig.maxGroups`（见 `src/types/error.ts`
+ * 与 `ErrorMonitoring` 构造器的 `normalizeCapacity(config.maxGroups, DEFAULT_MAX_GROUPS, 1)`）。
  */
 export const DEFAULT_MAX_GROUPS = 100
 
@@ -137,8 +137,10 @@ export class ErrorAggregator {
   /** 按错误码的累计账目（键集合有限，无需上限） */
   private readonly observedByCode = new Map<string, number>()
 
-  /** 按 Store 的累计账目，Store 基数超上限后并入 `OTHER_STORES_BUCKET` */
+  /** 按 Store 的累计账目，Store 基数超上限后并入溢出桶 */
   private readonly observedByStore = new Map<string, number>()
+  /** 溢出桶独立计数，避免与名为 `__others__` 的真实 Store 碰撞 */
+  private overflowStoreCount = 0
 
   /** 因 maxGroups 驱逐而消失的组数（账目已转入 `observedByCode`/`observedByStore`，此处只是留痕） */
   private evictedGroups = 0
@@ -150,7 +152,9 @@ export class ErrorAggregator {
   private evictionWarned = false
 
   constructor(maxGroups: number = DEFAULT_MAX_GROUPS) {
-    this.maxGroups = maxGroups
+    // 非有限值（NaN/Infinity）会让 `groups.size > maxGroups` 恒假，驱逐永不发生，
+    // 导致 groups Map 无界增长。回退到缺省值保证驱逐逻辑正常工作
+    this.maxGroups = Number.isFinite(maxGroups) ? maxGroups : DEFAULT_MAX_GROUPS
   }
 
   /**
@@ -164,7 +168,8 @@ export class ErrorAggregator {
     const groupId = this.resolveGroupId(fingerprint)
     const error = context.error
     const code = isGeomStoreError(error) ? error.code : 'UNKNOWN'
-    const now = context.timestamp || Date.now()
+    // 使用 Number.isFinite 处理 0 和 NaN，避免将合法的时间戳 0 或无效值误判为"缺失"
+    const now = Number.isFinite(context.timestamp) ? context.timestamp : Date.now()
 
     // context.error 只是「契约上」的 Error：`throw null` / 抛非 Error 值都会流到这里
     // （defaultErrorHandler 与 describeErrorProperty 已按此设防，buildFingerprint 也做了
@@ -275,8 +280,7 @@ export class ErrorAggregator {
       return
     }
     if (this.observedByStore.size >= MAX_TRACKED_STORE_KEYS) {
-      // 新 Store 不再逐个开键，并入溢出桶：桶键本身也是 byStore 的一项，求和不变量不破
-      this.observedByStore.set(OTHER_STORES_BUCKET, (this.observedByStore.get(OTHER_STORES_BUCKET) ?? 0) + 1)
+      this.overflowStoreCount++
       return
     }
     this.observedByStore.set(storeName, 1)
@@ -455,6 +459,7 @@ export class ErrorAggregator {
     this.observedErrors = 0
     this.observedByCode.clear()
     this.observedByStore.clear()
+    this.overflowStoreCount = 0
     this.evictedGroups = 0
     this.evictedErrors = 0
     this.evictionWarned = false
@@ -478,7 +483,9 @@ export class ErrorAggregator {
       totalGroups: this.groups.size,
       totalErrors: this.observedErrors,
       byCode: Object.fromEntries(this.observedByCode),
-      byStore: Object.fromEntries(this.observedByStore),
+      byStore: this.overflowStoreCount > 0
+        ? { ...Object.fromEntries(this.observedByStore), [OTHER_STORES_BUCKET]: this.overflowStoreCount }
+        : Object.fromEntries(this.observedByStore),
       evictedGroups: this.evictedGroups,
       evictedErrors: this.evictedErrors,
     }

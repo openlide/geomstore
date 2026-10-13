@@ -164,6 +164,23 @@ function withJsonContentType(headers: Record<string, string>): Record<string, st
 }
 
 /**
+ * 原始值降级：undefined/null 原样返回，bigint/symbol/function 字符串化
+ *
+ * 快慢路径共用：这三类在 JSON 里要么直接抛、要么被静默丢弃，统一字符串化以保留诊断信息
+ * （String(symbol) 合法，`'' + symbol` 才会抛）。对象/数组不在此处理，交给调用方决定后续
+ */
+function coercePrimitivePayload(payload: unknown): unknown {
+  if (payload === undefined || payload === null) {
+    return payload
+  }
+  const type = typeof payload
+  if (type === 'bigint' || type === 'symbol' || type === 'function') {
+    return `[${type} ${String(payload)}]`
+  }
+  return payload
+}
+
+/**
  * 把 payload 收成「JSON 可表示或至少可降级」的值（**全函数**，不跑序列化）
  *
  * 快路径专用：只挡「一定进不了 JSON」的三类原始值（bigint/symbol/function），
@@ -172,16 +189,7 @@ function withJsonContentType(headers: Record<string, string>): Record<string, st
  * 慢路径的逐字段降级（含试用串化与专名标记）见 {@link toSerializablePayload}
  */
 function toCoerciblePayload(payload: unknown): unknown {
-  if (payload === undefined || payload === null) {
-    return payload
-  }
-  const type = typeof payload
-  // bigint / symbol / function 在 JSON 里要么直接抛、要么被静默丢弃，
-  // 统一字符串化以保留诊断信息（String(symbol) 合法，`'' + symbol` 才会抛）
-  if (type === 'bigint' || type === 'symbol' || type === 'function') {
-    return `[${type} ${String(payload)}]`
-  }
-  return payload
+  return coercePrimitivePayload(payload)
 }
 
 /**
@@ -199,16 +207,12 @@ function toCoerciblePayload(payload: unknown): unknown {
  * payload 为百 KB 级状态快照时，那一遍遍历与中间字符串构造都是可测量的上报阻塞
  */
 function toSerializablePayload(payload: unknown): unknown {
-  if (payload === undefined || payload === null) {
+  const coerced = coercePrimitivePayload(payload)
+  // 原始值已处理完毕，后续只关心对象
+  if (coerced === payload && typeof payload !== 'object') {
     return payload
   }
-  const type = typeof payload
-  // bigint / symbol / function 在 JSON 里要么直接抛、要么被静默丢弃，
-  // 统一字符串化以保留诊断信息（String(symbol) 合法，`'' + symbol` 才会抛）
-  if (type === 'bigint' || type === 'symbol' || type === 'function') {
-    return `[${type} ${String(payload)}]`
-  }
-  if (type !== 'object') {
+  if (typeof payload !== 'object') {
     return payload
   }
   try {
@@ -305,7 +309,8 @@ function toWxRequestError(err: unknown): Error {
  */
 function createDefaultRequest(options: HttpReporterOptions): HttpRequestImpl {
   const wxApi = (globalThis as { wx?: { request?: (options: unknown) => void } }).wx
-  const request = wxApi?.request
+  // 绑定 wxApi 作为 receiver，避免 wx.request 依赖 this 上下文时在调用时抛错
+  const request = wxApi?.request?.bind(wxApi)
   if (typeof request === 'function') {
     return (url, body, method, headers) =>
       new Promise<void>((resolve, reject) => {
@@ -319,7 +324,10 @@ function createDefaultRequest(options: HttpReporterOptions): HttpRequestImpl {
           // 平台自身另有默认上限（小程序侧通常 60s 量级），由平台兜底即可；
           // 需要与 fetch 分支同口径（默认 10s）请显式传 timeout。
           // 非有限值同样归一——Infinity 会被平台/宿主钳成极短值，NaN 的行为未定义
-          ...(options.timeout !== undefined ? { timeout: Number.isFinite(options.timeout) ? options.timeout : DEFAULT_FETCH_TIMEOUT_MS } : {}),
+          // <=0 按"不设超时"处理（与 fetch 分支口径一致），不传给 wx.request
+          ...(options.timeout !== undefined && options.timeout > 0
+            ? { timeout: Number.isFinite(options.timeout) ? options.timeout : DEFAULT_FETCH_TIMEOUT_MS }
+            : {}),
           // body 恒为 buildRequestBody 产出的 JSON 文本（JsonBody 品牌），字符串
           // 原样发送即可，无需 parse 后让 wx 再序列化一次
           data: body,
@@ -355,10 +363,13 @@ function createDefaultRequest(options: HttpReporterOptions): HttpRequestImpl {
       })) as unknown as {
         ok: boolean
         status: number
+        body?: { cancel?: () => Promise<void> }
       }
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}`)
       }
+      // 排空响应体：未读取的 body 会阻止连接返回池，持续上报下可能导致连接池耗尽
+      await response.body?.cancel?.()
     } catch (error) {
       // fetch 的中止 rejection 是无信息的 DOMException（"The operation was aborted"），
       // 换成本次超时值：监控层只能拿到 Error 消息，分类与排障全靠它。

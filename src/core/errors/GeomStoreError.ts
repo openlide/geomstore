@@ -68,7 +68,7 @@ function toSerializableValue(value: unknown, ancestors: WeakSet<object>, depth: 
     // 本函数，既无深度也无环路风险，故原样交回 value（`toJSON()` 的返回值里 Date 仍是
     // Date，序列化后的字面量仍是它的 ISO 串——与 R5-079 锁定的形状一致）
     if (serializerResult === null || typeof serializerResult !== 'object') {
-      return value
+      return typeof serializerResult === 'bigint' ? `${serializerResult}n` : value
     }
     // 序列化器给出对象/数组：交回 value 就是「把本函数仅有的两道保护整体旁路」——
     // 递归交回 JSON 引擎自由进行，而每次 toJSON() 都构造新身份的图/树节点
@@ -320,14 +320,19 @@ export class GeomStoreError extends Error {
    * ```
    */
   toJSON(): Record<string, unknown> {
-    return {
+    const result: Record<string, unknown> = {
       name: this.name,
       message: this.message,
       code: this.code,
       context: this.context === undefined ? undefined : toSerializableValue(this.context, new WeakSet<object>(), 0),
       stack: this.stack,
-      cause: this.cause === undefined ? undefined : toSerializableCause(this.cause),
     }
+    // cause 仅在构造期提供时才挂载：避免 Object.keys() 恒为 6、Object.hasOwn(json, 'cause') 恒为 true，
+    // 与 JSDoc 宣称的「仅在构造期提供时才带上 cause」保持一致
+    if (this.cause !== undefined) {
+      result.cause = toSerializableCause(this.cause)
+    }
+    return result
   }
 
   /**
@@ -340,7 +345,7 @@ export class GeomStoreError extends Error {
    * const error = new GeomStoreError(
    *   'Action failed',
    *   'ACTION_ERROR',
-   *   { actionName: 'save', storeName: 'user-store' }
+   *   { operation: 'save', storeName: 'user-store' }
    * )
    * console.log(error.getFriendlyMessage())
    * // "Action failed in store 'user-store': save"

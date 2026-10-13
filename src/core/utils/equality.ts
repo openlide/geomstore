@@ -78,7 +78,9 @@ const isBoxedPrimitive = (value: object): boolean => {
  * @returns 是否相等。比较范围：**原型一致**（前置条件，故 `class MyMap extends Map` 的
  *   空实例与空 `Map` 判不等、`Foo` 实例与同键字面量判不等）+ 自有可枚举字符串键逐项
  *   （数组含 length）；内建类型按内容比——Date 比时间值、RegExp 比 source+flags、
- *   Map 比键集与值、Set 比无序元素、装箱原始值（`new Number(1)` 一类）比 `valueOf()`。
+ *   Map 比键集与值、Set 比无序元素、装箱原始值（`new Number(1)` 一类）比 `valueOf()`、
+ *   Error 比 name+message、ArrayBuffer/TypedArray 比字节内容。Promise/WeakMap/WeakSet
+ *   无法按内容比较，只按引用判等（引用不同即判不等）。
  *   symbol 键与不可枚举属性不参与比较（状态上的版本号标记即属此类，不应影响相等判定）
  *
  * @remarks **Map 的键按引用（SameValueZero）匹配，只有值做深度比较**——这是有意的
@@ -204,7 +206,9 @@ function compareWithSeenPairs(a: unknown, b: unknown, comparison: Comparison, pa
     // 双方原型已在上面判等，故按 A 侧分派即覆盖 B 侧（instanceof 沿 getPrototypeOf 走，
     // 同原型 ⇒ 同一条链 ⇒ 同结论）；下面的 as 只是把这条不变量转交给类型系统。
     if (currentA instanceof Date) {
-      if (currentA.getTime() !== (currentB as Date).getTime()) {
+      // 使用 Object.is 处理 NaN（无效 Date 的 getTime() 返回 NaN），
+      // 保证两个无效 Date 被判为相等，与 SameValueZero 一致性原则一致
+      if (!Object.is(currentA.getTime(), (currentB as Date).getTime())) {
         return false
       }
       continue
@@ -247,6 +251,71 @@ function compareWithSeenPairs(a: unknown, b: unknown, comparison: Comparison, pa
         return false
       }
       continue
+    }
+
+    // Error 按 name + message 比较：Object.keys 对 Error 实例恒为空（name/message
+    // 是自有但不可枚举），只比键集会把 `new Error('a')` 与 `new Error('b')` 判等。
+    // 不比 stack（每次 new 都不同，且属于调试信息而非语义内容）；子类若加了自有属性
+    // 仍会走下面的通用键比较，那些属性会被正常纳入比较
+    if (currentA instanceof Error) {
+      const other = currentB as Error
+      if (currentA.name !== other.name || currentA.message !== other.message) {
+        return false
+      }
+      // 不 continue：Error 子类可能带自有属性，仍需走通用键比较
+    }
+
+    // ArrayBuffer 按字节内容比较：Object.keys 对 ArrayBuffer 恒为空（byteLength 是
+    // 原型上的访问器，实例上没有自有键），只比键集会把不同大小的缓冲区判等。
+    // 用 Uint8Array 视图逐字节读：DataView 也可以但 Uint8Array 的逐元素访问在 V8 上
+    // 更快；byteLength 不同直接判不等，避免无谓的字节遍历
+    if (typeof ArrayBuffer !== 'undefined' && currentA instanceof ArrayBuffer) {
+      const other = currentB as ArrayBuffer
+      if (currentA.byteLength !== other.byteLength) {
+        return false
+      }
+      const viewA = new Uint8Array(currentA)
+      const viewB = new Uint8Array(other)
+      for (let i = 0; i < viewA.length; i++) {
+        if (viewA[i] !== viewB[i]) {
+          return false
+        }
+      }
+      continue
+    }
+
+    // TypedArray（Int8Array / Uint8Array / Float32Array 等）按字节内容比较：
+    // 与 ArrayBuffer 同理，Object.keys 只返回下标键，但 length 已在数组分支比过，
+    // 这里用 buffer 的字节视图逐字节比较（同 buffer 同 byteOffset 同 length 的
+    // TypedArray 共享同一份字节，比逐元素更快且语义等价）。
+    // ArrayBuffer.isView 覆盖全部 TypedArray 与 DataView，且不依赖 realm 一致的构造器
+    if (typeof ArrayBuffer !== 'undefined' && ArrayBuffer.isView && ArrayBuffer.isView(currentA)) {
+      const viewA = currentA as ArrayBufferView
+      const viewB = currentB as ArrayBufferView
+      // byteLength 不同直接判不等（length 已在数组分支比过，但 byteLength 更底层）
+      if (viewA.byteLength !== viewB.byteLength) {
+        return false
+      }
+      // 用 Uint8Array 视图统一按字节比较：不同 TypedArray 类型（Int16Array vs Uint16Array）
+      // 只要字节内容相同就判等（这与「原型已判等」的前提一致——同原型必同类型，
+      // 但子类可能覆写 byteOffset/byteLength，逐字节比是最稳的口径）
+      const byteViewA = new Uint8Array(viewA.buffer, viewA.byteOffset, viewA.byteLength)
+      const byteViewB = new Uint8Array(viewB.buffer, viewB.byteOffset, viewB.byteLength)
+      for (let i = 0; i < byteViewA.length; i++) {
+        if (byteViewA[i] !== byteViewB[i]) {
+          return false
+        }
+      }
+      continue
+    }
+
+    // Promise / WeakMap / WeakSet 无法按内容比较（内部槽位不暴露，Object.keys 恒为空），
+    // 只能按引用判等。快速路径 `currentA === currentB` 已处理了引用相同的情况，
+    // 走到这里说明引用不同，直接判不等。
+    // 用 Object.prototype.toString 的 tag 判而非 instanceof：跨 realm 的 Promise 等
+    // 在 instanceof 上会落空，但本函数前面已判原型一致，同原型 ⇒ 同 realm ⇒ 同 tag
+    if (currentA instanceof Promise || currentA instanceof WeakMap || currentA instanceof WeakSet) {
+      return false
     }
 
     // 数组检查：原型一致仍可能一侧是数组、另一侧是 Object.create(Array.prototype)，

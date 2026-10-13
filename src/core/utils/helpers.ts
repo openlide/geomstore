@@ -8,7 +8,7 @@
  * - 克隆操作函数
  */
 
-import { deepCloneState, ownEnumerableKeys } from './clone.js'
+import { deepCloneState, isExactly, ownEnumerableKeys } from './clone.js'
 import { deepEqual } from './equality.js'
 
 // ==================== 类型判断 ====================
@@ -192,7 +192,7 @@ export function deepMerge<T extends Record<string, unknown>>(target: T, ...sourc
         continue
       }
 
-      const existing = dst[key]
+      const existing = Object.prototype.hasOwnProperty.call(dst, key) ? dst[key] : undefined
       if (isPlainObject(sourceVal)) {
         if (isPlainObject(existing)) {
           // 纯对象 → 纯对象：递归合并
@@ -334,14 +334,9 @@ export type CloneMode = 'deep' | 'shallow' | 'safe' | 'json'
 /**
  * 内建容器的准入门槛：只重建「恰好是该内建类型本身」的实例。
  *
- * 与 `clone.ts` 的 `isExactly` 是同一条判据——那份是 clone.ts 的模块私有函数（未导出），
- * 本模块因此各自复述一行，而不是把它做成 utils 间的隐式契约。两处必须一起漂移：
- * 想收敛就导出 `isExactly` 后删掉这里（改动跨 clone.ts，本轮分片未含该文件）。
+ * 复用 `clone.ts` 导出的 `isExactly`（已在本文件顶部导入），保持判据单一来源。
  * 子类实例走「返回原引用」的降级路径，理由见 {@link clone} 与 deepCloneState 的文档。
  */
-function isExactlyBuiltin(value: object, proto: object): boolean {
-  return Object.getPrototypeOf(value) === proto
-}
 
 /**
  * 统一的克隆函数
@@ -391,23 +386,23 @@ export function clone<T>(obj: T, options?: { mode?: CloneMode }): T {
   // deep/safe 走 deepCloneState（它自己也带同一道门槛，返回原引用），shallow 走
   // 「非纯对象返回原引用」分支。此前这里无条件 `new Date(obj.getTime())`，会让同一个
   // Date 子类在顶层被降级成基类副本、嵌在对象里却保留原引用（注释与实现相反）
-  if (obj instanceof Date && isExactlyBuiltin(obj, Date.prototype)) {
+  if (obj instanceof Date && isExactly(obj, Date.prototype)) {
     return new Date(obj.getTime()) as T
   }
-  if (obj instanceof RegExp && isExactlyBuiltin(obj, RegExp.prototype)) {
+  if (obj instanceof RegExp && isExactly(obj, RegExp.prototype)) {
     return new RegExp(obj.source, obj.flags) as T
   }
 
   if (mode === 'shallow') {
     // 浅克隆：只复制一层，且只对有「保类型的一层展开」办法的容器做展开
     // （Date/RegExp 已在上方按类型新建；内建类型的子类一律走下方的原引用降级）
-    if (Array.isArray(obj) && isExactlyBuiltin(obj, Array.prototype)) {
+    if (Array.isArray(obj) && isExactly(obj, Array.prototype)) {
       return [...obj] as T
     }
-    if (obj instanceof Map && isExactlyBuiltin(obj, Map.prototype)) {
+    if (obj instanceof Map && isExactly(obj, Map.prototype)) {
       return new Map(obj) as T
     }
-    if (obj instanceof Set && isExactlyBuiltin(obj, Set.prototype)) {
+    if (obj instanceof Set && isExactly(obj, Set.prototype)) {
       return new Set(obj) as T
     }
     // 其余对象只有纯对象可以展开：类实例/Error/WeakMap/Promise 的自有可枚举键一般为空，

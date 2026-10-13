@@ -51,13 +51,14 @@ export function mergeNamespaced(stores: readonly Store[], pick: (store: Store) =
  * 避免覆盖关系静默发生、排查困难。需要确定性归属请改用命名空间模式。
  *
  * @param warnedConflicts - 已告警的冲突组合集合（实例级去重，避免高频读取刷屏）
+ *   外层 Map 按 state key 分组，内层 Set 按 store 配对去重（保证 (A,B) 与 (B,A) 归一）
  */
 export function mergeStateMaps(
   stores: readonly Store[],
   // 返回类型放开 null/undefined：合并路径要能容忍未初始化/降级的子 store，
   // 而不是在渲染热路径上抛 TypeError（下方对空值按「无键可并」兜底）
   pick: (store: Store) => Record<string, unknown> | null | undefined,
-  warnedConflicts: Set<string>,
+  warnedConflicts: Map<string, Set<string>>,
 ): Record<string, unknown> {
   const result: Record<string, unknown> = {}
   // 归属按 store **实例**记录：同名但不同的两个实例正是「静默覆盖」的真实场景，
@@ -77,9 +78,20 @@ export function mergeStateMaps(
         if (previousOwner !== undefined && previousOwner !== store) {
           // 每个冲突组合只告警一次：getState/state 高频读取（渲染/computed）下
           // 重复告警会刷屏并带来每次调用的 Map 构建开销
-          const conflictKey = `${key}(${previousOwner.name},${store.name})`
-          if (!warnedConflicts.has(conflictKey)) {
-            warnedConflicts.add(conflictKey)
+          // 冲突键用实例身份而非名字：同名多实例正是本告警要拦截的场景，
+          // 用名字做键会让 A1/B1 与 A2/B2（A1===A2, B1!==B2）被判为同一冲突
+          // 用按名字排序的配对键保证 (A,B) 与 (B,A) 归一
+          const pairKey =
+            previousOwner.name < store.name
+              ? `${previousOwner.name}|${store.name}`
+              : `${store.name}|${previousOwner.name}`
+          let pairSet = warnedConflicts.get(key)
+          if (!pairSet) {
+            pairSet = new Set()
+            warnedConflicts.set(key, pairSet)
+          }
+          if (!pairSet.has(pairKey)) {
+            pairSet.add(pairKey)
             console.warn(
               `[composeStore] State key "${key}" exists in multiple stores (${previousOwner.name}, ${store.name}); ` +
                 `"${store.name}" wins in merged state/snapshot（读取侧最终由最后一个含该键的 store 决定），` +

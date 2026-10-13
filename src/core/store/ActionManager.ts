@@ -181,7 +181,7 @@ export class ActionManager<S extends State = State, A extends Actions = Actions>
     // onlyOnChange 模式：基线必须在进入 dispatch 之前采集。dispatch 期间通知被抑制，
     // beforeDispatch 钩子里的写入同样属于本次 dispatch 事务；基线晚采会把钩子写入
     // 当成「无变化」，收尾时跳过通知，该变更对所有监听器永久不可见
-    const mutationsBefore = this._mutationGate ? this._mutationGate() : 0
+    const mutationsBefore = this._getMutationCount ? this._getMutationCount() : 0
     // 先设置 dispatching 状态，再触发钩子，确保监听器能获取正确的状态
     this._enterDispatch()
     let result: unknown
@@ -220,7 +220,14 @@ export class ActionManager<S extends State = State, A extends Actions = Actions>
     // 外层 action 仍在执行却提前复位 dispatching，其后续 setState 会以中间态通知监听器；
     // 那类失败也不该被重新包装成 ACTION_EXECUTION_ERROR（action 本身已经执行完成）
     this._exitDispatch()
-    this._hooks.emit('afterDispatch', name, args, result)
+    // 钩子是注入的 IHookSystem，接口不保证 emit 吞掉处理器异常（与 beforeDispatch 同一理由）；
+    // 此处抛错会跳过缓存刷新与通知补发，异步分支还会丢掉 onSettled 的挂载，
+    // 使 action 返回的 promise 无人接收、其拒绝变成 unhandledRejection
+    try {
+      this._hooks.emit('afterDispatch', name, args, result)
+    } catch (error) {
+      this._reportSettledFailure(error)
+    }
     // 同步刷新缓存：action 可能通过 this.state.xxx = ... 直接变异状态，
     // 绕过 setState/$patch 导致缓存陈旧，此处按状态源强制回写
     this._safeRefreshCache()

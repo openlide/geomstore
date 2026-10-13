@@ -16,7 +16,13 @@ export interface SnapshotOptions {
    * 属性上的 `cloneError`。超出硬上限的部分按 `maxDepth` 降级报告，需要更深的结构走异步路径
    */
   maxDepth?: number
-  /** 是否检测循环引用 */
+  /**
+   * 是否在检测到循环引用时报告错误并咨询 `onError`
+   *
+   * 循环引用检测本身**始终开启**（clone.ts 用 `context.visited` 无条件防护无限递归），
+   * 本选项只控制检测到循环后的行为：`true` 时落账一条 `circular` 错误并交给 `onError`
+   * 决定是否中止；`false` 时静默跳过已访问节点（不报错、不中止），产出里该位置为占位值
+   */
   detectCircular?: boolean
   /** 是否包含不可枚举属性 */
   includeNonEnumerable?: boolean
@@ -32,8 +38,6 @@ export interface SnapshotOptions {
    *   SnapshotAbortError 中止、交付失败结果。
    */
   customCloner?: (value: unknown, context: CloneContext) => unknown
-  /** 是否异步执行 */
-  async?: boolean
   /** 异步批次大小 */
   batchSize?: number
   /**
@@ -74,7 +78,7 @@ export interface CloneContext {
   /** 父对象 */
   parent: unknown
   /** 属性键 */
-  key: string | number
+  key: string | number | symbol
   /**
    * 已访问节点登记表：源对象 → 该节点**已建好的克隆**（不是 WeakSet 式的纯成员集合）。
    *

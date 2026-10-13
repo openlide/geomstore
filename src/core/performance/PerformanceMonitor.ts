@@ -260,7 +260,12 @@ export class PerformanceMonitor implements PerformanceMonitorInterface {
 
     const perf = this.cachedWxPerformance
     if (perf) {
-      const value = perf.now()
+      let value: unknown
+      try {
+        value = perf.now()
+      } catch {
+        value = undefined
+      }
       if (typeof value === 'number' && Number.isFinite(value)) {
         return value
       }

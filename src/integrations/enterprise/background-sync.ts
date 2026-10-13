@@ -128,8 +128,11 @@ function installAppLifecycleHooks(): void {
 
   const runBackgroundChecks = (): void => {
     for (const handler of [...backgroundSyncHandlers]) {
-      // 与前台同口径：onBackground 回调里注销的处理器不得在本轮继续被调用
       if (!backgroundSyncHandlers.includes(handler)) continue
+      if (handler.store.destroyed) {
+        backgroundSyncHandlers.splice(backgroundSyncHandlers.indexOf(handler), 1)
+        continue
+      }
       handler.lastActiveTime = Date.now()
       try {
         handler.onBackground?.()
@@ -166,19 +169,29 @@ function installAppLifecycleHooks(): void {
     // 注入与下方的标记写入必须同口径兜底：ESM 严格模式下给冻结对象、只读数据属性
     // 或无 setter 的访问器赋值会直接抛 TypeError，此前只有 defineProperty 有 try/catch，
     // 于是「不可写的 options」这一本已被容忍的场景反而让 App(options) 启动失败
+    // 两侧赋值独立守卫：一侧失败不影响另一侧，避免半包装状态导致二次进入时重复包装
+    let onShowWrapped = false
+    let onHideWrapped = false
     try {
       options.onShow = function (this: unknown, ...args: unknown[]): void {
         runForegroundChecks()
         userOnShow?.apply(this, args)
       }
+      onShowWrapped = true
+    } catch (error) {
+      logger.warn('BackgroundSync', 'options.onShow 不可写（已冻结或为只读访问器），跳过该侧后台同步包装:', error)
+    }
+    try {
       options.onHide = function (this: unknown, ...args: unknown[]): void {
         runBackgroundChecks()
         userOnHide?.apply(this, args)
       }
+      onHideWrapped = true
     } catch (error) {
-      // 赋值抛错的那一侧未被改写（另一侧若已改写则保留，其检查照常生效）；
-      // 这里只损失对应侧的时效性检查，配置本身照常交给宿主 App
-      logger.warn('BackgroundSync', 'options 的生命周期属性不可写（已冻结或为只读访问器），跳过该侧后台同步包装:', error)
+      logger.warn('BackgroundSync', 'options.onHide 不可写（已冻结或为只读访问器），跳过该侧后台同步包装:', error)
+    }
+    // 两侧都失败时直接透传，不再写入标记（避免半包装状态）
+    if (!onShowWrapped && !onHideWrapped) {
       return originalApp.call(this, options)
     }
     // 标记写入用 defineProperty + 不可枚举：options 会被框架与宿主 Object.keys/展开遍历，
@@ -255,11 +268,14 @@ export function initBackgroundSync<S extends State = State>(config: BackgroundSy
     // 静默丢弃，调用方看不出任何差别（非小程序宿主/测试环境尤易触发）
     logger.warn('BackgroundSync', 'App 构造器当前不可用，处理器已登记但生命周期拦截要等 App 就位后安装')
   } else if (globalObj.App !== installedAppWrapper) {
-    // 全局 App 被外部替换：重装后的新包装遍历的仍是同一个模块级注册表，
+    // 全局 App 被外部替换或首次就位：重装后的新包装遍历的仍是同一个模块级注册表，
     // 旧条目照样会被调用。此前在此清空整表，会静默丢弃其他调用方
     // （另一处 initBackgroundSync）已注册的处理器，且无任何重新注册的机会
     if (backgroundSyncHandlers.length > 0) {
-      logger.warn('BackgroundSync', `全局 App 构造器已被替换，已重新安装包装并保留 ${backgroundSyncHandlers.length} 个已注册的处理器`)
+      const message = installedAppWrapper === null
+        ? `全局 App 构造器已就位，已安装包装并保留 ${backgroundSyncHandlers.length} 个已注册的处理器`
+        : `全局 App 构造器已被替换，已重新安装包装并保留 ${backgroundSyncHandlers.length} 个已注册的处理器`
+      logger.warn('BackgroundSync', message)
     }
     installAppLifecycleHooks()
   }

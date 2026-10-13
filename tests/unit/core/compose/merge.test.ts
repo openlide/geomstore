@@ -56,14 +56,14 @@ describe('compose/merge', () => {
       const a = fakeStore('a', { x: 1 })
       const b = fakeStore('b', { y: 2 })
 
-      expect(mergeStateMaps(asStores([a, b]), pick, new Set())).toEqual({ x: 1, y: 2 })
+      expect(mergeStateMaps(asStores([a, b]), pick, new Map())).toEqual({ x: 1, y: 2 })
     })
 
     it('同名键：后者覆盖前者并告警一次', () => {
       const a = fakeStore('a', { k: 1 })
       const b = fakeStore('b', { k: 2 })
 
-      const result = mergeStateMaps(asStores([a, b]), pick, new Set())
+      const result = mergeStateMaps(asStores([a, b]), pick, new Map())
 
       expect(result).toEqual({ k: 2 })
       expect(warnSpy).toHaveBeenCalledTimes(1)
@@ -73,7 +73,7 @@ describe('compose/merge', () => {
     it('同一冲突组合只告警一次：重复合并不再刷屏', () => {
       const a = fakeStore('a', { k: 1 })
       const b = fakeStore('b', { k: 2 })
-      const warned = new Set<string>()
+      const warned = new Map<string, Set<string>>()
       const stores = asStores([a, b])
 
       mergeStateMaps(stores, pick, warned)
@@ -89,7 +89,7 @@ describe('compose/merge', () => {
       const a1 = fakeStore('a', { k: 1 })
       const a2 = fakeStore('a', { k: 2 })
 
-      const result = mergeStateMaps(asStores([a1, a2]), pick, new Set())
+      const result = mergeStateMaps(asStores([a1, a2]), pick, new Map())
 
       expect(result).toEqual({ k: 2 })
       expect(warnSpy).toHaveBeenCalledTimes(1)
@@ -100,7 +100,7 @@ describe('compose/merge', () => {
       const a = fakeStore('a', { k: 1 })
       const b = fakeStore('b', { k: 2 })
 
-      mergeStateMaps(asStores([a, b]), pick, new Set())
+      mergeStateMaps(asStores([a, b]), pick, new Map())
 
       expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('写入'))
     })
@@ -108,7 +108,7 @@ describe('compose/merge', () => {
     it('无键的 store 不产生任何影响', () => {
       const empty = fakeStore('empty', {})
 
-      expect(mergeStateMaps(asStores([empty]), pick, new Set())).toEqual({})
+      expect(mergeStateMaps(asStores([empty]), pick, new Map())).toEqual({})
       expect(warnSpy).not.toHaveBeenCalled()
     })
   })

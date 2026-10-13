@@ -83,7 +83,6 @@ interface ComponentOptions {
     resize?(res: { size: { windowWidth: number; windowHeight: number } }): void
   }
   setData?: (data: Record<string, unknown>, callback?: () => void) => void
-  onShow?(...args: unknown[]): void
   /** 实例级订阅清理列表（由 withComponentStore 维护，避免多组件实例共享） */
   __geomUnbinds?: Array<() => void>
   [key: string]: unknown
@@ -158,9 +157,9 @@ export function withPageStore<S extends State, A extends Actions, G extends Gett
     // 传入的配置字面量（含自定义方法 / data）反向推断出 C，返回类型据此保留精确成员；
     // 修复前入参为具体类型（不含 C），C 只能回退到约束 PageOptions，
     // 自定义方法在返回值上退化为 unknown（编译期即报错）
-    PageConfig: WithPageThis<C, PageThis<S, A, G, O>> & { data: object } & ThisType<PageThis<S, A, G, O>>,
+    pageConfig: WithPageThis<C, PageThis<S, A, G, O>> & { data: object } & ThisType<PageThis<S, A, G, O>>,
   ): PageConfig<S, O, G> & Omit<C, 'data'> & { data: (C extends { data: infer D } ? D : object) & ExtractPageData<S, O, G> } {
-    const enhancedConfig = { ...PageConfig } as PageOptions
+    const enhancedConfig = { ...pageConfig } as PageOptions
 
     // 扩展 onLoad
     const originalOnLoad = enhancedConfig.onLoad
@@ -327,9 +326,9 @@ export function withComponentStore<S extends State, A extends Actions, G extends
   store: Store<S, A, G>,
   options: O = {} as O,
 ): <C extends ComponentOptions>(
-  // 外层声明必须与实现签名一致：否则调用方看到的仍是 `ComponentConfig: C`，
+  // 外层声明必须与实现签名一致：否则调用方看到的仍是 `componentConfig: C`，
   // 命名空间级的 ThisType 不会生效（方法内 this 推导会落回配置字面量）
-  ComponentConfig: WithComponentThis<C, ComponentThis<S, A, G, O, ComponentOwnMethods<C>>>,
+  componentConfig: WithComponentThis<C, ComponentThis<S, A, G, O, ComponentOwnMethods<C>>>,
 ) => ComponentConfig<S, A, G, O, ComponentOwnMethods<C>> &
   Omit<C, 'data' | 'methods'> & { data: (C extends { data: infer D } ? D : object) & ExtractPageData<S, O, G> } {
   // 解析映射与注入配置（与 Page/App 集成共用 resolveMappings）
@@ -355,10 +354,10 @@ export function withComponentStore<S extends State, A extends Actions, G extends
     // 与 withPageStore 同理注入 this 类型；差别在于 Component 的方法与生命周期嵌套在
     // methods / lifetimes / pageLifetimes 命名空间内，故用 WithComponentThis 把 ThisType
     // 挂到各命名空间本身（ThisType 只作用于所标注的那个对象字面量，顶层挂载不会下传）
-    ComponentConfig: WithComponentThis<C, ComponentThis<S, A, G, O, ComponentOwnMethods<C>>>,
+    componentConfig: WithComponentThis<C, ComponentThis<S, A, G, O, ComponentOwnMethods<C>>>,
   ): ComponentConfig<S, A, G, O, ComponentOwnMethods<C>> &
     Omit<C, 'data' | 'methods'> & { data: (C extends { data: infer D } ? D : object) & ExtractPageData<S, O, G> } {
-    const enhancedConfig: ComponentOptions = { ...ComponentConfig }
+    const enhancedConfig: ComponentOptions = { ...componentConfig }
 
     // action 绑定的本地名与组件自身 methods 同名时的遮蔽表：键 → 用户原方法。
     // 与 Page/App 侧的 bindActions 同口径（utils.ts 里那份会「告警 + 解绑时按原描述符
@@ -367,7 +366,7 @@ export function withComponentStore<S extends State, A extends Actions, G extends
     // 同一库对「action 绑定遮蔽宿主成员」已裁定为需要告警的事件，这里两个保障都缺。
     // 判定在配置级做一次（每个组件配置一份表，实例共用），告警随之只刷一次
     const shadowedMethods = new Map<string, unknown>()
-    // 取 enhancedConfig.methods 而非 ComponentConfig.methods：前者是同一份引用
+    // 取 enhancedConfig.methods 而非 componentConfig.methods：前者是同一份引用
     // （enhancedConfig 为浅拷贝），且类型已由 ComponentOptions 收敛，不必依赖 C 上
     // 是否存在 methods 键。判定必须发生在下面的 methods 合并之前
     const configMethods = enhancedConfig.methods
@@ -403,14 +402,15 @@ export function withComponentStore<S extends State, A extends Actions, G extends
         // 辅助函数：订阅 store 变化（共用 createStoreSubscriber）
         const subscribeStore = createStoreSubscriber(store)
 
-        try {
-          // 将绑定的 methods 合并到实例上：
-          // 先做实例级浅拷贝再合并，避免 this.methods 引用配置级共享对象时
-          // 直接写入污染所有实例共用的 methods 定义
-          if (this.methods) {
-            this.methods = { ...this.methods, ...boundMethods }
-          }
+        // 将绑定的 methods 合并到实例上（在 try 之外，避免回滚复杂度）：
+        // 先做实例级浅拷贝再合并，避免 this.methods 引用配置级共享对象时
+        // 直接写入污染所有实例共用的 methods 定义。合并本身不会抛错，
+        // 放在 try 外可让 catch 只回滚订阅而不必还原 methods
+        if (this.methods) {
+          this.methods = { ...this.methods, ...boundMethods }
+        }
 
+        try {
           // state 与 getters 两类映射共享**同一条**订阅（每个组件实例一条）：
           // 订阅粒度曾是「每次 bindMappings 一条」，同时配两类映射的实例占 2 份额度；
           // 列表项组件（每项一个 Component）场景下共享 store 的 maxSubscribers
@@ -516,7 +516,7 @@ export function withComponentStore<S extends State, A extends Actions, G extends
     // boundMethods 排在后：action 绑定覆盖组件同名方法（与 Page/App 侧 bindActions 一致，
     // action 映射必须生效）。同名情况已在上面登记进 shadowedMethods 并告警，detached 时回放原值
     enhancedConfig.methods = {
-      ...ComponentConfig.methods,
+      ...componentConfig.methods,
       ...boundMethods,
     }
 

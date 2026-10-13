@@ -282,8 +282,11 @@ export function parseActionName(fullName: string, namespace?: string | boolean):
     const parts = fullName.split('/')
     // 支持多级路径（如 store/a/b）：首段为 store 名，其余段合并为成员名，
     // 避免三级及以上路径静默落入裸名查找而失败
-    if (parts.length >= 2) {
-      return [parts[0], parts.slice(1).join('/')]
+    const actualName = parts.slice(1).join('/')
+    // 空成员名（如 'user/'）不做解析，返回空 store 名让调用方按裸名继续处理，
+    // 与 findTargetStoreWithKey 的空键守卫同口径
+    if (parts.length >= 2 && actualName !== '') {
+      return [parts[0], actualName]
     }
   }
   // 无命名空间（或名称中不含 '/'）时返回空 store 名：本函数不做任何 store 查找，

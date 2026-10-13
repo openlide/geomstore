@@ -162,13 +162,22 @@ export class SelectorFactory<S extends State = Record<string, unknown>, R = unkn
   }
 
   /**
+   * 判断缓存条目是否已过期（TTL 判定）
+   *
+   * @private
+   */
+  private isExpired(timestamp: number, now: number): boolean {
+    return timestamp + this.options.cacheTTL <= now
+  }
+
+  /**
    * 判断缓存条目是否命中（状态相等且未过期）
    *
    * @private
    */
   private isCacheHit(item: SelectorCacheItem<R>, state: S, now: number, stateVersion: number | undefined): boolean {
     // TTL 判定先行：比状态比较便宜，过期条目无需再比较
-    if (item.timestamp + this.options.cacheTTL <= now) {
+    if (this.isExpired(item.timestamp, now)) {
       return false
     }
     // 版本号由各 Store 独立计数；版本化条目保留原状态引用，须同时校验身份与版本。
@@ -261,7 +270,7 @@ export class SelectorFactory<S extends State = Record<string, unknown>, R = unkn
     // 且过期条目的状态快照与结果值继续被强引用（内存驻留）。倒序遍历，splice 不影响未检查的下标
     const writtenAt = cacheItem.timestamp
     for (let i = this.cacheHistory.length - 1; i >= 0; i--) {
-      if (this.cacheHistory[i].timestamp + this.options.cacheTTL <= writtenAt) {
+      if (this.isExpired(this.cacheHistory[i].timestamp, writtenAt)) {
         this.cacheHistory.splice(i, 1)
       }
     }
@@ -410,7 +419,10 @@ export class SelectorFactory<S extends State = Record<string, unknown>, R = unkn
  * console.log(result) // 20
  * ```
  */
-export function createSelector<S extends State, R>(selectorFn: Selector<S, R>, options?: SelectorOptions): Selector<S, R> {
+export function createSelector<S extends State, R>(
+  selectorFn: Selector<S, R>,
+  options?: SelectorOptions,
+): Selector<S, R> & { factory: SelectorFactory<S, R> } {
   const factory = new SelectorFactory(selectorFn, options)
 
   // Object.assign 附加 factory 对象（用于测试和高级用法），避免 any 断言

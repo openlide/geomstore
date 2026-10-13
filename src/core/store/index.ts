@@ -10,7 +10,7 @@ export { Store, isGeomStore } from './Store.js'
 // 工厂函数
 export { createStore } from './factory.js'
 
-// 子模块导出（供高级用户使用）
+// 子模块导出（内部使用，仅供库内 / 测试）
 // 各类的构造参数类型一并再导出：本 barrel 是这些管理器在库内的集中出口，
 // 只出类不出选项类型会逼调用方再去深路径取类型，破坏「单一类型入口」的一致性
 // （注意本 barrel 不在 package.json exports 里，包外取不到；此处仅为内部一致性）

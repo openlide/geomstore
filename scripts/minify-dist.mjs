@@ -116,12 +116,14 @@ function collectJs(dir, acc = { files: [], jsLinks: [], dirLinks: [], otherLinks
     // 'link'：指向目录时内部可能藏着 js，指向 js 文件本身就是个没压缩的模块，
     // 两者都破坏「全部 js 已压缩」；statSync 失败即断链，跟着走也没有可压内容。
     let targetIsDir = false
+    let broken = false
     try {
       targetIsDir = fs.statSync(full).isDirectory()
     } catch {
-      targetIsDir = false
+      broken = true
     }
-    if (targetIsDir) acc.dirLinks.push(full)
+    if (broken) acc.otherLinks.push(full)
+    else if (targetIsDir) acc.dirLinks.push(full)
     else if (entry.name.endsWith('.js')) acc.jsLinks.push(full)
     else acc.otherLinks.push(full)
   }
@@ -210,19 +212,29 @@ const kb = (n) => `${(n / 1024).toFixed(1)} KB`
  * 「一次性」不等于原子：这仍是一串逐个执行的 writeFileSync，ENOSPC / EACCES /
  * 磁盘半路故障可能发生在中间某个文件上。所以每写成功一个就记下它的原文，
  * 一旦抛错就把**已经动过的**文件逐个还原回去，绝不让 dist 停在「一半已压缩」
- * 的状态（那正是文件头承诺不会出现的半成品）。只还原写成功的那些：写失败的那个
- * 内容根本没变，把它算进「必须手工恢复」会把一条干净的错误说成数据已损坏。
+ * 的状态（那正是文件头承诺不会出现的半成品）。写失败的那个也要还原：writeFileSync
+ * 以 'w' 模式打开文件会先截断，中途失败时文件已被截断/部分写入，不是「根本没变」。
  * 还原本身再失败时必须点名到文件：那时 dist 确实是混合状态，只能由人重跑构建。
  */
 function writeAll(outputs) {
   const written = []
+  let currentFile = null
+  let currentOriginal = null
   try {
     for (const { file, code, original } of outputs) {
+      currentFile = file
+      currentOriginal = original
       fs.writeFileSync(file, code)
       written.push({ file, original })
+      currentFile = null
+      currentOriginal = null
     }
   } catch (error) {
     const unrestored = []
+    // 正在写入的文件也可能被截断（writeFileSync 以 'w' 先截断再写），同样需要还原
+    if (currentFile !== null && currentOriginal !== null) {
+      written.push({ file: currentFile, original: currentOriginal })
+    }
     for (const { file, original } of written) {
       try {
         fs.writeFileSync(file, original)
@@ -378,22 +390,18 @@ async function main() {
     await minifyWithEsbuild(esbuild, files)
     console.log('[minify-dist] minifier: esbuild')
   } else {
-    const hint = '[minify-dist] no minifier found. Install one first, e.g. `pnpm add -D terser`.'
-    if (strict) {
-      console.error(`${hint}\n              --strict：发布链路要求必须压缩，已中止。`)
-      process.exitCode = 1
-    } else {
-      console.warn(`${hint}\n              SKIPPED：未压缩产物仍可正常发布；正式发布请用 build:release。`)
-    }
+    bailNothingToDo(strict, '[minify-dist] no minifier found. Install one first, e.g. `pnpm add -D terser`.')
     return
   }
 
   const after = files.reduce((sum, f) => sum + fs.statSync(f).size, 0)
   const saved = before - after
   // before 已在上面保证 > 0，这里不再可能出现 NaN
+  // saved 可能为负（极小文件压缩后反而变大），百分比符号前不硬编码 `-`，由 saved 的符号决定
+  const percent = ((saved / before) * 100).toFixed(1)
   console.log(
     `[minify-dist] ${files.length} js files: ${kb(before)} -> ${kb(after)} ` +
-      `(saved ${kb(saved)}, -${((saved / before) * 100).toFixed(1)}%)`,
+      `(saved ${kb(saved)}, ${percent}%)`,
   )
 }
 

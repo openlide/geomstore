@@ -194,7 +194,7 @@ export class MetricsCollector {
    *
    * 添加单个性能指标到采集器。
    *
-   * @param {PerformanceMetrics} metric - 单条性能指标（形参名与私有字段 `metrics` 区分，
+   * @param {PerformanceMetrics} metric - 单条性能指标（形参名用单数，
    *   复数命名会让调用方误以为可传数组）
    */
   collect(metric: PerformanceMetrics): void {
@@ -546,5 +546,5 @@ export class PerformanceAnalyzer {
   }
 }
 
-/** 默认导出 */
+/** 类型再导出 */
 export type { PerformanceMetrics, PerformanceStats } from '../../types/performance.js'

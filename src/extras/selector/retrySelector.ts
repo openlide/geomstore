@@ -152,25 +152,22 @@ const NO_ERROR = Symbol('noError')
  * 不再出现「falsy 被覆盖、truthy 被保留」的分裂判定（非数值无从比较，按未标注处理）。
  */
 function annotateAttempts(error: unknown, attempts: number): unknown {
-  // 选择器可以合法地 `throw 'boom'` / `throw 42`，或重抛冻结的 Error：
-  // 此时 defineProperty 抛 TypeError，会用标注失败顶替真正的原始错误
-  const annotatable = typeof error === 'object' && error !== null && Object.isExtensible(error)
-  if (annotatable) {
-    const existing = (error as { attempts?: unknown }).attempts
-    const previous = typeof existing === 'number' && Number.isFinite(existing) ? existing : 0
-    if (previous < attempts) {
-      try {
+  try {
+    const annotatable = typeof error === 'object' && error !== null && Object.isExtensible(error)
+    if (annotatable) {
+      const existing = (error as { attempts?: unknown }).attempts
+      const previous = typeof existing === 'number' && Number.isFinite(existing) ? existing : 0
+      if (previous < attempts) {
         Object.defineProperty(error, 'attempts', {
           value: attempts,
           enumerable: false,
           configurable: true,
           writable: true,
         })
-      } catch {
-        // attempts 可能是宿主/调用方留下的不可配置属性：标注只是排障附加信息，
-        // 失败不得掩盖原始错误
       }
     }
+  } catch {
+    // 读取（Proxy 陷阱 / 抛错的 getter）与写入任一环节失败，都不得掩盖原始错误
   }
   return error
 }

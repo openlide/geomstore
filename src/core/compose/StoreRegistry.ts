@@ -209,6 +209,12 @@ export class StoreRegistry {
    * ```
    */
   registerAll(stores: Record<string, Store>): void {
+    // 形状守卫：null/undefined 或非对象会让 Object.entries 抛裸 TypeError，
+    // 数组/Store 实例等会被当作条目枚举——在进入预校验前拦截
+    if (!stores || typeof stores !== 'object' || Array.isArray(stores)) {
+      throw new Error('[StoreRegistry] registerAll expects a record of stores')
+    }
+
     // 预校验：逐条 register 时首条非法会让之前的条目已注册、之后的被静默跳过，
     // 调用方无法得知注册表停在哪一半（Object.entries 顺序也不保证与入参语义一致）
     for (const [name, store] of Object.entries(stores)) {

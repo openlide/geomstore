@@ -12,7 +12,7 @@ import type { CloneContext, SnapshotError, SnapshotOptions, SnapshotStats } from
 // `isIndexKey` 的收敛（第六轮 f2-13）：三份同名私有谓词各写一遍，改一处就会漂移成
 // 「同一份数组在克隆引擎与快照引擎里的附加键归属不同」。`extras/action/decorators/cache.ts`
 // 那份属参数序列化域、与克隆键集无关，维持现状。
-import { isExactly, isIndexKey, isSlotBearingBuiltin } from '../../core/utils/clone.js'
+import { isExactly, isIndexKey, isSlotBearingBuiltin, ownEnumerableKeys } from '../../core/utils/clone.js'
 
 /**
  * 快照中止信号：onError 回调返回 false 时抛出。
@@ -339,7 +339,7 @@ export function clonePrelude(
 function copyOwnKey(
   value: object,
   cloned: object,
-  key: string,
+  key: string | symbol,
   context: CloneContext,
   options: Required<SnapshotOptions>,
   errors: SnapshotError[],
@@ -366,7 +366,7 @@ function copyOwnKey(
       sourceValue,
       {
         ...context,
-        path: `${context.path}.${key}`,
+        path: `${context.path}.${typeof key === 'symbol' ? key.toString() : key}`,
         depth: context.depth + 1,
         parent: value,
         key,
@@ -393,7 +393,7 @@ function copyOwnKey(
     handleCloneError(
       error,
       {
-        path: `${context.path}.${key}`,
+        path: `${context.path}.${typeof key === 'symbol' ? key.toString() : key}`,
         depth: context.depth,
         // 描述符可用时直接取 value：访问器描述符没有 value 字段、恒为 undefined，
         // 故无需再区分描述符种类；访问器 getter 已证明会抛错，不经 safeReadProperty
@@ -524,6 +524,8 @@ export function cloneDeep<T>(
             // 让含 Symbol 键的 Map 克隆直接失败并越过 onError 降级契约
             path: `${context.path}[${String(k)}]`,
             depth: context.depth + 1,
+            parent: value,
+            key: k,
           },
           options,
           errors,
@@ -555,6 +557,8 @@ export function cloneDeep<T>(
             ...context,
             path: `${context.path}[${index}]`,
             depth: context.depth + 1,
+            parent: value,
+            key: index,
           },
           options,
           errors,
@@ -603,6 +607,12 @@ export function cloneDeep<T>(
           cloned[i] = clonedItem
         }
       }
+      // 被丢弃的元素（SKIP_CLONE_NODE）不写对应下标，尾部丢弃会让 cloned.length 比源短，
+      // 中段丢弃会留稀疏洞——compareSnapshots 的数组分支会把长度差读成 [removed:i] 变更。
+      // 统一把长度对齐到源：中段洞填 undefined（JSON 序列化为 null，与丢弃语义一致）
+      if (cloned.length !== value.length) {
+        cloned.length = value.length
+      }
 
       // 补一趟非下标的自有键（`arr.meta = 'v2'`、`arr.version = 3`）：只按下标克隆会让这类键
       // 整体丢失，而它们正是 deepEqual 数组分支比对的键集（length + Object.keys），后果是
@@ -642,9 +652,11 @@ export function cloneDeep<T>(
 
   // keys 计算纳入 try：Proxy 的 ownKeys/getOwnPropertyDescriptor 陷阱抛错时
   // 走 onError 降级，而非冲出整个快照
-  let keys: string[]
+  let keys: Array<string | symbol>
   try {
-    keys = options.includeNonEnumerable ? Object.getOwnPropertyNames(value) : Object.keys(value)
+    keys = options.includeNonEnumerable
+      ? [...Object.getOwnPropertyNames(value), ...Object.getOwnPropertySymbols(value)]
+      : ownEnumerableKeys(value)
   } catch (error) {
     // 中止信号在 handleCloneError 内原样上抛：这是用户在更深层做出的决定，
     // 二次咨询 onError 会把「中止」被中途改答降级为静默丢子树且快照仍标记成功

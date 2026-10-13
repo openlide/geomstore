@@ -112,9 +112,11 @@ describe('analyzer 插件 onError 清理计时栈', () => {
     expect(debugSpy).toHaveBeenCalledWith(expect.stringContaining('dispatch 的未完成配对计时已达上限 1000'))
     debugSpy.mockClear()
 
-    // 淘汰取栈底，栈顶仍是最近一次开帧：afterDispatch 与之配对，指标不缺位
+    // 上限已满时拒绝新入栈（而非淘汰栈底）：栈底可能是活跃帧，shift 会让它的 end 丢失，
+    // 后续 pop 弹出错误条目导致 span 错配。aborted-1000 未入栈，afterDispatch 弹出的是
+    // aborted-999 的 end，指标记为 aborted-999
     hooks.emit('afterDispatch', 'aborted-1000', [], undefined)
-    expect(monitor.getMetrics().map((m: { operation: string }) => m.operation)).toEqual(['dispatch:aborted-1000'])
+    expect(monitor.getMetrics().map((m: { operation: string }) => m.operation)).toEqual(['dispatch:aborted-999'])
     expect(debugSpy).not.toHaveBeenCalled()
 
     debugSpy.mockRestore()

@@ -26,6 +26,49 @@ function builtinTagOf(value: object): string {
 const BUILTIN_TAGS = new Set(['Date', 'RegExp', 'Map', 'Set', 'WeakMap', 'WeakSet'])
 
 /**
+ * 内部槽位探针：`Symbol.toStringTag` 可被任意用户对象伪造（`{ [Symbol.toStringTag]: 'Map' }`），
+ * 仅信标签会让这类对象 escape 写保护。对标签命中的值用原型方法探测内部槽位：
+ * 真正的内建实例探测成功返回 true，伪造对象会抛 TypeError（incompatible receiver）返回 false。
+ * 探测结果按标签缓存到原型上——同一原型的探测结果不变，避免每次判定都走 try/catch。
+ */
+const slotVerifiedProtos = new Set<object>()
+const slotRejectedTags = new Set<string>()
+function hasInternalSlot(value: object, tag: string): boolean {
+  const proto = Object.getPrototypeOf(value)
+  if (proto !== null && slotVerifiedProtos.has(proto)) return true
+  if (slotRejectedTags.has(tag)) return false
+  try {
+    switch (tag) {
+      case 'Date':
+        Date.prototype.getTime.call(value)
+        break
+      case 'RegExp':
+        void (value as RegExp).source
+        break
+      case 'Map':
+        Map.prototype.has.call(value, undefined)
+        break
+      case 'Set':
+        Set.prototype.has.call(value, undefined)
+        break
+      case 'WeakMap':
+        WeakMap.prototype.has.call(value, {} as object)
+        break
+      case 'WeakSet':
+        WeakSet.prototype.has.call(value, {} as object)
+        break
+      default:
+        return false
+    }
+    if (proto !== null) slotVerifiedProtos.add(proto)
+    return true
+  } catch {
+    slotRejectedTags.add(tag)
+    return false
+  }
+}
+
+/**
  * 内建对象判定：这些对象经 Proxy 包装后内部槽位语义被破坏——
  * Map/Set 的写操作（set/add/delete）走内部槽位、不触发 set 陷阱，写保护失效；
  * 且 Proxy 无法被 structuredClone 等序列化机制克隆。故不代理，直接返回原始引用。
@@ -38,15 +81,18 @@ const BUILTIN_TAGS = new Set(['Date', 'RegExp', 'Map', 'Set', 'WeakMap', 'WeakSe
  * 仍被判为内建（只看标签会把这类 Map 子类改成代理，反而制造上面那条 receiver 抛错）。
  */
 export function isBuiltinObject(value: object): boolean {
-  return (
+  if (
     value instanceof Date ||
     value instanceof RegExp ||
     value instanceof Map ||
     value instanceof Set ||
     value instanceof WeakMap ||
-    value instanceof WeakSet ||
-    BUILTIN_TAGS.has(builtinTagOf(value))
-  )
+    value instanceof WeakSet
+  ) {
+    return true
+  }
+  const tag = builtinTagOf(value)
+  return BUILTIN_TAGS.has(tag) && hasInternalSlot(value, tag)
 }
 
 /**
@@ -65,7 +111,10 @@ function collectionKindOf(value: object): 'Map' | 'Set' | undefined {
     return 'Set'
   }
   const tag = builtinTagOf(value)
-  return tag === 'Map' || tag === 'Set' ? tag : undefined
+  if ((tag === 'Map' || tag === 'Set') && hasInternalSlot(value, tag)) {
+    return tag
+  }
+  return undefined
 }
 
 /** 跨 realm 成立的 Map 判定（供类型收窄用，见 collectionKindOf） */
@@ -221,6 +270,12 @@ export class StateProxyManager<S extends State = State> {
 
         // 非对象或 null：函数可能是非普通实例的方法，需绑定原始接收者后返回
         if (typeof value !== 'object' || value === null) {
+          if (typeof value === 'function') {
+            const descriptor = Object.getOwnPropertyDescriptor(obj, key)
+            if (descriptor && !descriptor.configurable && 'value' in descriptor && !descriptor.writable) {
+              return descriptor.value
+            }
+          }
           return self._bindMethod(obj, key, value)
         }
 

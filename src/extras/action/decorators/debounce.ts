@@ -50,9 +50,12 @@ interface DebounceState {
   /**
    * 与上面两个队列一一对应的挂起 Promise
    *
-   * 只服务取消路径：`cancelDebouncedCalls` 要以「已取消」结算它们，而结算前必须先给
-   * 每个 promise 补一个 catch 处理器，否则卸载点上 fire-and-forget 的调用会变成
-   * unhandledRejection（见 `cancelPendingCalls` 的注释）。
+   * 服务两条路径：
+   * 1. 取消路径：`cancelDebouncedCalls` 要以「已取消」结算它们，结算前必须先给每个
+   *    promise 补一个 catch 处理器，否则卸载点上 fire-and-forget 的调用会变成
+   *    unhandledRejection（见 `cancelPendingCalls` 的注释）
+   * 2. 失败路径：`runPendingCalls` 的 catch 块同样遍历该队列补 catch 处理器，
+   *    防止到期/flush 时原方法失败导致的 unhandledRejection
    */
   pendingPromises: Array<Promise<unknown>>
   pendingArgs: unknown[]

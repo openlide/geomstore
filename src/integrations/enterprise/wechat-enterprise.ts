@@ -239,8 +239,21 @@ export function createEnterpriseApp(config: EnterpriseAppConfig = {}) {
     login(userId: string) {
       // 身份持久化由 switchUser 统一完成，此处不再重复写 CURRENT_USER_KEY：
       // 两处写入时任一侧改动都会让内存身份与 storage 身份分叉
+      // 与冷启动同口径校验 userId：createUserStore 入口对空/非字符串会抛错，
+      // 此处先拦截可让 login 的失败模式与冷启动一致（抛错前不污染 globalData）
+      if (!isValidUserId(userId)) {
+        throw new Error('login: userId 必须是非空字符串')
+      }
       const previousStore = this.globalData.store
-      const newStore = storeManager.switchUser(userId)
+      let newStore: Store<UserState>
+      try {
+        newStore = storeManager.switchUser(userId)
+      } catch (error) {
+        // switchUser 抛错（store 创建、插件安装、LRU 淘汰既有账号时 destroy/订阅者抛错）：
+        // 与冷启动同口径保留身份待下次重试，但 login 是显式调用，错误必须透传给调用方
+        logger.error('App', 'login 切换身份失败:', error)
+        throw error
+      }
       this.globalData.store = newStore
 
       // 账号切换：注销旧 Store 的后台同步处理器，为新 Store 重新注册
@@ -256,7 +269,16 @@ export function createEnterpriseApp(config: EnterpriseAppConfig = {}) {
       }
 
       // 重新初始化离线管理器：先释放旧实例的网络监听，防止泄漏
+      // 账号切换时与 logout 同口径清理离线队列与死信：队列键按 store name 派生，
+      // 不清理会留下旧账号的 payload（可能含 PII），且切回时 loadQueue 会重放非幂等操作
+      if (previousStore && previousStore !== newStore) {
+        offlineManager?.clearQueue()
+        offlineManager?.clearDeadLetters()
+      }
       offlineManager?.dispose()
+      // 重置同步标记：旧实例的在途同步可能尚未结束（.finally 未执行），
+      // 不重置会让新会话的 onShow 误判为「仍有同步在跑」并跳过队列同步
+      syncInFlight = false
       offlineManager = new SyncAwareOfflineManager(newStore)
       this.globalData.offlineManager = offlineManager
 
@@ -281,6 +303,8 @@ export function createEnterpriseApp(config: EnterpriseAppConfig = {}) {
       offlineManager?.clearQueue()
       offlineManager?.clearDeadLetters()
       offlineManager?.dispose()
+      // 重置同步标记：与 login 同口径，避免旧实例的在途同步影响下次会话
+      syncInFlight = false
       storeManager.logout()
       this.globalData.store = null
       this.globalData.offlineManager = null

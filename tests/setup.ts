@@ -60,43 +60,74 @@ const mockGetStorageSync = jest.fn(defaultStorageImpl.getStorageSync)
 const mockRemoveStorageSync = jest.fn(defaultStorageImpl.removeStorageSync)
 const mockClearStorageSync = jest.fn(defaultStorageImpl.clearStorageSync)
 
-// Mock 微信小程序 API
-g.wx = {
-  // 与真机一致：默认立即回调 success（statusCode 200 / 空 data），用例可自行覆盖 fail 分支
-  request: jest.fn((options: { success?: (res: { statusCode: number; data: unknown; errMsg: string }) => void } = {}) => {
-    options?.success?.({ statusCode: 200, data: {}, errMsg: 'request:ok' })
-  }),
-  setStorageSync: mockSetStorageSync,
-  getStorageSync: mockGetStorageSync,
-  removeStorageSync: mockRemoveStorageSync,
-  clearStorageSync: mockClearStorageSync,
-  showToast: jest.fn(),
-  hideToast: jest.fn(),
-  showLoading: jest.fn(),
-  hideLoading: jest.fn(),
-  createSelectorQuery: jest.fn(() => ({
-    select: jest.fn().mockReturnThis(),
-    selectAll: jest.fn().mockReturnThis(),
-    selectViewport: jest.fn().mockReturnThis(),
-    exec: jest.fn().mockResolvedValue([]),
-  })),
-  // 形参显式标注：真机 `wx.nextTick(callback)` 的回调无入参，隐式 any 会让
-  // 「传了参数的调用点」在这里静默通过。
-  // 排期仍用真实 setTimeout（此处不预装 fake timers），用例自行 useFakeTimers 后
-  // 需要手动推进时钟；未推进的残留回调由文件末尾的全局 afterEach clearAllTimers 丢弃
-  nextTick: jest.fn((callback: () => void) => setTimeout(callback, 0)),
-  // 高精度计时（模拟小程序 wx.getPerformance，底层复用 Node 的 performance.now）
-  getPerformance: jest.fn(() => ({ now: () => (typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now()) })),
-}
-
-// Mock 微信小程序环境
+// Mock 微信小程序环境（在 installDefaultMocks 之前声明，供函数引用）
 const mockPage = jest.fn()
 const mockComponent = jest.fn()
-
-// Mock getApp函数
 const mockGetApp = jest.fn(() => ({
   globalData: {},
 }))
+
+// 安装默认 mock：初始化与 afterEach 复用同一份，确保 jest.clearAllMocks() 后
+// 所有 mock（不止存储四件套）的实现都被重置，覆盖型用例不会泄漏到后续用例。
+// 注意：只重置我们创建的 mock 函数的实现，不覆盖测试文件自定义的 mock（如 enterprise.test.ts 的 mockStorage-backed wx）
+function installDefaultMocks(): void {
+  if (!g.wx) {
+    g.wx = {}
+  }
+  // 存储四件套：如果测试文件没有替换，就确保它们存在并重置实现；如果测试文件替换了，就不触碰
+  if (!g.wx.setStorageSync) {
+    g.wx.setStorageSync = mockSetStorageSync
+  } else if (g.wx.setStorageSync === mockSetStorageSync) {
+    mockSetStorageSync.mockImplementation(defaultStorageImpl.setStorageSync)
+  }
+  if (!g.wx.getStorageSync) {
+    g.wx.getStorageSync = mockGetStorageSync
+  } else if (g.wx.getStorageSync === mockGetStorageSync) {
+    mockGetStorageSync.mockImplementation(defaultStorageImpl.getStorageSync)
+  }
+  if (!g.wx.removeStorageSync) {
+    g.wx.removeStorageSync = mockRemoveStorageSync
+  } else if (g.wx.removeStorageSync === mockRemoveStorageSync) {
+    mockRemoveStorageSync.mockImplementation(defaultStorageImpl.removeStorageSync)
+  }
+  if (!g.wx.clearStorageSync) {
+    g.wx.clearStorageSync = mockClearStorageSync
+  } else if (g.wx.clearStorageSync === mockClearStorageSync) {
+    mockClearStorageSync.mockImplementation(defaultStorageImpl.clearStorageSync)
+  }
+  
+  // 其余 wx API 如果不存在就创建，如果存在且是我们的 mock 就重置实现
+  if (!g.wx.request) {
+    g.wx.request = jest.fn((options: { success?: (res: { statusCode: number; data: unknown; errMsg: string }) => void } = {}) => {
+      options?.success?.({ statusCode: 200, data: {}, errMsg: 'request:ok' })
+    })
+  }
+  if (!g.wx.showToast) g.wx.showToast = jest.fn()
+  if (!g.wx.hideToast) g.wx.hideToast = jest.fn()
+  if (!g.wx.showLoading) g.wx.showLoading = jest.fn()
+  if (!g.wx.hideLoading) g.wx.hideLoading = jest.fn()
+  if (!g.wx.createSelectorQuery) {
+    g.wx.createSelectorQuery = jest.fn(() => ({
+      select: jest.fn().mockReturnThis(),
+      selectAll: jest.fn().mockReturnThis(),
+      selectViewport: jest.fn().mockReturnThis(),
+      exec: jest.fn().mockResolvedValue([]),
+    }))
+  }
+  if (!g.wx.nextTick) {
+    g.wx.nextTick = jest.fn((callback: () => void) => setTimeout(callback, 0))
+  }
+  if (!g.wx.getPerformance) {
+    g.wx.getPerformance = jest.fn(() => ({ now: () => (typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now()) }))
+  }
+
+  mockPage.mockImplementation(() => undefined)
+  mockComponent.mockImplementation(() => undefined)
+  mockGetApp.mockImplementation(() => ({ globalData: {} }))
+}
+
+// Mock 微信小程序 API（首次安装）
+installDefaultMocks()
 
 g.Page = mockPage
 g.Component = mockComponent
@@ -122,10 +153,10 @@ afterEach(() => {
   jest.useRealTimers()
   storage.clear()
   jest.clearAllMocks()
-  mockSetStorageSync.mockImplementation(defaultStorageImpl.setStorageSync)
-  mockGetStorageSync.mockImplementation(defaultStorageImpl.getStorageSync)
-  mockRemoveStorageSync.mockImplementation(defaultStorageImpl.removeStorageSync)
-  mockClearStorageSync.mockImplementation(defaultStorageImpl.clearStorageSync)
+  // jest.clearAllMocks() 只清调用历史、不清 mockImplementation，
+  // 覆盖型用例（模拟读失败、替换 wx.request 等）会泄漏到后续用例，
+  // 故此处重新安装全部默认 mock（不止存储四件套）
+  installDefaultMocks()
 })
 
 // 错误处理：交给 Jest 自带的 unhandledRejection / uncaughtException 处理。
@@ -136,9 +167,13 @@ afterEach(() => {
 // `MaxListenersExceededWarning` 与永久泄漏的 handler。自行抛错只是把同一份职责抄一遍，
 // 故直接删除：Node 默认 `--unhandled-rejections=throw`，Jest 会把这类错误报成用例失败。
 
-console.log('[Test Setup] Environment initialized')
-console.log('[Test Setup] Node version:', process.version)
-console.log('[Test Setup] Platform:', process.platform)
+// 诊断日志按 DEBUG 环境变量开启：setupFilesAfterEnv 让每个测试文件都执行一次，
+// 无条件 console.log 会污染 Jest 输出与 CI 日志。需要排查环境问题时设 DEBUG=test-setup 即可
+if (process.env.DEBUG === 'test-setup') {
+  console.log('[Test Setup] Environment initialized')
+  console.log('[Test Setup] Node version:', process.version)
+  console.log('[Test Setup] Platform:', process.platform)
+}
 
 // 定义 __DEV__ 全局常量（用于 isProduction 检测）
 g.__DEV__ = process.env.NODE_ENV !== 'production'

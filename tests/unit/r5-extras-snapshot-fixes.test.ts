@@ -358,7 +358,7 @@ describe('R5-260 非有限延时不得交给 setTimeout', () => {
 
     expect(result.success).toBe(true)
     expect(result.errors.map((e) => e.type)).not.toContain('timeout')
-    expect(result.metadata.nodeCount).toBe(401)
+    expect(result.metadata.nodeCount).toBe(801)
     const delays = spy.mock.calls.map((call) => call[1])
     expect(delays.some((delay) => !Number.isFinite(delay))).toBe(false)
     spy.mockRestore()

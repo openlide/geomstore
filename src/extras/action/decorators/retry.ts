@@ -87,10 +87,17 @@ export function withRetry(options: RetryDecoratorOptions = {}): MethodDecorator 
 
     const originalMethod = descriptor.value as (...args: unknown[]) => unknown
 
-    descriptor.value = async function (this: unknown, ...args: unknown[]) {
+    const wrapper = async function (this: unknown, ...args: unknown[]) {
       // 复用公共内核，与 AsyncActionSupport.executeWithRetry 同一实现，避免退避语义漂移
       return retryWithBackoff(async () => await originalMethod.apply(this, args), { retries, delay, shouldRetry })
     }
+
+    // 保留原方法的 name/length：装饰器换实现时这两项元信息默认丢失，
+    // 依赖 arity 或函数名的调用方（框架、日志、反射式装饰）会看到错误签名
+    Object.defineProperty(wrapper, 'name', { value: originalMethod.name, configurable: true })
+    Object.defineProperty(wrapper, 'length', { value: originalMethod.length, configurable: true })
+
+    descriptor.value = wrapper
 
     return descriptor
   }

@@ -32,11 +32,15 @@ const ELIDED_PLACEHOLDER = '[details omitted]'
  * 依据只能是「被抛的值里本来就不放凭证」。
  */
 function describeThrownObject(value: object): string {
+  const SENSITIVE_KEYS = new Set(['token', 'password', 'secret', 'authorization', 'cookie', 'apikey', 'api_key', 'access_token', 'refresh_token', 'session', 'credential'])
   const projection: Record<string, unknown> = Object.create(null) as Record<string, unknown>
   for (const key of Object.keys(value)) {
     const descriptor = Object.getOwnPropertyDescriptor(value, key)
-    // 只取数据描述符：读访问器属性本身就是执行用户代码
     if (descriptor === undefined || !('value' in descriptor)) {
+      continue
+    }
+    if (SENSITIVE_KEYS.has(key.toLowerCase())) {
+      projection[key] = ELIDED_PLACEHOLDER
       continue
     }
     const field: unknown = descriptor.value
@@ -241,8 +245,8 @@ export async function retryWithBackoff<T>(fn: () => Promise<T>, options: RetryOp
  * @param promise - 被竞速的 Promise
  * @param timeout - 超时时间（毫秒，必须为大于 0 的有限数值）
  * @param timeoutMessage - 超时错误消息（仅用于展示，识别请用 {@link TIMEOUT_ERROR_CODE}）
- * @returns 原 Promise 的结果；超时则抛出错错误
- * @throws {RangeError} timeout 为非有限值或 <= 0
+ * @returns 原 Promise 的结果；超时则以 timeoutMessage 对应的错误拒绝
+ * @returns rejected with RangeError timeout 为非有限值或 <= 0 时
  *
  * @remarks 不可取消：超时只是让本函数提前 reject，`promise` 仍会在后台继续执行到结束；
  * 需要真正中断请在 `promise` 内部实现 AbortController 等取消机制。

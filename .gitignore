@@ -60,3 +60,4 @@ coverage-report.json
 .env.*
 !.env.example
 
+.ocr-fix/

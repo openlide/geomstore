@@ -83,7 +83,9 @@ export class StoreManager {
     // （createEnterpriseApp）也只读该键恢复身份。此前持久化只发生在示例 login
     // 路径里，StoreManager 的直接调用方换号后 storage 仍指向上一个账号，
     // 下次冷启动恢复错误身份。getUserStore 的只读预览不写此键（不改身份）
-    storage.set(CURRENT_USER_KEY, userId)
+    if (!storage.set(CURRENT_USER_KEY, userId)) {
+      logger.error('StoreManager', `身份键写入未被平台接受，冷启动可能恢复上一个账号: ${userId}`)
+    }
     logger.log('StoreManager', `切换到用户: ${userId}`)
     return newStore
   }
@@ -157,7 +159,13 @@ export class StoreManager {
    * 请在调用后自行 `storage.set(CURRENT_USER_KEY, userId)` 写回
    */
   clearAll(): void {
-    this.stores.forEach((store) => store.destroy())
+    this.stores.forEach((store) => {
+      try {
+        store.destroy()
+      } catch (error) {
+        logger.error('StoreManager', '销毁 store 失败，继续清理其余实例', error)
+      }
+    })
     this.stores.clear()
     this.currentUserId = null
     if (!storage.remove(CURRENT_USER_KEY)) {

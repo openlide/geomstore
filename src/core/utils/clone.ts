@@ -232,7 +232,7 @@ function fallbackClone<T>(value: T, seen?: WeakMap<object, unknown>): T {
     // 键集取 ownEnumerableKeys 而非 Object.keys：符号键同样是「非下标自有键」，
     // 漏掉它会让写进去的符号值在可写订阅者的载荷里凭空消失
     for (const key of ownEnumerableKeys(value as object)) {
-      if (typeof key === 'string' && !isIndexKey(key)) {
+      if (typeof key === 'symbol' || !isIndexKey(key)) {
         assignOwn(arr, key, fallbackClone((value as Record<PropertyKey, unknown>)[key], visited))
       }
     }

@@ -199,13 +199,14 @@ function installAnalyzer(store: Store, options: PerformanceOptions): (() => void
       stack = []
       pendingEnds.set(key, stack)
     }
-    stack.push(end)
-    if (stack.length > MAX_PENDING_DEPTH) {
-      // 出声解释这批操作为何在指标里查无此处（与 PerformanceMonitor 计时条目缺失时的
-      // console.debug 同口径）：静默淘汰会让监控数据的缺口无从解释
-      console.debug(`[GeomStore][analyzer] ${key} 的未完成配对计时已达上限 ${MAX_PENDING_DEPTH}，淘汰最早一条（该次操作不产出指标）`)
-      stack.shift()
+    if (stack.length >= MAX_PENDING_DEPTH) {
+      // 上限已满：拒绝入栈而非淘汰栈底。栈底可能是仍在等待 after 钩子的活跃帧，
+      // shift 会让它的 end 被丢弃，后续 pop 弹出错误条目导致 span 错配。
+      // 拒绝最新的入栈请求更安全：它是「重试风暴」中最新被中止的操作，丢弃它不影响已有配对
+      console.debug(`[GeomStore][analyzer] ${key} 的未完成配对计时已达上限 ${MAX_PENDING_DEPTH}，拒绝新入栈（该次操作不产出指标）`)
+      return
     }
+    stack.push(end)
   }
 
   const popEnd = (key: string): void => {

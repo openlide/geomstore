@@ -132,22 +132,22 @@ export function registerGlobalEntry(globalKey: string, storeName: string, api: u
   claimOwner(globalKey, storeName, token)
 
   return () => {
-    // 后一次注册已接管该键位：本次卸载不得再动条目
     if (!releaseOwner(globalKey, storeName, token)) {
       return
     }
-    const current = g[globalKey]
-    // 只删本次注册留下的自有条目：引用比对对原始值 api 会退化成值比较，
-    // 加自有属性判定，避免沿原型链命中同名成员后误删/删不掉
-    if (current && Object.prototype.hasOwnProperty.call(current, storeName) && current[storeName] === api) {
-      delete current[storeName]
-      // 表内已无条目时连容器一起摘掉（#365）：留着空表会让 globalThis 长期挂着
-      // 本库的键位，外部读到空对象也分不清「没有插件活跃」还是「有插件但无 store」。
-      // 必须先认 identity：条目也可能是外部在这之后换上的另一个对象，
-      // 只看「空了」就会把别人正挂着的表从 globalThis 上删掉
-      if (current === table && Object.keys(current).length === 0) {
-        delete g[globalKey]
+    // 卸载路径必须 fail-safe：注册路径全程 try/catch 降级为 no-op，卸载也得同口径。
+    // 严格模式下 delete 不可配置属性会抛 TypeError（外部 freeze 了容器、或 globalKey
+    // 被定义为不可配置数据属性），冒泡出去会违背「幂等、绝不抛错」的卸载承诺
+    try {
+      const current = g[globalKey]
+      if (current && Object.prototype.hasOwnProperty.call(current, storeName) && current[storeName] === api) {
+        delete current[storeName]
+        if (current === table && Object.keys(current).length === 0) {
+          delete g[globalKey]
+        }
       }
+    } catch {
+      // 容器被 freeze / 属性不可配置：卸载无法清理注册表条目，但不影响功能正确性
     }
   }
 }

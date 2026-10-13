@@ -472,8 +472,13 @@ export class OfflineManager<S extends State = State> {
     // 此刻覆写会把盘上旧操作整体抹掉。拒绝写入并告警，等存储恢复后的
     // 一次成功读取（loadQueue 会摘除 unreadableKeys）再恢复正常落盘
     if (this.unreadableKeys.has(this.queueKey)) {
-      logger.warn('OfflineManager', `离线队列读取失败过，拒绝覆写磁盘队列（旧操作保留在盘上）: ${this.queueKey}`)
-      return false
+      // 自愈：构造时的一次瞬时故障不应永久禁用落盘。重读一次，成功则摘除标记继续写入
+      const retry = this.readStorageKey(this.queueKey)
+      if (!retry.ok) {
+        logger.warn('OfflineManager', `离线队列读取失败过且重读仍失败，拒绝覆写磁盘队列（旧操作保留在盘上）: ${this.queueKey}`)
+        return false
+      }
+      this.unreadableKeys.delete(this.queueKey)
     }
     const view = this.syncing ? [...this.syncFailed, ...this.syncPending.slice(this.syncNextIndex), ...this.actionQueue] : this.actionQueue
     return storage.set(this.queueKey, view)
@@ -491,6 +496,12 @@ export class OfflineManager<S extends State = State> {
       return false
     }
     const deadLetters = this.getDeadLetters()
+    // getDeadLetters 自身可能刚把该键标记为不可读（首次读失败即返回空表），
+    // 必须在此复检：否则会把盘上旧死信整体覆写成「仅含本条」的队列
+    if (this.unreadableKeys.has(this.deadLetterKey)) {
+      logger.warn('OfflineManager', `死信队列读取失败过，拒绝覆写磁盘死信（操作保留在离线队列）: ${this.deadLetterKey}`)
+      return false
+    }
     deadLetters.push(action)
     // 超限时淘汰最旧条目，保护 storage 容量。
     // 被淘汰的是「同步失败且业务层尚未处理」的操作——正是本模块要防的静默丢失，

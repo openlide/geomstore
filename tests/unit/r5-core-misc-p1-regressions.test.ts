@@ -199,18 +199,20 @@ describe('R5 core-misc-p1 · compose/merge', () => {
   it('R5-107: 两个不同实例共用名字时的静默覆盖必须告警（按名字比较会把它抑制掉）', () => {
     const first = fakeChild('a', { shared: 1 })
     const twin = fakeChild('a', { shared: 2 })
-    const warned = new Set<string>()
+    const warned = new Map<string, Set<string>>()
 
     const merged = mergeStateMaps([first, twin], pickState, warned)
 
     expect(merged.shared).toBe(2)
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('State key "shared" exists in multiple stores (a, a)'))
-    expect([...warned]).toEqual(['shared(a,a)'])
+    // warned 现在按 state key 分组，内层 Set 按 store 配对去重
+    expect([...warned.keys()]).toEqual(['shared'])
+    expect([...warned.get('shared')!]).toEqual(['a|a'])
   })
 
   it('R5-107: 同一实例被重复列入 stores 不产生覆盖，不告警', () => {
     const only = fakeChild('a', { shared: 1 })
-    const warned = new Set<string>()
+    const warned = new Map<string, Set<string>>()
 
     const merged = mergeStateMaps([only, only], pickState, warned)
 
@@ -223,11 +225,13 @@ describe('R5 core-misc-p1 · compose/merge', () => {
     const a = fakeChild('s1', { k: 1 })
     const b = fakeChild('s2', { k: 2 })
     const c = fakeChild('s3', { k: 3 })
-    const warned = new Set<string>()
+    const warned = new Map<string, Set<string>>()
 
     mergeStateMaps([a, b, c], pickState, warned)
 
-    expect([...warned]).toEqual(['k(s1,s2)', 'k(s2,s3)'])
+    // warned 按 state key 分组，'k' 键下有两对冲突：(s1,s2) 与 (s2,s3)
+    expect([...warned.keys()]).toEqual(['k'])
+    expect([...warned.get('k')!].sort()).toEqual(['s1|s2', 's2|s3'])
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('(s2, s3)'))
   })
 

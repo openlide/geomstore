@@ -49,6 +49,113 @@ export interface AsyncCloneTask {
 }
 
 /**
+ * 异步模式单键克隆（数组附加键 / 普通对象属性共用）
+ *
+ * 从 processNodeAsync 的属性循环拆出：数组附加键循环（extraKeys）与普通对象属性循环（keys）
+ * 的逻辑逐字一致——读描述符、判访问器、归一化标志、对象值入队 / 原语值直接写入、错误落账。
+ * 两条路径此前各写一份（约 35 行），改一处必须改另一处，拆出后只留一份口径。
+ *
+ * @param source 源容器（数组或普通对象）
+ * @param cloned 目标容器（已创建外壳）
+ * @param key 要克隆的属性键
+ * @param context 克隆上下文
+ * @param options 快照选项
+ * @param errors 错误账本
+ * @param stats 统计账本
+ * @param counters 节点计数器
+ * @param enqueue 任务入队回调
+ */
+function copyOwnKeyAsync(
+  source: Record<string, unknown>,
+  cloned: Record<string, unknown>,
+  key: string,
+  context: CloneContext,
+  options: Required<AsyncSnapshotOptions>,
+  errors: SnapshotError[],
+  stats: SnapshotStats,
+  counters: { nodeCount: number; maxDepthReached: number; estimatedSize: number; hasCircular: boolean },
+  enqueue: (task: AsyncCloneTask) => void,
+): void {
+  let descriptor: PropertyDescriptor | undefined
+  try {
+    descriptor = Object.getOwnPropertyDescriptor(source, key)
+    if (!descriptor) {
+      return
+    }
+
+    // 访问器属性：以 getter 求值结果克隆为数据属性（与同步路径同语义）。
+    // 调用描述符里捕获的 getter 而非回读 `source[key]`——后者在 Proxy 上会重跑 `get`
+    // 陷阱，取值可与刚拿到的描述符不是同一件事；只有 setter 的访问器无值可读，
+    // 落为 undefined 并还原成可写数据属性（理由见 clone.ts 的属性循环注释）
+    const isAccessor = descriptor.get !== undefined || descriptor.set !== undefined
+    const sourceValue = isAccessor ? (descriptor.get ? descriptor.get.call(source) : undefined) : descriptor.value
+    // 与同步路径共用同一归一化口径（见 clone.ts 的 normalizeDescriptorFlags）：
+    // 此前异步用 `=== true`、同步传原始值，同一份数据在两条路径会产出不同描述符。
+    // 三个标志一律从这一个对象取（含下方的原语分支）——直接从 descriptor 读会把
+    // 刚归一化的结果又绕开，重新造出两套方言
+    const descriptorFlags = normalizeDescriptorFlags(descriptor, isAccessor)
+
+    if (sourceValue !== null && typeof sourceValue === 'object') {
+      // 占位属性必须可写可配置：源属性可能不可写，占位若继承该标志，
+      // 严格模式下的填充赋值会抛 TypeError 中断整个队列；
+      // 源描述符随任务携带，填充时经 defineProperty 还原真实标志
+      Object.defineProperty(cloned, key, {
+        value: undefined,
+        writable: true,
+        enumerable: descriptorFlags.enumerable,
+        configurable: true,
+      })
+
+      enqueue({
+        value: sourceValue,
+        context: {
+          ...context,
+          path: `${context.path}.${key}`,
+          depth: context.depth + 1,
+          parent: source,
+          key,
+        },
+        target: {
+          kind: 'prop',
+          container: cloned,
+          key,
+          descriptor: {
+            writable: descriptorFlags.writable,
+            enumerable: descriptorFlags.enumerable,
+            configurable: descriptorFlags.configurable,
+          },
+        },
+      })
+    } else {
+      // 原始值同样走 clonePrelude 计数：同步路径的 copyOwnKey 经 cloneDeep 对每个属性
+      // 都跑一遍 prelude（含原始值），异步必须同口径，否则 nodeCount/estimatedSize 会偏低
+      clonePrelude(sourceValue, { ...context, path: `${context.path}.${key}`, depth: context.depth + 1 }, options.maxDepth, options, errors, stats, counters)
+      Object.defineProperty(cloned, key, {
+        value: sourceValue,
+        ...descriptorFlags,
+      })
+    }
+  } catch (error) {
+    // 与同步路径共用 handleCloneError：中止信号原样上抛，其余按 cloneError 落账并咨询 onError
+    handleCloneError(
+      error,
+      {
+        path: `${context.path}.${key}`,
+        depth: context.depth,
+        // 描述符可用时直接取 value：访问器描述符没有 value 字段、恒为 undefined，
+        // 与原「识别访问器后显式返回 undefined」等价，故无需再区分描述符种类；
+        // 访问器 getter 已证明会抛错，不经 safeReadProperty 二次触发；
+        // 仅当描述符不可得（查询本身抛错）时才兜底读取
+        value: descriptor ? descriptor.value : safeReadProperty(source, key),
+      },
+      options,
+      errors,
+      stats,
+    )
+  }
+}
+
+/**
  * 异步模式单节点克隆
  *
  * @returns 该节点的克隆结果；`SKIP_CLONE_NODE` 表示按 onError 语义丢弃该节点
@@ -223,6 +330,8 @@ export function processNodeAsync(
             target: { kind: 'index', container: cloned, key: i },
           })
         } else {
+          // 原始值同样走 clonePrelude 计数（理由见对象属性分支）
+          clonePrelude(item, { ...context, path: `${context.path}[${i}]`, depth: context.depth + 1 }, options.maxDepth, options, errors, stats, counters)
           cloned[i] = item
         }
       }
@@ -242,63 +351,7 @@ export function processNodeAsync(
       }
 
       for (const key of extraKeys) {
-        let descriptor: PropertyDescriptor | undefined
-        try {
-          descriptor = Object.getOwnPropertyDescriptor(value, key)
-          if (!descriptor) {
-            continue
-          }
-          // 访问器/归一化标志/占位可写的口径与上方对象分支逐字一致（同一个 R6-099 结论）
-          const isAccessor = descriptor.get !== undefined || descriptor.set !== undefined
-          const sourceValue = isAccessor ? (descriptor.get ? descriptor.get.call(value) : undefined) : descriptor.value
-          const descriptorFlags = normalizeDescriptorFlags(descriptor, isAccessor)
-
-          if (sourceValue !== null && typeof sourceValue === 'object') {
-            Object.defineProperty(cloned, key, {
-              value: undefined,
-              writable: true,
-              enumerable: descriptorFlags.enumerable,
-              configurable: true,
-            })
-            enqueue({
-              value: sourceValue,
-              context: {
-                ...context,
-                path: `${context.path}.${key}`,
-                depth: context.depth + 1,
-                parent: value,
-                key,
-              },
-              target: {
-                kind: 'prop',
-                container: cloned,
-                key,
-                descriptor: {
-                  writable: descriptorFlags.writable,
-                  enumerable: descriptorFlags.enumerable,
-                  configurable: descriptorFlags.configurable,
-                },
-              },
-            })
-          } else {
-            Object.defineProperty(cloned, key, {
-              value: sourceValue,
-              ...descriptorFlags,
-            })
-          }
-        } catch (error) {
-          handleCloneError(
-            error,
-            {
-              path: `${context.path}.${key}`,
-              depth: context.depth,
-              value: descriptor ? descriptor.value : safeReadProperty(value as unknown as Record<string, unknown>, key),
-            },
-            options,
-            errors,
-            stats,
-          )
-        }
+        copyOwnKeyAsync(value as unknown as Record<string, unknown>, cloned, key, context, options, errors, stats, counters, enqueue)
       }
 
       stats.cloneOperations++
@@ -334,80 +387,7 @@ export function processNodeAsync(
   }
 
   for (const key of keys) {
-    let descriptor: PropertyDescriptor | undefined
-    try {
-      descriptor = Object.getOwnPropertyDescriptor(value, key)
-      if (!descriptor) {
-        continue
-      }
-
-      // 访问器属性：以 getter 求值结果克隆为数据属性（与同步路径同语义）。
-      // 调用描述符里捕获的 getter 而非回读 `value[key]`——后者在 Proxy 上会重跑 `get`
-      // 陷阱，取值可与刚拿到的描述符不是同一件事；只有 setter 的访问器无值可读，
-      // 落为 undefined 并还原成可写数据属性（理由见 clone.ts 的属性循环注释）
-      const isAccessor = descriptor.get !== undefined || descriptor.set !== undefined
-      const sourceValue = isAccessor ? (descriptor.get ? descriptor.get.call(value) : undefined) : descriptor.value
-      // 与同步路径共用同一归一化口径（见 clone.ts 的 normalizeDescriptorFlags）：
-      // 此前异步用 `=== true`、同步传原始值，同一份数据在两条路径会产出不同描述符。
-      // 三个标志一律从这一个对象取（含下方的原语分支）——直接从 descriptor 读会把
-      // 刚归一化的结果又绕开，重新造出两套方言
-      const descriptorFlags = normalizeDescriptorFlags(descriptor, isAccessor)
-
-      if (sourceValue !== null && typeof sourceValue === 'object') {
-        // 占位属性必须可写可配置：源属性可能不可写，占位若继承该标志，
-        // 严格模式下的填充赋值会抛 TypeError 中断整个队列；
-        // 源描述符随任务携带，填充时经 defineProperty 还原真实标志
-        Object.defineProperty(cloned, key, {
-          value: undefined,
-          writable: true,
-          enumerable: descriptorFlags.enumerable,
-          configurable: true,
-        })
-
-        enqueue({
-          value: sourceValue,
-          context: {
-            ...context,
-            path: `${context.path}.${key}`,
-            depth: context.depth + 1,
-            parent: value,
-            key,
-          },
-          target: {
-            kind: 'prop',
-            container: cloned,
-            key,
-            descriptor: {
-              writable: descriptorFlags.writable,
-              enumerable: descriptorFlags.enumerable,
-              configurable: descriptorFlags.configurable,
-            },
-          },
-        })
-      } else {
-        Object.defineProperty(cloned, key, {
-          value: sourceValue,
-          ...descriptorFlags,
-        })
-      }
-    } catch (error) {
-      // 与同步路径共用 handleCloneError：中止信号原样上抛，其余按 cloneError 落账并咨询 onError
-      handleCloneError(
-        error,
-        {
-          path: `${context.path}.${key}`,
-          depth: context.depth,
-          // 描述符可用时直接取 value：访问器描述符没有 value 字段、恒为 undefined，
-          // 与原「识别访问器后显式返回 undefined」等价，故无需再区分描述符种类；
-          // 访问器 getter 已证明会抛错，不经 safeReadProperty 二次触发；
-          // 仅当描述符不可得（查询本身抛错）时才兜底读取
-          value: descriptor ? descriptor.value : safeReadProperty(value as Record<string, unknown>, key),
-        },
-        options,
-        errors,
-        stats,
-      )
-    }
+    copyOwnKeyAsync(value as Record<string, unknown>, cloned, key, context, options, errors, stats, counters, enqueue)
   }
 
   stats.cloneOperations++

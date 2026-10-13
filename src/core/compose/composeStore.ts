@@ -61,8 +61,9 @@ class ComposedStore<S extends State = State> implements Store<S> {
   private _storeUnsubscribers: Array<() => void> = []
   /** 子 store 单路合并订阅是否已建立（构造期为缓存失效建立，组合层订阅复用，避免重复占额度） */
   private _childSubscriptionsReady: boolean = false
-  /** 已告警过的 state 键冲突组合（每个组合只告警一次，避免高频 getState 刷屏） */
-  private _warnedStateKeyConflicts = new Set<string>()
+  /** 已告警过的 state 键冲突组合（每个组合只告警一次，避免高频 getState 刷屏）
+   *  外层 Map 按 state key 分组，内层 Set 按 store 配对去重 */
+  private _warnedStateKeyConflicts = new Map<string, Set<string>>()
   /** 已按「空视图」读过的销毁子 store：每个子 store 只告警一次（WeakSet 不驻留死店） */
   private _warnedDestroyedChildren = new WeakSet<object>()
   /** 子 Store 钩子桥接的退订函数（destroy 时统一移除，防止闭包残留） */
@@ -208,7 +209,7 @@ class ComposedStore<S extends State = State> implements Store<S> {
       for (const actionName of Object.keys(store.actions ?? {})) {
         const mappedKey = this._namespace ? `${store.name}/${actionName}` : actionName
         if (!Object.prototype.hasOwnProperty.call(mergedActions, mappedKey)) {
-          mergedActions[mappedKey] = (...args: unknown[]) => store.dispatch(actionName, ...args)
+          defineOwnProperty(mergedActions, mappedKey, (...args: unknown[]) => store.dispatch(actionName, ...args))
         }
       }
     }
@@ -458,6 +459,9 @@ class ComposedStore<S extends State = State> implements Store<S> {
       }
       return
     }
+    if (this._skipDestroyedChild(targetStore, '跳过对它的写入')) {
+      return
+    }
     targetStore.setState(actualKey as keyof typeof targetStore.state, value as (typeof targetStore.state)[keyof typeof targetStore.state])
   }
 
@@ -537,7 +541,7 @@ class ComposedStore<S extends State = State> implements Store<S> {
         // own property 判定：`in` 会命中 Object 原型链（'toString' 等），
         // 原型链属性名会误判为已存在而跳过真实 getter 的合并
         if (!Object.prototype.hasOwnProperty.call(result, mappedKey)) {
-          result[mappedKey] = subGetters[key] as (state: S) => unknown
+          defineOwnProperty(result, mappedKey, subGetters[key] as (state: S) => unknown)
         }
       }
     }
