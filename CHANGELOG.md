@@ -7,7 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-暂无（0.8.2 已定稿，见下节）。
+暂无（0.8.3 已定稿，见下节）。
+
+## [0.8.3] - 2026-10-13
+
+一次全库代码审查的收口：三轮共确认 **25 处缺陷**（首轮 13、第二轮 5、第三轮 7——其中 1 处是第二轮自身引入的回归），全部修复并有回归判据锁定；另落地三项性能结论。**无破坏性变更**：公开 API 只增不减，唯一的类型面收紧是 `PerformanceMonitor.metrics` 由「未标修饰符而实际 public」收回 `private`——它从未出现在任何文档或导出清单里。据此定 patch 而非 minor。
+
+### Fixed
+
+**定时器延迟越界（同一根因的六处漏网副本）**——`setTimeout` 的延迟超过 `2**31-1` 时宿主不报错，而是静默夹成约 1ms。于是「30 天节流」变成「每次都执行」、「退避到 35 分钟」变成「立刻重试」，且只在真实宿主上复现。本轮把 action 装饰器（throttle / debounce / async-core / AsyncActionSupport）、selector（`createDebouncedSelector`、`createRetrySelectorAsync` 退避）、error（`ErrorRecovery` 退避、`ErrorMonitoring.delay`）、plugins（`persistencePlugin` 写盘防抖）共六处的排程延迟统一归一并钳到 `MAX_TIMER_DELAY`。其中 `ErrorRecovery` 的 `Infinity` 原本落进 `: 0` 分支被当成 0，退避退化成对下游的紧贴重试风暴——这是第二轮修复自己改错的，第三轮补审才抓到。
+
+**缓存与装饰器叠加**
+
+- `withCache` 的 `observesPromise` 挂在宿主而非缓存条目上：原型方法被多实例共用时，一个条目的 pending Promise 会被别的宿主观察到，异步结果错配。下沉为条目级 `fromPromise`。
+- `ttl` 传 `NaN` 未归一：`Date.now() + NaN` 的比较恒为 false，条目永不过期也永不被驱逐，内存缓涨。非有限/负值归一为默认 5000ms。
+- 节流/防抖叠在缓存外层时，被抑制调用的返回值会写进缓存并被后续命中（throttle 侧是 `undefined`；debounce 侧更糟——`runPendingCalls` 把同一次执行的结果 resolve 给所有挂起 Promise，造成**跨参数错值**）。新增占位品牌协议 `PLACEHOLDER_RESULT`（`Symbol.for`，跨包副本互认）+ `markPlaceholder` / `isPlaceholder`：缓存见标原样透传、不落缓存不去重。错序叠加从「静默错值」降级为「不缓存」，三处 JSDoc 写明顺序契约「节流/防抖在外、缓存在内」。
+
+**错误处理链路**
+
+- `ErrorHandler.isThenable` 读 `.then` 未包 try/catch：带抛错 getter 的 thenable 会让「是不是 Promise」这个判断本身抛出，错误在分类阶段就炸，走不到任何兜底。
+- `ErrorMonitoring` 用 `||` 吞掉阈值 0（0 是合法语义：不丢弃任何样本）→ 改 `??`；`capacity` 未归一。
+- `ErrorAggregator` 驱逐不记账（统计分母失真），`groupIdByFingerprint` 残留条目会让新一轮同指纹错误挂到已消失的组上。
+- `HttpReporter` 上下文序列化：快路径与慢路径混在一条链上，任一上下文项抛错就整树重串，且序列化结果在同一次上报内会被改写。拆成 `serializeContextFast` / `serializeContextDegraded` 两条互斥路径并共用 `projectContext`，兜底粒度降到单条目。
+
+**集成层**
+
+- `OfflineManager`：队列读取抛错时仍用空数组覆写磁盘，把一次读取故障放大成离线操作全量丢失（at-least-once 语义破掉）。补 `disposed` 守卫与 `isValidOfflineAction` 校验，只在确认读到合法队列时才写回。
+- 热更新：`wx.showModal` 缺失或抛错时，已下载完成的更新会被一个弹窗永久搁浅。确认链抽成具名 `confirmAndApply`，弹窗失败也走同一链路；`applyUpdate` 失败后「清标记不清备份」的不成对问题一并修掉——残留备份会让下一次普通冷启动被误判为「更新后首启」，把备份点之后的持久化变更整体回滚。
+- `subscribeMappers` / `updateAll`：单个映射器抛错会中断同批次其余映射的更新，一个坏键就让整页停止刷新。改为逐个 try/catch + 批次后统一抛出（坏键跳过、`prevValues` 不动、保持可自愈）。
+- `ActionLoader`：`getAllLoading` 用普通对象字面量导致 `__proto__` 键被原型 setter 吞掉；`setOptions` 用 `'|'` join 做键比较，参数含分隔符时产生假阴性（配置变了以为没变）→ 改 JSON 比较。
+- `timeTravelPlugin.goTo`：未校验整数、未防同帧重入，浮点/越界 index 与同帧多次跳转会踩踏历史指针。
+
+### Changed
+
+- **`env.storage` 新增 `getWithStatus`**（`hit` / `miss` / `error` 三态）。此前「读不到」只有一种返回值，键不存在与读取抛错（配额、序列化损坏、宿主异常）无从区分，调用方只能一律当未命中——`OfflineManager` 那个「读失败覆写队列」的缺陷正是这么来的。既有 `get` 的行为逐字不变，属纯增量，调用方按需迁移。
+- **`HttpReporter` 的序列化行为**：`toJSON` **非幂等**的上下文条目，此前会被「降级成标记片段」，现在**照常交付**（首过即可序列化即交付；首过即抛才走慢路径）。这是把「同一次上报内双重序列化」当成缺陷修掉后的必然结果——串两次既浪费，也会让非幂等条目前后不一致。影响面限于自定义了非幂等 `toJSON` 的上报方（罕见），wire format 与字段语义不变。
+
+### Performance
+
+- `PerformanceMonitor` 采样缓冲改环形缓冲：满容后原实现每次写入都要 `splice` 搬动整个数组，写入 **O(maxSize) → O(1)**；读侧多一次 O(n) 投影，而读的频次（出报表/导出）远低于写，采样点全在热路径上。采样顺序、容量语义与导出格式不变。另：`sortByDuration` 过滤非有限耗时（NaN 会污染分位数）。
+- 集成层映射订阅 **2N → N**：`bindMappings` 原先给 state 与 getters 各建一条订阅，绑 N 个映射就是 2N 条订阅与 2N 次 `setData` 调度。合并为一条只读订阅（`createMapper` / `subscribeMappers`），触发阈值翻倍。映射语义、更新时机、清理路径不变。
+- `HttpReporter` 常见路径：每条上下文的整树遍历由 2 次降到 1 次。
+
+### Testing
+
+- 新增 `tests/unit/review-fixes.test.ts`（35 个用例）。每轮修复都经 `git stash` 对照确认判别力：13/20、19/29、25/35 条在修复前失败，其余为伴随断言。
+- 方法论沉淀：**延迟越界这族缺陷无法用 fake timers 复现**——假时钟按字面值排程，不会复刻宿主的静默夹取。判据改为捕获排定的延迟值（spy `globalThis.setTimeout` 比对第二参数）。
+- `r6-f1-07-http-reporter` 原用例锁定的是旧的双重序列化行为，本版随修复一并更新，并补「首过即抛仍走慢路径」一条。
 
 ## [0.8.2] - 2026-09-26
 
@@ -822,7 +868,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [0.1.3]: https://github.com/openlide/GeomStore/releases/tag/v0.1.3
 [0.2.0]: https://github.com/openlide/GeomStore/releases/tag/v0.2.0
 [0.2.1]: https://github.com/openlide/GeomStore/releases/tag/v0.2.1
-[Unreleased]: https://github.com/openlide/geomstore/compare/v0.8.2...HEAD
+[Unreleased]: https://github.com/openlide/geomstore/compare/v0.8.3...HEAD
+[0.8.3]: https://github.com/openlide/GeomStore/releases/tag/v0.8.3
 [0.8.2]: https://github.com/openlide/geomstore/releases/tag/v0.8.2
 [0.8.1]: https://github.com/openlide/geomstore/releases/tag/v0.8.1
 [0.8.0]: https://github.com/openlide/geomstore/releases/tag/v0.8.0
