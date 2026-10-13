@@ -47,6 +47,7 @@ coverage-report.json
 *.tmp
 *.temp
 .cache/
+.ocr-fix/
 
 # 示例工程 examples/ 是仓库源码，不忽略：tools/tsconfig.examples.json 的 include 覆盖整个
 # examples/**，CI 的「Typecheck (examples)」步骤就跑在它上面；整目录忽略会让干净检出缺文件
