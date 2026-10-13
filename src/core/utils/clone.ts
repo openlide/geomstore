@@ -160,7 +160,7 @@ export function ownEnumerableKeys(target: object): Array<string | symbol> {
  * 注入的属性反而变成继承属性（deepMerge 的 defineProperty 防护也会因此失效）。
  * defineProperty 只定义自有数据属性，可安全承载任意键名。
  */
-function assignOwn(target: object, key: string | symbol, value: unknown): void {
+export function assignOwn(target: object, key: string | symbol, value: unknown): void {
   // 符号键不可能与原型链上的 accessor 同名，`__proto__` 这条防护只对字符串键有意义
   if (key === '__proto__') {
     Object.defineProperty(target, key, { value, writable: true, enumerable: true, configurable: true })

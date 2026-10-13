@@ -8,7 +8,7 @@
  * - 克隆操作函数
  */
 
-import { deepCloneState, isExactly, ownEnumerableKeys } from './clone.js'
+import { assignOwn, deepCloneState, isExactly, isIndexKey, ownEnumerableKeys } from './clone.js'
 import { deepEqual } from './equality.js'
 
 // ==================== 类型判断 ====================
@@ -397,7 +397,18 @@ export function clone<T>(obj: T, options?: { mode?: CloneMode }): T {
     // 浅克隆：只复制一层，且只对有「保类型的一层展开」办法的容器做展开
     // （Date/RegExp 已在上方按类型新建；内建类型的子类一律走下方的原引用降级）
     if (Array.isArray(obj) && isExactly(obj, Array.prototype)) {
-      return [...obj] as T
+      // 不能用 `[...obj]`：展开走迭代器协议，空洞被物化成值为 undefined 的实槽位
+      // （`'0' in copy` 由 false 变 true），非下标自有可枚举键（`arr.meta`、符号键）整个丢掉。
+      // deep 路径（clone.ts 的数组分支）为「克隆与源在比较器下等价」这条被选择器/快照依赖的
+      // 不变量刻意保住了两者，shallow 反着来 ⇒ 产物被 shallowEqual/deepEqual 判不等，
+      // 且附加数据静默消失。slice() 保空洞，附加键按 deep 路径同一口径搬（浅拷贝共享值）
+      const copy = obj.slice()
+      for (const key of ownEnumerableKeys(obj)) {
+        if (typeof key === 'symbol' || !isIndexKey(key)) {
+          assignOwn(copy, key, obj[key as unknown as number])
+        }
+      }
+      return copy as T
     }
     if (obj instanceof Map && isExactly(obj, Map.prototype)) {
       return new Map(obj) as T

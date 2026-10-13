@@ -193,8 +193,10 @@ export function withPageStore<S extends State, A extends Actions, G extends Gett
         // 最早注册的实例被 evict-oldest 静默驱逐（症状「某些实例不刷新」）
         const mappers: Array<{ update: () => void }> = []
 
-        // 绑定 state
-        if (options.mapState) {
+        // 绑定 state：按**解析后的映射大小**判定，不看选项真值——`mapState: []` / `{}` 同样是真值，
+        // 会 push 一个 no-op mapper 使 mappers 非空、绕过 subscribeMappers 的 `length === 0` 短路，
+        // 于是建立一条永不产生更新的真实订阅白占 maxSubscribers 额度（与 with-app-store 同口径）
+        if (Object.keys(stateMapping).length > 0) {
           mappers.push(
             createMapper(
               this.data,
@@ -207,7 +209,7 @@ export function withPageStore<S extends State, A extends Actions, G extends Gett
         }
 
         // 绑定 getters
-        if (options.mapGetters) {
+        if (Object.keys(gettersMapping).length > 0) {
           mappers.push(
             createMapper(
               this.data,
@@ -417,8 +419,10 @@ export function withComponentStore<S extends State, A extends Actions, G extends
           // （默认 50）会被先耗尽，最早注册的实例被 evict-oldest 静默驱逐
           const mappers: Array<{ update: () => void }> = []
 
-          // 绑定 state
-          if (options.mapState) {
+          // 绑定 state：按**解析后的映射大小**判定，不看选项真值——`mapState: []` / `{}` 同样是真值，
+          // 会 push 一个 no-op mapper 使 mappers 非空、绕过 subscribeMappers 的 `length === 0` 短路，
+          // 于是建立一条永不产生更新的真实订阅白占 maxSubscribers 额度（与 with-app-store 同口径）
+          if (Object.keys(stateMapping).length > 0) {
             mappers.push(
               createMapper(
                 this.data,
@@ -431,7 +435,7 @@ export function withComponentStore<S extends State, A extends Actions, G extends
           }
 
           // 绑定 getters
-          if (options.mapGetters) {
+          if (Object.keys(gettersMapping).length > 0) {
             mappers.push(
               createMapper(
                 this.data,

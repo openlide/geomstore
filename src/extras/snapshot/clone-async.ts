@@ -321,8 +321,8 @@ export function processNodeAsync(
       // 元素自己的描述符标志同样不还原（index 目标只带位置，不像 prop 目标可携带 descriptor）。
       // 之所以按现状保留：克隆产物主要供 diff / 序列化消费，而 JSON 与 forEach/for-of 都把
       // 洞读成 undefined，两种形状在使用侧等价；要真正保洞需两条路径同步改成
-      // hasOwnProperty 判定 + 显式写 length（否则尾部洞会缩短克隆：cloned 的长度只由实际
-      // 写到的最大索引决定），并顺带决定元素描述符是否还原——超出 low 波次，需要时另开一条改动
+      // hasOwnProperty 判定，并顺带决定元素描述符是否还原——需要时另开一条改动。
+      // **长度**不在此列：它必须与同步路径对齐，见下方 return 前的 cloned.length 赋值
       for (let i = 0; i < value.length; i++) {
         const item = value[i]
         if (item !== null && typeof item === 'object') {
@@ -370,6 +370,14 @@ export function processNodeAsync(
           counters,
           enqueue,
         )
+      }
+
+      // 尾部元素被丢弃（任务返回 SKIP_CLONE_NODE）时该下标永不填充，而 cloned 的长度只由
+      // 实际写到的最大索引决定 ⇒ 比源短。同步路径 clone.ts 的数组分支在循环后做了同一道对齐，
+      // 缺了它两条路径产出长度分叉，compareSnapshots 会报出调用方从未做过的 `[removed:i]`。
+      // 只会加长不会截断：下标填充全部 < value.length，附加键已被 isIndexKey 滤掉
+      if (cloned.length !== value.length) {
+        cloned.length = value.length
       }
 
       stats.cloneOperations++

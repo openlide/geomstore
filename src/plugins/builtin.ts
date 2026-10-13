@@ -412,7 +412,13 @@ function installPersistence<S extends State>(store: Store<S>, rawOptions?: Persi
       try {
         saveState(filter ? filter(store.getState()) : store.getState())
       } catch (error) {
+        // 只 console 不够：监控口径只认 onError（见本文件 :276-278 与 docs/ARCHITECTURE.md），
+        // 而这里正是「销毁前最后一次落盘」——`filter` / `getState` 抛错时 saveState 根本没进入，
+        // 它内部那条 emit onError 的 catch 不会触发；外层 Store.destroy 的 uninstall catch
+        // 同样只 console。缺了这一条，末次状态变更在生产里静默丢失且无从归因。
+        // 卸载发生在 _hooks.clear() 之前，故此刻 emit 仍可用（与下面 clearOnUninstall 同口径）
         console.error('[GeomStore] Failed to persist state on uninstall:', error)
+        store.hooks.emit('onError', error as Error, 'persistence')
       }
     }
     pendingState = null

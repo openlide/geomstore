@@ -8,6 +8,14 @@
 
 /**
  * 回退状态：支持固定值或根据错误/当前状态动态计算
+ *
+ * **`F` 本身可调用时这个联合是二义的**：消费侧一律以 `typeof fallback === 'function'` 判别形态
+ * （见 `ErrorBoundary.resolveFallback` 与 `getFallbackState`），因此「恰好是函数的**静态**回退值」
+ * 会被当成计算函数、以 `(error, currentState)` 调用，而不是原样返回。需要把函数本身当回退值时
+ * 请包一层对象（如 `{ fn }`），别直接传裸函数。
+ *
+ * 另：`withErrorBoundary()` 不传泛型时 `F` 落回 `unknown`，而 `unknown | X` 仍是 `unknown`，
+ * 类型层连「两种形态」都表达不出来，此时判别只剩运行时 `typeof`。
  */
 export type ErrorFallback<F = unknown, S = unknown> = F | ((error: Error, currentState: S | undefined) => F)
 
@@ -18,7 +26,7 @@ export type ErrorFallback<F = unknown, S = unknown> = F | ((error: Error, curren
  * @template F - 回退值类型（与状态类型解耦：回退值不必是状态对象）
  */
 export interface ErrorBoundaryOptions<S = unknown, F = unknown> {
-  /** 回退状态：固定值或计算函数 */
+  /** 回退状态：固定值或计算函数（`F` 可为函数类型时的二义见 {@link ErrorFallback}） */
   fallback?: ErrorFallback<F, S>
   /** 错误回调 */
   onError?: (error: Error) => void

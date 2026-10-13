@@ -65,12 +65,19 @@ export interface NamespaceConfig {
 }
 
 /**
- * Store 组合类型
+ * Store 组合类型 —— **仓库内部**的契约镜像，不在任何发布入口上
  *
  * 描述运行时 `core/compose` 的 `ComposedStore` 类的形状：该类 `implements Store<S>`，
  * 除 `stores` 外没有别的公开成员，所以这里直接交叉出同一份契约，而不是另抄一遍
  * name/state/stores 三件套——手抄的副本与类之间没有任何编译期关联，类增删成员、
- * 改 `state` 只读性时这里不会报错，按本别名书写类型的消费者会静默拿不到那些 API。
+ * 改 `state` 只读性时这里不会报错。
+ *
+ * **别把它当成对外可写的类型**：`package.json` 的 `exports` 既没有 `./types` 子路径、
+ * 也没有深路径通配，包外拿不到本文件；而公开出口面上的 `ComposedStore` 指的是
+ * `core/compose` 导出的**实现类**（含 private 成员 ⇒ 名义类型），与本别名形状不同——
+ * `const s: ComposedStore = composeStore([...])` 过不了类型检查（TS2740）。
+ * 本别名的消费方只有仓库内部的类型级测试（经 `@/types/compose.js` 深路径导入），
+ * 用途是把「类的公开形状」钉成一份可编译校验的交叉类型，免得文档与实现各说一套。
  *
  * 默认泛型取 `State`（即 `object`）而非 `Record<string, unknown>`：后者只接受带索引签名的
  * 类型，会把未声明索引签名的业务 interface 拒之门外，与本文件 `StoreLike` 的口径矛盾。

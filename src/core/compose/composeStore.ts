@@ -585,6 +585,12 @@ class ComposedStore<S extends State = State> implements Store<S> {
       return undefined
     }
 
+    // 同 getCached：只有命名空间分支（:563 按名字 find）会解析到死店；
+    // 非命名空间分支靠 getGetterNames() 在销毁后返回 [] 天然排除，故守卫在这里对它是空操作
+    if (this._skipDestroyedChild(targetStore, '跳过对它的 getter 调用')) {
+      return undefined
+    }
+
     return targetStore.getter(actualGetter)
   }
 
@@ -886,6 +892,12 @@ class ComposedStore<S extends State = State> implements Store<S> {
       if (this._strict) {
         throw new Error(`[composeStore] Cannot find store for key: ${keyStr}`)
       }
+      return undefined as S[K]
+    }
+    // 命名空间模式下 findTargetStoreWithKey 只按名字解析、不过滤死店（平铺模式已过滤），
+    // 少了这道守卫就会让 Store.getCached 抛「Cannot call getCached on a destroyed Store」，
+    // 与 setState / dispatch / invalidateCache / getCacheStats 的「已销毁 → 跳过」分叉
+    if (this._skipDestroyedChild(targetStore, '跳过对它的缓存读取')) {
       return undefined as S[K]
     }
     return targetStore.getCached(actualKey as never) as S[K]

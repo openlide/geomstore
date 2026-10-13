@@ -265,8 +265,12 @@ withAppStore<S, A, G>(store, options?: ConnectOptions<S, A, G>): <C>(config: C) 
 ### 组合
 
 ```ts
-composeStore(stores: StoreLike[], options?: ComposeOptions): ComposedStore
-createStoreTree(config: StoreTreeNode, options?: ComposeOptions): ComposedStore
+composeStore<Stores extends readonly StoreLike[]>(
+  stores: [...Stores],
+  options?: ComposeOptions,
+): Store<ExtractStates<Stores>, ExtractActions<Stores>, ExtractGetters<Stores>>
+createStoreTree(stores: Store[], options?: ComposeOptions): StoreTreeNode
+class ComposedStore<S extends State = State> implements Store<S> // 值导出，见下方说明
 class StoreRegistry { register / get / has / delete / list … }
 export const globalRegistry: StoreRegistry
 ```
@@ -278,7 +282,12 @@ export const globalRegistry: StoreRegistry
 
 > **`lazy` / `tree` 与 `NamespaceConfig` 是「已声明、未实现」项**：三个名字都还在公开类型面上（`ComposeOptions.lazy` / `ComposeOptions.tree` 与 `NamespaceConfig`，后者经 `core` / `compose` / `plugins` 三个入口再导出），但运行时**零消费方**——`composeStore` 与 `createStoreTree` 的构造函数只读 `options.namespace` 与 `options.strict`，命名空间分隔符在实现里硬编码为 `'/'`（`separator` / `autoPrefix` 无人接受）。写了编译通过、静默无效，**不要按它安排懒加载或前缀策略**。是否在 0.7.0 一并删除是一个尚未拍板的公开决策（删成员与删导出都是破坏性变更），当前口径是「标注未实现、不静默删导出」。
 
-`ComposedStore`：`getState` / `dispatch`（支持斜杠路径）/ `subscribe` / `isStateKeyDirty`（形参同为 `string | symbol`）/ `hooks` / `$patch` / `$replaceState` / `destroy` 等，语义与单 Store 一致。导出的类型别名 `ComposedStore<S extends State = State>` 的形状是 `Store<S> & { stores }`——直接交叉同一份契约，而不是手抄 `name/state/stores` 三件套，实现类增删成员时这里会编译报错而非让按别名书写的调用方静默少 API。
+`ComposedStore`：`getState` / `dispatch`（支持斜杠路径）/ `subscribe` / `isStateKeyDirty`（形参同为 `string | symbol`）/ `hooks` / `$patch` / `$replaceState` / `destroy` 等，语义与单 Store 一致。
+
+**主入口导出的 `ComposedStore` 是实现类本身**（一个值，加上该类的实例类型），**不是**结构化类型别名。两点后果：
+
+- `composeStore()` 的返回类型是结构化的 `Store<ExtractStates<…>, ExtractActions<…>, ExtractGetters<…>>`。而类含大量 `private` 成员，其实例类型因而是**名义化**的：`const s: ComposedStore = composeStore([...])` **过不了类型检查**（实测报 TS2740，缺失成员里点名 `_stores` / `_namespace` / `_strict` 等私有字段——TS 对 private 成员要求同源）。要标注类型请用 `Store<…>`，或直接交给推断；`instanceof ComposedStore` 与直接构造实例仍然可用。
+- `src/types/compose.ts` 里另有一个**同名**的结构化别名 `ComposedStore<S extends State = State> = Store<S> & { stores }`（直接交叉同一份契约，避免手抄 `name/state/stores` 三件套而漂移）。它**不在任何发布入口上**：`package.json` 的 `exports` 既没有 `./types` 子路径也没有深路径通配，故包外不可达，只供仓库内部的类型级测试经 `@/types/compose.js` 使用。**不要按它书写对外类型**——公开面上的这个名字指的是上面那个类。
 
 - `$patch` / `$replaceState` 在**命名空间 + `strict`** 下是原子操作：先完成全部子 store 查找与严格校验再统一写入，校验失败时一个 store 都不写（不留「前一半已落库」且调用方无法回滚的半更新态）。
 - 子 store 在写入期间被销毁时，只有「销毁守卫」那一类异常被静默跳过；同一 tick 内该订阅者回调抛出的其它真实故障（状态保护拦截、监听器自身抛错）**照常冒泡**给调用方。
@@ -648,6 +657,7 @@ withErrorBoundary(boundary, fn?)
 
 - **默认 fail-loud**：未配置 `fallback` 时错误重抛；提供 `fallback` 即声明恢复意图（显式 `recoverable` 配置优先）
 - `fallback` 计算函数自身抛错时**重抛原始错误**（不丢失现场），且不重复触发 `onError`（`onError` 已就原始错误触发）
+- **`fallback` 的两种形态按 `typeof === 'function'` 判别**，故回退值类型 `F` 本身可调用时是二义的：「恰好是函数的**静态**回退值」会被当成计算函数、以 `(error, currentState)` 调用，而不是原样返回。`withErrorBoundary()` 不传泛型时 `F` 落回 `unknown`（`unknown | X` 仍是 `unknown`），类型层连两种形态都表达不出来，判别只剩运行时 `typeof`。需要把函数本身当回退值时请包一层对象（如 `{ fn }`），别传裸函数
 - 非 `Error` 的抛出值（`throw 'str'` / `throw 42`）在入口处归一化为 `Error` 后再写入 `errorHistory`、传给 `onError` 与 `fallback`；**重抛时仍是原始值**，捕获方语义不变
 - **只对「被包裹方法的原始返回值」做 thenable 判定**：`@withErrorBoundary` 装饰的方法，其**回退值**不被 `await`（带 `then` 的回退值也原样返回，同步方法的返回形状不会凭空变一种）。回退值是边界自己产出的、不是被包裹方法的异步结果；方法本身返回 Promise / thenable 时仍照常等待（判据是 `then` 鸭子类型，跨 realm 与手写 thenable 不漏）
 - 显式 `recoverable: true` 而未配 `fallback`（或 `setFallbackState(undefined)`）时 `execute` / `executeAsync` 返回 `undefined`，返回类型为 `T | F | undefined`

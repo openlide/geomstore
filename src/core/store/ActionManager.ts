@@ -145,6 +145,15 @@ export class ActionManager<S extends State = State, A extends Actions = Actions>
         // 在 action 体内全部失效（console.log 与迭代都拿不到实现）
         return (target as Record<string | symbol, unknown>)[prop]
       },
+      // action 名只登记在 boundActions、不在 Proxy target 上，缺 has 陷阱会让
+      // `'otherAction' in this` 与 `this.otherAction` 给出相反答案——用 `in` 做可选
+      // action / 插件注入 helper 的特性探测会静默走错分支
+      has(target: Record<string, unknown>, prop: string | symbol) {
+        if (typeof prop === 'string' && Object.prototype.hasOwnProperty.call(boundActions, prop)) {
+          return true
+        }
+        return prop in target
+      },
     })
 
     // 绑定 actions 的 this 到代理对象
@@ -243,7 +252,7 @@ export class ActionManager<S extends State = State, A extends Actions = Actions>
     // - onlyOnChange 模式按「计数 > 已通知覆盖计数」精确补发：
     //   续段 setState 已自发通知过的（计数已被覆盖）不再重复
     const onSettled = (): void => {
-      this._settleAfterDispatch(this._getLastNotifiedMutationCount?.() ?? -1)
+      this._settleAfterDispatch(this._lastNotifiedBaseline(-1))
     }
     // 鸭子类型判定 thenable：instanceof Promise 跨 realm（iframe / node:vm）或另一份
     // bundle 里的 Promise 子类都会判假，被当作同步结果处理时，await 之后的状态变更
@@ -296,6 +305,25 @@ export class ActionManager<S extends State = State, A extends Actions = Actions>
   }
 
   /**
+   * 读取「最近一次通知已覆盖的计数」作为收尾基线
+   *
+   * 提供者由非 Store 消费方注入、可能抛错，而两个调用点都在保护性 try 之外
+   * （`_settleAfterDispatch` 的实参位、`_flushAfterSyncSegment` 早于 execute 挂 `.then`），
+   * 逃出去会顶掉上游的 action 错误、让缓存回刷与补发通知整段被跳过，异步分支还会留下
+   * 无人处理的 rejection。故就地归口上报后退回 fallback——按「可见性优先」宁多刷一轮。
+   *
+   * @private
+   */
+  private _lastNotifiedBaseline(fallback: number): number {
+    try {
+      return this._getLastNotifiedMutationCount?.() ?? fallback
+    } catch (error) {
+      this._reportSettledFailure(error)
+      return fallback
+    }
+  }
+
+  /**
    * 异步 action 同步段的兜底补发：promise 永不 settle 时同步段的写入也要可见
    *
    * 与 {@link _settleAfterDispatch} 的区别只有两点：不回刷缓存（`execute` 在进这一支之前
@@ -321,15 +349,18 @@ export class ActionManager<S extends State = State, A extends Actions = Actions>
       // dispatch 抑制（同步段的写入当场就通知了），不存在被吞的问题 ⇒ 保持仅 settle 补发
       return
     }
-    const baseline = this._mutationGate ? (this._getLastNotifiedMutationCount?.() ?? mutationsBefore) : mutationsBefore
-    if (!this._mutationGate && this._getMutationCount && this._getMutationCount() <= mutationsBefore) {
-      // 默认模式：通知本就无条件，补发前提改由「同步段是否改过状态」把关
-      return
-    }
-    if (!this._shouldNotifyNow(baseline)) {
-      return
-    }
+    // 计数提供者（`_getMutationCount` / `_mutationGate`）与补发链路都可能抛错，统一归口：
+    // 本方法在 execute 里被调用得比 `.then` 挂载还早，异常逃出去会让 action 返回的 promise
+    // 没有任何 rejection 处理器（unhandledRejection，Node 下可直接终止进程）
     try {
+      const baseline = this._mutationGate ? this._lastNotifiedBaseline(mutationsBefore) : mutationsBefore
+      if (!this._mutationGate && this._getMutationCount && this._getMutationCount() <= mutationsBefore) {
+        // 默认模式：通知本就无条件，补发前提改由「同步段是否改过状态」把关
+        return
+      }
+      if (!this._shouldNotifyNow(baseline)) {
+        return
+      }
       this._notifyListeners()
     } catch (error) {
       // 与 _settleAfterDispatch 同一口径：补发链路自身抛错就地归口，不外溢给调用方

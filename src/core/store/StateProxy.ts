@@ -29,14 +29,18 @@ const BUILTIN_TAGS = new Set(['Date', 'RegExp', 'Map', 'Set', 'WeakMap', 'WeakSe
  * 内部槽位探针：`Symbol.toStringTag` 可被任意用户对象伪造（`{ [Symbol.toStringTag]: 'Map' }`），
  * 仅信标签会让这类对象 escape 写保护。对标签命中的值用原型方法探测内部槽位：
  * 真正的内建实例探测成功返回 true，伪造对象会抛 TypeError（incompatible receiver）返回 false。
- * 探测结果按标签缓存到原型上——同一原型的探测结果不变，避免每次判定都走 try/catch。
+ *
+ * 探测结果**不缓存**——标签身份与原型身份都不蕴含内部槽位：
+ * - 按标签缓存负结果：一个伪造对象就永久废掉该类型在**全进程**的判定，之后真的跨 realm
+ *   Map/Set 全被当普通对象代理，`proxy.set(k, v)` 随即抛「incompatible receiver」，
+ *   且 `collectionKindOf` 同判据 ⇒ 脏追踪的集合边一起漏标。
+ * - 按原型缓存正结果：`Object.create(某个已验证过的 Map 子类原型)` 没有内部槽位，
+ *   却会因原型命中而直接 escape 写保护。
+ *
+ * 不缓存的代价可忽略：本函数只在 `instanceof` 已判假（跨 realm）或标签被伪造时才走到，
+ * 同 realm 的内建对象在 `isBuiltinObject` 的 `instanceof` 分支就返回了。
  */
-const slotVerifiedProtos = new Set<object>()
-const slotRejectedTags = new Set<string>()
 function hasInternalSlot(value: object, tag: string): boolean {
-  const proto = Object.getPrototypeOf(value)
-  if (proto !== null && slotVerifiedProtos.has(proto)) return true
-  if (slotRejectedTags.has(tag)) return false
   try {
     switch (tag) {
       case 'Date':
@@ -60,10 +64,8 @@ function hasInternalSlot(value: object, tag: string): boolean {
       default:
         return false
     }
-    if (proto !== null) slotVerifiedProtos.add(proto)
     return true
   } catch {
-    slotRejectedTags.add(tag)
     return false
   }
 }

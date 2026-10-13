@@ -64,7 +64,7 @@ jobs:
       # 会重新出现（这正是本条注释原先要防的事，靠复制粘贴防不住）。
       # 覆盖面：src/tests 的 TS + 全部手写文档 md（README / CONTRIBUTING / CHANGELOG / docs/** /
       # packages/** 的 README / SKILL.md 与 references/*-semantics.md）。
-      # **不含** `.codebuddy/skills/geomstore/references/api/**`——那是 `pnpm skill:api` 从
+      # **不含** `skills/geomstore/references/api/**`——那是 `pnpm skill:api` 从
       # `dist/**/*.d.ts` 生成的构建产物。对它跑格式化器会**改动内容**：实测会转义块引用里
       # 粗体跨度内的星号、把 ```ts 围栏抬成 ````ts，并因 .prettierrc 的 semi:false 删掉
       # `.d.ts` 声明行末尾的分号（某文件实测 20 行 → 1 行）。而这份文件的契约恰恰是

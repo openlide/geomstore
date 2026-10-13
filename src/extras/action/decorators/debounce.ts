@@ -185,9 +185,15 @@ function takePendingCalls(slot: DebounceState): Pick<DebounceState, 'pendingReso
  */
 async function runPendingCalls(slot: DebounceState): Promise<void> {
   clearDebounceTimer(slot)
-  // 只有存活到现在的这一个定时器会触发，摘走的 pendingArgs 正是最后一次调用的参数
-  // （每次调用都会先清掉上一个定时器再写入），不存在「pendingArgs 为空 → 回退旧 args」的分支
   const taken = takePendingCalls(slot)
+  // `clearTimeout` 取消不了「已从本批定时器快照出队」的旧回调——真实 Node 定时器相位下，
+  // flush/cancel 与防抖定时器同批到期且顺序在前时，队列已被摘空而残留回调仍进到这里
+  // （withThrottle 把同一竞态明文定性为真实并配了双守卫）。合法防抖调用每次必压入一个
+  // resolver，故空队列即「无挂起调用」：此时以空参 apply 原方法会多发一次 `search(undefined)`，
+  // 且结果因 pendingResolves 为空而被丢弃
+  if (taken.pendingResolves.length === 0) {
+    return
+  }
   try {
     const result = await slot.originalMethod.apply(slot.host, taken.pendingArgs)
     taken.pendingResolves.forEach((r) => r(result))

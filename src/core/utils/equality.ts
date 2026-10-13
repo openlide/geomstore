@@ -284,6 +284,25 @@ function compareWithSeenPairs(a: unknown, b: unknown, comparison: Comparison, pa
       continue
     }
 
+    // SharedArrayBuffer 与 ArrayBuffer 的构造器/原型链不同（`instanceof ArrayBuffer` 判假），
+    // 而它的自有可枚举键同样恒空、byteLength 也在原型上 ⇒ 落到通用键比较会把**字节不同、
+    // 甚至大小不同**的两个 SAB 判等（假相等 → 选择器返回陈旧值、变更检测漏报，且无任何报错）。
+    // 克隆侧已把 SAB 当一等内建（clone.ts 的 SLOT_BEARING_TAGS），比较侧不能缺这一支。
+    if (typeof SharedArrayBuffer !== 'undefined' && currentA instanceof SharedArrayBuffer) {
+      const other = currentB as SharedArrayBuffer
+      if (currentA.byteLength !== other.byteLength) {
+        return false
+      }
+      const viewA = new Uint8Array(currentA)
+      const viewB = new Uint8Array(other)
+      for (let i = 0; i < viewA.length; i++) {
+        if (viewA[i] !== viewB[i]) {
+          return false
+        }
+      }
+      continue
+    }
+
     // TypedArray（Int8Array / Uint8Array / Float32Array 等）按字节内容比较：
     // 与 ArrayBuffer 同理，Object.keys 只返回下标键，但 length 已在数组分支比过，
     // 这里用 buffer 的字节视图逐字节比较（同 buffer 同 byteOffset 同 length 的

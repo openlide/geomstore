@@ -300,6 +300,13 @@ export class SnapshotManager {
     // totalCount 因此系统性偏小，percentage 会提前饱和到 100、estimatedTimeRemaining 随之
     // 归零 —— 进度只可作近似观测，完成判据始终是 promise 落定与 result.success
     const MAX_ESTIMATE_DEPTH = 10
+    // 节点预算：深度上限只限**深度**不限广度 —— 一个 depth ≤ 10 却有 1e5 个自有键的对象
+    // 仍会被逐键枚举 + 逐键 getOwnPropertyDescriptor，而本函数在 createSnapshotAsync 的
+    // **第一个 await 之前**同步跑完，等于在这个以「不阻塞主线程」为存在理由的 API 入口上
+    // 做一遍与克隆同量级的第二遍扫描。超预算即停止下潜，totalCount 随之偏小 ——
+    // 与深度截断是同一种偏差，进度仍只作近似观测
+    const MAX_ESTIMATE_NODES = 10000
+    let estimateBudget = MAX_ESTIMATE_NODES
     const estimateNodeCount = (obj: unknown, depth = 0): number => {
       if (depth > MAX_ESTIMATE_DEPTH || obj === null || typeof obj !== 'object') return 1
       // Array.isArray 对已 revoke 的 Proxy 抛 TypeError（同 getDataType 所述坑），
@@ -311,31 +318,40 @@ export class SnapshotManager {
       } catch {
         return 1
       }
+      let sum = 1
       if (isArray) {
         // 数组元素读取同样可能触发 Proxy 陷阱抛错：与对象分支同口径按叶子计数
         try {
-          return (obj as unknown[]).reduce((sum: number, item: unknown) => sum + estimateNodeCount(item, depth + 1), 1)
+          const items = obj as unknown[]
+          for (let i = 0; i < items.length; i++) {
+            if (estimateBudget-- <= 0) break
+            sum += estimateNodeCount(items[i], depth + 1)
+          }
         } catch {
           return 1
         }
+        return sum
       }
       try {
         // Object.keys 与描述符读取都可能触发 Proxy 陷阱抛错，估算失败按叶子计数
-        return Object.keys(obj).reduce((sum, key) => {
+        // 用 for-of 而非 reduce：预算耗尽时要能**中断**本节点的键遍历，reduce 停不下来
+        for (const key of Object.keys(obj)) {
+          if (estimateBudget-- <= 0) break
           try {
             const descriptor = Object.getOwnPropertyDescriptor(obj, key)
             // 访问器属性按叶子计数（不触发 getter）
             const child = descriptor && 'value' in descriptor ? descriptor.value : undefined
-            return sum + estimateNodeCount(child, depth + 1)
+            sum += estimateNodeCount(child, depth + 1)
           } catch {
             // 单键描述符读取失败按叶子计数，其余键继续估算
-            return sum + 1
+            sum += 1
           }
-        }, 1)
+        }
       } catch {
         // ownKeys/枚举验证阶段失败：整个对象按叶子计数
         return 1
       }
+      return sum
     }
     const totalCount = estimateNodeCount(data)
 

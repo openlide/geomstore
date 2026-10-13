@@ -224,6 +224,21 @@ export class BenchmarkRunner {
         throw new Error(`场景 "${scenario.name}" 的数据集配置无效: ${scenario.datasetSize}（${field} 须为非负整数，得到 ${String(value)}）`)
       }
     }
+    // 缓存档的这两个数是缓存场景里唯一未校验的数值输入（capacity 在 createTestStore 已严格校验）。
+    // NaN 能穿透测量轮的 `keySpaceSize < 1` 守卫（NaN < 1 为 false），随后 pickKey(keys, NaN)
+    // 恒为 undefined ⇒ 每轮退化成裸 getState()，产出「约 0 耗时 + 巨量 ops/s」，
+    // 而 4 项缓存门限里仍有 3 项通过 ⇒ **场景整体判通过**：正是上面四条校验要消灭的
+    // 「测了个空却绿灯」。readWriteRatio 为 NaN 时 `Math.random() < NaN` 恒 false，
+    // 全部轮次走写路径，读档语义被静默改写，故一并校验
+    if (scenario.cacheConfig) {
+      const { keySpaceMultiplier = 1, readWriteRatio = 0.7 } = scenario.cacheConfig
+      if (!Number.isFinite(keySpaceMultiplier) || keySpaceMultiplier <= 0) {
+        throw new Error(`场景 "${scenario.name}" 的 cacheConfig.keySpaceMultiplier 无效: ${String(keySpaceMultiplier)}（须为正有限数）`)
+      }
+      if (!Number.isFinite(readWriteRatio) || readWriteRatio < 0 || readWriteRatio > 1) {
+        throw new Error(`场景 "${scenario.name}" 的 cacheConfig.readWriteRatio 无效: ${String(readWriteRatio)}（须为 0..1 的有限数）`)
+      }
+    }
 
     const durations: number[] = []
     const timestamps: number[] = []
@@ -259,7 +274,10 @@ export class BenchmarkRunner {
       // 基线起算（见下面 delta），这样 0 只能由「堆在两次采样之间真的没动过」产生。
       // 诚实记录一处残留：没有 --expose-gc 时 forceGC 是 no-op，样本下界退化成基线本身，
       // ② 那类噪声仍在——此时增量只能当方向参考，与 `measureMemory` 的注释同一结论。
-      benchmarkUtils.forceGC()
+      // 这句话不能只写在注释里：CI 跑的 `node packages/benchmark/dist/smoke.js` 就不带
+      // --expose-gc，即每一次 CI 运行的内存档都在②的口径下判定，而报告读者无从分辨。
+      // 故接住返回值并落进 warnings，与 cacheReadWorks 的告警走同一数组、同一渲染路径。
+      const gcAvailable = benchmarkUtils.forceGC()
       const initialMemory = benchmarkUtils.getMemorySnapshot()
       let peakMemory = initialMemory.heapUsed
       let lowWaterMemory = initialMemory.heapUsed
@@ -309,6 +327,21 @@ export class BenchmarkRunner {
         peakInstantRate: this.calculatePeakInstantRate(timestamps),
       }
 
+      // 两条告警各自独立可达，故先收集再一次成型（原先只有一条、直接内联在三元里）
+      const warnings: string[] = []
+      if (cacheReadWorks === false) {
+        warnings.push(
+          'store.getCached 成员存在却没有产生任何可观测的缓存访问（一次探针调用后 hits+misses 未变化）：' +
+            '读档已退化为真实状态读。按 BenchmarkStore 契约，无缓存的实现应**省略**该成员而不是包一层什么都不读的函数。',
+        )
+      }
+      if (!gcAvailable) {
+        warnings.push(
+          '未检测到 --expose-gc：forceGC 是 no-op，内存 delta 实为「本轮攒了多少垃圾」而非净留存，' +
+            '与 V8 何时回收有关、跨机器不可复现，只能当方向参考（判定口径见 measureMemory 注释）。',
+        )
+      }
+
       // passed 不给占位值：先测量、再一次成型。原先 `passed: true` 建好即被下一行的
       // checkThresholds 覆盖，是纯死状态，还会让「忘了赋值」看起来像通过
       const measured: Omit<BenchmarkResult, 'passed'> = {
@@ -333,14 +366,7 @@ export class BenchmarkRunner {
           // getCacheStats 是可选契约：被适配的库没有缓存时省略它，此处按「缓存未启用」上报
           cache: store.getCacheStats ? buildCacheResult(store.getCacheStats()) : emptyCacheResult(),
         },
-        ...(cacheReadWorks === false
-          ? {
-              warnings: [
-                'store.getCached 成员存在却没有产生任何可观测的缓存访问（一次探针调用后 hits+misses 未变化）：' +
-                  '读档已退化为真实状态读。按 BenchmarkStore 契约，无缓存的实现应**省略**该成员而不是包一层什么都不读的函数。',
-              ],
-            }
-          : {}),
+        ...(warnings.length > 0 ? { warnings } : {}),
       }
 
       const evaluation = this.checkThresholds(measured, scenario)
