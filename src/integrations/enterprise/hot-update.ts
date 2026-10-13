@@ -332,50 +332,64 @@ export function initHotUpdate<S extends State = State>(config: HotUpdateConfig<S
       return
     }
 
-    wx.showModal({
-      title: '更新提示',
-      content: '新版本已准备好，是否重启应用？',
-      success: (res) => {
-        if (!res.confirm) return
-        // 备份必须在用户确认时进行而非 onUpdateReady 时：弹窗期间业务仍在运行
-        // （in-flight 请求回调照常 $patch 并经持久化插件落盘），若备份取自弹窗前，
-        // 重启后恢复会把「备份点之前弹窗期间已持久化的变更」整体回滚。
-        // 确认时刻的内存状态 ≥ 此刻任何已持久化数据；残余窗口仅剩
-        // 「确认到进程终止之间」最后一段（受防抖落盘时机影响，无法完全消除）
-        // 备份失败与宿主回调失败各自兜底：此前 onBeforeUpdate 与 backupState 共用一个
-        // try，宿主上报/落库逻辑抛错既被误记成「备份状态失败」，又会 return 掉用户
-        // 刚确认的更新且不给任何反馈（备份写不进只是失去恢复能力，不是不更新的理由）
-        let backedUp = false
-        try {
-          backupState(registration.store, registration.backupKey)
-          backedUp = true
-        } catch (error) {
-          logger.error('HotUpdate', '备份状态失败，本次更新不做状态恢复:', error)
-        }
-        try {
-          registration.onBeforeUpdate?.()
-        } catch (error) {
-          logger.error('HotUpdate', 'onBeforeUpdate 回调执行失败:', error)
-        }
-        // 先写待更新重启标记再 applyUpdate：重启后凭标记区分「更新后首启」与
-        // 「拒绝更新后的普通重启」，避免普通重启把备份点之后的持久化变更回滚。
-        // 备份没落盘时不写标记：否则重启后是一次凭空执行的无源恢复。
-        // 标记写入失败（storage.set 已尽力而为，仅配额满等异常）不阻断更新：
-        // 损失的只是恢复语义
-        if (backedUp) {
-          storage.set(pendingLaunchKey(registration.backupKey), true)
-        }
-        // applyUpdate 抛错即更新未生效：刚写入的标记与备份必须成对清掉，
-        // 否则下一次普通冷启动会被误判为「更新后首启」并把备份点之后的变更整体回滚
-        // （与 onUpdateFailed 同口径，此前该出口只存在于「平台回调更新失败」一条路径上）
-        try {
-          updateManager.applyUpdate()
-        } catch (error) {
-          logger.error('HotUpdate', 'applyUpdate 失败，按更新未生效清理标记与备份:', error)
-          clearBackup(registration.backupKey)
-        }
-      },
-    })
+    // 用户确认后的更新链（备份 → onBeforeUpdate → 待更新标记 → applyUpdate）抽成具名
+    // 函数：showModal 调用失败时（宿主缺该 API / 抛错）也要能走到同一链路——
+    // 已下载的更新不该被一个缺失的弹窗搁浅
+    const confirmAndApply = (res: { confirm?: boolean }): void => {
+      if (!res.confirm) return
+      // 备份必须在用户确认时进行而非 onUpdateReady 时：弹窗期间业务仍在运行
+      // （in-flight 请求回调照常 $patch 并经持久化插件落盘），若备份取自弹窗前，
+      // 重启后恢复会把「备份点之前弹窗期间已持久化的变更」整体回滚。
+      // 确认时刻的内存状态 ≥ 此刻任何已持久化数据；残余窗口仅剩
+      // 「确认到进程终止之间」最后一段（受防抖落盘时机影响，无法完全消除）
+      // 备份失败与宿主回调失败各自兜底：此前 onBeforeUpdate 与 backupState 共用一个
+      // try，宿主上报/落库逻辑抛错既被误记成「备份状态失败」，又会 return 掉用户
+      // 刚确认的更新且不给任何反馈（备份写不进只是失去恢复能力，不是不更新的理由）
+      let backedUp = false
+      try {
+        backupState(registration.store, registration.backupKey)
+        backedUp = true
+      } catch (error) {
+        logger.error('HotUpdate', '备份状态失败，本次更新不做状态恢复:', error)
+      }
+      try {
+        registration.onBeforeUpdate?.()
+      } catch (error) {
+        logger.error('HotUpdate', 'onBeforeUpdate 回调执行失败:', error)
+      }
+      // 先写待更新重启标记再 applyUpdate：重启后凭标记区分「更新后首启」与
+      // 「拒绝更新后的普通重启」，避免普通重启把备份点之后的持久化变更回滚。
+      // 备份没落盘时不写标记：否则重启后是一次凭空执行的无源恢复。
+      // 标记写入失败（storage.set 已尽力而为，仅配额满等异常）不阻断更新：
+      // 损失的只是恢复语义
+      if (backedUp) {
+        storage.set(pendingLaunchKey(registration.backupKey), true)
+      }
+      // applyUpdate 抛错即更新未生效：刚写入的标记与备份必须成对清掉，
+      // 否则下一次普通冷启动会被误判为「更新后首启」并把备份点之后的变更整体回滚
+      // （与 onUpdateFailed 同口径，此前该出口只存在于「平台回调更新失败」一条路径上）
+      try {
+        updateManager.applyUpdate()
+      } catch (error) {
+        logger.error('HotUpdate', 'applyUpdate 失败，按更新未生效清理标记与备份:', error)
+        clearBackup(registration.backupKey)
+      }
+    }
+
+    try {
+      wx.showModal({
+        title: '更新提示',
+        content: '新版本已准备好，是否重启应用？',
+        success: confirmAndApply,
+      })
+    } catch (error) {
+      // 宿主缺 showModal 或调用本身抛错（插件上下文、精简宿主、测试替身）时，
+      // 异常从微信回调逸出、success 永不执行——新版本已下载却不备份、不重启，
+      // 用户端与排障端都只看到一条「准备就绪」日志，更新链静默中断。
+      // 兜底按「用户确认」继续：弹窗只是确认环节，更新本身已下载完成
+      logger.error('HotUpdate', 'showModal 调用失败，按确认继续更新:', error)
+      confirmAndApply({ confirm: true })
+    }
   })
 
   updateManager.onUpdateFailed(() => {
@@ -386,7 +400,13 @@ export function initHotUpdate<S extends State = State>(config: HotUpdateConfig<S
     if (hotUpdateRegistration) {
       clearBackup(hotUpdateRegistration.backupKey)
     }
-    wx.showToast({ title: '更新失败，请重试', icon: 'none' })
+    try {
+      // 页面栈为空时部分基础库的 showToast 会抛（offline.ts 同款兜底）：
+      // 反馈失败不得反过来炸掉 onUpdateFailed 回调
+      wx.showToast({ title: '更新失败，请重试', icon: 'none' })
+    } catch (error) {
+      logger.error('HotUpdate', 'showToast 调用失败:', error)
+    }
   })
 }
 

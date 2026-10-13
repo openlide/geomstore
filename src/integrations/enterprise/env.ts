@@ -113,9 +113,80 @@ export const logger = {
 }
 
 /**
+ * 存储读取的三态结果
+ *
+ * `storage.get` 把三态压成两态（值 / null）是既有的向后兼容契约——「读失败」与「键不存在」
+ * 都回落 null，六个既有调用方全部依赖该口径，不能改。但**读失败与缺失必须可区分**：
+ * OfflineManager 曾在读失败时把内存空队列当成全量，随后的入队覆写磁盘队列，盘上旧操作
+ * 从内存与磁盘同时消失（at-least-once 被破坏）。故在适配器层提供本函数，让关键路径
+ * （离线队列/死信）按真实状态决策，其余调用方继续用 `get`
+ */
+export type StorageReadStatus = 'hit' | 'miss' | 'error'
+
+/** {@link storage.getWithStatus} 的返回形状：error 时 value 恒为 null，原始抛错物挂 error 供归因 */
+export interface StorageReadResult<T> {
+  status: StorageReadStatus
+  value: T | null
+  error?: unknown
+}
+
+/**
+ * 读取并解码 storage 值，并区分「命中 / 缺失 / 读取失败」
+ *
+ * 解码口径与 `storage.get` 逐字相同（含 number/boolean 原文返回的契约、引号信封闭环、
+ * 缺失键语义 #330），只是把「平台抛错」从「回落 null」升级为独立的 error 态。
+ * 日志口径也一致：失败照记一条 error——两条路径的可见输出相同
+ */
+function readStorageWithStatus<T>(key: string): StorageReadResult<T> {
+  let value: unknown
+  try {
+    value = wx.getStorageSync(key)
+  } catch (error) {
+    // 与 set/remove 同口径记日志：静默转 null 会让调用方无法区分
+    // 「存储坏了」与「没有值」，登录态与账号隔离状态可能被无声丢弃
+    logger.error('Storage', `读取 storage 失败: ${key}`, error)
+    return { status: 'error', value: null, error }
+  }
+
+  // 缺失键语义（#330）：wx.getStorageSync 对不存在的键返回 `''`（不抛错、不返回
+  // undefined），因此「存了空串」与「键不存在」在平台层面不可区分，一律按 miss。
+  // 显式判空而非 `!value`：`!value` 会把外部写入的原始 `0` / `false` 也当成缺失，
+  // 而本工具对这两类值按原始字符串返回（见 storage.get 的契约），判定口径必须一致
+  if (value === '' || value === undefined || value === null) {
+    return { status: 'miss', value: null }
+  }
+  if (typeof value !== 'string') {
+    return { status: 'hit', value: value as T }
+  }
+  // 兼容非 JSON 字符串（如 login 时存储的纯 userId）
+  try {
+    const parsed = JSON.parse(value)
+    // 纯数字/布尔字符串（如 "1001"）保持字符串语义，
+    // 避免 "1001" 被解析为 number 1001 导致 userId 类型混淆、多账号隔离失效。
+    // set 写入的字符串不会走到这里：它要么解析失败（原文返回），要么带引号信封
+    // （解析结果是 string，直接返回解析值），落进本分支的只有数字/布尔本身与裸历史值
+    if (typeof parsed === 'number' || typeof parsed === 'boolean') {
+      return { status: 'hit', value: value as T }
+    }
+    return { status: 'hit', value: parsed as T }
+  } catch {
+    return { status: 'hit', value: value as T }
+  }
+}
+
+/**
  * 存储工具
  */
 export const storage = {
+  /**
+   * 读取并解码 storage 值，区分「命中 / 缺失 / 读取失败」三态。
+   *
+   * 给需要按真实状态决策的调用方用（当前是 OfflineManager 的队列/死信加载）：读失败时
+   * 内存不得被当成全量，否则随后的覆写会把磁盘旧数据抹掉。其余调用方继续用 {@link get}。
+   * 注意 hit 的 value 仍可能为 null——「存了一个 JSON null」在平台层与缺失不可区分，
+   * 这是 #330 的既有口径，三态化没有改变它
+   */
+  getWithStatus: readStorageWithStatus,
   /**
    * 读取并解码 storage 值。
    *
@@ -138,34 +209,12 @@ export const storage = {
    *
    * 缺失键语义（#330）：wx.getStorageSync 对不存在的键返回 `''`（不抛错、不返回
    * undefined），因此「存了空串」与「键不存在」在平台层面不可区分，两者一律返回 null。
-   * 这里用显式判空而非 `!value`：`!value` 会把外部写入的原始 `0` / `false` 也当成缺失，
-   * 而本工具对这两类值按原始字符串返回（见上文契约），判定口径必须一致
+   * 读取失败同样回落 null（与缺失同形）——需要区分这两种结局的调用方请用
+   * {@link getWithStatus}，那是它存在的全部理由
    */
   get: <T>(key: string): T | null => {
-    try {
-      const value = wx.getStorageSync(key)
-      if (value === '' || value === undefined || value === null) return null
-      if (typeof value !== 'string') return value as T
-      // 兼容非 JSON 字符串（如 login 时存储的纯 userId）
-      try {
-        const parsed = JSON.parse(value)
-        // 纯数字/布尔字符串（如 "1001"）保持字符串语义，
-        // 避免 "1001" 被解析为 number 1001 导致 userId 类型混淆、多账号隔离失效。
-        // set 写入的字符串不会走到这里：它要么解析失败（原文返回），要么带引号信封
-        // （解析结果是 string，直接返回解析值），落进本分支的只有数字/布尔本身与裸历史值
-        if (typeof parsed === 'number' || typeof parsed === 'boolean') {
-          return value as T
-        }
-        return parsed as T
-      } catch {
-        return value as T
-      }
-    } catch (error) {
-      // 与 set/remove 同口径记日志：静默转 null 会让调用方无法区分
-      // 「存储坏了」与「没有值」，登录态与账号隔离状态可能被无声丢弃
-      logger.error('Storage', `读取 storage 失败: ${key}`, error)
-      return null
-    }
+    const read = readStorageWithStatus<T>(key)
+    return read.status === 'hit' ? read.value : null
   },
   // set/remove 尽力而为（配额满等存储异常仅记日志不外抛）：
   // 队列落盘、标记写入、登出清理等调用点众多，逐点兜底易遗漏，

@@ -78,6 +78,16 @@ export class OfflineManager<S extends State = State> {
   private syncFailed: OfflineAction[] = []
   private syncNextIndex = 0
   private disposed = false
+  /**
+   * 读取失败的存储键集合：这些键的磁盘内容不可信，禁止随后的覆写。
+   *
+   * 成因是 storage 适配层的三态被压成两态：`storage.get` 对「键不存在」与「读取抛错」
+   * 同返 null（env.ts 的 catch 记日志后 return null）。读失败时内存队列为空而磁盘队列
+   * 仍在，此后任何一次 saveQueue/appendDeadLetter 都会把磁盘旧数据整体覆写——那些操作
+   * 从内存与磁盘同时消失，重启也回不来，直接违背 at-least-once 契约。
+   * 读取成功时随手摘除该键，瞬时故障可自愈
+   */
+  private readonly unreadableKeys = new Set<string>()
   /** 网络监听回调引用，dispose 时用于精确移除。参数类型同时兼容 wx.on/offNetworkStatusChange 两种签名 */
   private networkHandler: ((res: { isConnected?: boolean; errMsg?: string }) => void) | null = null
   private readonly maxRetryCount: number
@@ -458,6 +468,13 @@ export class OfflineManager<S extends State = State> {
     // 旧实例的在途同步（或 dispose 后的 enqueue）落盘会覆写新实例的队列，
     // 磁盘丢失操作而新实例内存仍持有——重启即永久丢失
     if (this.disposed) return true
+    // 该键读取失败过：内存队列不一定是全量（可能只剩故障后新入队的项），
+    // 此刻覆写会把盘上旧操作整体抹掉。拒绝写入并告警，等存储恢复后的
+    // 一次成功读取（loadQueue 会摘除 unreadableKeys）再恢复正常落盘
+    if (this.unreadableKeys.has(this.queueKey)) {
+      logger.warn('OfflineManager', `离线队列读取失败过，拒绝覆写磁盘队列（旧操作保留在盘上）: ${this.queueKey}`)
+      return false
+    }
     const view = this.syncing ? [...this.syncFailed, ...this.syncPending.slice(this.syncNextIndex), ...this.actionQueue] : this.actionQueue
     return storage.set(this.queueKey, view)
   }
@@ -466,6 +483,13 @@ export class OfflineManager<S extends State = State> {
    * 追加操作到死信队列（持久化，供业务层后续人工处理或上报）
    */
   private appendDeadLetter(action: OfflineAction): boolean {
+    // 死信键读取失败过：getDeadLetters 返回的空表不是全量，写入即覆写盘上旧死信
+    // （与 saveQueue 的 unreadableKeys 守卫同口径）。返回 false 让调用方把操作
+    // 保留在离线队列里重试，而不是连同磁盘死信一起丢掉
+    if (this.unreadableKeys.has(this.deadLetterKey)) {
+      logger.warn('OfflineManager', `死信队列读取失败过，拒绝覆写磁盘死信（操作保留在离线队列）: ${this.deadLetterKey}`)
+      return false
+    }
     const deadLetters = this.getDeadLetters()
     deadLetters.push(action)
     // 超限时淘汰最旧条目，保护 storage 容量。
@@ -489,7 +513,16 @@ export class OfflineManager<S extends State = State> {
    * 上报逻辑读到畸形条目。被过滤掉的条数会告警，便于发现存储被改坏
    */
   getDeadLetters(): OfflineAction[] {
-    const saved = storage.get<OfflineAction[]>(this.deadLetterKey)
+    const read = this.readStorageKey(this.deadLetterKey)
+    if (!read.ok) {
+      // 读失败与 loadQueue 同口径：记住该键不可信并返回空表，但 appendDeadLetter
+      // 会因 unreadableKeys 守卫拒绝写入，盘上旧死信不会被空表覆写
+      this.unreadableKeys.add(this.deadLetterKey)
+      logger.error('OfflineManager', `死信队列读取失败，已禁止覆写（旧死信保留在盘上）: ${this.deadLetterKey}`)
+      return []
+    }
+    this.unreadableKeys.delete(this.deadLetterKey)
+    const saved = read.value
     if (!Array.isArray(saved)) return []
     const valid = saved.filter(isValidOfflineAction)
     if (valid.length !== saved.length) {
@@ -513,10 +546,32 @@ export class OfflineManager<S extends State = State> {
   }
 
   /**
+   * 从存储读取一个键，区分「读到值 / 键不存在 / 读取失败」三种结局
+   *
+   * 三态由 storage 适配器直接给出（{@link storage.getWithStatus}），不再用
+   * `wx.getStorageInfoSync().keys` 探测键存在性——那只对 wx 后端有效、多一次系统调用，
+   * 且自定义存储后端（env.storage 之外的实现）完全失效。读失败时内存队列不得被当成
+   * 全量：磁盘队列仍在，此后任何覆写都会把盘上旧操作整体抹掉
+   */
+  private readStorageKey(key: string): { ok: false } | { ok: true; value: unknown } {
+    const read = storage.getWithStatus<unknown>(key)
+    return read.status === 'error' ? { ok: false } : { ok: true, value: read.value }
+  }
+
+  /**
    * 从存储加载队列
    */
   private loadQueue(): void {
-    const saved = storage.get<unknown>(this.queueKey)
+    const read = this.readStorageKey(this.queueKey)
+    if (!read.ok) {
+      // 读失败：保留内存空队列，但记住这个键不可信——此后 saveQueue 拒绝覆写，
+      // 磁盘上的旧操作得以存活到存储恢复后的下一次加载
+      this.unreadableKeys.add(this.queueKey)
+      logger.error('OfflineManager', `离线队列读取失败，已禁止覆写磁盘队列（旧操作保留在盘上）: ${this.queueKey}`)
+      return
+    }
+    this.unreadableKeys.delete(this.queueKey)
+    const saved = read.value
     if (Array.isArray(saved)) {
       // 逐项校验并丢弃损坏条目（null/字符串/缺 retryCount 等）：
       // 这类条目会让 syncQueue 在 retryCount++ 处抛 TypeError 永久卡死整个队列
