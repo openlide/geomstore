@@ -1,6 +1,6 @@
 # `./integrations` API 参考（自动生成）
 
-> **本文件由 `scripts/generate-skill-api-reference.mjs` 从 `dist/**/\*.d.ts` 生成，请勿手工编辑。\*\*
+> **本文件由 `scripts/generate-skill-api-reference.mjs` 从 `dist/**/*.d.ts` 生成，请勿手工编辑。**
 >
 > - 来源版本：`@openlide/geomstore@0.8.3`
 > - 内容来源：构建产物类型声明（随 npm 包发布，与安装版本必然一致）
@@ -21,31 +21,31 @@
  * - `G`：约束 mapGetters 键/值须为 getter 名
  */
 export interface ConnectOptions<S extends State = State, A extends Actions = Actions, G extends Getters<S> = Getters<S>> {
-  /** 映射state */
-  mapState?: readonly (keyof S)[] | Record<string, keyof S>
-  /** 映射getters */
-  mapGetters?: readonly (keyof G)[] | Record<string, keyof G>
-  /** 映射actions（数组形式按 action 名映射；对象形式支持本地名重命名，值须为 action 名） */
-  mapActions?: readonly (keyof A)[] | Record<string, keyof A>
-  /** 是否自动注入到页面/组件data（使用getCached） */
-  autoInject?: boolean
-  /** 自动注入的字段映射（从store键到本地键）。为空对象时视为「没有注入条目」，与未写等价 */
-  injectMapping?: Record<string, string>
-  /**
-   * 是否在页面 `onShow` / 组件 `pageLifetimes.show` / App `onShow` 时按 `getCached` 重新注入一次。
-   *
-   * 生效条件（三者同时，缺一即整项无效且**不会告警**，#R6-062）：
-   * `autoUpdateOnShow && autoInject && Object.keys(injectMapping).length > 0`
-   * —— 见 `with-store.ts` 的 page/component 两处判定与 `with-app-store.ts:267`，
-   * 只写本项（或把 `injectMapping` 给成 `{}`）时连包装器都不安装。
-   *
-   * 挂载点口径（旧文案在此处有三处偏差，已按实现改写）：
-   * - 页面：`onShow`（首次注入仍在 `onLoad`）
-   * - 组件：`pageLifetimes.show`——组件配置上的 `onShow` **不是**组件生命周期，
-   *   框架不会调用它；`attached` 是首次注入点（等价于页面的 `onLoad`），不是本项的挂载点
-   * - App：`onShow`（`onLaunch` 是首次注入点；`globalData` 尚未建立时只转发用户 `onShow`）
-   */
-  autoUpdateOnShow?: boolean
+    /** 映射state */
+    mapState?: readonly (keyof S)[] | Record<string, keyof S>;
+    /** 映射getters */
+    mapGetters?: readonly (keyof G)[] | Record<string, keyof G>;
+    /** 映射actions（数组形式按 action 名映射；对象形式支持本地名重命名，值须为 action 名） */
+    mapActions?: readonly (keyof A)[] | Record<string, keyof A>;
+    /** 是否自动注入到页面/组件data（使用getCached） */
+    autoInject?: boolean;
+    /** 自动注入的字段映射（从store键到本地键）。为空对象时视为「没有注入条目」，与未写等价 */
+    injectMapping?: Record<string, string>;
+    /**
+     * 是否在页面 `onShow` / 组件 `pageLifetimes.show` / App `onShow` 时按 `getCached` 重新注入一次。
+     *
+     * 生效条件（三者同时，缺一即整项无效且**不会告警**，#R6-062）：
+     * `autoUpdateOnShow && autoInject && Object.keys(injectMapping).length > 0`
+     * —— 见 `with-store.ts` 的 page/component 两处判定与 `with-app-store.ts:267`，
+     * 只写本项（或把 `injectMapping` 给成 `{}`）时连包装器都不安装。
+     *
+     * 挂载点口径（旧文案在此处有三处偏差，已按实现改写）：
+     * - 页面：`onShow`（首次注入仍在 `onLoad`）
+     * - 组件：`pageLifetimes.show`——组件配置上的 `onShow` **不是**组件生命周期，
+     *   框架不会调用它；`attached` 是首次注入点（等价于页面的 `onLoad`），不是本项的挂载点
+     * - App：`onShow`（`onLaunch` 是首次注入点；`globalData` 尚未建立时只转发用户 `onShow`）
+     */
+    autoUpdateOnShow?: boolean;
 }
 ```
 
@@ -63,30 +63,17 @@ export interface ConnectOptions<S extends State = State, A extends Actions = Act
  * @param store - Store 实例
  * @returns 取消绑定函数数组
  */
-export declare function bindActions<S extends State = State>(
-  target: Record<string, unknown>,
-  mappings: Record<string, string>,
-  store: Store<S>,
-): Array<() => void>
+export declare function bindActions<S extends State = State>(target: Record<string, unknown>, mappings: Record<string, string>, store: Store<S>): Array<() => void>;
 ```
 
 ### `bindMappings`
 
 ```ts
-export declare function bindMappings(
-  _target: unknown,
-  mappings: Record<string, string>,
-  getValue: (storeKey: string) => unknown,
-  setter: (updates: Record<string, unknown>) => void,
-  subscribeStore: (
-    callback: () => void,
-    options?: {
-      readOnly?: boolean
-    },
-  ) => () => void,
-  /** 判断某状态键自上次通知以来是否变更（仅 state 映射可传入；getters 不提供，缺失时对象值保持「宁多勿漏」始终发送） */
-  changedKeys?: (storeKey: string) => boolean,
-): Array<() => void>
+export declare function bindMappings(_target: unknown, mappings: Record<string, string>, getValue: (storeKey: string) => unknown, setter: (updates: Record<string, unknown>) => void, subscribeStore: (callback: () => void, options?: {
+    readOnly?: boolean;
+}) => () => void, 
+/** 判断某状态键自上次通知以来是否变更（仅 state 映射可传入；getters 不提供，缺失时对象值保持「宁多勿漏」始终发送） */
+changedKeys?: (storeKey: string) => boolean): Array<() => void>;
 ```
 
 ### `cleanupBindings`
@@ -99,12 +86,12 @@ export declare function bindMappings(
  *
  * @param unbinds - 取消绑定函数数组
  */
-export declare function cleanupBindings(unbinds: Array<() => void>): void
+export declare function cleanupBindings(unbinds: Array<() => void>): void;
 ```
 
 ### `exposeStoreAPI`
 
-````ts
+```ts
 /**
  * 暴露 Store API 到目标实例
  *
@@ -124,12 +111,12 @@ export declare function cleanupBindings(unbinds: Array<() => void>): void
  * // 现在可以通过 appInstance.getStore() 访问 Store
  * ```
  */
-export declare function exposeStoreAPI<S extends State = State>(target: Record<string, unknown>, store: Store<S>): () => void
-````
+export declare function exposeStoreAPI<S extends State = State>(target: Record<string, unknown>, store: Store<S>): () => void;
+```
 
 ### `parseMapping`
 
-````ts
+```ts
 /**
  * 解析映射配置，返回统一的键值对映射
  *
@@ -153,12 +140,12 @@ export declare function exposeStoreAPI<S extends State = State>(target: Record<s
  * // → { totalCount: 'count', userName: 'name' }
  * ```
  */
-export declare function parseMapping(mapping: ReadonlyArray<PropertyKey> | Record<string, PropertyKey>): Record<string, string>
-````
+export declare function parseMapping(mapping: ReadonlyArray<PropertyKey> | Record<string, PropertyKey>): Record<string, string>;
+```
 
 ### `performAutoInject`
 
-````ts
+```ts
 /**
  * 自动注入 Store 值到目标对象
  *
@@ -184,26 +171,18 @@ export declare function parseMapping(mapping: ReadonlyArray<PropertyKey> | Recor
  * )
  * ```
  */
-export declare function performAutoInject<S extends State = State>(
-  _target: unknown,
-  injectMapping: Record<string, string>,
-  store: Store<S>,
-  setter: (updates: Record<string, unknown>) => void,
-): void
-````
+export declare function performAutoInject<S extends State = State>(_target: unknown, injectMapping: Record<string, string>, store: Store<S>, setter: (updates: Record<string, unknown>) => void): void;
+```
 
 ### `withAppStore`
 
 ```ts
-export declare function withAppStore<S extends State, A extends Actions, G extends Getters<S>, O extends ConnectOptions<S, A, G>>(
-  store: Store<S, A, G>,
-  options?: O,
-): <C extends AppOptions>(AppConfig: WithPageThis<C, AppThis<S, A, G, O, C>> & ThisType<AppThis<S, A, G, O, C>>) => C
+export declare function withAppStore<S extends State, A extends Actions, G extends Getters<S>, O extends ConnectOptions<S, A, G>>(store: Store<S, A, G>, options?: O): <C extends AppOptions>(AppConfig: WithPageThis<C, AppThis<S, A, G, O, C>> & ThisType<AppThis<S, A, G, O, C>>) => C;
 ```
 
 ### `withComponentStore`
 
-````ts
+```ts
 /**
  * Component 混入函数
  *
@@ -251,25 +230,16 @@ export declare function withAppStore<S extends State, A extends Actions, G exten
  * }))
  * ```
  */
-export declare function withComponentStore<S extends State, A extends Actions, G extends Getters<S>, O extends ConnectOptions<S, A, G>>(
-  store: Store<S, A, G>,
-  options?: O,
-): <C extends ComponentOptions>(
-  componentConfig: WithComponentThis<C, ComponentThis<S, A, G, O, ComponentOwnMethods<C>>>,
-) => ComponentConfig<S, A, G, O, ComponentOwnMethods<C>> &
-  Omit<C, 'data' | 'methods'> & {
+export declare function withComponentStore<S extends State, A extends Actions, G extends Getters<S>, O extends ConnectOptions<S, A, G>>(store: Store<S, A, G>, options?: O): <C extends ComponentOptions>(componentConfig: WithComponentThis<C, ComponentThis<S, A, G, O, ComponentOwnMethods<C>>>) => ComponentConfig<S, A, G, O, ComponentOwnMethods<C>> & Omit<C, 'data' | 'methods'> & {
     data: (C extends {
-      data: infer D
-    }
-      ? D
-      : object) &
-      ExtractPageData<S, O, G>
-  }
-````
+        data: infer D;
+    } ? D : object) & ExtractPageData<S, O, G>;
+};
+```
 
 ### `withPageStore`
 
-````ts
+```ts
 /**
  * Page 混入函数
  *
@@ -315,20 +285,11 @@ export declare function withComponentStore<S extends State, A extends Actions, G
  * }))
  * ```
  */
-export declare function withPageStore<S extends State, A extends Actions, G extends Getters<S>, O extends ConnectOptions<S, A, G>>(
-  store: Store<S, A, G>,
-  options?: O,
-): <C extends PageOptions>(
-  pageConfig: WithPageThis<C, PageThis<S, A, G, O>> & {
-    data: object
-  } & ThisType<PageThis<S, A, G, O>>,
-) => PageConfig<S, O, G> &
-  Omit<C, 'data'> & {
+export declare function withPageStore<S extends State, A extends Actions, G extends Getters<S>, O extends ConnectOptions<S, A, G>>(store: Store<S, A, G>, options?: O): <C extends PageOptions>(pageConfig: WithPageThis<C, PageThis<S, A, G, O>> & {
+    data: object;
+} & ThisType<PageThis<S, A, G, O>>) => PageConfig<S, O, G> & Omit<C, "data"> & {
     data: (C extends {
-      data: infer D
-    }
-      ? D
-      : object) &
-      ExtractPageData<S, O, G>
-  }
-````
+        data: infer D;
+    } ? D : object) & ExtractPageData<S, O, G>;
+};
+```

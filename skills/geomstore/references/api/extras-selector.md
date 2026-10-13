@@ -1,6 +1,6 @@
 # `./extras/selector` API 参考（自动生成）
 
-> **本文件由 `scripts/generate-skill-api-reference.mjs` 从 `dist/**/\*.d.ts` 生成，请勿手工编辑。\*\*
+> **本文件由 `scripts/generate-skill-api-reference.mjs` 从 `dist/**/*.d.ts` 生成，请勿手工编辑。**
 >
 > - 来源版本：`@openlide/geomstore@0.8.3`
 > - 内容来源：构建产物类型声明（随 npm 包发布，与安装版本必然一致）
@@ -14,11 +14,11 @@
 ```ts
 /** 异步重试选择器选项 */
 export interface AsyncRetrySelectorOptions extends RetrySelectorOptions {
-  /**
-   * 重试间延迟（毫秒）或按重试序号的退避函数（attempt 从 1 开始）。
-   * 默认 0（立即重试）；同步重试选择器无法承载延迟，需要延迟请用本异步变体
-   */
-  delay?: number | ((attempt: number) => number)
+    /**
+     * 重试间延迟（毫秒）或按重试序号的退避函数（attempt 从 1 开始）。
+     * 默认 0（立即重试）；同步重试选择器无法承载延迟，需要延迟请用本异步变体
+     */
+    delay?: number | ((attempt: number) => number);
 }
 ```
 
@@ -36,7 +36,7 @@ export interface AsyncRetrySelectorOptions extends RetrySelectorOptions {
  * 绑上去、返回 `(params: P) => R`，那一形态见 {@link ParametricSelectorFactory}。
  * 两者混用会让使用者拿本类型标注工厂返回值时编译失败
  */
-export type ParametricSelector<S extends State = Record<string, unknown>, P = unknown, R = unknown> = (state: S, params: P) => R
+export type ParametricSelector<S extends State = Record<string, unknown>, P = unknown, R = unknown> = (state: S, params: P) => R;
 ```
 
 ### `ParametricSelectorFactory`
@@ -48,7 +48,7 @@ export type ParametricSelector<S extends State = Record<string, unknown>, P = un
  * 即 `createParametricSelector(selectorFn)` 的返回类型。该形态此前没有任何导出名字，
  * 使用者想标注它只能手写 `(state: S) => (params: P) => R`
  */
-export type ParametricSelectorFactory<S extends State = Record<string, unknown>, P = unknown, R = unknown> = (state: S) => (params: P) => R
+export type ParametricSelectorFactory<S extends State = Record<string, unknown>, P = unknown, R = unknown> = (state: S) => (params: P) => R;
 ```
 
 ### `RetrySelectorOptions`
@@ -56,19 +56,19 @@ export type ParametricSelectorFactory<S extends State = Record<string, unknown>,
 ```ts
 /** 同步重试选择器选项 */
 export interface RetrySelectorOptions {
-  /**
-   * 重试次数（不含首次执行，总尝试次数 = retries + 1），默认 3。
-   * 仅适用于依赖外部可变状态的 selector——纯函数对相同输入重试必然得到相同结果
-   */
-  retries?: number
-  /**
-   * 是否对该错误继续重试（attempt 为重试序号，从 1 开始）
-   *
-   * 形参按 `Error` 契约给出：选择器抛出的若不是 Error（`throw 'boom'` / `throw { code: 500 }`），
-   * 调用本回调前先规范成同等信息量的 Error，否则回调里的 `error.message` 恒为 undefined，
-   * 会把「该重试」误判成「不该重试」。抛给调用方的仍是原值
-   */
-  shouldRetry?: RetryPredicate
+    /**
+     * 重试次数（不含首次执行，总尝试次数 = retries + 1），默认 3。
+     * 仅适用于依赖外部可变状态的 selector——纯函数对相同输入重试必然得到相同结果
+     */
+    retries?: number;
+    /**
+     * 是否对该错误继续重试（attempt 为重试序号，从 1 开始）
+     *
+     * 形参按 `Error` 契约给出：选择器抛出的若不是 Error（`throw 'boom'` / `throw { code: 500 }`），
+     * 调用本回调前先规范成同等信息量的 Error，否则回调里的 `error.message` 恒为 undefined，
+     * 会把「该重试」误判成「不该重试」。抛给调用方的仍是原值
+     */
+    shouldRetry?: RetryPredicate;
 }
 ```
 
@@ -83,7 +83,7 @@ export interface RetrySelectorOptions {
  * 后者只接受带索引签名的类型，会把这类 interface 拒之门外。
  * 默认值仍为 `Record<string, unknown>`，既有写法行为不变。
  */
-export type Selector<S extends State = Record<string, unknown>, R = unknown> = (state: S) => R
+export type Selector<S extends State = Record<string, unknown>, R = unknown> = (state: S) => R;
 ```
 
 ### `SelectorCacheItem`
@@ -93,29 +93,29 @@ export type Selector<S extends State = Record<string, unknown>, R = unknown> = (
  * 选择器缓存项
  */
 export interface SelectorCacheItem<R> {
-  /** 缓存的值 */
-  value: R
-  /** 缓存的时间戳 */
-  timestamp: number
-  /** 缓存的state引用 */
-  state: unknown
-  /**
-   * 缓存条目对应的状态版本号（来自 Store 的变更计数）。
-   * 有值时命中判定退化为 O(1) 整数比较，无需 deepEqual 全树比较；
-   * 为 undefined 表示状态无版本标记（普通对象），回退到 equalityFn 比较。
-   *
-   * 判「有没有值」一律写 `version !== undefined`，**不要写 `if (item.version)`**：
-   * `0` 是合法版本号（Store 的 `_mutationCount` 从 0 起算），真值判断会把首版状态误判成
-   * 「无版本」而退回昂贵的 deepEqual 路径。现有消费方（`createSelector.isCacheHit`、
-   * `parametricSelector` 的 stateCache 命中校验）都按 `!== undefined` 写。
-   */
-  version?: number
+    /** 缓存的值 */
+    value: R;
+    /** 缓存的时间戳 */
+    timestamp: number;
+    /** 缓存的state引用 */
+    state: unknown;
+    /**
+     * 缓存条目对应的状态版本号（来自 Store 的变更计数）。
+     * 有值时命中判定退化为 O(1) 整数比较，无需 deepEqual 全树比较；
+     * 为 undefined 表示状态无版本标记（普通对象），回退到 equalityFn 比较。
+     *
+     * 判「有没有值」一律写 `version !== undefined`，**不要写 `if (item.version)`**：
+     * `0` 是合法版本号（Store 的 `_mutationCount` 从 0 起算），真值判断会把首版状态误判成
+     * 「无版本」而退回昂贵的 deepEqual 路径。现有消费方（`createSelector.isCacheHit`、
+     * `parametricSelector` 的 stateCache 命中校验）都按 `!== undefined` 写。
+     */
+    version?: number;
 }
 ```
 
 ### `SelectorComposer`
 
-````ts
+```ts
 /**
  * 选择器组合器类
  *
@@ -138,288 +138,277 @@ export interface SelectorCacheItem<R> {
  * ```
  */
 export declare class SelectorComposer {
-  /**
-   * 组合多个选择器
-   *
-   * 将多个选择器的结果组合成单个值
-   *
-   * @template S - 状态类型
-   * @template R - 返回值类型（未显式给出时由 `combiner` 的返回类型反推）
-   * @template T - selectors 的元组类型（未显式给出时取 `Selector<S, unknown>[]`）
-   * @param {SelectorComposerInput<S, T, R>} input - 选择器和组合器配置。R 一路透传到
-   *   `combiner` 的返回位：组合器返回了与 `R` 不符的东西（拼错的属性名、多包一层）在编译期
-   *   就报错，而不是被实现里的一句断言静默成 `R`
-   * @returns {Selector<S, R>} 组合后的选择器
-   *
-   * @example
-   * ```typescript
-   * const selector = SelectorComposer.combine({
-   *   selectors: [
-   *     (s) => s.base,
-   *     (s) => s.taxRate,
-   *     (s) => s.shipping
-   *   ],
-   *   combiner: (base, tax, shipping) => base * (1 + tax) + shipping
-   * })
-   *
-   * const total = selector({ base: 100, taxRate: 0.1, shipping: 10 })
-   * // 100 * 1.1 + 10 = 120
-   * ```
-   */
-  static combine<S extends State, R = unknown, T extends readonly Selector<S, unknown>[] = readonly Selector<S, unknown>[]>(
-    input: SelectorComposerInput<S, T, R>,
-  ): Selector<S, R>
-  /**
-   * pipe / createDerived 共用的管道实现
-   *
-   * 两个公开入口只有重载签名不同、运行期行为逐字相同，故各自委托到这里：
-   * 此前 createDerived 写作 `pipe(...(selectors as [never]))`，那个断言把重载契约整个丢掉
-   * （`[never]` 可赋给任意 rest 形参，连第一个参数不是「接受 state 的选择器」都查不出来，
-   * 错误只在运行期暴露）。改为共用实现后两侧都只面对自己的 rest 类型，无需断言。
-   *
-   * @private
-   */
-  private static runPipe
-  /**
-   * 管道操作
-   *
-   * 将一个选择器的结果作为下一个选择器的输入
-   *
-   * @template S - 状态类型
-   * @template T1 - 第一个选择器的返回类型
-   * @template T2 - 第二个选择器的返回类型
-   * @template T3 - 第三个选择器的返回类型（可选）
-   * @template T4 - 第四个选择器的返回类型（可选）
-   * @param {Selector<S, T1>} selector1 - 第一个选择器
-   * @param {(input: T1) => T2} selector2 - 第二个选择器
-   * @param {(input: T2) => T3} selector3 - 第三个选择器（可选）
-   * @param {(input: T3) => T4} selector4 - 第四个选择器（可选）
-   * @returns {Selector<S, T4>} 管道选择器。返回类型即**最后一棒**的输出，随传入的个数取
-   *   T2 / T3 / T4（只传一个时是 T1）——重载签名不会给出 `T4 | T3 | T2 | T1` 这种联合类型，
-   *   调用侧按具体重载直接拿到窄类型
-   *
-   * @example
-   * ```typescript
-   * const selector = SelectorComposer.pipe(
-   *   (s) => s.user,
-   *   (user) => user.profile,
-   *   (profile) => profile.avatar
-   * )
-   *
-   * const avatar = selector(state)
-   * // 相当于: state.user.profile.avatar
-   * ```
-   */
-  static pipe<S extends State, T1, T2, T3, T4>(
-    selector1: Selector<S, T1>,
-    selector2: (input: T1) => T2,
-    selector3: (input: T2) => T3,
-    selector4: (input: T3) => T4,
-  ): Selector<S, T4>
-  static pipe<S extends State, T1, T2, T3>(selector1: Selector<S, T1>, selector2: (input: T1) => T2, selector3: (input: T2) => T3): Selector<S, T3>
-  static pipe<S extends State, T1, T2>(selector1: Selector<S, T1>, selector2: (input: T1) => T2): Selector<S, T2>
-  static pipe<S extends State, T1>(selector1: Selector<S, T1>): Selector<S, T1>
-  /**
-   * 创建派生选择器
-   *
-   * 通过管道操作创建派生选择器，pipe的别名
-   *
-   * @template S - 状态类型
-   * @template R1 - 第一个返回类型
-   * @template R2 - 第二个返回类型
-   * @template R3 - 第三个返回类型（可选）
-   * @param {Selector<S, R1>} selector1 - 第一个选择器
-   * @param {(input: R1) => R2} selector2 - 第二个选择器
-   * @param {(input: R2) => R3} selector3 - 第三个选择器（可选）
-   * @returns {Selector<S, R3>} 派生选择器。与 pipe 同：返回类型即最后一棒的输出
-   *   （两棒时是 R2），不是 `R3 | R2 | R1` 联合
-   *
-   * @example
-   * ```typescript
-   * const selector = SelectorComposer.createDerived(
-   *   (s) => s.items,
-   *   (items) => items.filter(i => i.active),
-   *   (activeItems) => activeItems.length
-   * )
-   *
-   * const count = selector(state)
-   * // 计算活跃项目数量
-   * ```
-   */
-  static createDerived<S extends State, R1, R2, R3>(selector1: Selector<S, R1>, selector2: (input: R1) => R2, selector3: (input: R2) => R3): Selector<S, R3>
-  static createDerived<S extends State, R1, R2>(selector1: Selector<S, R1>, selector2: (input: R1) => R2): Selector<S, R2>
-  /**
-   * 创建数组选择器
-   *
-   * 对数组的每个元素应用选择器
-   *
-   * @template T - 数组元素类型
-   * @template R - 返回元素类型
-   * @param {(item: T) => R} itemSelector - 元素选择器
-   * @returns {(array: T[]) => R[]} 数组选择器（输入为数组，不满足 Selector 的对象约束，故用函数类型）
-   *
-   * @example
-   * ```typescript
-   * const selector = SelectorComposer.createArraySelector(
-   *   (item: number) => item * 2
-   * )
-   *
-   * const doubled = selector([1, 2, 3])
-   * console.log(doubled) // [2, 4, 6]
-   * ```
-   */
-  static createArraySelector<T, R>(itemSelector: (item: T) => R): (array: T[]) => R[]
-  /**
-   * 创建对象选择器
-   *
-   * 对状态的**每个自有可枚举字符串键**应用选择器，返回同键名的对象。
-   *
-   * ⚠️ `K` 必须是 `keyof S` 中除 Symbol 外的全部键（即 `K = Extract<keyof S, string>`），
-   * 不能只填其中一部分：实现的键集来自运行期的 `Object.keys(state)`，与类型参数无关。
-   * 把 `K` 声明成子集（如 `createObjectSelector<S, 'a', R>((key: 'a') => ...)`）会让
-   * `keySelector` 收到它声明域之外的键、返回对象多出 `Record<K, R>` 之外的键——类型不会报错，
-   * 只表现为结果比预期多键。之所以不把签名改成 `(key: keyof S) => Selector<S, R>`
-   * （`keyof S` / `keyof S & string` / `Extract<keyof S, string>` 三种写法均已实测）：
-   * 键参数的类型一旦依赖 `S`，`(key) => (s: MyState) => s[key]` 这一最常见写法就会因
-   * 循环推断把 `S` 退回约束 `object`、`key` 退化成 `never` 而直接编译失败，
-   * 为了一个不产生错误数据的宽松性牺牲全部调用点的类型推断不值得。
-   * 确实只想派生固定子集时请改用 {@link SelectorComposer#combine}（键集由 selectors 显式列出）
-   *
-   * @template S - 状态类型
-   * @template K - 键类型，须为 `keyof S` 的非 Symbol 全部键（见上）
-   * @template R - 值类型
-   * @param {(key: K) => Selector<S, R>} keySelector - 键选择器工厂
-   * @returns {Selector<S, Record<K, R>>} 对象选择器
-   *
-   * @example
-   * ```typescript
-   * const selector = SelectorComposer.createObjectSelector(
-   *   (key) => (s) => s[key].toUpperCase()
-   * )
-   *
-   * const result = selector({ name: 'alice', city: 'beijing' })
-   * console.log(result) // { name: 'ALICE', city: 'BEIJING' }
-   * ```
-   */
-  static createObjectSelector<S extends State, K extends keyof S, R>(keySelector: (key: K) => Selector<S, R>): Selector<S, Record<K, R>>
-  /**
-   * 创建条件选择器
-   *
-   * 根据条件选择执行哪个选择器
-   *
-   * @template S - 状态类型
-   * @template R - 返回值类型
-   * @param {(state: S) => boolean} condition - 条件函数
-   * @param {Selector<S, R>} trueSelector - 条件为true时执行的选择器
-   * @param {Selector<S, R>} falseSelector - 条件为false时执行的选择器
-   * @returns {Selector<S, R>} 条件选择器
-   *
-   * @example
-   * ```typescript
-   * const selector = SelectorComposer.createConditionalSelector(
-   *   (s) => s.userType === 'admin',
-   *   (s) => s.adminPermissions,
-   *   (s) => s.userPermissions
-   * )
-   *
-   * const permissions = selector({ userType: 'admin', adminPermissions: [...], userPermissions: [...] })
-   * // 返回 adminPermissions
-   * ```
-   */
-  static createConditionalSelector<S extends State, R>(
-    condition: (state: S) => boolean,
-    trueSelector: Selector<S, R>,
-    falseSelector: Selector<S, R>,
-  ): Selector<S, R>
-  /**
-   * 创建默认值选择器
-   *
-   * 选择器失败或返回undefined时使用默认值
-   *
-   * @template S - 状态类型
-   * @template R - 返回值类型
-   * @param {Selector<S, R>} selector - 原始选择器
-   * @param {R} defaultValue - 默认值
-   * @returns {Selector<S, R>} 带默认值的选择器
-   *
-   * @remarks 只有「选择器抛错」这条兜底会留一条 `console.error`；「合法返回 undefined」不记日志。
-   *   否则两种情形在结果上同形，拼错的属性名会长期伪装成「正常的空值」（`R` 的声明给不出信号：
-   *   undefined 并非 `R` 的合法取值，判定只能靠运行期）。
-   *
-   * @example
-   * ```typescript
-   * const selector = SelectorComposer.createDefaultSelector(
-   *   (s) => s.optionalField,
-   *   'N/A'
-   * )
-   *
-   * const value1 = selector({ optionalField: 'exists' })
-   * console.log(value1) // 'exists'
-   *
-   * const value2 = selector({ optionalField: undefined })
-   * console.log(value2) // 'N/A'
-   * ```
-   */
-  static createDefaultSelector<S extends State, R>(selector: Selector<S, R>, defaultValue: R): Selector<S, R>
-  static createRetrySelector<S extends State, R>(selector: Selector<S, R>, options?: RetrySelectorOptions): Selector<S, R>
-  static createRetrySelectorAsync<S extends State, R>(selector: Selector<S, R>, options?: AsyncRetrySelectorOptions): (state: S) => Promise<R>
-  /**
-   * 创建防抖选择器
-   *
-   * 延迟执行选择器，在延迟期间多次调用只执行最后一次
-   *
-   * @template S - 状态类型
-   * @template R - 返回值类型
-   * @param {Selector<S, R>} selector - 原始选择器
-   * @param {number} [delay=300] - 防抖延迟（毫秒）
-   * @returns {Selector<S, Promise<R>>} 防抖选择器（返回Promise）
-   *
-   * @remarks **每次调用的返回 Promise 都必须被处理**（await 或挂 `.catch`）：防抖窗口内的
-   * 前几次调用共享最后那一个 Promise，选择器抛错时它以 rejection 收尾；若那次调用丢弃了
-   * 返回值，Node/小程序运行时就把这次 rejection 报成 unhandledRejection（本库不代为
-   * `.catch(noop)` 吞掉——那会让真实失败彻底不可见）。
-   *
-   * @example
-   * ```typescript
-   * const selector = SelectorComposer.createDebouncedSelector(
-   *   (s) => s.value * 2,
-   *   300
-   * )
-   *
-   * // 多次调用在300ms内只有最后一次会执行，且所有调用拿到同一个结果
-   * await Promise.all([selector(state), selector(state), selector(state).catch(onError)])
-   * // 选择器抛错时：await selector(state).catch((error) => reportError(error))
-   * ```
-   */
-  static createDebouncedSelector<S extends State, R>(selector: Selector<S, R>, delay?: number): Selector<S, Promise<R>>
-  /**
-   * 创建节流选择器
-   *
-   * 限制选择器执行频率，在指定间隔内只执行一次
-   *
-   * @template S - 状态类型
-   * @template R - 返回值类型
-   * @param {Selector<S, R>} selector - 原始选择器
-   * @param {number} [interval=300] - 节流间隔（毫秒）
-   * @returns {Selector<S, R>} 节流选择器
-   *
-   * @example
-   * ```typescript
-   * const selector = SelectorComposer.createThrottledSelector(
-   *   (s) => s.value * 2,
-   *   300
-   * )
-   *
-   * // 在300ms内多次调用只执行一次
-   * selector(state)
-   * selector(state)
-   * selector(state)
-   * // 第一次执行，后两次返回缓存值
-   * ```
-   */
-  static createThrottledSelector<S extends State, R>(selector: Selector<S, R>, interval?: number): Selector<S, R>
+    /**
+     * 组合多个选择器
+     *
+     * 将多个选择器的结果组合成单个值
+     *
+     * @template S - 状态类型
+     * @template R - 返回值类型（未显式给出时由 `combiner` 的返回类型反推）
+     * @template T - selectors 的元组类型（未显式给出时取 `Selector<S, unknown>[]`）
+     * @param {SelectorComposerInput<S, T, R>} input - 选择器和组合器配置。R 一路透传到
+     *   `combiner` 的返回位：组合器返回了与 `R` 不符的东西（拼错的属性名、多包一层）在编译期
+     *   就报错，而不是被实现里的一句断言静默成 `R`
+     * @returns {Selector<S, R>} 组合后的选择器
+     *
+     * @example
+     * ```typescript
+     * const selector = SelectorComposer.combine({
+     *   selectors: [
+     *     (s) => s.base,
+     *     (s) => s.taxRate,
+     *     (s) => s.shipping
+     *   ],
+     *   combiner: (base, tax, shipping) => base * (1 + tax) + shipping
+     * })
+     *
+     * const total = selector({ base: 100, taxRate: 0.1, shipping: 10 })
+     * // 100 * 1.1 + 10 = 120
+     * ```
+     */
+    static combine<S extends State, R = unknown, T extends readonly Selector<S, unknown>[] = readonly Selector<S, unknown>[]>(input: SelectorComposerInput<S, T, R>): Selector<S, R>;
+    /**
+     * pipe / createDerived 共用的管道实现
+     *
+     * 两个公开入口只有重载签名不同、运行期行为逐字相同，故各自委托到这里：
+     * 此前 createDerived 写作 `pipe(...(selectors as [never]))`，那个断言把重载契约整个丢掉
+     * （`[never]` 可赋给任意 rest 形参，连第一个参数不是「接受 state 的选择器」都查不出来，
+     * 错误只在运行期暴露）。改为共用实现后两侧都只面对自己的 rest 类型，无需断言。
+     *
+     * @private
+     */
+    private static runPipe;
+    /**
+     * 管道操作
+     *
+     * 将一个选择器的结果作为下一个选择器的输入
+     *
+     * @template S - 状态类型
+     * @template T1 - 第一个选择器的返回类型
+     * @template T2 - 第二个选择器的返回类型
+     * @template T3 - 第三个选择器的返回类型（可选）
+     * @template T4 - 第四个选择器的返回类型（可选）
+     * @param {Selector<S, T1>} selector1 - 第一个选择器
+     * @param {(input: T1) => T2} selector2 - 第二个选择器
+     * @param {(input: T2) => T3} selector3 - 第三个选择器（可选）
+     * @param {(input: T3) => T4} selector4 - 第四个选择器（可选）
+     * @returns {Selector<S, T4>} 管道选择器。返回类型即**最后一棒**的输出，随传入的个数取
+     *   T2 / T3 / T4（只传一个时是 T1）——重载签名不会给出 `T4 | T3 | T2 | T1` 这种联合类型，
+     *   调用侧按具体重载直接拿到窄类型
+     *
+     * @example
+     * ```typescript
+     * const selector = SelectorComposer.pipe(
+     *   (s) => s.user,
+     *   (user) => user.profile,
+     *   (profile) => profile.avatar
+     * )
+     *
+     * const avatar = selector(state)
+     * // 相当于: state.user.profile.avatar
+     * ```
+     */
+    static pipe<S extends State, T1, T2, T3, T4>(selector1: Selector<S, T1>, selector2: (input: T1) => T2, selector3: (input: T2) => T3, selector4: (input: T3) => T4): Selector<S, T4>;
+    static pipe<S extends State, T1, T2, T3>(selector1: Selector<S, T1>, selector2: (input: T1) => T2, selector3: (input: T2) => T3): Selector<S, T3>;
+    static pipe<S extends State, T1, T2>(selector1: Selector<S, T1>, selector2: (input: T1) => T2): Selector<S, T2>;
+    static pipe<S extends State, T1>(selector1: Selector<S, T1>): Selector<S, T1>;
+    /**
+     * 创建派生选择器
+     *
+     * 通过管道操作创建派生选择器，pipe的别名
+     *
+     * @template S - 状态类型
+     * @template R1 - 第一个返回类型
+     * @template R2 - 第二个返回类型
+     * @template R3 - 第三个返回类型（可选）
+     * @param {Selector<S, R1>} selector1 - 第一个选择器
+     * @param {(input: R1) => R2} selector2 - 第二个选择器
+     * @param {(input: R2) => R3} selector3 - 第三个选择器（可选）
+     * @returns {Selector<S, R3>} 派生选择器。与 pipe 同：返回类型即最后一棒的输出
+     *   （两棒时是 R2），不是 `R3 | R2 | R1` 联合
+     *
+     * @example
+     * ```typescript
+     * const selector = SelectorComposer.createDerived(
+     *   (s) => s.items,
+     *   (items) => items.filter(i => i.active),
+     *   (activeItems) => activeItems.length
+     * )
+     *
+     * const count = selector(state)
+     * // 计算活跃项目数量
+     * ```
+     */
+    static createDerived<S extends State, R1, R2, R3>(selector1: Selector<S, R1>, selector2: (input: R1) => R2, selector3: (input: R2) => R3): Selector<S, R3>;
+    static createDerived<S extends State, R1, R2>(selector1: Selector<S, R1>, selector2: (input: R1) => R2): Selector<S, R2>;
+    /**
+     * 创建数组选择器
+     *
+     * 对数组的每个元素应用选择器
+     *
+     * @template T - 数组元素类型
+     * @template R - 返回元素类型
+     * @param {(item: T) => R} itemSelector - 元素选择器
+     * @returns {(array: T[]) => R[]} 数组选择器（输入为数组，不满足 Selector 的对象约束，故用函数类型）
+     *
+     * @example
+     * ```typescript
+     * const selector = SelectorComposer.createArraySelector(
+     *   (item: number) => item * 2
+     * )
+     *
+     * const doubled = selector([1, 2, 3])
+     * console.log(doubled) // [2, 4, 6]
+     * ```
+     */
+    static createArraySelector<T, R>(itemSelector: (item: T) => R): (array: T[]) => R[];
+    /**
+     * 创建对象选择器
+     *
+     * 对状态的**每个自有可枚举字符串键**应用选择器，返回同键名的对象。
+     *
+     * ⚠️ `K` 必须是 `keyof S` 中除 Symbol 外的全部键（即 `K = Extract<keyof S, string>`），
+     * 不能只填其中一部分：实现的键集来自运行期的 `Object.keys(state)`，与类型参数无关。
+     * 把 `K` 声明成子集（如 `createObjectSelector<S, 'a', R>((key: 'a') => ...)`）会让
+     * `keySelector` 收到它声明域之外的键、返回对象多出 `Record<K, R>` 之外的键——类型不会报错，
+     * 只表现为结果比预期多键。之所以不把签名改成 `(key: keyof S) => Selector<S, R>`
+     * （`keyof S` / `keyof S & string` / `Extract<keyof S, string>` 三种写法均已实测）：
+     * 键参数的类型一旦依赖 `S`，`(key) => (s: MyState) => s[key]` 这一最常见写法就会因
+     * 循环推断把 `S` 退回约束 `object`、`key` 退化成 `never` 而直接编译失败，
+     * 为了一个不产生错误数据的宽松性牺牲全部调用点的类型推断不值得。
+     * 确实只想派生固定子集时请改用 {@link SelectorComposer#combine}（键集由 selectors 显式列出）
+     *
+     * @template S - 状态类型
+     * @template K - 键类型，须为 `keyof S` 的非 Symbol 全部键（见上）
+     * @template R - 值类型
+     * @param {(key: K) => Selector<S, R>} keySelector - 键选择器工厂
+     * @returns {Selector<S, Record<K, R>>} 对象选择器
+     *
+     * @example
+     * ```typescript
+     * const selector = SelectorComposer.createObjectSelector(
+     *   (key) => (s) => s[key].toUpperCase()
+     * )
+     *
+     * const result = selector({ name: 'alice', city: 'beijing' })
+     * console.log(result) // { name: 'ALICE', city: 'BEIJING' }
+     * ```
+     */
+    static createObjectSelector<S extends State, K extends keyof S, R>(keySelector: (key: K) => Selector<S, R>): Selector<S, Record<K, R>>;
+    /**
+     * 创建条件选择器
+     *
+     * 根据条件选择执行哪个选择器
+     *
+     * @template S - 状态类型
+     * @template R - 返回值类型
+     * @param {(state: S) => boolean} condition - 条件函数
+     * @param {Selector<S, R>} trueSelector - 条件为true时执行的选择器
+     * @param {Selector<S, R>} falseSelector - 条件为false时执行的选择器
+     * @returns {Selector<S, R>} 条件选择器
+     *
+     * @example
+     * ```typescript
+     * const selector = SelectorComposer.createConditionalSelector(
+     *   (s) => s.userType === 'admin',
+     *   (s) => s.adminPermissions,
+     *   (s) => s.userPermissions
+     * )
+     *
+     * const permissions = selector({ userType: 'admin', adminPermissions: [...], userPermissions: [...] })
+     * // 返回 adminPermissions
+     * ```
+     */
+    static createConditionalSelector<S extends State, R>(condition: (state: S) => boolean, trueSelector: Selector<S, R>, falseSelector: Selector<S, R>): Selector<S, R>;
+    /**
+     * 创建默认值选择器
+     *
+     * 选择器失败或返回undefined时使用默认值
+     *
+     * @template S - 状态类型
+     * @template R - 返回值类型
+     * @param {Selector<S, R>} selector - 原始选择器
+     * @param {R} defaultValue - 默认值
+     * @returns {Selector<S, R>} 带默认值的选择器
+     *
+     * @remarks 只有「选择器抛错」这条兜底会留一条 `console.error`；「合法返回 undefined」不记日志。
+     *   否则两种情形在结果上同形，拼错的属性名会长期伪装成「正常的空值」（`R` 的声明给不出信号：
+     *   undefined 并非 `R` 的合法取值，判定只能靠运行期）。
+     *
+     * @example
+     * ```typescript
+     * const selector = SelectorComposer.createDefaultSelector(
+     *   (s) => s.optionalField,
+     *   'N/A'
+     * )
+     *
+     * const value1 = selector({ optionalField: 'exists' })
+     * console.log(value1) // 'exists'
+     *
+     * const value2 = selector({ optionalField: undefined })
+     * console.log(value2) // 'N/A'
+     * ```
+     */
+    static createDefaultSelector<S extends State, R>(selector: Selector<S, R>, defaultValue: R): Selector<S, R>;
+    static createRetrySelector<S extends State, R>(selector: Selector<S, R>, options?: RetrySelectorOptions): Selector<S, R>;
+    static createRetrySelectorAsync<S extends State, R>(selector: Selector<S, R>, options?: AsyncRetrySelectorOptions): (state: S) => Promise<R>;
+    /**
+     * 创建防抖选择器
+     *
+     * 延迟执行选择器，在延迟期间多次调用只执行最后一次
+     *
+     * @template S - 状态类型
+     * @template R - 返回值类型
+     * @param {Selector<S, R>} selector - 原始选择器
+     * @param {number} [delay=300] - 防抖延迟（毫秒）
+     * @returns {Selector<S, Promise<R>>} 防抖选择器（返回Promise）
+     *
+     * @remarks **每次调用的返回 Promise 都必须被处理**（await 或挂 `.catch`）：防抖窗口内的
+     * 前几次调用共享最后那一个 Promise，选择器抛错时它以 rejection 收尾；若那次调用丢弃了
+     * 返回值，Node/小程序运行时就把这次 rejection 报成 unhandledRejection（本库不代为
+     * `.catch(noop)` 吞掉——那会让真实失败彻底不可见）。
+     *
+     * @example
+     * ```typescript
+     * const selector = SelectorComposer.createDebouncedSelector(
+     *   (s) => s.value * 2,
+     *   300
+     * )
+     *
+     * // 多次调用在300ms内只有最后一次会执行，且所有调用拿到同一个结果
+     * await Promise.all([selector(state), selector(state), selector(state).catch(onError)])
+     * // 选择器抛错时：await selector(state).catch((error) => reportError(error))
+     * ```
+     */
+    static createDebouncedSelector<S extends State, R>(selector: Selector<S, R>, delay?: number): Selector<S, Promise<R>>;
+    /**
+     * 创建节流选择器
+     *
+     * 限制选择器执行频率，在指定间隔内只执行一次
+     *
+     * @template S - 状态类型
+     * @template R - 返回值类型
+     * @param {Selector<S, R>} selector - 原始选择器
+     * @param {number} [interval=300] - 节流间隔（毫秒）
+     * @returns {Selector<S, R>} 节流选择器
+     *
+     * @example
+     * ```typescript
+     * const selector = SelectorComposer.createThrottledSelector(
+     *   (s) => s.value * 2,
+     *   300
+     * )
+     *
+     * // 在300ms内多次调用只执行一次
+     * selector(state)
+     * selector(state)
+     * selector(state)
+     * // 第一次执行，后两次返回缓存值
+     * ```
+     */
+    static createThrottledSelector<S extends State, R>(selector: Selector<S, R>, interval?: number): Selector<S, R>;
 }
-````
+```
 
 ### `SelectorComposerInput`
 
@@ -436,29 +425,25 @@ export declare class SelectorComposer {
  * - 两参数写法 `SelectorComposerInput<S, T>` 的 `R` 仍取默认 `unknown`，行为不变
  *   （该默认由 `tests/types/selector-combiner-result.typecheck.ts` 断言锁着）。
  */
-export interface SelectorComposerInput<
-  S extends State = Record<string, unknown>,
-  T extends readonly Selector<S, unknown>[] = readonly Selector<S, unknown>[],
-  R = unknown,
-> {
-  /** 选择器数组 */
-  selectors: [...T]
-  /**
-   * 组合函数
-   *
-   * 参数刻意保持 `any[]`（实测改 `unknown[]` 即破功）：调用方的 combiner 普遍写成
-   * `(base: number, tax: number) => number` 这类**具体形参**，参数逆变下
-   * `(a: number) => …` 不满足 `(a: unknown) => …`，直接编译失败；
-   * 且 `combine` 内部是 `combiner(...results)` 的透传调用，形参类型由调用方泛型推断保证。
-   * 返回值不再是 `unknown` 而是 `R`，见上方类型参数说明。
-   */
-  combiner: (...results: any[]) => R
+export interface SelectorComposerInput<S extends State = Record<string, unknown>, T extends readonly Selector<S, unknown>[] = readonly Selector<S, unknown>[], R = unknown> {
+    /** 选择器数组 */
+    selectors: [...T];
+    /**
+     * 组合函数
+     *
+     * 参数刻意保持 `any[]`（实测改 `unknown[]` 即破功）：调用方的 combiner 普遍写成
+     * `(base: number, tax: number) => number` 这类**具体形参**，参数逆变下
+     * `(a: number) => …` 不满足 `(a: unknown) => …`，直接编译失败；
+     * 且 `combine` 内部是 `combiner(...results)` 的透传调用，形参类型由调用方泛型推断保证。
+     * 返回值不再是 `unknown` 而是 `R`，见上方类型参数说明。
+     */
+    combiner: (...results: any[]) => R;
 }
 ```
 
 ### `SelectorFactory`
 
-````ts
+```ts
 /**
  * 选择器工厂类
  *
@@ -486,165 +471,165 @@ export interface SelectorComposerInput<
  * ```
  */
 export declare class SelectorFactory<S extends State = Record<string, unknown>, R = unknown> {
-  /**
-   * 选择器函数
-   * @private
-   * @type {Selector<S, R>}
-   */
-  private selector
-  /**
-   * 当前缓存
-   * @private
-   * @type {SelectorCacheItem<R> | null}
-   */
-  private cache
-  /**
-   * 缓存选项
-   * @private
-   * @type {Required<SelectorOptions>}
-   */
-  private options
-  /**
-   * 缓存历史记录
-   * @private
-   * @type {SelectorCacheItem<R>[]}
-   */
-  private cacheHistory
-  /**
-   * 创建选择器工厂实例
-   *
-   * @param {Selector<S, R>} selector - 选择器函数
-   * @param {SelectorOptions} [options={}] - 缓存选项
-   *
-   * @example
-   * ```typescript
-   * const factory = new SelectorFactory(
-   *   (state) => state.user.name,
-   *   {
-   *     cache: true,
-   *     cacheSize: 10,
-   *     cacheTTL: 5000
-   *   }
-   * )
-   * ```
-   */
-  constructor(selector: Selector<S, R>, options?: SelectorOptions)
-  /**
-   * 执行选择器
-   *
-   * 根据缓存配置决定是使用缓存还是重新计算
-   *
-   * @param {S} state - 状态对象
-   * @returns {R} 选择器结果
-   *
-   * @example
-   * ```typescript
-   * const factory = new SelectorFactory((s) => s.value * 2)
-   * const result1 = factory.execute({ value: 10 })
-   * const result2 = factory.execute({ value: 10 })
-   * // 第二次执行会使用缓存
-   * ```
-   */
-  execute(state: S): R
-  /**
-   * 缓存解析协议：命中查找（当前条目 + 历史回溯）→ 未命中则计算并写入缓存
-   *
-   * execute 与 withCacheResult 共用本方法，两者的差异只在返回包装。此前两处各写一遍
-   * 「findCacheHit → selector → updateCache」，同一套协议要同步维护两份就会漂移
-   * （findCacheHit 抽出之前两者就分叉过一次：withCacheResult 只查当前条目，
-   * 命中 history 时 execute 判命中而它判未命中）。
-   *
-   * @private
-   */
-  private resolve
-  /**
-   * 判断缓存条目是否已过期（TTL 判定）
-   *
-   * @private
-   */
-  private isExpired
-  /**
-   * 判断缓存条目是否命中（状态相等且未过期）
-   *
-   * @private
-   */
-  private isCacheHit
-  /**
-   * 查找命中的缓存条目：最近一条优先，其次回溯 cacheHistory（最新在后），
-   * 命中历史条目时将其提升为当前缓存（LRU 语义）
-   *
-   * @private
-   * @returns 命中的缓存条目；未命中返回 null
-   */
-  private findCacheHit
-  /**
-   * 更新缓存
-   *
-   * @private
-   * @param {S} state - 状态对象
-   * @param {R} value - 计算结果
-   */
-  private updateCache
-  /**
-   * 清除缓存
-   *
-   * 清除所有缓存，下次执行会重新计算
-   *
-   * @example
-   * ```typescript
-   * factory.clearCache()
-   * const result = factory.execute(state)
-   * // 这次会重新计算，不使用缓存
-   * ```
-   */
-  clearCache(): void
-  /**
-   * 获取缓存状态
-   *
-   * `cacheHit` 的口径要说明白：它返回的是 **当前缓存条目**（`this.cache`，即最近一次写入
-   * 或因命中历史而被提升为当前的那条），与 `hasCache` 同源同值，**不是**「最近一次
-   * 命中的那条」。命中查找走 findCacheHit，它可能返回 cacheHistory 里的任意一条，
-   * 而本方法不记录那次查找的结果。字段名沿用 cacheHit 以保持既有公开面不变
-   * （改名是当前缓存语义的破坏性变更，不属本轮 low），需要真正的「最近命中」请比较
-   * `getCacheStatus().cacheHit` 与调用前后的 `cacheSize`/timestamp 自行推断
-   *
-   * @returns {{hasCache: boolean, cacheSize: number, cacheHit?: SelectorCacheItem<R>}} 缓存状态信息
-   *
-   * @example
-   * ```typescript
-   * const status = factory.getCacheStatus()
-   * console.log('Has cache:', status.hasCache)
-   * console.log('Cache size:', status.cacheSize)
-   * console.log('Current cache entry:', status.cacheHit)
-   * ```
-   */
-  getCacheStatus(): {
-    hasCache: boolean
-    cacheSize: number
-    cacheHit?: SelectorCacheItem<R>
-  }
-  /**
-   * 创建带有缓存结果的选择器
-   *
-   * 返回的选择器会返回一个对象，包含值和是否来自缓存的信息
-   *
-   * @returns {Selector<S, SelectorResult<R>>} 包含缓存信息的选择器
-   *
-   * @example
-   * ```typescript
-   * const factory = new SelectorFactory((s) => s.value)
-   * const resultSelector = factory.withCacheResult()
-   *
-   * const result1 = resultSelector(state)
-   * console.log(result1.value, result1.fromCache) // 10, false
-   *
-   * const result2 = resultSelector(state)
-   * console.log(result2.value, result2.fromCache) // 10, true
-   * ```
-   */
-  withCacheResult(): Selector<S, SelectorResult<R>>
+    /**
+     * 选择器函数
+     * @private
+     * @type {Selector<S, R>}
+     */
+    private selector;
+    /**
+     * 当前缓存
+     * @private
+     * @type {SelectorCacheItem<R> | null}
+     */
+    private cache;
+    /**
+     * 缓存选项
+     * @private
+     * @type {Required<SelectorOptions>}
+     */
+    private options;
+    /**
+     * 缓存历史记录
+     * @private
+     * @type {SelectorCacheItem<R>[]}
+     */
+    private cacheHistory;
+    /**
+     * 创建选择器工厂实例
+     *
+     * @param {Selector<S, R>} selector - 选择器函数
+     * @param {SelectorOptions} [options={}] - 缓存选项
+     *
+     * @example
+     * ```typescript
+     * const factory = new SelectorFactory(
+     *   (state) => state.user.name,
+     *   {
+     *     cache: true,
+     *     cacheSize: 10,
+     *     cacheTTL: 5000
+     *   }
+     * )
+     * ```
+     */
+    constructor(selector: Selector<S, R>, options?: SelectorOptions);
+    /**
+     * 执行选择器
+     *
+     * 根据缓存配置决定是使用缓存还是重新计算
+     *
+     * @param {S} state - 状态对象
+     * @returns {R} 选择器结果
+     *
+     * @example
+     * ```typescript
+     * const factory = new SelectorFactory((s) => s.value * 2)
+     * const result1 = factory.execute({ value: 10 })
+     * const result2 = factory.execute({ value: 10 })
+     * // 第二次执行会使用缓存
+     * ```
+     */
+    execute(state: S): R;
+    /**
+     * 缓存解析协议：命中查找（当前条目 + 历史回溯）→ 未命中则计算并写入缓存
+     *
+     * execute 与 withCacheResult 共用本方法，两者的差异只在返回包装。此前两处各写一遍
+     * 「findCacheHit → selector → updateCache」，同一套协议要同步维护两份就会漂移
+     * （findCacheHit 抽出之前两者就分叉过一次：withCacheResult 只查当前条目，
+     * 命中 history 时 execute 判命中而它判未命中）。
+     *
+     * @private
+     */
+    private resolve;
+    /**
+     * 判断缓存条目是否已过期（TTL 判定）
+     *
+     * @private
+     */
+    private isExpired;
+    /**
+     * 判断缓存条目是否命中（状态相等且未过期）
+     *
+     * @private
+     */
+    private isCacheHit;
+    /**
+     * 查找命中的缓存条目：最近一条优先，其次回溯 cacheHistory（最新在后），
+     * 命中历史条目时将其提升为当前缓存（LRU 语义）
+     *
+     * @private
+     * @returns 命中的缓存条目；未命中返回 null
+     */
+    private findCacheHit;
+    /**
+     * 更新缓存
+     *
+     * @private
+     * @param {S} state - 状态对象
+     * @param {R} value - 计算结果
+     */
+    private updateCache;
+    /**
+     * 清除缓存
+     *
+     * 清除所有缓存，下次执行会重新计算
+     *
+     * @example
+     * ```typescript
+     * factory.clearCache()
+     * const result = factory.execute(state)
+     * // 这次会重新计算，不使用缓存
+     * ```
+     */
+    clearCache(): void;
+    /**
+     * 获取缓存状态
+     *
+     * `cacheHit` 的口径要说明白：它返回的是 **当前缓存条目**（`this.cache`，即最近一次写入
+     * 或因命中历史而被提升为当前的那条），与 `hasCache` 同源同值，**不是**「最近一次
+     * 命中的那条」。命中查找走 findCacheHit，它可能返回 cacheHistory 里的任意一条，
+     * 而本方法不记录那次查找的结果。字段名沿用 cacheHit 以保持既有公开面不变
+     * （改名是当前缓存语义的破坏性变更，不属本轮 low），需要真正的「最近命中」请比较
+     * `getCacheStatus().cacheHit` 与调用前后的 `cacheSize`/timestamp 自行推断
+     *
+     * @returns {{hasCache: boolean, cacheSize: number, cacheHit?: SelectorCacheItem<R>}} 缓存状态信息
+     *
+     * @example
+     * ```typescript
+     * const status = factory.getCacheStatus()
+     * console.log('Has cache:', status.hasCache)
+     * console.log('Cache size:', status.cacheSize)
+     * console.log('Current cache entry:', status.cacheHit)
+     * ```
+     */
+    getCacheStatus(): {
+        hasCache: boolean;
+        cacheSize: number;
+        cacheHit?: SelectorCacheItem<R>;
+    };
+    /**
+     * 创建带有缓存结果的选择器
+     *
+     * 返回的选择器会返回一个对象，包含值和是否来自缓存的信息
+     *
+     * @returns {Selector<S, SelectorResult<R>>} 包含缓存信息的选择器
+     *
+     * @example
+     * ```typescript
+     * const factory = new SelectorFactory((s) => s.value)
+     * const resultSelector = factory.withCacheResult()
+     *
+     * const result1 = resultSelector(state)
+     * console.log(result1.value, result1.fromCache) // 10, false
+     *
+     * const result2 = resultSelector(state)
+     * console.log(result2.value, result2.fromCache) // 10, true
+     * ```
+     */
+    withCacheResult(): Selector<S, SelectorResult<R>>;
 }
-````
+```
 
 ### `SelectorOptions`
 
@@ -657,67 +642,67 @@ export declare class SelectorFactory<S extends State = Record<string, unknown>, 
  * `if (this.options.cache)`）；本类型只声明形状，故把口径抄在这里以免只读契约的人拿不到默认值。
  */
 export interface SelectorOptions {
-  /**
-   * 是否启用缓存（默认 `true`）。
-   * `cacheSize` / `cacheTTL` / `equalityFn` 都只在 `cache` 为真时才被读取。
-   */
-  cache?: boolean
-  /**
-   * 缓存历史条数（默认 10，历史条目同样参与命中判定，不只比对最近一条）。
-   *
-   * 归一化口径：`Number.isFinite(v) ? Math.max(1, v) : 10`——0 / 负数被夹到 1，
-   * `NaN`/`Infinity`/未提供回到 10（不夹会让 history 无界增长或刚 push 就被 shift 掉）。
-   */
-  cacheSize?: number
-  /**
-   * 缓存生存时间，毫秒（默认 5000）。
-   *
-   * 本类型只是 `number`，取值守卫在实现侧：`src/extras/selector/createSelector.ts` 的
-   * `SelectorFactory` 用 `typeof v === 'number' && v > 0 ? v : 5000` 归一化，
-   * 拦掉三类静默劣化——`NaN`（判据 `timestamp + NaN <= now` 恒假 → 永不过期，
-   * 就地变异后仍返回陈旧值）、`0`/负数（写入即过期 → 等价于关缓存，却仍照旧付快照克隆
-   * 与 push 成本，且不报错）、未类型化调用方传进来的字符串（`timestamp + '60000'` 变成拼接，
-   * 判定同样恒假）。
-   *
-   * 与 `cacheSize` 的差别是**有意的**：`Infinity` 在这里是合法配置（= 不按时间过期，
-   * 版本化状态的失效凭证仍是版本号），而 `cacheSize` 的 `Infinity` 会让历史无界增长，
-   * 所以只有 `cacheSize` 夹上限。别把两者强行统一成同一个函数。
-   */
-  cacheTTL?: number
-  /**
-   * 比较函数（默认 `deepEqual`；显式传 falsy 视同未提供，同样回退 `deepEqual`）。
-   *
-   * 比较的是**输入状态**（缓存键），不是选择器结果：实现里是
-   * `equalityFn(item.state, state)`（`createSelector.ts` 的 `isCacheHit`），
-   * 且仅在状态无版本标记（非 Store 状态、直接传普通对象）时才被调用。
-   * 形参不能写成 `(a: S, b: S)`：本类型不带 `S` 泛型、`createSelector(selectorFn, options?)`
-   * 的 options 位点也不随 `S` 实例化，要标注具体状态得先在实现层把泛型透传下来。
-   * 于是候选只剩 `unknown` 与 `any` 两档，而 `unknown` 那一档下面这条会把它否掉。
-   *
-   * 但 `unknown` 形参在 `strictFunctionTypes` 下会**拒掉调用方按具体状态标注的比较器**：
-   * `{ equalityFn: (x: OrderState, y: OrderState) => x.id === y.id }` 实测报
-   * `TS2322: Type 'unknown' is not assignable to type 'OrderState'`（属性式函数按逆变比较）。
-   * 与 `AsyncActions`（R5-316）同一处方：形参取 `any` 让这类写法可赋——`any` 在这里只出现在
-   * **逆变的形参位**，返回值仍是 `boolean`，不会把错误结果放过去；实现侧传进来的本来就是
-   * `unknown`（缓存条目存的 state 与调用方给的 state），因此内部调用点不因它失去检查。
-   */
-  equalityFn?: (a: any, b: any) => boolean
-  /**
-   * 状态**无版本标记**时用什么作为缓存失效凭证（默认 `true` = 缓存内容快照）。
-   *
-   * - `true`：写缓存时深拷贝一份状态，命中判定用 `equalityFn(快照, 当前状态)` 比内容。
-   *   任何深比较器（`deepEqual`、lodash `isEqual`、`(a,b)=>deepEqual(a,b)` 包装）都只有
-   *   这一种正确形态——若缓存活引用，两个实参会是同一个对象，深比较恒等，
-   *   就地变异看不见，TTL 内会持续返回陈旧值。
-   * - `false`：缓存**活引用**，命中判定退化为 `equalityFn(原引用, 当前引用)`。
-   *   仅当 `equalityFn` 是引用相等（`(a, b) => a === b`）时才该这么用：此时快照会与
-   *   活引用永不相等，缓存变成永远命不中。换来的收益是省下一次整树克隆，
-   *   代价是**前提被违反时（同一对象就地改过）会返回陈旧值**。
-   *
-   * 状态带版本号（Store 的 `_mutationCount`）时本选项不参与判定：版本号已是失效凭证，
-   * 既不克隆也不用 `equalityFn`。
-   */
-  snapshotState?: boolean
+    /**
+     * 是否启用缓存（默认 `true`）。
+     * `cacheSize` / `cacheTTL` / `equalityFn` 都只在 `cache` 为真时才被读取。
+     */
+    cache?: boolean;
+    /**
+     * 缓存历史条数（默认 10，历史条目同样参与命中判定，不只比对最近一条）。
+     *
+     * 归一化口径：`Number.isFinite(v) ? Math.max(1, v) : 10`——0 / 负数被夹到 1，
+     * `NaN`/`Infinity`/未提供回到 10（不夹会让 history 无界增长或刚 push 就被 shift 掉）。
+     */
+    cacheSize?: number;
+    /**
+     * 缓存生存时间，毫秒（默认 5000）。
+     *
+     * 本类型只是 `number`，取值守卫在实现侧：`src/extras/selector/createSelector.ts` 的
+     * `SelectorFactory` 用 `typeof v === 'number' && v > 0 ? v : 5000` 归一化，
+     * 拦掉三类静默劣化——`NaN`（判据 `timestamp + NaN <= now` 恒假 → 永不过期，
+     * 就地变异后仍返回陈旧值）、`0`/负数（写入即过期 → 等价于关缓存，却仍照旧付快照克隆
+     * 与 push 成本，且不报错）、未类型化调用方传进来的字符串（`timestamp + '60000'` 变成拼接，
+     * 判定同样恒假）。
+     *
+     * 与 `cacheSize` 的差别是**有意的**：`Infinity` 在这里是合法配置（= 不按时间过期，
+     * 版本化状态的失效凭证仍是版本号），而 `cacheSize` 的 `Infinity` 会让历史无界增长，
+     * 所以只有 `cacheSize` 夹上限。别把两者强行统一成同一个函数。
+     */
+    cacheTTL?: number;
+    /**
+     * 比较函数（默认 `deepEqual`；显式传 falsy 视同未提供，同样回退 `deepEqual`）。
+     *
+     * 比较的是**输入状态**（缓存键），不是选择器结果：实现里是
+     * `equalityFn(item.state, state)`（`createSelector.ts` 的 `isCacheHit`），
+     * 且仅在状态无版本标记（非 Store 状态、直接传普通对象）时才被调用。
+     * 形参不能写成 `(a: S, b: S)`：本类型不带 `S` 泛型、`createSelector(selectorFn, options?)`
+     * 的 options 位点也不随 `S` 实例化，要标注具体状态得先在实现层把泛型透传下来。
+     * 于是候选只剩 `unknown` 与 `any` 两档，而 `unknown` 那一档下面这条会把它否掉。
+     *
+     * 但 `unknown` 形参在 `strictFunctionTypes` 下会**拒掉调用方按具体状态标注的比较器**：
+     * `{ equalityFn: (x: OrderState, y: OrderState) => x.id === y.id }` 实测报
+     * `TS2322: Type 'unknown' is not assignable to type 'OrderState'`（属性式函数按逆变比较）。
+     * 与 `AsyncActions`（R5-316）同一处方：形参取 `any` 让这类写法可赋——`any` 在这里只出现在
+     * **逆变的形参位**，返回值仍是 `boolean`，不会把错误结果放过去；实现侧传进来的本来就是
+     * `unknown`（缓存条目存的 state 与调用方给的 state），因此内部调用点不因它失去检查。
+     */
+    equalityFn?: (a: any, b: any) => boolean;
+    /**
+     * 状态**无版本标记**时用什么作为缓存失效凭证（默认 `true` = 缓存内容快照）。
+     *
+     * - `true`：写缓存时深拷贝一份状态，命中判定用 `equalityFn(快照, 当前状态)` 比内容。
+     *   任何深比较器（`deepEqual`、lodash `isEqual`、`(a,b)=>deepEqual(a,b)` 包装）都只有
+     *   这一种正确形态——若缓存活引用，两个实参会是同一个对象，深比较恒等，
+     *   就地变异看不见，TTL 内会持续返回陈旧值。
+     * - `false`：缓存**活引用**，命中判定退化为 `equalityFn(原引用, 当前引用)`。
+     *   仅当 `equalityFn` 是引用相等（`(a, b) => a === b`）时才该这么用：此时快照会与
+     *   活引用永不相等，缓存变成永远命不中。换来的收益是省下一次整树克隆，
+     *   代价是**前提被违反时（同一对象就地改过）会返回陈旧值**。
+     *
+     * 状态带版本号（Store 的 `_mutationCount`）时本选项不参与判定：版本号已是失效凭证，
+     * 既不克隆也不用 `equalityFn`。
+     */
+    snapshotState?: boolean;
 }
 ```
 
@@ -728,14 +713,14 @@ export interface SelectorOptions {
  * 选择器结果类型
  */
 export type SelectorResult<R> = {
-  value: R
-  fromCache: boolean
-}
+    value: R;
+    fromCache: boolean;
+};
 ```
 
 ### `createMemoizedSelector`
 
-````ts
+```ts
 /**
  * 创建记忆化选择器
  *
@@ -769,12 +754,12 @@ export type SelectorResult<R> = {
  * })
  * ```
  */
-export declare function createMemoizedSelector<S extends State, R>(selectorFn: Selector<S, R>, equalityFn?: (a: any, b: any) => boolean): Selector<S, R>
-````
+export declare function createMemoizedSelector<S extends State, R>(selectorFn: Selector<S, R>, equalityFn?: (a: any, b: any) => boolean): Selector<S, R>;
+```
 
 ### `createParametricSelector`
 
-````ts
+```ts
 /**
  * 创建参数化选择器
  *
@@ -832,18 +817,15 @@ export declare function createMemoizedSelector<S extends State, R>(selectorFn: S
  * // 每个参数独立缓存
  * ```
  */
-export declare function createParametricSelector<S extends State, P, R>(
-  selectorFn: (state: S, params: P) => R,
-  options?: {
-    ttl?: number
-    maxEntries?: number
-  },
-): ParametricSelectorFactory<S, P, R>
-````
+export declare function createParametricSelector<S extends State, P, R>(selectorFn: (state: S, params: P) => R, options?: {
+    ttl?: number;
+    maxEntries?: number;
+}): ParametricSelectorFactory<S, P, R>;
+```
 
 ### `createRetrySelector`
 
-````ts
+```ts
 /**
  * 创建重试选择器
  *
@@ -874,12 +856,12 @@ export declare function createParametricSelector<S extends State, P, R>(
  * const result = selector(state)
  * ```
  */
-export declare function createRetrySelector<S extends State, R>(selector: Selector<S, R>, options?: RetrySelectorOptions): Selector<S, R>
-````
+export declare function createRetrySelector<S extends State, R>(selector: Selector<S, R>, options?: RetrySelectorOptions): Selector<S, R>;
+```
 
 ### `createRetrySelectorAsync`
 
-````ts
+```ts
 /**
  * 创建可延迟重试的异步选择器
  *
@@ -912,12 +894,12 @@ export declare function createRetrySelector<S extends State, R>(selector: Select
  * )
  * ```
  */
-export declare function createRetrySelectorAsync<S extends State, R>(selector: Selector<S, R>, options?: AsyncRetrySelectorOptions): (state: S) => Promise<R>
-````
+export declare function createRetrySelectorAsync<S extends State, R>(selector: Selector<S, R>, options?: AsyncRetrySelectorOptions): (state: S) => Promise<R>;
+```
 
 ### `createSelector`
 
-````ts
+```ts
 /**
  * 创建选择器
  *
@@ -978,17 +960,14 @@ export declare function createRetrySelectorAsync<S extends State, R>(selector: S
  * console.log(result) // 20
  * ```
  */
-export declare function createSelector<S extends State, R>(
-  selectorFn: Selector<S, R>,
-  options?: SelectorOptions,
-): Selector<S, R> & {
-  factory: SelectorFactory<S, R>
-}
-````
+export declare function createSelector<S extends State, R>(selectorFn: Selector<S, R>, options?: SelectorOptions): Selector<S, R> & {
+    factory: SelectorFactory<S, R>;
+};
+```
 
 ### `createStructuredSelector`
 
-````ts
+```ts
 /**
  * 创建组合选择器
  *
@@ -1022,6 +1001,6 @@ export declare function createSelector<S extends State, R>(
  * ```
  */
 export declare function createStructuredSelector<S extends State, R extends object = Record<string, unknown>>(selectors: {
-  [K in keyof R]?: Selector<S, R[K]>
-}): Selector<S, R>
-````
+    [K in keyof R]?: Selector<S, R[K]>;
+}): Selector<S, R>;
+```

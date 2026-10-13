@@ -1,6 +1,6 @@
 # `./extras/action` API 参考（自动生成）
 
-> **本文件由 `scripts/generate-skill-api-reference.mjs` 从 `dist/**/\*.d.ts` 生成，请勿手工编辑。\*\*
+> **本文件由 `scripts/generate-skill-api-reference.mjs` 从 `dist/**/*.d.ts` 生成，请勿手工编辑。**
 >
 > - 来源版本：`@openlide/geomstore@0.8.3`
 > - 内容来源：构建产物类型声明（随 npm 包发布，与安装版本必然一致）
@@ -22,7 +22,7 @@
  * 而**拒绝**这些装饰器的返回值（`const d: ActionDecorator = withRetry()` 编译不过），
  * 对外等于一个不可用的重复类型。
  */
-export type ActionDecorator = MethodDecorator
+export type ActionDecorator = MethodDecorator;
 ```
 
 ### `ActionErrorData`
@@ -36,12 +36,12 @@ export type ActionDecorator = MethodDecorator
  * 过不了类型检查，等于强制每个调用方自行 cast（正是 `unknown` 想避免的事）。
  */
 export interface ActionErrorData {
-  /** 规范化后错误对象的 `message` */
-  message: string
-  /** 规范化后错误对象的 `stack`：无栈的实现下为 undefined */
-  stack?: string
-  /** 记录时刻（`Date.now()`） */
-  timestamp: number
+    /** 规范化后错误对象的 `message` */
+    message: string;
+    /** 规范化后错误对象的 `stack`：无栈的实现下为 undefined */
+    stack?: string;
+    /** 记录时刻（`Date.now()`） */
+    timestamp: number;
 }
 ```
 
@@ -60,20 +60,20 @@ export interface ActionErrorData {
  * 没有隐式索引签名、不满足约束，显式传类型实参时用 type alias（或对象字面量推断结果）。
  */
 export interface ActionExecutionContext<S extends State = State, A extends Actions = Actions> {
-  /** 当前state */
-  state: S
-  /** 所有actions */
-  actions: A
-  /** Action名称 */
-  actionName: string
-  /** Action参数 */
-  args: unknown[]
+    /** 当前state */
+    state: S;
+    /** 所有actions */
+    actions: A;
+    /** Action名称 */
+    actionName: string;
+    /** Action参数 */
+    args: unknown[];
 }
 ```
 
 ### `ActionExecutor`
 
-````ts
+```ts
 /**
  * Action执行器类
  *
@@ -127,277 +127,266 @@ export interface ActionExecutionContext<S extends State = State, A extends Actio
  * ```
  */
 export declare class ActionExecutor<A extends Actions = AsyncActions> {
-  /** 执行历史与统计（实现已拆至 ./ActionHistory.js） */
-  private readonly history
-  /**
-   * 执行Action
-   *
-   * 异步执行指定的Action，并记录执行结果
-   *
-   * @template K - Action名称类型
-   * @param {A} actions - Actions对象
-   * @param {K} actionName - 要执行的Action名称
-   * @param {Parameters<A[K]>} args - Action参数
-   * @returns {Promise<Awaited<ReturnType<A[K]>>>} Action执行结果（异步 action 返回其 resolve 值，不会出现 Promise<Promise<T>>）
-   * @throws {Error} 如果Action执行失败
-   *
-   * @example
-   * ```typescript
-   * try {
-   *   const result = await executor.execute(actions, 'fetchData', 'user-123')
-   *   console.log('Action succeeded:', result)
-   * } catch (error) {
-   *   console.error('Action failed:', error)
-   * }
-   * ```
-   */
-  execute<K extends keyof A>(actions: A, actionName: K, ...args: Parameters<A[K]>): Promise<Awaited<ReturnType<A[K]>>>
-  /**
-   * 执行 Action 但不写历史
-   *
-   * 重试/超时等「一次逻辑调用可能对应多次底层执行」的路径用它，再由 `recordOutcome`
-   * 就整体结果记一条：若直接用 `execute`，3 次重试会落 4 条记录，`getStats().total`
-   * 变成尝试次数、`successRate` 对最终成功的调用报出 25%，中间失败还会挤掉其他
-   * Action 的真实记录（历史按 maxHistory 有界）。
-   *
-   * @private
-   */
-  private run
-  /**
-   * 围绕一次「逻辑调用」记录恰好一条历史
-   *
-   * `run` 只负责执行、不记账，记账统一收口在这里：错误经 `toError` 规范化后写入
-   * `ActionResult.error`，向外抛出的仍是原始错误值。
-   *
-   * @private
-   */
-  private recordOutcome
-  /**
-   * 并行执行多个Action
-   *
-   * 同时执行多个独立的Action，返回所有结果（包括错误）
-   *
-   * @template K - Action名称类型
-   * @param {A} actions - Actions对象
-   * @param {Array<{action: K, args: Parameters<A[K]>}>} tasks - 任务列表
-   * @returns {Promise<Array<Awaited<ReturnType<A[K]>> | Error>>} 执行结果数组（成功返回结果，失败返回Error）
-   *
-   * @example
-   * ```typescript
-   * const results = await executor.executeParallel(actions, [
-   *   { action: 'fetchUser', args: ['user-1'] },
-   *   { action: 'fetchPosts', args: ['user-1'] },
-   *   { action: 'fetchProfile', args: ['user-1'] }
-   * ])
-   *
-   * results.forEach((result, index) => {
-   *   if (result instanceof Error) {
-   *     console.error(`Task ${index} failed:`, result)
-   *   } else {
-   *     console.log(`Task ${index} succeeded:`, result)
-   *   }
-   * })
-   * ```
-   */
-  executeParallel<K extends keyof A>(
-    actions: A,
-    tasks: Array<{
-      action: K
-      args: Parameters<A[K]>
-    }>,
-  ): Promise<Array<Awaited<ReturnType<A[K]>> | Error>>
-  /**
-   * 串行执行多个Action
-   *
-   * 依次执行多个Action，每个Action完成后才执行下一个
-   *
-   * @template K - Action名称类型
-   * @param {A} actions - Actions对象
-   * @param {Array<{action: K, args: Parameters<A[K]>}>} tasks - 任务列表
-   * @returns {Promise<Array<Awaited<ReturnType<A[K]>> | Error>>} 执行结果数组
-   *
-   * @example
-   * ```typescript
-   * const results = await executor.executeSequential(actions, [
-   *   { action: 'validateData', args: [data] },
-   *   { action: 'transformData', args: [data] },
-   *   { action: 'saveData', args: [data] }
-   * ])
-   *
-   * // 检查是否有失败
-   * const hasFailures = results.some(r => r instanceof Error)
-   * if (hasFailures) {
-   *   console.log('Some tasks failed, aborting...')
-   * } else {
-   *   console.log('All tasks completed successfully')
-   * }
-   * ```
-   */
-  executeSequential<K extends keyof A>(
-    actions: A,
-    tasks: Array<{
-      action: K
-      args: Parameters<A[K]>
-    }>,
-  ): Promise<Array<Awaited<ReturnType<A[K]>> | Error>>
-  /**
-   * 重试Action执行
-   *
-   * 在Action失败时自动重试，支持指数退避策略
-   *
-   * @template K - Action名称类型
-   * @param {A} actions - Actions对象
-   * @param {K} actionName - Action名称
-   * @param {Parameters<A[K]>} args - Action参数
-   * @param {{retries?: number, delay?: number, onRetry?: (error: Error, attempt: number) => void}} options - 重试选项
-   * @param {number} [options.retries=3] - 最大重试次数
-   * @param {number} [options.delay=100] - 基础重试延迟（毫秒）
-   * @param {(error: Error, attempt: number) => void} [options.onRetry] - 重试回调
-   * @returns {Promise<Awaited<ReturnType<A[K]>>>} Action执行结果
-   * @throws {Error} 如果所有重试都失败
-   *
-   * @remarks 历史按「一次逻辑调用」记账：逐次重试不单独入历史，`getStats()` 的 total
-   * 与 `successRate` 因此反映调用结果而非单次尝试结果。
-   *
-   * 同一条记录的 `duration`（以及派生的 `avgDuration`）是**端到端**耗时，包含
-   * `retryWithBackoff` 的全部退避等待（`delay * 2^(i-1)`）：`retries: 3, delay: 100`
-   * 的三次失败重试会给 `duration` 加上约 700ms。它衡量的是「这次调用等了多久」，
-   * 不是 action 自身的执行延迟——把它当性能指标读之前先想想重试次数。
-   *
-   * @example
-   * ```typescript
-   * const result = await executor.executeWithRetry(
-   *   actions,
-   *   'fetchData',
-   *   ['user-123'],
-   *   {
-   *     retries: 3,
-   *     delay: 1000,
-   *     onRetry: (error, attempt) => {
-   *       console.log(`Attempt ${attempt} failed:`, error.message)
-   *       if (attempt === 3) {
-   *         // 最后一次重试，显示用户友好的错误
-   *         showError('服务暂时不可用，请稍后重试')
-   *       }
-   *     }
-   *   }
-   * )
-   * ```
-   */
-  executeWithRetry<K extends keyof A>(
-    actions: A,
-    actionName: K,
-    args: Parameters<A[K]>,
-    options?: {
-      retries?: number
-      delay?: number
-      onRetry?: (error: Error, attempt: number) => void
-    },
-  ): Promise<Awaited<ReturnType<A[K]>>>
-  /**
-   * 执行Action并设置超时
-   *
-   * 在指定时间内完成Action执行，超时则抛出错误
-   *
-   * @template K - Action名称类型
-   * @param {A} actions - Actions对象
-   * @param {K} actionName - Action名称
-   * @param {Parameters<A[K]>} args - Action参数
-   * @param {number} timeout - 超时时间（毫秒，必须为大于 0 的有限数值）
-   * @returns {Promise<Awaited<ReturnType<A[K]>>>} Action执行结果
-   * @throws {Error} 如果超时或Action执行失败
-   * @throws {RangeError} timeout 非法
-   *
-   * @remarks Promise 无法取消：超时只让本方法提前 reject，底层 action 仍会执行到结束，
-   * 其迟到结果被丢弃且不写入历史（本方法按「一次调用一条记录」记为超时失败）。
-   * 需要真正中断请在 action 内部使用 AbortController 等取消机制。
-   *
-   * 超时错误由公共内核 `raceWithTimeout` 统一构造，带 `code === TIMEOUT_ERROR_CODE`
-   * （见 `./async-core.js`）：判定是否超时请按该 code，文案 `Action timeout after <n>ms`
-   * 仅用于展示，不保证跨版本稳定。
-   *
-   * @example
-   * ```typescript
-   * try {
-   *   const result = await executor.executeWithTimeout(
-   *     actions,
-   *     'fetchData',
-   *     ['user-123'],
-   *     5000 // 5秒超时
-   *   )
-   *   console.log('Data fetched:', result)
-   * } catch (error) {
-   *   if ((error as { code?: string }).code === TIMEOUT_ERROR_CODE) {
-   *     console.error('Request timed out')
-   *     showTimeoutError()
-   *   } else {
-   *     console.error('Request failed:', error)
-   *   }
-   * }
-   * ```
-   */
-  executeWithTimeout<K extends keyof A>(actions: A, actionName: K, args: Parameters<A[K]>, timeout: number): Promise<Awaited<ReturnType<A[K]>>>
-  /**
-   * 记录执行结果（实现已拆至 ./ActionHistory.js）
-   *
-   * @private
-   */
-  private recordResult
-  /**
-   * 获取Action执行历史
-   *
-   * 返回指定Action或所有Action的执行历史
-   *
-   * @param {string} [actionName] - Action名称，如果未指定则返回所有Action的历史
-   * @returns {ActionResult[]} 执行历史数组的副本。传入 actionName 时按时间**正序**（最早在前，
-   *   保持插入顺序）；未传时聚合所有 Action 并按 startTime **倒序**（最新在前）
-   *
-   * @remarks 本方法是 `ActionHistoryTracker.getHistory` 的转发，排序口径与它一致：
-   * 「按时间倒序」只适用于不带参数的聚合调用，`getHistory('fetchData')[0]` 拿到的是该
-   * Action **最早**的一条，取最新一条请用 `[length - 1]`。
-   * 与转发目标同口径的还有副本粒度：只有**数组容器**是副本（外部 push/splice 不会污染内部
-   * 桶），数组里的 `ActionResult` 条目仍与内部桶共享同一对象，请按只读值消费。
-   */
-  getHistory(actionName?: string): ActionResult[]
-  /**
-   * 获取Action执行统计
-   *
-   * 计算指定Action的执行统计信息
-   *
-   * @param {string} actionName - Action名称
-   * @returns {ActionStats} 统计信息
-   */
-  getStats(actionName: string): ActionStats
-  /**
-   * 清除执行历史
-   *
-   * 删除指定Action或所有Action的执行历史
-   *
-   * @param {string} [actionName] - Action名称，如果未指定则清除所有历史
-   */
-  clearHistory(actionName?: string): void
-  /**
-   * 设置最大历史记录数
-   *
-   * 设置每个Action最多保留的历史记录数量
-   *
-   * @param {number} size - 最大历史记录数（必须 >= 1）
-   */
-  setMaxHistory(size: number): void
-  /**
-   * 获取所有Action的统计
-   *
-   * 返回所有已执行Action的统计信息
-   *
-   * @returns {Record<string, ActionStats>} 统计对象
-   */
-  getAllStats(): Record<string, ActionStats>
+    /** 执行历史与统计（实现已拆至 ./ActionHistory.js） */
+    private readonly history;
+    /**
+     * 执行Action
+     *
+     * 异步执行指定的Action，并记录执行结果
+     *
+     * @template K - Action名称类型
+     * @param {A} actions - Actions对象
+     * @param {K} actionName - 要执行的Action名称
+     * @param {Parameters<A[K]>} args - Action参数
+     * @returns {Promise<Awaited<ReturnType<A[K]>>>} Action执行结果（异步 action 返回其 resolve 值，不会出现 Promise<Promise<T>>）
+     * @throws {Error} 如果Action执行失败
+     *
+     * @example
+     * ```typescript
+     * try {
+     *   const result = await executor.execute(actions, 'fetchData', 'user-123')
+     *   console.log('Action succeeded:', result)
+     * } catch (error) {
+     *   console.error('Action failed:', error)
+     * }
+     * ```
+     */
+    execute<K extends keyof A>(actions: A, actionName: K, ...args: Parameters<A[K]>): Promise<Awaited<ReturnType<A[K]>>>;
+    /**
+     * 执行 Action 但不写历史
+     *
+     * 重试/超时等「一次逻辑调用可能对应多次底层执行」的路径用它，再由 `recordOutcome`
+     * 就整体结果记一条：若直接用 `execute`，3 次重试会落 4 条记录，`getStats().total`
+     * 变成尝试次数、`successRate` 对最终成功的调用报出 25%，中间失败还会挤掉其他
+     * Action 的真实记录（历史按 maxHistory 有界）。
+     *
+     * @private
+     */
+    private run;
+    /**
+     * 围绕一次「逻辑调用」记录恰好一条历史
+     *
+     * `run` 只负责执行、不记账，记账统一收口在这里：错误经 `toError` 规范化后写入
+     * `ActionResult.error`，向外抛出的仍是原始错误值。
+     *
+     * @private
+     */
+    private recordOutcome;
+    /**
+     * 并行执行多个Action
+     *
+     * 同时执行多个独立的Action，返回所有结果（包括错误）
+     *
+     * @template K - Action名称类型
+     * @param {A} actions - Actions对象
+     * @param {Array<{action: K, args: Parameters<A[K]>}>} tasks - 任务列表
+     * @returns {Promise<Array<Awaited<ReturnType<A[K]>> | Error>>} 执行结果数组（成功返回结果，失败返回Error）
+     *
+     * @example
+     * ```typescript
+     * const results = await executor.executeParallel(actions, [
+     *   { action: 'fetchUser', args: ['user-1'] },
+     *   { action: 'fetchPosts', args: ['user-1'] },
+     *   { action: 'fetchProfile', args: ['user-1'] }
+     * ])
+     *
+     * results.forEach((result, index) => {
+     *   if (result instanceof Error) {
+     *     console.error(`Task ${index} failed:`, result)
+     *   } else {
+     *     console.log(`Task ${index} succeeded:`, result)
+     *   }
+     * })
+     * ```
+     */
+    executeParallel<K extends keyof A>(actions: A, tasks: Array<{
+        action: K;
+        args: Parameters<A[K]>;
+    }>): Promise<Array<Awaited<ReturnType<A[K]>> | Error>>;
+    /**
+     * 串行执行多个Action
+     *
+     * 依次执行多个Action，每个Action完成后才执行下一个
+     *
+     * @template K - Action名称类型
+     * @param {A} actions - Actions对象
+     * @param {Array<{action: K, args: Parameters<A[K]>}>} tasks - 任务列表
+     * @returns {Promise<Array<Awaited<ReturnType<A[K]>> | Error>>} 执行结果数组
+     *
+     * @example
+     * ```typescript
+     * const results = await executor.executeSequential(actions, [
+     *   { action: 'validateData', args: [data] },
+     *   { action: 'transformData', args: [data] },
+     *   { action: 'saveData', args: [data] }
+     * ])
+     *
+     * // 检查是否有失败
+     * const hasFailures = results.some(r => r instanceof Error)
+     * if (hasFailures) {
+     *   console.log('Some tasks failed, aborting...')
+     * } else {
+     *   console.log('All tasks completed successfully')
+     * }
+     * ```
+     */
+    executeSequential<K extends keyof A>(actions: A, tasks: Array<{
+        action: K;
+        args: Parameters<A[K]>;
+    }>): Promise<Array<Awaited<ReturnType<A[K]>> | Error>>;
+    /**
+     * 重试Action执行
+     *
+     * 在Action失败时自动重试，支持指数退避策略
+     *
+     * @template K - Action名称类型
+     * @param {A} actions - Actions对象
+     * @param {K} actionName - Action名称
+     * @param {Parameters<A[K]>} args - Action参数
+     * @param {{retries?: number, delay?: number, onRetry?: (error: Error, attempt: number) => void}} options - 重试选项
+     * @param {number} [options.retries=3] - 最大重试次数
+     * @param {number} [options.delay=100] - 基础重试延迟（毫秒）
+     * @param {(error: Error, attempt: number) => void} [options.onRetry] - 重试回调
+     * @returns {Promise<Awaited<ReturnType<A[K]>>>} Action执行结果
+     * @throws {Error} 如果所有重试都失败
+     *
+     * @remarks 历史按「一次逻辑调用」记账：逐次重试不单独入历史，`getStats()` 的 total
+     * 与 `successRate` 因此反映调用结果而非单次尝试结果。
+     *
+     * 同一条记录的 `duration`（以及派生的 `avgDuration`）是**端到端**耗时，包含
+     * `retryWithBackoff` 的全部退避等待（`delay * 2^(i-1)`）：`retries: 3, delay: 100`
+     * 的三次失败重试会给 `duration` 加上约 700ms。它衡量的是「这次调用等了多久」，
+     * 不是 action 自身的执行延迟——把它当性能指标读之前先想想重试次数。
+     *
+     * @example
+     * ```typescript
+     * const result = await executor.executeWithRetry(
+     *   actions,
+     *   'fetchData',
+     *   ['user-123'],
+     *   {
+     *     retries: 3,
+     *     delay: 1000,
+     *     onRetry: (error, attempt) => {
+     *       console.log(`Attempt ${attempt} failed:`, error.message)
+     *       if (attempt === 3) {
+     *         // 最后一次重试，显示用户友好的错误
+     *         showError('服务暂时不可用，请稍后重试')
+     *       }
+     *     }
+     *   }
+     * )
+     * ```
+     */
+    executeWithRetry<K extends keyof A>(actions: A, actionName: K, args: Parameters<A[K]>, options?: {
+        retries?: number;
+        delay?: number;
+        onRetry?: (error: Error, attempt: number) => void;
+    }): Promise<Awaited<ReturnType<A[K]>>>;
+    /**
+     * 执行Action并设置超时
+     *
+     * 在指定时间内完成Action执行，超时则抛出错误
+     *
+     * @template K - Action名称类型
+     * @param {A} actions - Actions对象
+     * @param {K} actionName - Action名称
+     * @param {Parameters<A[K]>} args - Action参数
+     * @param {number} timeout - 超时时间（毫秒，必须为大于 0 的有限数值）
+     * @returns {Promise<Awaited<ReturnType<A[K]>>>} Action执行结果
+     * @throws {Error} 如果超时或Action执行失败
+     * @throws {RangeError} timeout 非法
+     *
+     * @remarks Promise 无法取消：超时只让本方法提前 reject，底层 action 仍会执行到结束，
+     * 其迟到结果被丢弃且不写入历史（本方法按「一次调用一条记录」记为超时失败）。
+     * 需要真正中断请在 action 内部使用 AbortController 等取消机制。
+     *
+     * 超时错误由公共内核 `raceWithTimeout` 统一构造，带 `code === TIMEOUT_ERROR_CODE`
+     * （见 `./async-core.js`）：判定是否超时请按该 code，文案 `Action timeout after <n>ms`
+     * 仅用于展示，不保证跨版本稳定。
+     *
+     * @example
+     * ```typescript
+     * try {
+     *   const result = await executor.executeWithTimeout(
+     *     actions,
+     *     'fetchData',
+     *     ['user-123'],
+     *     5000 // 5秒超时
+     *   )
+     *   console.log('Data fetched:', result)
+     * } catch (error) {
+     *   if ((error as { code?: string }).code === TIMEOUT_ERROR_CODE) {
+     *     console.error('Request timed out')
+     *     showTimeoutError()
+     *   } else {
+     *     console.error('Request failed:', error)
+     *   }
+     * }
+     * ```
+     */
+    executeWithTimeout<K extends keyof A>(actions: A, actionName: K, args: Parameters<A[K]>, timeout: number): Promise<Awaited<ReturnType<A[K]>>>;
+    /**
+     * 记录执行结果（实现已拆至 ./ActionHistory.js）
+     *
+     * @private
+     */
+    private recordResult;
+    /**
+     * 获取Action执行历史
+     *
+     * 返回指定Action或所有Action的执行历史
+     *
+     * @param {string} [actionName] - Action名称，如果未指定则返回所有Action的历史
+     * @returns {ActionResult[]} 执行历史数组的副本。传入 actionName 时按时间**正序**（最早在前，
+     *   保持插入顺序）；未传时聚合所有 Action 并按 startTime **倒序**（最新在前）
+     *
+     * @remarks 本方法是 `ActionHistoryTracker.getHistory` 的转发，排序口径与它一致：
+     * 「按时间倒序」只适用于不带参数的聚合调用，`getHistory('fetchData')[0]` 拿到的是该
+     * Action **最早**的一条，取最新一条请用 `[length - 1]`。
+     * 与转发目标同口径的还有副本粒度：只有**数组容器**是副本（外部 push/splice 不会污染内部
+     * 桶），数组里的 `ActionResult` 条目仍与内部桶共享同一对象，请按只读值消费。
+     */
+    getHistory(actionName?: string): ActionResult[];
+    /**
+     * 获取Action执行统计
+     *
+     * 计算指定Action的执行统计信息
+     *
+     * @param {string} actionName - Action名称
+     * @returns {ActionStats} 统计信息
+     */
+    getStats(actionName: string): ActionStats;
+    /**
+     * 清除执行历史
+     *
+     * 删除指定Action或所有Action的执行历史
+     *
+     * @param {string} [actionName] - Action名称，如果未指定则清除所有历史
+     */
+    clearHistory(actionName?: string): void;
+    /**
+     * 设置最大历史记录数
+     *
+     * 设置每个Action最多保留的历史记录数量
+     *
+     * @param {number} size - 最大历史记录数（必须 >= 1）
+     */
+    setMaxHistory(size: number): void;
+    /**
+     * 获取所有Action的统计
+     *
+     * 返回所有已执行Action的统计信息
+     *
+     * @returns {Record<string, ActionStats>} 统计对象
+     */
+    getAllStats(): Record<string, ActionStats>;
 }
-````
+```
 
 ### `ActionLoader`
 
-````ts
+```ts
 /**
  * Action加载状态管理器
  *
@@ -428,332 +417,332 @@ export declare class ActionExecutor<A extends Actions = AsyncActions> {
  * ```
  */
 export declare class ActionLoader {
-  /**
-   * loading 引用计数（按 loading 键）：同一 action 重叠调用时，
-   * 首个调用置 true、最后一个完成才置 false，避免共享布尔键的提前翻转。
-   * 可注入共享存储（withLoading 场景）：同宿主上不同选项签名的装饰器
-   * 对同一 loading 键的计数必须集中，否则仍会互相提前翻转。
-   *
-   * 该计数同时是 loading 状态的**唯一来源**：此前另有实例私有的布尔镜像，
-   * 共享计数时另一实例的 increment 不会写本实例的镜像，本实例 decrement 到
-   * 非零也不复位它，于是 `isLoading()` 会永久返回 true。
-   * @private
-   */
-  private loadingRefCounts
-  /**
-   * 错误映射
-   * @private
-   * @type {Map<string, Error | null>}
-   */
-  private errors
-  /**
-   * 错误数据映射
-   * @private
-   * @type {Map<string, ActionErrorData>}
-   */
-  private errorData
-  /**
-   * 记账代际：`clearInternalRecords()` 每次自增
-   *
-   * in-flight 调用在开始时捕获它的值，结算时比对：不一致就说明自己的 increment 记录
-   * 已被丢弃（`clear()` 或换配置的 `setOptions()` 都已给旧键补写复位值），此时任何
-   * 状态写入都只可能吞掉「重置之后新起的调用」的计数。见 {@link CallScope}
-   * @private
-   */
-  private stateGeneration
-  /**
-   * 最近一次**实际调用**用到的 setState
-   *
-   * `clear()` 与换键的 `setOptions()` 据此给旧键补写复位值：内部记账被清空后已无
-   * 在途调用来纠正 store，`loading: true` 会永久卡住。
-   * 需要复位的键直接取自下面的几张表（键即状态键），无需另设登记表。
-   *
-   * 赋值点在 wrapper 内部（每次调用登记一次），而不是只在 `wrap()` 当时：本类的常见
-   * 用法是 wrap 一次、复用同一个 wrapper 反复调用，而 `clear()` 会把本字段清成
-   * undefined。只在 wrap 时赋值的话，「wrap → clear → 继续用同一个 wrapper」之后
-   * 下一次 clear()/setOptions() 就拿不到写入函数，复位值一个也写不出去。
-   * @private
-   */
-  private lastSetState
-  /**
-   * 配置选项（由 {@link normalizeActionLoaderOptions} 补齐，缺省值见 {@link ACTION_LOADER_DEFAULTS}）
-   * @private
-   * @type {NormalizedActionLoaderOptions}
-   */
-  private options
-  /**
-   * 创建Action加载器实例
-   *
-   * @param {ActionLoaderOptions} [options={}] - 配置选项
-   *
-   * @example
-   * ```typescript
-   * // 使用默认选项
-   * const loader = new ActionLoader()
-   *
-   * // 自定义选项
-   * const customLoader = new ActionLoader({
-   *   autoLoading: true,
-   *   loadingKey: 'isLoading',
-   *   errorKey: 'myError',
-   *   errorDataKey: 'errorDetails'
-   * })
-   * ```
-   */
-  constructor(options?: ActionLoaderOptions)
-  /**
-   * 包装Action，自动管理加载状态
-   *
-   * 执行时会自动设置loading状态，成功后清除loading和error，失败时设置error
-   *
-   * @template T - Action函数类型（参数类型不限，返回值须为 Promise）
-   * @param {T} action - 要包装的异步Action函数
-   * @param {string} actionName - Action名称（用于状态键）
-   * @param {(key: string, value: unknown) => void} setState - 设置状态的函数
-   * @returns {T} 包装后的Action（签名与被包装者一致）
-   *
-   * @remarks 约束用 `(...args: never[]) => Promise<unknown>` 而非 `unknown[]`：按参数逆变，
-   * `unknown[]` 会拒掉类文档示例里 `(userId: string) => Promise<User>` 这类带具体参数类型的
-   * action（调用方被迫写 `as any`），`never[]` 则放行且保留 T 的推导。
-   *
-   * 包装函数把自己的 receiver 原样转发给被包装的 action：本方法常被用来包一个**未绑定**的
-   * 方法引用（`loader.wrap(store.fetchUser, 'fetchUser', store.setState.bind(store))`），
-   * 那种写法下 `this` 就是宿主，丢掉它会让依赖 receiver 的 action 直接抛错。
-   *
-   * 派生状态（loading/error/errorData）的写入按「一次调用的配置快照 + 代际凭证」结算：
-   * `autoLoading` 与三个状态键都在调用开始时求值一次，结算时只认这份快照，且只在
-   * 代际未变时才写——见 {@link CallScope}。中途 `setOptions()`/`clear()` 之后进行的
-   * 收尾写入既可能对错键、也会吞掉别人调用的计数，故一并跳过。
-   *
-   * @example
-   * ```typescript
-   * const fetchUserAction = async (userId: string) => {
-   *   const user = await api.getUser(userId)
-   *   return user
-   * }
-   *
-   * const wrapped = loader.wrap(
-   *   fetchUserAction,
-   *   'fetchUser',
-   *   store.setState.bind(store)
-   * )
-   *
-   * // 执行时自动管理状态
-   * await wrapped('user123')
-   * // state.loading = false (执行时为true)
-   * // state.error = null
-   * ```
-   */
-  wrap<T extends (...args: never[]) => Promise<unknown>>(action: T, actionName: string, setState: (key: string, value: unknown) => void): T
-  /**
-   * 取本次调用的配置快照与记账凭证
-   *
-   * @private
-   */
-  private captureCallScope
-  /**
-   * 一次调用的收尾：把派生状态写回宿主
-   *
-   * `error === null` 是成功路径（清错误），否则记录错误。错误状态管理独立于
-   * `autoLoading` 开关：即使关闭也应清掉/写上陈旧错误。
-   *
-   * 代际变了就直接返回：本调用的 increment 记录已被 `clear()`/换配置的 `setOptions()`
-   * 丢弃，而那两处都已给旧键补写复位值——再减一次只会把「重置之后新起的调用」的计数
-   * 吞掉、并在它仍在飞行时把共享键翻成 false。
-   *
-   * @private
-   */
-  private settleCall
-  /**
-   * 执行辅助状态写入（loading/error/errorData），失败不外泄
-   *
-   * 这些是派生的 UI 状态，写入失败（典型场景：action 执行期间 store 被销毁，
-   * setState 抛 "Cannot call setState on a destroyed Store"）不得掩盖主流程结果：
-   * 成功路径冒泡会用新异常替换掉 action 的返回值，失败路径冒泡会替换掉 action 的
-   * 原始错误，两种情况调用方看到的都是与真实故障无关的异常。
-   *
-   * 注意 incrementLoading 不走此助手：wrap 依赖它抛错来回滚已递增的引用计数。
-   *
-   * @private
-   */
-  private safeRunStateEffect
-  /**
-   * 递增 loading 引用计数；首个进行中的调用才将 loading 置为 true
-   *
-   * @private
-   */
-  private incrementLoading
-  /**
-   * 递减 loading 引用计数；最后一个完成的调用才将 loading 置为 false
-   *
-   * @private
-   */
-  private decrementLoading
-  /**
-   * 回滚一次 increment（`setState` 抛错时），只退计数不写状态
-   *
-   * @private
-   */
-  private releaseLoadingSlot
-  /**
-   * 写 error / errorData
-   *
-   * 键取自调用开始时的快照（{@link CallScope}），不在这里重算：中途 `setOptions()`
-   * 换过键名的话，重算会让「按旧键写的账」跑到新键上去补一笔，而新键属于切换之后的调用。
-   *
-   * @private
-   */
-  private writeError
-  /**
-   * 获取loading key
-   *
-   * @private
-   * @param {string} actionName - Action名称
-   * @returns {string} loading状态键（perActionKeys 模式下按 action 派生）
-   */
-  private getLoadingKey
-  /**
-   * 获取error key
-   *
-   * @private
-   * @param {string} actionName - Action名称
-   * @returns {string} error状态键（perActionKeys 模式下按 action 派生）
-   */
-  private getErrorKey
-  /**
-   * 获取error data key
-   *
-   * @private
-   * @param {string} actionName - Action名称
-   * @returns {string} error数据状态键（perActionKeys 模式下按 action 派生）
-   */
-  private getErrorDataKey
-  /**
-   * 检查是否loading
-   *
-   * @param {string} actionName - Action名称
-   * @returns {boolean} 是否正在加载
-   *
-   * @example
-   * ```typescript
-   * if (loader.isLoading('fetchUser')) {
-   *   console.log('Fetching user...')
-   * }
-   * ```
-   */
-  isLoading(actionName: string): boolean
-  /**
-   * 获取error
-   *
-   * @param {string} actionName - Action名称
-   * @returns {Error | null} 错误对象，没有错误时返回null
-   *
-   * @example
-   * ```typescript
-   * const error = loader.getError('fetchUser')
-   * if (error) {
-   *   console.error('Failed to fetch user:', error.message)
-   * }
-   * ```
-   */
-  getError(actionName: string): Error | null
-  /**
-   * 获取error data
-   *
-   * @param {string} actionName - Action名称
-   * @returns {ActionErrorData | undefined} 错误数据（message/stack/timestamp），无错误时 undefined
-   *
-   * @example
-   * ```typescript
-   * const errorData = loader.getErrorData('fetchUser')
-   * if (errorData) {
-   *   console.log('Error occurred at:', new Date(errorData.timestamp))
-   *   console.log('Stack trace:', errorData.stack)
-   * }
-   * ```
-   */
-  getErrorData(actionName: string): ActionErrorData | undefined
-  /**
-   * 获取所有loading状态
-   *
-   * @returns {Record<string, boolean>} 所有loading状态的对象
-   *
-   * @example
-   * ```typescript
-   * const loadingStates = loader.getAllLoading()
-   * console.log('All loading states:', loadingStates)
-   * ```
-   */
-  getAllLoading(): Record<string, boolean>
-  /**
-   * 获取所有errors
-   *
-   * @returns {Record<string, Error | null>} 所有错误的对象
-   *
-   * @example
-   * ```typescript
-   * const errors = loader.getAllErrors()
-   * Object.entries(errors).forEach(([key, error]) => {
-   *   if (error) {
-   *     console.error(`${key}:`, error.message)
-   *   }
-   * })
-   * ```
-   */
-  getAllErrors(): Record<string, Error | null>
-  /**
-   * 清除所有状态
-   *
-   * 既丢内部记账，也把宿主 store 里的派生状态复位（loading→false、error/errorData→null）：
-   * 只清内部的话，store 会永久停在最后一次写入的值上（典型表现 `loading: true` 卡死），
-   * 此后已没有在途调用来纠正它。
-   *
-   * 注意：注入的共享 loading 计数会被一并清零，同宿主上其他 loader 实例的进行中调用
-   * 因此失去计数（与 `setOptions` 换选项时的处理口径一致）。
-   *
-   * @param {(key: string, value: unknown) => void} [setState] - 复位写入用的 setState，
-   *   缺省复用最近一次调用（wrapper 实际执行时）登记的那个
-   *
-   * @example
-   * ```typescript
-   * // 重置所有状态（含 store 侧）
-   * loader.clear()
-   * ```
-   */
-  clear(setState?: (key: string, value: unknown) => void): void
-  /**
-   * 给本实例写过的状态键补写复位值
-   *
-   * @private
-   */
-  private resetDerivedState
-  /**
-   * 丢弃内部记账（store 侧的复位由 `resetDerivedState` 负责）
-   *
-   * 代际同时自增：进行中的调用据此认出自己的 increment 记录已不在，结算时不再改任何
-   * 状态键（见 {@link CallScope}）。
-   *
-   * @private
-   */
-  private clearInternalRecords
-  /**
-   * 设置选项
-   *
-   * 更新配置选项，未提供的选项保持不变
-   *
-   * @param {Partial<ActionLoaderOptions>} options - 要更新的选项
-   *
-   * @example
-   * ```typescript
-   * loader.setOptions({
-   *   loadingKey: 'isLoading',
-   *   autoLoading: false
-   * })
-   * ```
-   */
-  setOptions(options: Partial<ActionLoaderOptions>): void
+    /**
+     * loading 引用计数（按 loading 键）：同一 action 重叠调用时，
+     * 首个调用置 true、最后一个完成才置 false，避免共享布尔键的提前翻转。
+     * 可注入共享存储（withLoading 场景）：同宿主上不同选项签名的装饰器
+     * 对同一 loading 键的计数必须集中，否则仍会互相提前翻转。
+     *
+     * 该计数同时是 loading 状态的**唯一来源**：此前另有实例私有的布尔镜像，
+     * 共享计数时另一实例的 increment 不会写本实例的镜像，本实例 decrement 到
+     * 非零也不复位它，于是 `isLoading()` 会永久返回 true。
+     * @private
+     */
+    private loadingRefCounts;
+    /**
+     * 错误映射
+     * @private
+     * @type {Map<string, Error | null>}
+     */
+    private errors;
+    /**
+     * 错误数据映射
+     * @private
+     * @type {Map<string, ActionErrorData>}
+     */
+    private errorData;
+    /**
+     * 记账代际：`clearInternalRecords()` 每次自增
+     *
+     * in-flight 调用在开始时捕获它的值，结算时比对：不一致就说明自己的 increment 记录
+     * 已被丢弃（`clear()` 或换配置的 `setOptions()` 都已给旧键补写复位值），此时任何
+     * 状态写入都只可能吞掉「重置之后新起的调用」的计数。见 {@link CallScope}
+     * @private
+     */
+    private stateGeneration;
+    /**
+     * 最近一次**实际调用**用到的 setState
+     *
+     * `clear()` 与换键的 `setOptions()` 据此给旧键补写复位值：内部记账被清空后已无
+     * 在途调用来纠正 store，`loading: true` 会永久卡住。
+     * 需要复位的键直接取自下面的几张表（键即状态键），无需另设登记表。
+     *
+     * 赋值点在 wrapper 内部（每次调用登记一次），而不是只在 `wrap()` 当时：本类的常见
+     * 用法是 wrap 一次、复用同一个 wrapper 反复调用，而 `clear()` 会把本字段清成
+     * undefined。只在 wrap 时赋值的话，「wrap → clear → 继续用同一个 wrapper」之后
+     * 下一次 clear()/setOptions() 就拿不到写入函数，复位值一个也写不出去。
+     * @private
+     */
+    private lastSetState;
+    /**
+     * 配置选项（由 {@link normalizeActionLoaderOptions} 补齐，缺省值见 {@link ACTION_LOADER_DEFAULTS}）
+     * @private
+     * @type {NormalizedActionLoaderOptions}
+     */
+    private options;
+    /**
+     * 创建Action加载器实例
+     *
+     * @param {ActionLoaderOptions} [options={}] - 配置选项
+     *
+     * @example
+     * ```typescript
+     * // 使用默认选项
+     * const loader = new ActionLoader()
+     *
+     * // 自定义选项
+     * const customLoader = new ActionLoader({
+     *   autoLoading: true,
+     *   loadingKey: 'isLoading',
+     *   errorKey: 'myError',
+     *   errorDataKey: 'errorDetails'
+     * })
+     * ```
+     */
+    constructor(options?: ActionLoaderOptions);
+    /**
+     * 包装Action，自动管理加载状态
+     *
+     * 执行时会自动设置loading状态，成功后清除loading和error，失败时设置error
+     *
+     * @template T - Action函数类型（参数类型不限，返回值须为 Promise）
+     * @param {T} action - 要包装的异步Action函数
+     * @param {string} actionName - Action名称（用于状态键）
+     * @param {(key: string, value: unknown) => void} setState - 设置状态的函数
+     * @returns {T} 包装后的Action（签名与被包装者一致）
+     *
+     * @remarks 约束用 `(...args: never[]) => Promise<unknown>` 而非 `unknown[]`：按参数逆变，
+     * `unknown[]` 会拒掉类文档示例里 `(userId: string) => Promise<User>` 这类带具体参数类型的
+     * action（调用方被迫写 `as any`），`never[]` 则放行且保留 T 的推导。
+     *
+     * 包装函数把自己的 receiver 原样转发给被包装的 action：本方法常被用来包一个**未绑定**的
+     * 方法引用（`loader.wrap(store.fetchUser, 'fetchUser', store.setState.bind(store))`），
+     * 那种写法下 `this` 就是宿主，丢掉它会让依赖 receiver 的 action 直接抛错。
+     *
+     * 派生状态（loading/error/errorData）的写入按「一次调用的配置快照 + 代际凭证」结算：
+     * `autoLoading` 与三个状态键都在调用开始时求值一次，结算时只认这份快照，且只在
+     * 代际未变时才写——见 {@link CallScope}。中途 `setOptions()`/`clear()` 之后进行的
+     * 收尾写入既可能对错键、也会吞掉别人调用的计数，故一并跳过。
+     *
+     * @example
+     * ```typescript
+     * const fetchUserAction = async (userId: string) => {
+     *   const user = await api.getUser(userId)
+     *   return user
+     * }
+     *
+     * const wrapped = loader.wrap(
+     *   fetchUserAction,
+     *   'fetchUser',
+     *   store.setState.bind(store)
+     * )
+     *
+     * // 执行时自动管理状态
+     * await wrapped('user123')
+     * // state.loading = false (执行时为true)
+     * // state.error = null
+     * ```
+     */
+    wrap<T extends (...args: never[]) => Promise<unknown>>(action: T, actionName: string, setState: (key: string, value: unknown) => void): T;
+    /**
+     * 取本次调用的配置快照与记账凭证
+     *
+     * @private
+     */
+    private captureCallScope;
+    /**
+     * 一次调用的收尾：把派生状态写回宿主
+     *
+     * `error === null` 是成功路径（清错误），否则记录错误。错误状态管理独立于
+     * `autoLoading` 开关：即使关闭也应清掉/写上陈旧错误。
+     *
+     * 代际变了就直接返回：本调用的 increment 记录已被 `clear()`/换配置的 `setOptions()`
+     * 丢弃，而那两处都已给旧键补写复位值——再减一次只会把「重置之后新起的调用」的计数
+     * 吞掉、并在它仍在飞行时把共享键翻成 false。
+     *
+     * @private
+     */
+    private settleCall;
+    /**
+     * 执行辅助状态写入（loading/error/errorData），失败不外泄
+     *
+     * 这些是派生的 UI 状态，写入失败（典型场景：action 执行期间 store 被销毁，
+     * setState 抛 "Cannot call setState on a destroyed Store"）不得掩盖主流程结果：
+     * 成功路径冒泡会用新异常替换掉 action 的返回值，失败路径冒泡会替换掉 action 的
+     * 原始错误，两种情况调用方看到的都是与真实故障无关的异常。
+     *
+     * 注意 incrementLoading 不走此助手：wrap 依赖它抛错来回滚已递增的引用计数。
+     *
+     * @private
+     */
+    private safeRunStateEffect;
+    /**
+     * 递增 loading 引用计数；首个进行中的调用才将 loading 置为 true
+     *
+     * @private
+     */
+    private incrementLoading;
+    /**
+     * 递减 loading 引用计数；最后一个完成的调用才将 loading 置为 false
+     *
+     * @private
+     */
+    private decrementLoading;
+    /**
+     * 回滚一次 increment（`setState` 抛错时），只退计数不写状态
+     *
+     * @private
+     */
+    private releaseLoadingSlot;
+    /**
+     * 写 error / errorData
+     *
+     * 键取自调用开始时的快照（{@link CallScope}），不在这里重算：中途 `setOptions()`
+     * 换过键名的话，重算会让「按旧键写的账」跑到新键上去补一笔，而新键属于切换之后的调用。
+     *
+     * @private
+     */
+    private writeError;
+    /**
+     * 获取loading key
+     *
+     * @private
+     * @param {string} actionName - Action名称
+     * @returns {string} loading状态键（perActionKeys 模式下按 action 派生）
+     */
+    private getLoadingKey;
+    /**
+     * 获取error key
+     *
+     * @private
+     * @param {string} actionName - Action名称
+     * @returns {string} error状态键（perActionKeys 模式下按 action 派生）
+     */
+    private getErrorKey;
+    /**
+     * 获取error data key
+     *
+     * @private
+     * @param {string} actionName - Action名称
+     * @returns {string} error数据状态键（perActionKeys 模式下按 action 派生）
+     */
+    private getErrorDataKey;
+    /**
+     * 检查是否loading
+     *
+     * @param {string} actionName - Action名称
+     * @returns {boolean} 是否正在加载
+     *
+     * @example
+     * ```typescript
+     * if (loader.isLoading('fetchUser')) {
+     *   console.log('Fetching user...')
+     * }
+     * ```
+     */
+    isLoading(actionName: string): boolean;
+    /**
+     * 获取error
+     *
+     * @param {string} actionName - Action名称
+     * @returns {Error | null} 错误对象，没有错误时返回null
+     *
+     * @example
+     * ```typescript
+     * const error = loader.getError('fetchUser')
+     * if (error) {
+     *   console.error('Failed to fetch user:', error.message)
+     * }
+     * ```
+     */
+    getError(actionName: string): Error | null;
+    /**
+     * 获取error data
+     *
+     * @param {string} actionName - Action名称
+     * @returns {ActionErrorData | undefined} 错误数据（message/stack/timestamp），无错误时 undefined
+     *
+     * @example
+     * ```typescript
+     * const errorData = loader.getErrorData('fetchUser')
+     * if (errorData) {
+     *   console.log('Error occurred at:', new Date(errorData.timestamp))
+     *   console.log('Stack trace:', errorData.stack)
+     * }
+     * ```
+     */
+    getErrorData(actionName: string): ActionErrorData | undefined;
+    /**
+     * 获取所有loading状态
+     *
+     * @returns {Record<string, boolean>} 所有loading状态的对象
+     *
+     * @example
+     * ```typescript
+     * const loadingStates = loader.getAllLoading()
+     * console.log('All loading states:', loadingStates)
+     * ```
+     */
+    getAllLoading(): Record<string, boolean>;
+    /**
+     * 获取所有errors
+     *
+     * @returns {Record<string, Error | null>} 所有错误的对象
+     *
+     * @example
+     * ```typescript
+     * const errors = loader.getAllErrors()
+     * Object.entries(errors).forEach(([key, error]) => {
+     *   if (error) {
+     *     console.error(`${key}:`, error.message)
+     *   }
+     * })
+     * ```
+     */
+    getAllErrors(): Record<string, Error | null>;
+    /**
+     * 清除所有状态
+     *
+     * 既丢内部记账，也把宿主 store 里的派生状态复位（loading→false、error/errorData→null）：
+     * 只清内部的话，store 会永久停在最后一次写入的值上（典型表现 `loading: true` 卡死），
+     * 此后已没有在途调用来纠正它。
+     *
+     * 注意：注入的共享 loading 计数会被一并清零，同宿主上其他 loader 实例的进行中调用
+     * 因此失去计数（与 `setOptions` 换选项时的处理口径一致）。
+     *
+     * @param {(key: string, value: unknown) => void} [setState] - 复位写入用的 setState，
+     *   缺省复用最近一次调用（wrapper 实际执行时）登记的那个
+     *
+     * @example
+     * ```typescript
+     * // 重置所有状态（含 store 侧）
+     * loader.clear()
+     * ```
+     */
+    clear(setState?: (key: string, value: unknown) => void): void;
+    /**
+     * 给本实例写过的状态键补写复位值
+     *
+     * @private
+     */
+    private resetDerivedState;
+    /**
+     * 丢弃内部记账（store 侧的复位由 `resetDerivedState` 负责）
+     *
+     * 代际同时自增：进行中的调用据此认出自己的 increment 记录已不在，结算时不再改任何
+     * 状态键（见 {@link CallScope}）。
+     *
+     * @private
+     */
+    private clearInternalRecords;
+    /**
+     * 设置选项
+     *
+     * 更新配置选项，未提供的选项保持不变
+     *
+     * @param {Partial<ActionLoaderOptions>} options - 要更新的选项
+     *
+     * @example
+     * ```typescript
+     * loader.setOptions({
+     *   loadingKey: 'isLoading',
+     *   autoLoading: false
+     * })
+     * ```
+     */
+    setOptions(options: Partial<ActionLoaderOptions>): void;
 }
-````
+```
 
 ### `ActionLoaderOptions`
 
@@ -762,37 +751,37 @@ export declare class ActionLoader {
  * Action加载状态选项
  */
 export interface ActionLoaderOptions {
-  /** 自动管理loading状态 */
-  autoLoading?: boolean
-  /** loading状态字段名 */
-  loadingKey?: string
-  /** error状态字段名 */
-  errorKey?: string
-  /** error数据字段名 */
-  errorDataKey?: string
-  /**
-   * 是否按 action 名称派生独立状态键（默认 false）
-   *
-   * 启用后状态键为 `${baseKey}_${actionName}`（如 `loading_fetchUser`），
-   * 解决同一 ActionLoader 包装多个异步 action 并发执行时
-   * loading/error 状态互相覆盖的问题；单个异步 action 场景可保持默认
-   */
-  perActionKeys?: boolean
-  /**
-   * 共享的 loading 引用计数存储
-   *
-   * 供 `withLoading` 装饰器按宿主 + loading 键注入：同一宿主上不同选项签名（如不同 `errorKey`）
-   * 的装饰器实例各自持有计数时，对同一 loading 键的并发计数互不可见，
-   * 先完成的调用会提前翻转共享布尔键。直接构造 `ActionLoader` 的调用方无需提供。
-   *
-   * 这是**公开可传**的选项（`docs/API.md` 的选项表里有它），不是类型层隐藏得了的内部件：
-   * `@internal` 标签既不阻止 tsc 导出它，也不让 `src/extras/index.ts` 的再导出少掉它，
-   * 留着只会让人以为它不该被碰。它的两条真实约束是：
-   * - **只在构造期读一次**（`options.sharedLoadingCounts ?? new Map()`），`setOptions()` 忽略它——
-   *   运行期换 Map 会让新旧两本计数同时存在，那比忽略更糟；
-   * - 自造/复用同一 Map 给多个 loader 时，「首个调用置 true、末个完成置 false」的不变量由注入方负责。
-   */
-  sharedLoadingCounts?: Map<string, number>
+    /** 自动管理loading状态 */
+    autoLoading?: boolean;
+    /** loading状态字段名 */
+    loadingKey?: string;
+    /** error状态字段名 */
+    errorKey?: string;
+    /** error数据字段名 */
+    errorDataKey?: string;
+    /**
+     * 是否按 action 名称派生独立状态键（默认 false）
+     *
+     * 启用后状态键为 `${baseKey}_${actionName}`（如 `loading_fetchUser`），
+     * 解决同一 ActionLoader 包装多个异步 action 并发执行时
+     * loading/error 状态互相覆盖的问题；单个异步 action 场景可保持默认
+     */
+    perActionKeys?: boolean;
+    /**
+     * 共享的 loading 引用计数存储
+     *
+     * 供 `withLoading` 装饰器按宿主 + loading 键注入：同一宿主上不同选项签名（如不同 `errorKey`）
+     * 的装饰器实例各自持有计数时，对同一 loading 键的并发计数互不可见，
+     * 先完成的调用会提前翻转共享布尔键。直接构造 `ActionLoader` 的调用方无需提供。
+     *
+     * 这是**公开可传**的选项（`docs/API.md` 的选项表里有它），不是类型层隐藏得了的内部件：
+     * `@internal` 标签既不阻止 tsc 导出它，也不让 `src/extras/index.ts` 的再导出少掉它，
+     * 留着只会让人以为它不该被碰。它的两条真实约束是：
+     * - **只在构造期读一次**（`options.sharedLoadingCounts ?? new Map()`），`setOptions()` 忽略它——
+     *   运行期换 Map 会让新旧两本计数同时存在，那比忽略更糟；
+     * - 自造/复用同一 Map 给多个 loader 时，「首个调用置 true、末个完成置 false」的不变量由注入方负责。
+     */
+    sharedLoadingCounts?: Map<string, number>;
 }
 ```
 
@@ -815,35 +804,33 @@ export interface ActionLoaderOptions {
  * 对按 `success` 收窄的调用方而言这是一次向更精确方向的收敛；对外部手工构造结果的
  * 调用方则是轻微破坏性变更（少给一个对方的键反而报错），故按 minor 版本对待。
  */
-export type ActionResult<T = unknown> =
-  | {
-      /** 是否成功 */
-      success: true
-      /** 返回值 */
-      data: T
-      /** 失败时才有值：成功分支上恒为 undefined */
-      error?: undefined
-      /** 开始时间 */
-      startTime: number
-      /** 结束时间 */
-      endTime: number
-      /** 执行时长（= endTime - startTime） */
-      duration: number
-    }
-  | {
-      /** 是否成功 */
-      success: false
-      /** 成功时才有值：失败分支上恒为 undefined */
-      data?: undefined
-      /** 错误信息（已由 `toError` 归一化为 Error） */
-      error: Error
-      /** 开始时间 */
-      startTime: number
-      /** 结束时间 */
-      endTime: number
-      /** 执行时长（= endTime - startTime） */
-      duration: number
-    }
+export type ActionResult<T = unknown> = {
+    /** 是否成功 */
+    success: true;
+    /** 返回值 */
+    data: T;
+    /** 失败时才有值：成功分支上恒为 undefined */
+    error?: undefined;
+    /** 开始时间 */
+    startTime: number;
+    /** 结束时间 */
+    endTime: number;
+    /** 执行时长（= endTime - startTime） */
+    duration: number;
+} | {
+    /** 是否成功 */
+    success: false;
+    /** 成功时才有值：失败分支上恒为 undefined */
+    data?: undefined;
+    /** 错误信息（已由 `toError` 归一化为 Error） */
+    error: Error;
+    /** 开始时间 */
+    startTime: number;
+    /** 结束时间 */
+    endTime: number;
+    /** 执行时长（= endTime - startTime） */
+    duration: number;
+};
 ```
 
 ### `ActionStats`
@@ -851,17 +838,17 @@ export type ActionResult<T = unknown> =
 ```ts
 /** 单个 Action 的执行统计 */
 export interface ActionStats {
-  total: number
-  success: number
-  failure: number
-  avgDuration: number
-  successRate: number
+    total: number;
+    success: number;
+    failure: number;
+    avgDuration: number;
+    successRate: number;
 }
 ```
 
 ### `ActionUtils`
 
-````ts
+```ts
 /**
  * Action工具类
  *
@@ -882,49 +869,49 @@ export interface ActionStats {
  * ```
  */
 export declare class ActionUtils<A extends Actions = AsyncActions> {
-  /**
-   * Action执行器
-   * @private
-   * @type {ActionExecutor<A>}
-   */
-  private executor
-  /**
-   * 构造时绑定的 Actions 对象，供 `execute` 省略首参时使用
-   * @private
-   */
-  private readonly actions
-  /**
-   * 创建Action工具实例
-   *
-   * @param {A} actions - Actions对象：绑定为本实例的默认执行目标
-   * @param {ActionUtilsOptions<A>} [options] - 配置选项（支持依赖注入）
-   */
-  constructor(actions: A, options?: ActionUtilsOptions<A>)
-  /**
-   * 执行Action（代理到executor）
-   *
-   * @template K - Action名称类型
-   * @param {A} actions - Actions对象（省略时使用构造时绑定的 actions）
-   * @param {K} actionName - Action名称
-   * @param {Parameters<A[K]>} args - Action 参数
-   * @returns {Promise<Awaited<ReturnType<A[K]>>>} Action执行结果
-   * @throws {TypeError} 入参形态不对（缺 actionName、actionName 在该 actions 上不存在或不是
-   *   函数）时**就地**抛出：不经过执行器，因此不会在 `getStats`/`getHistory` 里留下记录
-   * @throws 被装饰 action 自身抛出的错误会**原样**向上抛出（同 `ActionExecutor.execute`）：
-   *   本方法只是门面，不做包装、也不转成「失败结果」。executor 已把该次执行按失败记入历史
-   *   （`getStats`/`getHistory` 可见），随后 rethrow 原始值——调用方 `catch (e) => e === thrown`
-   *   的身份判断成立
-   *
-   * @example
-   * ```typescript
-   * const result = await utils.execute(actions, 'fetchData', 'user-123')
-   * const same = await utils.execute('fetchData', 'user-123')
-   * ```
-   */
-  execute<K extends keyof A>(actionName: K, ...args: Parameters<A[K]>): Promise<Awaited<ReturnType<A[K]>>>
-  execute<K extends keyof A>(actions: A, actionName: K, ...args: Parameters<A[K]>): Promise<Awaited<ReturnType<A[K]>>>
+    /**
+     * Action执行器
+     * @private
+     * @type {ActionExecutor<A>}
+     */
+    private executor;
+    /**
+     * 构造时绑定的 Actions 对象，供 `execute` 省略首参时使用
+     * @private
+     */
+    private readonly actions;
+    /**
+     * 创建Action工具实例
+     *
+     * @param {A} actions - Actions对象：绑定为本实例的默认执行目标
+     * @param {ActionUtilsOptions<A>} [options] - 配置选项（支持依赖注入）
+     */
+    constructor(actions: A, options?: ActionUtilsOptions<A>);
+    /**
+     * 执行Action（代理到executor）
+     *
+     * @template K - Action名称类型
+     * @param {A} actions - Actions对象（省略时使用构造时绑定的 actions）
+     * @param {K} actionName - Action名称
+     * @param {Parameters<A[K]>} args - Action 参数
+     * @returns {Promise<Awaited<ReturnType<A[K]>>>} Action执行结果
+     * @throws {TypeError} 入参形态不对（缺 actionName、actionName 在该 actions 上不存在或不是
+     *   函数）时**就地**抛出：不经过执行器，因此不会在 `getStats`/`getHistory` 里留下记录
+     * @throws 被装饰 action 自身抛出的错误会**原样**向上抛出（同 `ActionExecutor.execute`）：
+     *   本方法只是门面，不做包装、也不转成「失败结果」。executor 已把该次执行按失败记入历史
+     *   （`getStats`/`getHistory` 可见），随后 rethrow 原始值——调用方 `catch (e) => e === thrown`
+     *   的身份判断成立
+     *
+     * @example
+     * ```typescript
+     * const result = await utils.execute(actions, 'fetchData', 'user-123')
+     * const same = await utils.execute('fetchData', 'user-123')
+     * ```
+     */
+    execute<K extends keyof A>(actionName: K, ...args: Parameters<A[K]>): Promise<Awaited<ReturnType<A[K]>>>;
+    execute<K extends keyof A>(actions: A, actionName: K, ...args: Parameters<A[K]>): Promise<Awaited<ReturnType<A[K]>>>;
 }
-````
+```
 
 ### `ActionUtilsOptions`
 
@@ -933,8 +920,8 @@ export declare class ActionUtils<A extends Actions = AsyncActions> {
  * ActionUtils 配置选项
  */
 export interface ActionUtilsOptions<A extends Actions = AsyncActions> {
-  /** 自定义执行器实例 */
-  executor?: ActionExecutor<A>
+    /** 自定义执行器实例 */
+    executor?: ActionExecutor<A>;
 }
 ```
 
@@ -954,7 +941,7 @@ export interface ActionUtilsOptions<A extends Actions = AsyncActions> {
  * 不需要（也不应该）放宽到 `any`。
  */
 export interface AsyncActions extends Actions {
-  [key: string]: (...args: any[]) => Promise<unknown>
+    [key: string]: (...args: any[]) => Promise<unknown>;
 }
 ```
 
@@ -974,10 +961,10 @@ export interface AsyncActions extends Actions {
  * 缓存装饰器选项
  */
 export interface CacheDecoratorOptions {
-  /** 缓存生存时间（毫秒） */
-  ttl?: number
-  /** 自定义缓存键函数（参数与被装饰方法一致） */
-  keyFn?: (...args: unknown[]) => string
+    /** 缓存生存时间（毫秒） */
+    ttl?: number;
+    /** 自定义缓存键函数（参数与被装饰方法一致） */
+    keyFn?: (...args: unknown[]) => string;
 }
 ```
 
@@ -994,12 +981,12 @@ export interface CacheDecoratorOptions {
  * 不外抛）。任一回调抛错/拒绝都会先经 `onError` 再按原有语义传播。
  */
 export interface DecoratorOptions {
-  /** 执行前的回调 */
-  before?: (...args: unknown[]) => void
-  /** 执行成功后的回调 */
-  after?: (result: unknown) => void
-  /** 执行失败的回调 */
-  onError?: (error: Error) => void
+    /** 执行前的回调 */
+    before?: (...args: unknown[]) => void;
+    /** 执行成功后的回调 */
+    after?: (result: unknown) => void;
+    /** 执行失败的回调 */
+    onError?: (error: Error) => void;
 }
 ```
 
@@ -1010,32 +997,32 @@ export interface DecoratorOptions {
  * 日志装饰器选项
  */
 export interface LogDecoratorOptions {
-  /**
-   * 日志输出目标，缺省 `console`
-   *
-   * 生产构建里接入统一日志通道（或整体替换为 no-op）比在业务代码里到处删日志更可控，
-   * 与 `PerformanceMonitor` 的 `logger` 选项同一思路。sink 自身抛错只告警，
-   * 不会中断被装饰的 action，也不会把成功的调用改判成失败。
-   */
-  sink?: LogSink
-  /**
-   * 输出前的脱敏钩子：决定参数 / 返回值 / 错误以什么形态进入日志
-   *
-   * 非生产构建下它的返回值就是最终输出。生产构建下**不**再接管输出：返回值仍要过一道
-   * {@link summarize} 摘要，除非同时显式传 `summarizeInProduction: false`（见该选项）。
-   */
-  redact?: (value: unknown, phase: LogPhase) => unknown
-  /**
-   * 生产构建下是否强制摘要输出，缺省 `true`
-   *
-   * `true`：进 sink 的一律是不含内容的摘要（{@link summarize}），自带 `redact` 也绕不过去
-   * ——一个过于宽松或有 bug 的脱敏器不该能静默关掉这道防线。
-   * 只有显式传 `false` 才表示「我确认过，sink 侧自行脱敏」，此时 `redact` 单独决定形态。
-   *
-   * 非生产构建默认原样输出（本地调试用）：staging 之类与生产同构的运行期由
-   * `isProduction()` 的判定覆盖，需要收敛内容时同样传 `redact`。
-   */
-  summarizeInProduction?: boolean
+    /**
+     * 日志输出目标，缺省 `console`
+     *
+     * 生产构建里接入统一日志通道（或整体替换为 no-op）比在业务代码里到处删日志更可控，
+     * 与 `PerformanceMonitor` 的 `logger` 选项同一思路。sink 自身抛错只告警，
+     * 不会中断被装饰的 action，也不会把成功的调用改判成失败。
+     */
+    sink?: LogSink;
+    /**
+     * 输出前的脱敏钩子：决定参数 / 返回值 / 错误以什么形态进入日志
+     *
+     * 非生产构建下它的返回值就是最终输出。生产构建下**不**再接管输出：返回值仍要过一道
+     * {@link summarize} 摘要，除非同时显式传 `summarizeInProduction: false`（见该选项）。
+     */
+    redact?: (value: unknown, phase: LogPhase) => unknown;
+    /**
+     * 生产构建下是否强制摘要输出，缺省 `true`
+     *
+     * `true`：进 sink 的一律是不含内容的摘要（{@link summarize}），自带 `redact` 也绕不过去
+     * ——一个过于宽松或有 bug 的脱敏器不该能静默关掉这道防线。
+     * 只有显式传 `false` 才表示「我确认过，sink 侧自行脱敏」，此时 `redact` 单独决定形态。
+     *
+     * 非生产构建默认原样输出（本地调试用）：staging 之类与生产同构的运行期由
+     * `isProduction()` 的判定覆盖，需要收敛内容时同样传 `redact`。
+     */
+    summarizeInProduction?: boolean;
 }
 ```
 
@@ -1043,7 +1030,7 @@ export interface LogDecoratorOptions {
 
 ```ts
 /** 日志内容产生的阶段，供 `redact` 按阶段决定脱敏策略 */
-export type LogPhase = 'args' | 'result' | 'error'
+export type LogPhase = 'args' | 'result' | 'error';
 ```
 
 ### `LogSink`
@@ -1057,8 +1044,8 @@ export type LogPhase = 'args' | 'result' | 'error'
  */
 /** 日志输出口：与 console 的 (message, ...data) 形状一致，便于直接接入项目 logger */
 export interface LogSink {
-  log: (message: string, ...data: unknown[]) => void
-  error: (message: string, ...data: unknown[]) => void
+    log: (message: string, ...data: unknown[]) => void;
+    error: (message: string, ...data: unknown[]) => void;
 }
 ```
 
@@ -1075,21 +1062,21 @@ export interface LogSink {
  * 重试装饰器选项
  */
 export interface RetryDecoratorOptions {
-  /**
-   * 首次执行之外的最大重试次数（总尝试次数 = retries + 1），默认 3
-   *
-   * 非有限值/负数/小数在内核里归一到非负整数（即「只执行一次」），不会是无限重试
-   */
-  retries?: number
-  /** 基础重试延迟（毫秒） */
-  delay?: number
-  /**
-   * 判断是否应该重试的函数
-   *
-   * 入参恒为 `Error`：非 Error 的抛出值（`throw 'boom'` / `throw { code }`）在传给本函数前
-   * 已由内核 `toError` 规范化，可安全读 `error.message`/`stack`；向外抛出的仍是原始值
-   */
-  shouldRetry?: (error: Error) => boolean
+    /**
+     * 首次执行之外的最大重试次数（总尝试次数 = retries + 1），默认 3
+     *
+     * 非有限值/负数/小数在内核里归一到非负整数（即「只执行一次」），不会是无限重试
+     */
+    retries?: number;
+    /** 基础重试延迟（毫秒） */
+    delay?: number;
+    /**
+     * 判断是否应该重试的函数
+     *
+     * 入参恒为 `Error`：非 Error 的抛出值（`throw 'boom'` / `throw { code }`）在传给本函数前
+     * 已由内核 `toError` 规范化，可安全读 `error.message`/`stack`；向外抛出的仍是原始值
+     */
+    shouldRetry?: (error: Error) => boolean;
 }
 ```
 
@@ -1104,21 +1091,21 @@ export interface RetryDecoratorOptions {
  * 的 options 都是它的子集/复用者，各写一份字段声明迟早与内核漂移。
  */
 export interface RetryOptions {
-  /** 最大重试次数（不含首次执行），默认 3 */
-  retries?: number
-  /** 基础退避延迟（毫秒），第 n 次重试等待 delay * 2^(n-1)，默认 100 */
-  delay?: number
-  /** 是否对某次错误继续重试（返回 false 立即抛出），默认全部重试 */
-  shouldRetry?: (error: Error) => boolean
-  /** 每次实际重试前的回调（attempt 从 1 开始） */
-  onRetry?: (error: Error, attempt: number) => void
+    /** 最大重试次数（不含首次执行），默认 3 */
+    retries?: number;
+    /** 基础退避延迟（毫秒），第 n 次重试等待 delay * 2^(n-1)，默认 100 */
+    delay?: number;
+    /** 是否对某次错误继续重试（返回 false 立即抛出），默认全部重试 */
+    shouldRetry?: (error: Error) => boolean;
+    /** 每次实际重试前的回调（attempt 从 1 开始） */
+    onRetry?: (error: Error, attempt: number) => void;
 }
 ```
 
 ### `TIMEOUT_ERROR_CODE`
 
 ```ts
-TIMEOUT_ERROR_CODE: 'ACTION_TIMEOUT'
+TIMEOUT_ERROR_CODE: "ACTION_TIMEOUT"
 ```
 
 ### `ThrottleDecoratorOptions`
@@ -1156,18 +1143,18 @@ TIMEOUT_ERROR_CODE: 'ACTION_TIMEOUT'
  * 节流选项
  */
 export interface ThrottleDecoratorOptions {
-  /** 新窗口首次调用是否立即执行（默认 true） */
-  leading?: boolean
-  /** 窗口结束时是否以最新参数补发被抑制的调用（默认 true） */
-  trailing?: boolean
-  /**
-   * 是否按异步方法处理返回值（默认 false）
-   *
-   * 用于「非 async 语法但返回 Promise」的方法（包装函数、手写 thenable）：这类方法
-   * 首次调用若被抑制（leading=false），装饰器无从观测返回值，会按同步方法返回 undefined。
-   * 置为 true 可强制被抑制的调用也返回 Promise，保证调用方 await/.then 不崩。
-   */
-  assumeAsync?: boolean
+    /** 新窗口首次调用是否立即执行（默认 true） */
+    leading?: boolean;
+    /** 窗口结束时是否以最新参数补发被抑制的调用（默认 true） */
+    trailing?: boolean;
+    /**
+     * 是否按异步方法处理返回值（默认 false）
+     *
+     * 用于「非 async 语法但返回 Promise」的方法（包装函数、手写 thenable）：这类方法
+     * 首次调用若被抑制（leading=false），装饰器无从观测返回值，会按同步方法返回 undefined。
+     * 置为 true 可强制被抑制的调用也返回 Promise，保证调用方 await/.then 不崩。
+     */
+    assumeAsync?: boolean;
 }
 ```
 
@@ -1176,13 +1163,13 @@ export interface ThrottleDecoratorOptions {
 ```ts
 /** 附带 `code` 的超时错误形状（`Error` + {@link TIMEOUT_ERROR_CODE}） */
 export interface TimeoutError extends Error {
-  code: typeof TIMEOUT_ERROR_CODE
+    code: typeof TIMEOUT_ERROR_CODE;
 }
 ```
 
 ### `cancelDebouncedCalls`
 
-````ts
+```ts
 /**
  * 取消宿主上挂起的防抖调用（**不执行**原方法）
  *
@@ -1208,12 +1195,12 @@ export interface TimeoutError extends Error {
  * }
  * ```
  */
-export declare function cancelDebouncedCalls(host: unknown, method?: string | symbol): void
-````
+export declare function cancelDebouncedCalls(host: unknown, method?: string | symbol): void;
+```
 
 ### `cancelThrottledCalls`
 
-````ts
+```ts
 /**
  * 取消宿主上挂起的节流补发（**不执行**原方法）
  *
@@ -1238,12 +1225,12 @@ export declare function cancelDebouncedCalls(host: unknown, method?: string | sy
  * }
  * ```
  */
-export declare function cancelThrottledCalls(host: unknown, method?: string | symbol): void
-````
+export declare function cancelThrottledCalls(host: unknown, method?: string | symbol): void;
+```
 
 ### `createDecorator`
 
-````ts
+```ts
 /**
  * 创建Action装饰器
  *
@@ -1281,8 +1268,8 @@ export declare function cancelThrottledCalls(host: unknown, method?: string | sy
  * }
  * ```
  */
-export declare function createDecorator(options?: DecoratorOptions): MethodDecorator
-````
+export declare function createDecorator(options?: DecoratorOptions): MethodDecorator;
+```
 
 ### `disposeDebouncedState`
 
@@ -1300,7 +1287,7 @@ export declare function createDecorator(options?: DecoratorOptions): MethodDecor
  * @param host - 宿主；基本类型 / null、以及装饰 store action 时的 action 上下文代理都定位不到
  *        状态（见模块头），此时本函数为 no-op
  */
-export declare function disposeDebouncedState(host: unknown): void
+export declare function disposeDebouncedState(host: unknown): void;
 ```
 
 ### `disposeThrottledState`
@@ -1320,7 +1307,7 @@ export declare function disposeDebouncedState(host: unknown): void
  * @param host - 宿主；基本类型 / null、以及装饰 store action 时的 action 上下文代理都定位不到
  *        状态（见模块头），此时本函数为 no-op
  */
-export declare function disposeThrottledState(host: unknown): void
+export declare function disposeThrottledState(host: unknown): void;
 ```
 
 ### `flushDebouncedCalls`
@@ -1341,7 +1328,7 @@ export declare function disposeThrottledState(host: unknown): void
  *        见模块头）
  * @param method - 只立即执行该名字的被装饰方法；省略时覆盖该宿主上所有防抖方法
  */
-export declare function flushDebouncedCalls(host: unknown, method?: string | symbol): void
+export declare function flushDebouncedCalls(host: unknown, method?: string | symbol): void;
 ```
 
 ### `flushThrottledCalls`
@@ -1360,12 +1347,12 @@ export declare function flushDebouncedCalls(host: unknown, method?: string | sym
  * @param host - 宿主；基本类型 / null 时为 no-op（装饰 store action 时同样定位不到状态，见模块头）
  * @param method - 只补发该名字的被装饰方法；省略时补发该宿主上所有挂起的节流调用
  */
-export declare function flushThrottledCalls(host: unknown, method?: string | symbol): void
+export declare function flushThrottledCalls(host: unknown, method?: string | symbol): void;
 ```
 
 ### `withCache`
 
-````ts
+```ts
 /**
  * 创建缓存装饰器
  *
@@ -1421,12 +1408,12 @@ export declare function flushThrottledCalls(host: unknown, method?: string | sym
  * }
  * ```
  */
-export declare function withCache(options?: CacheDecoratorOptions): MethodDecorator
-````
+export declare function withCache(options?: CacheDecoratorOptions): MethodDecorator;
+```
 
 ### `withDebounce`
 
-````ts
+```ts
 /**
  * GeomStore - 防抖装饰器
  *
@@ -1494,12 +1481,12 @@ export declare function withCache(options?: CacheDecoratorOptions): MethodDecora
  * searchComponent.search('app') // 只执行这次
  * ```
  */
-export declare function withDebounce(delay?: number): MethodDecorator
-````
+export declare function withDebounce(delay?: number): MethodDecorator;
+```
 
 ### `withLoading`
 
-````ts
+```ts
 /**
  * 创建withLoading装饰器
  *
@@ -1529,12 +1516,12 @@ export declare function withDebounce(delay?: number): MethodDecorator
  * // store.state.loading = false (执行时为true)
  * ```
  */
-export declare function withLoading(options?: ActionLoaderOptions): MethodDecorator
-````
+export declare function withLoading(options?: ActionLoaderOptions): MethodDecorator;
+```
 
 ### `withLog`
 
-````ts
+```ts
 /**
  * 创建日志装饰器
  *
@@ -1574,12 +1561,12 @@ export declare function withLoading(options?: ActionLoaderOptions): MethodDecora
  * // [Action] fetchUserData completed with result: { id: 'user-123', name: 'John' }
  * ```
  */
-export declare function withLog(name?: string, options?: LogDecoratorOptions): MethodDecorator
-````
+export declare function withLog(name?: string, options?: LogDecoratorOptions): MethodDecorator;
+```
 
 ### `withRetry`
 
-````ts
+```ts
 /**
  * 创建重试装饰器
  *
@@ -1623,12 +1610,12 @@ export declare function withLog(name?: string, options?: LogDecoratorOptions): M
  * }
  * ```
  */
-export declare function withRetry(options?: RetryDecoratorOptions): MethodDecorator
-````
+export declare function withRetry(options?: RetryDecoratorOptions): MethodDecorator;
+```
 
 ### `withThrottle`
 
-````ts
+```ts
 /**
  * 创建节流装饰器
  *
@@ -1658,12 +1645,12 @@ export declare function withRetry(options?: RetryDecoratorOptions): MethodDecora
  * }
  * ```
  */
-export declare function withThrottle(interval?: number, options?: ThrottleDecoratorOptions): MethodDecorator
-````
+export declare function withThrottle(interval?: number, options?: ThrottleDecoratorOptions): MethodDecorator;
+```
 
 ### `withTimeout`
 
-````ts
+```ts
 /**
  * GeomStore - 超时装饰器
  *
@@ -1721,5 +1708,5 @@ export declare function withThrottle(interval?: number, options?: ThrottleDecora
  * 底层 action 自己抛一条含该文本的错误就会误判成超时，而 `ActionExecutor.executeWithTimeout`
  * 的文案是 `Action timeout after <n>ms`（小写 t），按文本匹配又会漏判它的真实超时。
  */
-export declare function withTimeout(timeout?: number): MethodDecorator
-````
+export declare function withTimeout(timeout?: number): MethodDecorator;
+```

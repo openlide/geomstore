@@ -1,6 +1,6 @@
 # `./core` API 参考（自动生成）
 
-> **本文件由 `scripts/generate-skill-api-reference.mjs` 从 `dist/**/\*.d.ts` 生成，请勿手工编辑。\*\*
+> **本文件由 `scripts/generate-skill-api-reference.mjs` 从 `dist/**/*.d.ts` 生成，请勿手工编辑。**
 >
 > - 来源版本：`@openlide/geomstore@0.8.3`
 > - 内容来源：构建产物类型声明（随 npm 包发布，与安装版本必然一致）

@@ -1,6 +1,6 @@
 # GeomStore API 参考（按入口拆分，自动生成）
 
-> **本文件由 `scripts/generate-skill-api-reference.mjs` 从 `dist/**/\*.d.ts` 生成，请勿手工编辑。\*\*
+> **本文件由 `scripts/generate-skill-api-reference.mjs` 从 `dist/**/*.d.ts` 生成，请勿手工编辑。**
 >
 > - 来源版本：`@openlide/geomstore@0.8.3`
 > - 内容来源：构建产物类型声明（随 npm 包发布，与安装版本必然一致）
@@ -12,18 +12,18 @@
 
 按需打开所需入口的文件即可（渐进加载，不必读整个目录）：
 
-| 引入路径               | 展开方式 | 符号数 | 文件                                               |
-| ---------------------- | -------- | ------ | -------------------------------------------------- |
-| `.`                    | 完整声明 | 63     | [`main.md`](./main.md)                             |
-| `./core`               | 仅符号名 | 63     | [`core.md`](./core.md)                             |
-| `./extras`             | 仅符号名 | 67     | [`extras.md`](./extras.md)                         |
-| `./extras/action`      | 完整声明 | 35     | [`extras-action.md`](./extras-action.md)           |
-| `./extras/error`       | 完整声明 | 20     | [`extras-error.md`](./extras-error.md)             |
-| `./extras/performance` | 完整声明 | 9      | [`extras-performance.md`](./extras-performance.md) |
-| `./extras/plugins`     | 完整声明 | 9      | [`extras-plugins.md`](./extras-plugins.md)         |
-| `./extras/selector`    | 完整声明 | 17     | [`extras-selector.md`](./extras-selector.md)       |
-| `./extras/snapshot`    | 完整声明 | 15     | [`extras-snapshot.md`](./extras-snapshot.md)       |
-| `./integrations`       | 完整声明 | 10     | [`integrations.md`](./integrations.md)             |
+| 引入路径 | 展开方式 | 符号数 | 文件 |
+| --- | --- | --- | --- |
+| `.` | 完整声明 | 63 | [`main.md`](./main.md) |
+| `./core` | 仅符号名 | 63 | [`core.md`](./core.md) |
+| `./extras` | 仅符号名 | 67 | [`extras.md`](./extras.md) |
+| `./extras/action` | 完整声明 | 35 | [`extras-action.md`](./extras-action.md) |
+| `./extras/error` | 完整声明 | 20 | [`extras-error.md`](./extras-error.md) |
+| `./extras/performance` | 完整声明 | 9 | [`extras-performance.md`](./extras-performance.md) |
+| `./extras/plugins` | 完整声明 | 9 | [`extras-plugins.md`](./extras-plugins.md) |
+| `./extras/selector` | 完整声明 | 17 | [`extras-selector.md`](./extras-selector.md) |
+| `./extras/snapshot` | 完整声明 | 15 | [`extras-snapshot.md`](./extras-snapshot.md) |
+| `./integrations` | 完整声明 | 10 | [`integrations.md`](./integrations.md) |
 
 `./core` 与 `./extras` 是 `.` 及其子入口的聚合/别名，为避免重复只列符号名；完整声明请看对应入口文件。
 
