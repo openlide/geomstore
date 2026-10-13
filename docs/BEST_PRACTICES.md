@@ -150,7 +150,7 @@
 - **超深结构走异步路径**：同步克隆是递归实现（栈深＝数据深度），生效上限取 `maxDepth`（默认 100）与栈安全硬上限（1000）的较小值，抬高 `maxDepth` 也到不了 1000 层以上；超过请用异步路径（任务队列，不占调用栈）。见 [CONCEPTS §8](./CONCEPTS.md#同步与异步)。
 - **失败结果也要能读**：`SnapshotResult.data` 的类型是 `T | undefined`，不判空取属性会当场编译报错。
   - 失败时 `stats` 交出的是引擎实际累计到中止点的值，`metadata` 的规模项按零处理——`data` 不可信时按它算出的 size / nodeCount 同样不可信。见 [CONCEPTS §8](./CONCEPTS.md#失败与丢弃的表现)。
-- **不要把快照当状态同步机制**：它是一次性隔离副本；跨实例 / 跨端同步请走持久化插件或企业集成。
+- **不要把快照当状态同步机制**：它是一次性隔离副本；跨实例 / 跨端同步请走持久化插件。
 
 ## 8. 错误处理
 
@@ -159,30 +159,11 @@
   - 提供 `fallback` 即等于声明恢复意图；未配 `fallback` 而显式 `recoverable: true` 时返回 `undefined`，返回类型按 `T | F | undefined` 消费。
 - **抛出的值请保持 `Error`**：`throw 'str'` 会被边界归一化成 `new Error(String(v))` 记账（堆栈是边界处的，不是抛出点的），重抛时仍是原始值——排查体验远不如带堆栈的 `Error`。见 [CONCEPTS §10](./CONCEPTS.md#边界errorboundary)。
 - **`@withErrorBoundary` 装饰的方法返回形状不变**：只有被包裹方法自己的 Promise / thenable 会被等待，回退值即使自带 callable `then` 也不会被 await——给回退值挂 `then` 换不到延迟交付。见 [CONCEPTS §10](./CONCEPTS.md#边界errorboundary)。
-- **错误子系统交出来的诊断对象都是副本**：`getGroups()` / `getErrorGroups()` / `generateReport()` 的组、`sampleError`、handler 上下文、入库的 `errorLog` 条目都各拷一层。
-  - 改它们不回写内部账目；要改语义请走 API，不要就地改诊断对象。见 [CONCEPTS §10](./CONCEPTS.md#监控errormonitoring)。
-- **`ErrorRecovery` 的 operation 命名要稳定**：额度按 `code:storeName:operation` 计量。见 [CONCEPTS §10](./CONCEPTS.md#恢复errorrecovery)。
-  - 动态 id（`fetchUser:${id}`）会不断产生新键、让「同一操作的退避策略」失去意义；按「操作类型」而非「操作对象」命名。
-  - `recover()` 的 `error` / `config` / `attempt` 由库内写入，第二参数换不到策略。
-- **额度用尽不会重新领一份**：`maxRetries` 用尽后计数与周期窗都保留，同一故障周期内的后续 `recover()` 持续抛 `Max retries (n) exceeded`，只有时间窗过期才开新周期。别把未经校验的外部输入直接塞进 `maxRetries`：`NaN` / `Infinity` 会让上限彻底失效（库在写入时已归一到默认 3、小数向下取整、负数夹到 0，但依赖归一不如别传）。
-  - 要区分「额度被谁用满」读抛出物 `context.retryKey`（两个来源都缺时是 `<code>:unattributed`）。
-  - 策略内部失败抛的是 `GeomStoreError`（`code: INTERNAL_ERROR`、`cause` 是原始错误），按 `instanceof` / `code` 分支处理比匹配文案可靠。
-  - 见 [CONCEPTS §10](./CONCEPTS.md#恢复errorrecovery)。
-- **`ErrorMonitoring` 的 reporter 要幂等且有超时**：批量 flush 做 `ok / fail / timeout` 三态判定，仅真正 resolve 才算成功，超时按失败重入队；上报端要可重试且不产生重复脏数据。
-  - 队列溢出丢弃是可消费指标：`getDroppedErrors()` / `summary.droppedErrors`；看投递缺口读它，不要拿 `summary.totalErrors`（观测到的错误总数）当「都送出去了」。
-  - 见 [CONCEPTS §10](./CONCEPTS.md#监控errormonitoring)。
-- **显式传入 `0` 是合法的**：`batchInterval` / `batchThreshold` / `reportTimeout` 用 `??` 兜底，不会被替换为默认值（`batchInterval: 0` 即「无延迟」）。
-  - `reportTimeout <= 0`（含 `0`）统一按不超时处理——「等到上报真结束」就传 0，不要传一个很大的数。见 [CONCEPTS §10](./CONCEPTS.md#监控errormonitoring)。
-- **在 reporter 里不要再写 Store**：上报失败会触发错误处理，可能形成回路。reporter 只做网络 / 日志。
-- **给监控配上限**：`maxQueueSize` / `maxFlushRetries` / `maxGroups` 按流量设定，持续失败的批次会被丢弃并告警，而不是无限空转；越界值走一次可见的下限裁剪。见 [CONCEPTS §10](./CONCEPTS.md#监控errormonitoring)。
-- **看板读 `getAggregationStats()` 的 `evictedGroups` / `evictedErrors`**：「聚合有没有丢数据」只在这里可见。见 [CONCEPTS §10](./CONCEPTS.md#监控errormonitoring)。
-  - `totalErrors` / `byCode` / `byStore` 按条累计、单调不减；`totalGroups` / `getGroups()` 才是存活组视图。
-  - `maxGroups: 0` 不是关掉聚合（要关传 `enableAggregation: false`），而是刚建的组立刻被踢掉。
 
 ## 9. 小程序实践
 
 - **主包体积**：只用到的能力才引入 `extras/*`；不要为了省一行而引入聚合入口 `@openlide/geomstore/extras`（它会把全部可选能力拉进产物）。分层的体积收益取决于宿主有没有打包器——宿主只有 npm +「构建 npm」时，本包整目录被拷贝，改子路径不省上传体积，见 [README 的引入方式与体积分层](../README.md#引入方式与体积分层)。
-- **分包**：企业集成（`extras/enterprise`）、调试插件（`extras/plugins` 的 devtools / timeTravel）建议放进分包。注意「把能力放进分包」和「省下上传体积」是两件事：构建 npm 整目录拷贝本包，**不按子路径拆**，所以还得把 `miniprogram_npm` 的输出位置也指到该分包（配置见 [README · 把构建结果放进分包](../README.md#把构建结果放进分包)），否则代码进了分包、字节还留在主包。
+- **分包**：调试插件（`extras/plugins` 的 devtools / timeTravel）建议放进分包。注意「把能力放进分包」和「省下上传体积」是两件事：构建 npm 整目录拷贝本包，**不按子路径拆**，所以还得把 `miniprogram_npm` 的输出位置也指到该分包（配置见 [README · 把构建结果放进分包](../README.md#把构建结果放进分包)），否则代码进了分包、字节还留在主包。
 - **`setData` 优化**：集成层已按 `isStateKeyDirty` 跳过未变化的映射键，前提是映射粒度合理——映射整个大对象（`mapState: { whole: 'list' }`）会让任何内部变化都触发全量传输。映射到具体字段。见 [CONCEPTS §13](./CONCEPTS.md#映射)。
 - **`undefined` 不是合法值**：`setData` 不接受 `undefined`，集成层会过滤掉该字段。要「清空」用 `null`。
 - **持久化后端必须同步且三方法齐备**：`getItem` / `setItem` / `removeItem` 缺项在 `store.use()` 安装期即抛 `TypeError`；不传 `storage` 时用的就是内置 `WxStorageBackend`，残缺环境下走内存降级并给一次降级信号。见 [CONCEPTS §11](./CONCEPTS.md#调试表与持久化)。
@@ -216,31 +197,30 @@
 
 反模式表只给结论，「为什么」列不超过 10 字；完整理由见对应 §N 与 [CONCEPTS.md](./CONCEPTS.md)。
 
-| 不要这样做                                                           | 为什么             | 改用 / 详见                                                                                                                 |
-| -------------------------------------------------------------------- | ------------------ | --------------------------------------------------------------------------------------------------------------------------- |
-| 直接改 `getState()` 返回的嵌套字段                                   | 绕过保护与脏计数   | `setState` / `$patch`，详见 §1                                                                                              |
-| 在 getter / 选择器里写状态或发请求                                   | 每次读取都重算     | 写入放 action，详见 §4                                                                                                      |
-| `batch(async () => { await …; store.setState(…) })`                  | `await` 后不合并   | 写入放 action 内，详见 §2                                                                                                   |
-| 订阅回调里做数据转换                                                 | 同份数据反复算     | 转换放 getter / 选择器，详见 §5                                                                                             |
-| 用 `$replaceState` 做局部更新                                        | 未列出的键丢失     | `$patch`，详见 §2                                                                                                           |
-| 把 `undefined` 写进要在 `setData` 里传输的字段                       | 该字段会被过滤     | 用 `null` 表达「空」，详见 §9                                                                                               |
-| 传异步 storage 或残缺后端给持久化插件                                | 安装期即抛错       | 三方法齐备的同步后端（默认 `WxStorageBackend`），详见 §9                                                                    |
-| 宿主卸载后仍留着挂起的防抖 / 节流调用                                | 到点照样执行       | `cancel*` / `flush*` / `dispose*`，详见 §9                                                                                  |
-| 用不写 `return` 的箭头函数当快照 `onError`                           | falsy＝拒绝继续    | 显式 `return true`，或改用 `onProgress`，详见 §7                                                                            |
-| 只传 `equalityFn: (a, b) => a === b`、不关快照                       | 缓存永不命中       | 一并传 `snapshotState: false`，详见 §4                                                                                      |
-| 给自定义深比较器配 `snapshotState: false`                            | TTL 内持续陈旧     | 保持默认 `snapshotState: true`，详见 §4                                                                                     |
-| 把 `createDecorator` 装饰的同步方法当 Promise 用                     | 同步方法返回同步值 | 同步取值，异步方法照常 `await`，见 [API.md](./API.md#装饰器)                                                                |
-| 为省一行引入 `@openlide/geomstore/extras`                            | 全部能力进模块图   | 按需 `extras/<能力>`，详见 §9 与 [README](../README.md#引入方式与体积分层)                                                  |
-| reporter 里再写 Store / 再抛错                                       | 形成错误处理回路   | reporter 只做网络 / 日志，失败交给 flush 的重入队，详见 §8                                                                  |
-| 用动态 operation id 做重试计量                                       | 退避策略失去意义   | 按「操作类型」命名，详见 §8                                                                                                 |
-| 断言里读私有字段（`errorQueue` 等）                                  | 改名后静默通过     | 用公开 API 或测试缝，详见 §10                                                                                               |
-| 用 `getState()` 观察缓存命中率                                       | 它根本不查缓存     | 读 `getCached(key)`、观测读 `getCacheStats()`，详见 §6                                                                      |
-| 把 `compareSnapshots` 的 `changed: true` 直接当成「内容确实变了」    | 输入不可信也 true  | 先判 `inputTrusted`，详见 §7                                                                                                |
-| 拿 `snap.data` 里的 Map / Set 子类、TypedArray、`Error` 当隔离副本改 | 会串回活状态       | 自行 `slice(0)` / 结构化克隆，或 `customCloner`，详见 §1                                                                    |
-| 组合里某个子 store 被单独 `destroy()` 后继续按原样读整棵组合         | 只贡献空视图       | 显式判 `store.destroyed`，并把那条一次性告警当错误处理，见 [CONCEPTS §12](./CONCEPTS.md#子-store-生命周期)                  |
-| 给 `initBackgroundSync` 注册一个没有 `refreshData` action 的 store   | 切前台不刷新       | 提供 `refreshData`（通常委托自身的同步 action），或不为该店注册后台同步，见 [API.md](./API.md#extrasenterprise企业微信集成) |
-| 在冻结 / 不可写的属性上依赖状态保护与脏追踪                          | 拿到的是裸引用     | 放可写属性上，或整体 `setState` / `$patch` 替换，详见 §1                                                                    |
-| 为了覆盖率删除防御分支                                               | 降低真实环境健壮性 | 保留分支 + 带原因的 `istanbul ignore`，详见 §10                                                                             |
+| 不要这样做                                                           | 为什么             | 改用 / 详见                                                                                                |
+| -------------------------------------------------------------------- | ------------------ | ---------------------------------------------------------------------------------------------------------- |
+| 直接改 `getState()` 返回的嵌套字段                                   | 绕过保护与脏计数   | `setState` / `$patch`，详见 §1                                                                             |
+| 在 getter / 选择器里写状态或发请求                                   | 每次读取都重算     | 写入放 action，详见 §4                                                                                     |
+| `batch(async () => { await …; store.setState(…) })`                  | `await` 后不合并   | 写入放 action 内，详见 §2                                                                                  |
+| 订阅回调里做数据转换                                                 | 同份数据反复算     | 转换放 getter / 选择器，详见 §5                                                                            |
+| 用 `$replaceState` 做局部更新                                        | 未列出的键丢失     | `$patch`，详见 §2                                                                                          |
+| 把 `undefined` 写进要在 `setData` 里传输的字段                       | 该字段会被过滤     | 用 `null` 表达「空」，详见 §9                                                                              |
+| 传异步 storage 或残缺后端给持久化插件                                | 安装期即抛错       | 三方法齐备的同步后端（默认 `WxStorageBackend`），详见 §9                                                   |
+| 宿主卸载后仍留着挂起的防抖 / 节流调用                                | 到点照样执行       | `cancel*` / `flush*` / `dispose*`，详见 §9                                                                 |
+| 用不写 `return` 的箭头函数当快照 `onError`                           | falsy＝拒绝继续    | 显式 `return true`，或改用 `onProgress`，详见 §7                                                           |
+| 只传 `equalityFn: (a, b) => a === b`、不关快照                       | 缓存永不命中       | 一并传 `snapshotState: false`，详见 §4                                                                     |
+| 给自定义深比较器配 `snapshotState: false`                            | TTL 内持续陈旧     | 保持默认 `snapshotState: true`，详见 §4                                                                    |
+| 把 `createDecorator` 装饰的同步方法当 Promise 用                     | 同步方法返回同步值 | 同步取值，异步方法照常 `await`，见 [API.md](./API.md#装饰器)                                               |
+| 为省一行引入 `@openlide/geomstore/extras`                            | 全部能力进模块图   | 按需 `extras/<能力>`，详见 §9 与 [README](../README.md#引入方式与体积分层)                                 |
+| reporter 里再写 Store / 再抛错                                       | 形成错误处理回路   | reporter 只做网络 / 日志，失败交给 flush 的重入队，详见 §8                                                 |
+| 用动态 operation id 做重试计量                                       | 退避策略失去意义   | 按「操作类型」命名，详见 §8                                                                                |
+| 断言里读私有字段（`errorQueue` 等）                                  | 改名后静默通过     | 用公开 API 或测试缝，详见 §10                                                                              |
+| 用 `getState()` 观察缓存命中率                                       | 它根本不查缓存     | 读 `getCached(key)`、观测读 `getCacheStats()`，详见 §6                                                     |
+| 把 `compareSnapshots` 的 `changed: true` 直接当成「内容确实变了」    | 输入不可信也 true  | 先判 `inputTrusted`，详见 §7                                                                               |
+| 拿 `snap.data` 里的 Map / Set 子类、TypedArray、`Error` 当隔离副本改 | 会串回活状态       | 自行 `slice(0)` / 结构化克隆，或 `customCloner`，详见 §1                                                   |
+| 组合里某个子 store 被单独 `destroy()` 后继续按原样读整棵组合         | 只贡献空视图       | 显式判 `store.destroyed`，并把那条一次性告警当错误处理，见 [CONCEPTS §12](./CONCEPTS.md#子-store-生命周期) |
+| 在冻结 / 不可写的属性上依赖状态保护与脏追踪                          | 拿到的是裸引用     | 放可写属性上，或整体 `setState` / `$patch` 替换，详见 §1                                                   |
+| 为了覆盖率删除防御分支                                               | 降低真实环境健壮性 | 保留分支 + 带原因的 `istanbul ignore`，详见 §10                                                            |
 
 ### 上线检查清单
 
@@ -251,13 +231,10 @@
 - [ ] `onError` 钩子已接上报（持久化降级与恢复被跳过、监听器抛错、订阅者被驱逐、落盘 / 清理失败在生产只走这里）（§5 / §8 / §9）
 - [ ] 高频 `subscribe` 路径核对过 `maxSubscribers`：它是硬上界，达限会挤掉最早的一份注册并发一条 `onError`（§5）
 - [ ] 带敏感数据的 action 已按需给 `withLog` 传 `redact` / `sink`（生产构建默认只输出摘要，`Error` 不含 `message`），见 [API.md](./API.md#装饰器)
-- [ ] `ErrorMonitoring` 的 reporter 幂等、有超时；`maxQueueSize` / `maxFlushRetries` / `maxGroups` 按流量设定；看板读 `getAggregationStats()`（§8）
 - [ ] 消费快照的代码先判 `inputTrusted` 再读 `changed`；没有就地修改快照里「保留原引用」的那类值；需要副本的走 `customCloner` 或自行克隆（§1 / §7）
-- [ ] 注册了后台同步（`initBackgroundSync` / `createEnterpriseApp`）的每个 store 都自带 `refreshData` action（见上表）
 - [ ] 状态树里没有「靠状态保护拦住写入」的冻结子树 / 不可写属性（§1）
 - [ ] 验证缓存是否生效用的是 `getCached()` / `getCacheStats()`，不是 `getState()`（§6）
 - [ ] 组合层销毁子 store 后有显式存活判定（`store.destroyed`），没把「整棵组合还读得动」当成「所有子店都活着」（[CONCEPTS §12](./CONCEPTS.md#子-store-生命周期)）
-- [ ] `ErrorRecovery` 的 operation 命名稳定（不含动态 id）（§8）
 - [ ] 页面 / 组件卸载后不再触发写入；订阅由集成层自动清理（清理绑定不等于销毁 Store）（§9）
 - [ ] 被 `withDebounce` / `withThrottle` 装饰的方法已在 `onUnload` / `detached` 里收尾（§9）
 - [ ] `stateProtection` 保持开启（§2）

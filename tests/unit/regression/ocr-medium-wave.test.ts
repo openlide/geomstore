@@ -339,7 +339,7 @@ describe('ActionManager', () => {
 
   it('#138 action 已返回后收尾步骤抛错，不再二次复位 dispatch 计数', () => {
     const hooks = {
-      emit: jest.fn((name: string, ...args: unknown[]) => {
+      emit: jest.fn((name: string, ..._args: unknown[]) => {
         if (name === 'afterDispatch') throw new Error('after boom')
       }),
     }

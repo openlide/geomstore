@@ -8,16 +8,15 @@
  * 该缺陷只在类型层可见，故用测试锁住：ts-jest 会报告类型错误，比仅依赖
  * typecheck:examples 更早失败。
  *
- * 文件同时承载 src/types 里**带运行时实现**的导出的回归用例（`types/error.ts` 的
- * `defaultErrorHandler` 见 #385/#384、`types/store.ts` 的 `Store.hooks` 契约面见 #404），
- * 因为 types 层没有独立的测试目录（`tests/unit/core/error/` 那类路径属实现层）。
+ * 文件同时承载 src/types 里**带运行时实现**的导出的回归用例（`types/store.ts` 的
+ * `Store.hooks` 契约面见 #404），因为 types 层没有独立的测试目录
+ * （`tests/unit/core/error/` 那类路径属实现层）。
  * 末尾另有一组针对测试基础设施自身（`tests/setup.ts` 的 wx mock / 定时器 / 进程监听器，
  * 见 #414/#415/#416/#417）的用例：它们与上面的类型契约同属「只在编译期或全局装配阶段暴露」的缺陷。
  */
 
 import { composeStore, createStore } from '../../src/index.js'
 import { createParametricSelector, createSelector } from '../../src/extras/selector.js'
-import { createErrorContext, defaultErrorHandler, type ErrorLevel } from '../../src/types/error.js'
 import type { IHookSystem } from '../../src/types/plugin.js'
 
 interface UserState {
@@ -75,108 +74,6 @@ describe('状态类型为业务 interface（无索引签名）', () => {
     expect(readState().user.name).toBe('Carol')
 
     root.destroy()
-  })
-})
-
-// ==================== #385：defaultErrorHandler 对非 Error 抛值的兜底 ====================
-
-describe('defaultErrorHandler 对非 Error 抛值的兜底（#385）', () => {
-  const asError = (value: unknown): Error => value as Error
-
-  it('throw null 时 warning 分支不再在处理器内部抛 TypeError', () => {
-    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {})
-    const context = createErrorContext('user-store', 'dispatch', asError(null), 'warning')
-
-    expect(() => defaultErrorHandler(context)).not.toThrow()
-    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('[WARNING][user-store]'), expect.stringContaining('Warning in dispatch'), 'null')
-
-    warnSpy.mockRestore()
-  })
-
-  it('throw 字符串时按字符串输出，而不是 undefined', () => {
-    const infoSpy = jest.spyOn(console, 'info').mockImplementation(() => {})
-    const context = createErrorContext('user-store', 'dispatch', asError('boom'), 'info')
-
-    expect(() => defaultErrorHandler(context)).not.toThrow()
-    expect(infoSpy).toHaveBeenCalledWith(expect.stringContaining('[INFO][user-store]'), expect.stringContaining('Info in dispatch'), 'boom')
-
-    infoSpy.mockRestore()
-  })
-
-  it('error / critical 分支取 stack 时同样不抛（缺失或为非 Error 值）', () => {
-    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {})
-
-    expect(() => defaultErrorHandler(createErrorContext('user-store', 'dispatch', asError(undefined), 'critical'))).not.toThrow()
-    expect(() => defaultErrorHandler(createErrorContext('user-store', 'dispatch', asError({ code: 500 }), 'error'))).not.toThrow()
-
-    // 原始值仍被完整打印（便于定位），且不会输出 'Stack:' 行
-    const printed = errorSpy.mock.calls.map((call) => call[call.length - 1])
-    expect(printed).toContain(undefined)
-    expect(printed.some((arg) => typeof arg === 'object' && arg !== null && 'code' in arg)).toBe(true)
-    expect(errorSpy.mock.calls.some((call) => call.includes('Stack:'))).toBe(false)
-
-    errorSpy.mockRestore()
-  })
-
-  it('真实 Error 的输出保持原样（message 逐字透传，有 stack 才输出 Stack 行）', () => {
-    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {})
-    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {})
-    const error = new Error('Test warning')
-    error.stack = 'Test stack trace'
-
-    defaultErrorHandler(createErrorContext('user-store', 'dispatch', error, 'warning'))
-    defaultErrorHandler(createErrorContext('user-store', 'dispatch', error, 'error'))
-
-    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('[WARNING][user-store]'), expect.stringContaining('Warning in dispatch'), 'Test warning')
-    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('[ERROR][user-store]'), 'Stack:', 'Test stack trace')
-
-    errorSpy.mockRestore()
-    warnSpy.mockRestore()
-  })
-})
-
-// ==================== #384：defaultErrorHandler 的级别分派是穷尽的 ====================
-
-describe('defaultErrorHandler 的级别分派（#384）', () => {
-  const asLevel = (value: string): ErrorLevel => value as unknown as ErrorLevel
-
-  it('契约外的级别走刻意兜底的 info 分支，而不是被静默丢掉', () => {
-    const infoSpy = jest.spyOn(console, 'info').mockImplementation(() => {})
-    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {})
-    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {})
-
-    // 兜底仍要出声：未知级别按 info 打印，前缀保留调用方传进来的原始标签
-    defaultErrorHandler(createErrorContext('user-store', 'dispatch', new Error('unexpected'), asLevel('debug')))
-
-    expect(infoSpy).toHaveBeenCalledWith(expect.stringContaining('[DEBUG][user-store]'), expect.stringContaining('Info in dispatch'), 'unexpected')
-    expect(errorSpy).not.toHaveBeenCalled()
-    expect(warnSpy).not.toHaveBeenCalled()
-
-    infoSpy.mockRestore()
-    errorSpy.mockRestore()
-    warnSpy.mockRestore()
-  })
-
-  it('warn 别名与 warning 同通道，critical 与 error 同通道（switch 登记顺序不变）', () => {
-    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {})
-    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {})
-    const infoSpy = jest.spyOn(console, 'info').mockImplementation(() => {})
-    const error = new Error('level routing')
-    error.stack = 'routing stack'
-
-    defaultErrorHandler(createErrorContext('s', 'dispatch', error, 'warn'))
-    defaultErrorHandler(createErrorContext('s', 'dispatch', error, 'critical'))
-    defaultErrorHandler(createErrorContext('s', 'dispatch', error, 'info'))
-
-    expect(warnSpy).toHaveBeenCalledTimes(1)
-    expect(infoSpy).toHaveBeenCalledTimes(1)
-    // critical：error 通道 + 堆栈行（级别标签保留 CRITICAL）
-    expect(errorSpy.mock.calls[0]?.[0]).toContain('[CRITICAL][s]')
-    expect(errorSpy.mock.calls.some((call) => call.includes('Stack:'))).toBe(true)
-
-    warnSpy.mockRestore()
-    errorSpy.mockRestore()
-    infoSpy.mockRestore()
   })
 })
 

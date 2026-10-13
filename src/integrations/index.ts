@@ -11,31 +11,6 @@
 export { withPageStore, withComponentStore } from './with-store.js'
 export { withAppStore } from './with-app-store.js'
 
-// ==================== 企业级方案 ====================
-
-export {
-  createUserStore,
-  StoreManager,
-  storeManager,
-  initHotUpdate,
-  restoreFromHotUpdate,
-  OfflineManager,
-  initBackgroundSync,
-  unregisterBackgroundSync,
-  createEnterpriseApp,
-} from './enterprise/index.js'
-export type {
-  UserInfo,
-  UserPreferences,
-  UserState,
-  UserStoreConfig,
-  BackupData,
-  HotUpdateConfig,
-  OfflineAction,
-  BackgroundSyncConfig,
-  EnterpriseAppConfig,
-} from './enterprise/index.js'
-
 // ==================== 集成工具函数 ====================
 
 // createMapper / subscribeMappers 是集成入口（withPageStore 等）内部复用的绑定原语，

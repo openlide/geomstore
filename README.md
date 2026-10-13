@@ -2,7 +2,7 @@
 
 面向**原生微信小程序优先**的状态管理库：类 Pinia 的 API、完备的 TypeScript 类型推断，核心极简、可选能力下沉 `extras`。
 
-- **瘦核心 / extras 分层** —— 主入口只含运行必需 API；快照、选择器、Action 增强、性能监控、错误处理、企业集成等一律走 `extras/*` 子路径，按需引入
+- **瘦核心 / extras 分层** —— 主入口只含运行必需 API；快照、选择器、Action 增强、性能监控、错误处理等一律走 `extras/*` 子路径，按需引入
 - **小程序原生友好** —— 内置 `withPageStore` / `withComponentStore` / `withAppStore`，页面卸载自动退订；`wx.request`、同步存储、基础库缺失的 `console.group` 等环境差异均已适配
 - **类型完备** —— 全量 `.d.ts` 随包发布，state / actions / getters 与插件均泛型化推导，无需手写断言
 - **行为可观测** —— 统一错误账本（`errors` + `onError` 降级策略）、性能指标采集、快照隔离与差异对比
@@ -95,7 +95,7 @@ Page(
 | 小程序集成    | `withPageStore` / `withComponentStore` / `withAppStore`                         | 都从主入口引入；卸载自动退订                        |
 | 独立 LRU 缓存 | `LRUCache`                                                                      | 容量淘汰 + TTL，可脱离 Store 使用                   |
 
-**不在**主入口、需按需引入的能力：快照引擎、选择器、Action 装饰器与增强、性能监控、内置插件实现、错误处理、企业（WeCom）集成。
+**不在**主入口、需按需引入的能力：快照引擎、选择器、Action 装饰器与增强、性能监控、内置插件实现、错误处理。
 
 ## 引入方式与体积分层
 
@@ -161,18 +161,18 @@ import { persistencePlugin } from '@openlide/geomstore/extras/plugins'
 
 ## 文档
 
-| 文档                                                                           | 内容                                                 |
-| ------------------------------------------------------------------------------ | ---------------------------------------------------- |
-| [docs/GUIDE.md](./docs/GUIDE.md)                                               | 使用指南：从零接入到进阶用法                         |
-| [docs/API.md](./docs/API.md)                                                   | API 参考：入口一览、选项默认值、语义契约             |
-| [docs/CONCEPTS.md](./docs/CONCEPTS.md)                                         | 机制语义的唯一正本：状态、通知、缓存、快照…          |
-| [docs/FAQ.md](./docs/FAQ.md)                                                   | 按症状排查                                           |
-| [docs/BEST_PRACTICES.md](./docs/BEST_PRACTICES.md)                             | 该做 / 别做的结论清单与上线检查                      |
-| [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md)                                 | 分层架构、目录职责与设计取舍                         |
-| [docs/MIGRATION.md](./docs/MIGRATION.md)                                       | 版本迁移与行为变更对照（历史只写在这里）             |
-| [examples/](./examples)                                                        | 可运行示例五类                                       |
-| [CHANGELOG.md](./CHANGELOG.md)                                                 | 完整变更记录（**不随包发布**，见 GitHub 仓库）       |
-| [CONTRIBUTING.md](./CONTRIBUTING.md)                                           | 脚本、门禁清单、构建与发版流程                       |
+| 文档                                                     | 内容                                                 |
+| -------------------------------------------------------- | ---------------------------------------------------- |
+| [docs/GUIDE.md](./docs/GUIDE.md)                         | 使用指南：从零接入到进阶用法                         |
+| [docs/API.md](./docs/API.md)                             | API 参考：入口一览、选项默认值、语义契约             |
+| [docs/CONCEPTS.md](./docs/CONCEPTS.md)                   | 机制语义的唯一正本：状态、通知、缓存、快照…          |
+| [docs/FAQ.md](./docs/FAQ.md)                             | 按症状排查                                           |
+| [docs/BEST_PRACTICES.md](./docs/BEST_PRACTICES.md)       | 该做 / 别做的结论清单与上线检查                      |
+| [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md)           | 分层架构、目录职责与设计取舍                         |
+| [docs/MIGRATION.md](./docs/MIGRATION.md)                 | 版本迁移与行为变更对照（历史只写在这里）             |
+| [examples/](./examples)                                  | 可运行示例五类                                       |
+| [CHANGELOG.md](./CHANGELOG.md)                           | 完整变更记录（**不随包发布**，见 GitHub 仓库）       |
+| [CONTRIBUTING.md](./CONTRIBUTING.md)                     | 脚本、门禁清单、构建与发版流程                       |
 | [skills/geomstore/SKILL.md](./skills/geomstore/SKILL.md) | 供 AI 编码助手读取的库使用规程（仓库内，不随包发布） |
 
 ## 许可

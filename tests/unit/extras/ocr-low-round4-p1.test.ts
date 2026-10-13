@@ -13,10 +13,6 @@ import { withDebounce } from '@/extras/action/decorators/debounce.js'
 import { withThrottle } from '@/extras/action/decorators/throttle.js'
 import { retryWithBackoff } from '@/extras/action/async-core.js'
 import { createRetrySelector, createRetrySelectorAsync } from '@/extras/selector/retrySelector.js'
-import { DEFAULT_MAX_LOG_SIZE, ErrorHandlerImpl } from '@/extras/error/ErrorHandler.js'
-import { ErrorBoundary } from '@/extras/error/ErrorBoundary.js'
-import { HttpReporter } from '@/extras/error/reporters/HttpReporter.js'
-import type { ErrorContext } from '@/types/error.js'
 
 /** 执行一次并捕获抛出的值 */
 async function capture(fn: () => unknown): Promise<Error & { attempts?: number }> {
@@ -241,83 +237,6 @@ describe('#253 withThrottle 助手提升到装饰阶段后的尾随语义', () =
     jest.advanceTimersByTime(100)
 
     expect(host.calls).toEqual([1, 2, 5])
-  })
-})
-
-describe('#236 ErrorHandler.setMaxLogSize 取整到实际容量', () => {
-  let errorSpy: jest.SpyInstance
-
-  beforeEach(() => {
-    errorSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined)
-  })
-  afterEach(() => {
-    errorSpy.mockRestore()
-  })
-
-  it('小数向下取整，非有限值回退默认值，且都保留最新若干条', () => {
-    const handler = new ErrorHandlerImpl()
-    handler.setMaxLogSize(5.9)
-    for (let i = 0; i < 8; i++) {
-      handler.handle('user-store', 'action-execution', new Error(`e${i}`))
-    }
-    expect(handler.getErrorLog()).toHaveLength(5)
-    expect(handler.getErrorLog().map((ctx) => ctx.error.message)).toEqual(['e3', 'e4', 'e5', 'e6', 'e7'])
-
-    handler.setMaxLogSize(Number.NaN)
-    for (let i = 0; i < DEFAULT_MAX_LOG_SIZE + 3; i++) {
-      handler.handle('user-store', 'action-execution', new Error(`f${i}`))
-    }
-    expect(handler.getErrorLog()).toHaveLength(DEFAULT_MAX_LOG_SIZE)
-  })
-})
-
-describe('#264 ErrorBoundary 的历史上限与 ErrorHandler 同源', () => {
-  it('超出上限时保留最新 DEFAULT_MAX_LOG_SIZE 条', () => {
-    const boundary = new ErrorBoundary<{ n: number }>()
-
-    for (let i = 0; i < DEFAULT_MAX_LOG_SIZE + 5; i++) {
-      // 未配 fallback 且不可恢复：execute 记录后重抛原始错误
-      expect(() =>
-        boundary.execute(() => {
-          throw new Error(`e${i}`)
-        }),
-      ).toThrow(`e${i}`)
-    }
-
-    const history = boundary.getErrorHistory()
-    expect(history).toHaveLength(DEFAULT_MAX_LOG_SIZE)
-    expect(history[0]?.message).toBe('e5')
-    expect(history[history.length - 1]?.message).toBe(`e${DEFAULT_MAX_LOG_SIZE + 4}`)
-  })
-})
-
-describe('#275 HttpReporter 单条与批量共用同一投影', () => {
-  it('批量负载里的条目与单条上报的 body 结构一致', async () => {
-    const bodies: string[] = []
-    const reporter = new HttpReporter(
-      'https://example.invalid/err',
-      { method: 'POST', headers: { 'Content-Type': 'application/json' } },
-      async (_url: string, body: string) => {
-        bodies.push(body)
-      },
-    )
-    const context: ErrorContext = {
-      storeName: 'user-store',
-      operation: 'action-execution',
-      error: new Error('boom'),
-      level: 'error',
-      timestamp: 1700000000000,
-      payload: { actionName: 'login' },
-    }
-
-    await reporter.report(context)
-    await reporter.reportBatch([context])
-
-    expect(bodies).toHaveLength(2)
-    const single = JSON.parse(String(bodies[0])) as Record<string, unknown>
-    const batch = JSON.parse(String(bodies[1])) as { errors: Record<string, unknown>[] }
-    expect(batch.errors).toHaveLength(1)
-    expect(batch.errors[0]).toEqual(single)
   })
 })
 

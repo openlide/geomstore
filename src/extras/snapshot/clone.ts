@@ -624,7 +624,7 @@ export function cloneDeep<T>(
       // 直接抛 TypeError。键集口径与对象分支一致（includeNonEnumerable 决定取哪一套键）；
       // 取键本身抛错（Proxy 的 ownKeys 陷阱）由包住本分支的外层 try 收尾，与对象分支的
       // keys catch 同样落到「丢该节点」。异步引擎 clone-async.ts 的数组分支是同一段代码的
-      // 第二份，这一趟要一并补上（见 .ocr-fix/verdicts6/f2-13.md 的 NEEDS-MAIN）
+      // 第二份，这一趟要一并补上
       const extraKeys = (options.includeNonEnumerable ? Object.getOwnPropertyNames(value) : Object.keys(value)).filter(
         (key) => key !== 'length' && !isIndexKey(key),
       )
@@ -654,9 +654,7 @@ export function cloneDeep<T>(
   // 走 onError 降级，而非冲出整个快照
   let keys: Array<string | symbol>
   try {
-    keys = options.includeNonEnumerable
-      ? [...Object.getOwnPropertyNames(value), ...Object.getOwnPropertySymbols(value)]
-      : ownEnumerableKeys(value)
+    keys = options.includeNonEnumerable ? [...Object.getOwnPropertyNames(value), ...Object.getOwnPropertySymbols(value)] : ownEnumerableKeys(value)
   } catch (error) {
     // 中止信号在 handleCloneError 内原样上抛：这是用户在更深层做出的决定，
     // 二次咨询 onError 会把「中止」被中途改答降级为静默丢子树且快照仍标记成功

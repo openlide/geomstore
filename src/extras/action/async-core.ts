@@ -32,7 +32,19 @@ const ELIDED_PLACEHOLDER = '[details omitted]'
  * 依据只能是「被抛的值里本来就不放凭证」。
  */
 function describeThrownObject(value: object): string {
-  const SENSITIVE_KEYS = new Set(['token', 'password', 'secret', 'authorization', 'cookie', 'apikey', 'api_key', 'access_token', 'refresh_token', 'session', 'credential'])
+  const SENSITIVE_KEYS = new Set([
+    'token',
+    'password',
+    'secret',
+    'authorization',
+    'cookie',
+    'apikey',
+    'api_key',
+    'access_token',
+    'refresh_token',
+    'session',
+    'credential',
+  ])
   const projection: Record<string, unknown> = Object.create(null) as Record<string, unknown>
   for (const key of Object.keys(value)) {
     const descriptor = Object.getOwnPropertyDescriptor(value, key)
@@ -152,8 +164,8 @@ export interface RetryOptions {
 /**
  * 把被回调异常顶掉的真实失败挂到该异常的 `cause` 上
  *
- * target/lib 为 ES2020，`Error` 构造器没有 `cause` 选项签名，按 `ErrorRecovery` 同口径
- * 用属性赋值补齐。已有 cause 的不覆盖（那是更精确的一条链），冻结/只读的对象挂不上也
+ * target/lib 为 ES2020，`Error` 构造器没有 `cause` 选项签名，用属性赋值补齐。
+ * 已有 cause 的不覆盖（那是更精确的一条链），冻结/只读的对象挂不上也
  * 就此作罢——为了附加信息再顶替一次失败是本末倒置。
  */
 function attachCause(error: Error, original: unknown): void {
@@ -215,8 +227,7 @@ export async function retryWithBackoff<T>(fn: () => Promise<T>, options: RetryOp
         throw error
       }
 
-      // 通知回调的异常不得改变重试结果：与 ErrorRecovery.executeRetryStrategy 的
-      // onRetry 处理同口径（否则一个只用于打日志的回调能让重试提前中断、
+      // 通知回调的异常不得改变重试结果（否则一个只用于打日志的回调能让重试提前中断、
       // 并让调用方看到与真实失败无关的报错）
       if (onRetry) {
         try {

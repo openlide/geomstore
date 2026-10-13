@@ -1,13 +1,11 @@
 /**
  * 第五轮审查修复（分片 plugins-types-p1）：types 层契约的回归锁
  *
- * 运行时部分：R5-309（`defaultErrorHandler` 对非字符串 level 的兜底）。
  * 编译期部分由 `npx tsc -p tsconfig.tests.json --noEmit` 把守：
  * R5-316（AsyncActions 形参方差）、R5-312（ComposedStore 别名对齐 Store 契约面）、
  * R5-311（ExtractMember 拆出 MemberOrEmpty 后两道守卫语义不变）。
  */
 
-import { createErrorContext, defaultErrorHandler, type ErrorLevel } from '@/types/error.js'
 import type { AsyncActions } from '@/types/action.js'
 import type { ComposedStore, ExtractGetters, ExtractStates, StoreLike } from '@/types/compose.js'
 import type { Store } from '@/types/store.js'
@@ -75,42 +73,7 @@ interface NoGettersStore extends StoreLike {
 }
 export const gettersNotNever: Equal<keyof ExtractGetters<[NoGettersStore]>, never> = true
 
-// ==================== 运行时断言：R5-309 ====================
-
-describe('R5-309 defaultErrorHandler 对非字符串 level 的兜底', () => {
-  const asLevel = (value: unknown): ErrorLevel => value as ErrorLevel
-
-  it('level 缺省（JS 调用方手搓上下文）时不再在处理器内部抛 TypeError', () => {
-    const infoSpy = jest.spyOn(console, 'info').mockImplementation(() => {})
-    const context = { storeName: 'user-store', operation: 'dispatch' as const, error: new Error('boom'), level: asLevel(undefined) }
-
-    expect(() => defaultErrorHandler(context)).not.toThrow()
-    expect(infoSpy).toHaveBeenCalledWith(expect.stringContaining('[UNKNOWN][user-store]'), expect.stringContaining('Info in dispatch'), 'boom')
-
-    infoSpy.mockRestore()
-  })
-
-  it('level 为非字符串值时同样退回 UNKNOWN 标签', () => {
-    const infoSpy = jest.spyOn(console, 'info').mockImplementation(() => {})
-
-    for (const bad of [42, null, {}, []]) {
-      expect(() => defaultErrorHandler(createErrorContext('s', 'dispatch', new Error('x'), asLevel(bad)))).not.toThrow()
-    }
-
-    expect(infoSpy).toHaveBeenCalledTimes(4)
-    expect(infoSpy).toHaveBeenCalledWith(expect.stringContaining('[UNKNOWN][s]'), expect.stringContaining('Info in dispatch'), 'x')
-    infoSpy.mockRestore()
-  })
-
-  it('合法 level 的大写前缀与级别分派不受影响', () => {
-    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {})
-
-    defaultErrorHandler(createErrorContext('s', 'dispatch', new Error('x'), 'warning'))
-
-    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('[WARNING][s]'), expect.stringContaining('Warning in dispatch'), 'x')
-    warnSpy.mockRestore()
-  })
-})
+// ==================== 运行时断言：R5-316 ====================
 
 describe('R5-316 AsyncActions 的编译期样本在运行时同样可用', () => {
   it('带标注的异步箭头函数无需断言即可赋值', async () => {

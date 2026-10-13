@@ -5,12 +5,12 @@
  *
  * 1. 按子入口精确引入（推荐，体积最优）：
  *    `@openlide/geomstore/extras/snapshot`、`/selector`、`/action`、
- *    `/performance`、`/plugins`、`/enterprise`、`/error`
+ *    `/performance`、`/plugins`、`/error`
  * 2. 动态导入按需加载：
  *    `const { SnapshotManager } = await import('@openlide/geomstore/extras/snapshot')`
  *
  * 从本入口（`@openlide/geomstore/extras`）引入会一并拉入本文件聚合的可选能力
- * （插件 / 性能监控 / 快照 / Action 增强 / 企业微信集成）；选择器与错误处理**不在**本入口
+ * （插件 / 性能监控 / 快照 / Action 增强）；选择器与错误处理**不在**本入口
  * 聚合，请走各自的子入口 `@openlide/geomstore/extras/selector`、`/extras/error`。
  *
  * @remarks v0.4.0 起快照 / 选择器 / Action 增强的实现已由 `src/core` 物理下沉至
@@ -18,7 +18,7 @@
  * `@openlide/geomstore/core`）始终不导出这些能力。
  *
  * @remarks 下方每一段都从**同一能力的已发布子入口**（`./plugins.js` / `./performance.js` /
- * `./snapshot.js` / `./action.js` / `./enterprise.js`）按名再导出，而不是各自指向叶子模块：
+ * `./snapshot.js` / `./action.js`）按名再导出，而不是各自指向叶子模块：
  * 同一公开面若被两处独立指向叶子，两处清单会静默漂移（此前即已出现
  * `ActionStats`/`LogDecoratorOptions` 只在本入口可取的情况），名字写错则由编译期
  * 「导出项不存在」直接报错。**值导出**的一致性由
@@ -92,27 +92,3 @@ export type {
 export type { LogSink, LogPhase } from './action.js'
 export type { AsyncActions, ActionResult, ActionLoaderOptions, ActionDecorator, ActionExecutionContext } from './action.js'
 export type { ActionErrorData, RetryOptions, TimeoutError } from './action.js'
-
-// ==================== 企业微信集成（同 `./enterprise.js` 子入口） ====================
-export {
-  createUserStore,
-  StoreManager,
-  storeManager,
-  initHotUpdate,
-  restoreFromHotUpdate,
-  OfflineManager,
-  initBackgroundSync,
-  unregisterBackgroundSync,
-  createEnterpriseApp,
-} from './enterprise.js'
-export type {
-  UserInfo,
-  UserPreferences,
-  UserState,
-  UserStoreConfig,
-  BackupData,
-  HotUpdateConfig,
-  OfflineAction,
-  BackgroundSyncConfig,
-  EnterpriseAppConfig,
-} from './enterprise.js'

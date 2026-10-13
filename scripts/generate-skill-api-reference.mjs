@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 生成 skill 的 API 参考（按入口拆分）：dist/**\/*.d.ts → .codebuddy/skills/geomstore/references/api/
+ * 生成 skill 的 API 参考（按入口拆分）：dist/**\/*.d.ts → skills/geomstore/references/api/
  *
  * 背景：GeomStore 会被独立安装到其他小程序项目使用，那边只有 node_modules/@openlide/geomstore：
  * 仓库的 docs/ 与 src/ 均不存在（docs/ 不在 package.json 的 files 中，不随包发布）。因此跨项目
@@ -37,8 +37,8 @@ import ts from 'typescript'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const pkg = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'))
-const OUT_DIR = path.join(root, '.codebuddy/skills/geomstore/references/api')
-const LEGACY_FILE = path.join(root, '.codebuddy/skills/geomstore/references/api.md')
+const OUT_DIR = path.join(root, 'skills/geomstore/references/api')
+const LEGACY_FILE = path.join(root, 'skills/geomstore/references/api.md')
 
 /**
  * 这些入口的符号已在别处展开，只列符号名，避免产出重复膨胀。

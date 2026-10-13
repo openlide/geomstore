@@ -514,9 +514,9 @@ describe('文档门禁 G7 / G8 / G9 / G11：数字反查事实来源', () => {
     })
   })
 
-  it('skill 的生成 API 参考不少于 12 篇（与 r6-f1-02 同口径）', () => {
+  it('skill 的生成 API 参考不少于 11 篇（与 r6-f1-02 同口径）', () => {
     const dir = path.join(repoRoot, 'skills/geomstore/references/api')
-    expect(readdirSync(dir).filter((f) => f.endsWith('.md')).length).toBeGreaterThanOrEqual(12)
+    expect(readdirSync(dir).filter((f) => f.endsWith('.md')).length).toBeGreaterThanOrEqual(11)
   })
 
   it('文档里写「N 个子路径」的数量词都等于 exports 实际键数', () => {

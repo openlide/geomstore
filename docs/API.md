@@ -30,7 +30,6 @@ import { createSnapshot } from '@openlide/geomstore/extras/snapshot' // extras
 - [extras/performance（性能监控）](#extrasperformance性能监控)
 - [extras/plugins（插件实现）](#extrasplugins插件实现)
 - [extras/error（错误处理）](#extraserror错误处理)
-- [extras/enterprise（企业微信集成）](#extrasenterprise企业微信集成)
 - [易误用点](#易误用点)
 - [版本与变更](#版本与变更)
 
@@ -47,8 +46,7 @@ import { createSnapshot } from '@openlide/geomstore/extras/snapshot' // extras
 | `@openlide/geomstore/extras/action`                      | ActionLoader / withLoading / 装饰器 / 防抖·节流的宿主收尾入口                                                                                                                                                                                                            | 按需                    |
 | `@openlide/geomstore/extras/performance`                 | 性能监控与 analyzer 插件                                                                                                                                                                                                                                                 | 按需                    |
 | `@openlide/geomstore/extras/plugins`                     | 内置插件实现与存储后端                                                                                                                                                                                                                                                   | 按需                    |
-| `@openlide/geomstore/extras/error`                       | 错误类族 / 边界 / 恢复 / 监控 / 上报器                                                                                                                                                                                                                                   | 按需                    |
-| `@openlide/geomstore/extras/enterprise`                  | 企业微信集成                                                                                                                                                                                                                                                             | 按需                    |
+| `@openlide/geomstore/extras/error`                       | 错误类族 / 错误边界                                                                                                                                                                                                                                                      | 按需                    |
 | `@openlide/geomstore/{store,hooks,plugins,integrations}` | 转发子目录（`pnpm stubs` 生成，供不解析 `exports` 子路径的老式场景；指向 `dist` 的 ESM）                                                                                                                                                                                 | —                       |
 | 包根 `dist-weapp/`（非引入路径）                         | 微信「构建 npm」专用产物：`miniprogram` 字段指向的目录，**不是引入路径、不要按路径 import 它**。与 `dist` 一比一对应的 CJS 镜像，公开子路径入口齐备、导出面逐项一致。形态成因与「为什么不能用 Node 验证它」见 [CONTRIBUTING 的构建与发布](../CONTRIBUTING.md#构建与发布) | 仅微信侧                |
 
@@ -653,115 +651,7 @@ withErrorBoundary(boundary, fn?)
 - 非 `Error` 的抛出值（`throw 'str'` / `throw 42`）在入口处归一化为 `Error` 后再写入 `errorHistory`、传给 `onError` 与 `fallback`；**重抛时仍是原始值**，捕获方语义不变
 - **只对「被包裹方法的原始返回值」做 thenable 判定**：`@withErrorBoundary` 装饰的方法，其**回退值**不被 `await`（带 `then` 的回退值也原样返回，同步方法的返回形状不会凭空变一种）。回退值是边界自己产出的、不是被包裹方法的异步结果；方法本身返回 Promise / thenable 时仍照常等待（判据是 `then` 鸭子类型，跨 realm 与手写 thenable 不漏）
 - 显式 `recoverable: true` 而未配 `fallback`（或 `setFallbackState(undefined)`）时 `execute` / `executeAsync` 返回 `undefined`，返回类型为 `T | F | undefined`
-- 错误历史上限 100：取库内单一常量 `DEFAULT_MAX_LOG_SIZE`，与 `ErrorHandler.errorLog` 的上限（及其 `setMaxLogSize` 非有限值的回退值）同源同值，不再两处各写一份。`ErrorBoundary` 自身的上限**不对外开放**，`ErrorHandler.setMaxLogSize` 也只影响 `errorLog`；`getErrorHistory()` 可读
-
-### ErrorRecovery
-
-```ts
-new ErrorRecovery()
-configure(map: RecoveryStrategyMap): void
-recover<T>(error: GeomStoreError, context?: RecoveryContext): Promise<T>
-clearAllRetryCounts(): void                    // 清空全部重试计数与周期窗（按 code 定点清除不是公开口）
-createDefaultErrorRecovery() / defaultErrorRecovery
-RecoveryStrategy: { RETRY, FALLBACK, IGNORE, RECOVER, RESTART }
-```
-
-- 重试额度按**故障周期**计量：窗口 = `max(60s, 本周期全部退避总时长 × 2)`；超窗视为新周期重置
-- `maxRetries` 取值范围是正整数，**写入时归一**：小数向下取整、负数夹到 `0`、**非有限值（`NaN` / `Infinity`）回落到默认 3**。末条是防重试风暴的前提——`currentAttempt >= NaN` 恒为假会让上限彻底失效，`Infinity` 则永远达不到，两者都会让重试跟着调用方的失败循环一路跑下去（配置常来自 `parseInt(untrustedConfig)` 一类输入）
-- 达到 `maxRetries` 后**在同一故障周期内持续拦截**：只抛错、**保留**该键的计数与周期窗（清掉它们会让紧接的下一次 `recover` 落进「新周期」分支重新领满额度，「max-retries 防重试风暴」就只对触发超限的那一次调用生效）。要主动放行请显式 `clearAllRetryCounts()`
-- 恢复成功只清除**当前键**（`code:storeName:operation`）的计数与周期窗，不级联清除同码其他键（同码不同 store / 操作各自持有进行中的额度）。两个来源都为空时键写作 `CODE:unattributed` 并随超限抛出物的 `context.retryKey` 回传；这一桶是有意的粗粒度兜底，要按 Store 隔离请按第二参传 `{ storeName, operation }`
-- 键容量守卫 `MAX_RETRY_KEYS = 1000`：超限时先清自身周期窗已到期的键（每键到期时刻各自算，用一个全局 60s 判过期会连活跃键的计数一起删掉），再按插入顺序淘汰「最早进入当前周期」的键
-- 策略执行**内部**失败抛 `GeomStoreError` 而不是裸 `Error`（`code: INTERNAL_ERROR`，带 `cause` 指向原始错误与 `strategy` / `originalCode` / `retryKey` / `attempts` 上下文，消息文本保持稳定），按 `error.code` / `isGeomStoreError` 分类的调用方因此不会把它当成外来错误绕过处理
-- 策略表是 `Map`：以 `Object.prototype` 成员名（`constructor` / `toString` …）作错误码时 `getConfig` 返回 `undefined`、`recover` 报「No recovery strategy configured for error code: constructor」，不再命中原型链成员而给出误导性的 Unknown recovery strategy
-- `recover(error, context)` 的 `error` / `config` / `attempt` 由库内后写，调用方传入的同名字段无法覆盖实际执行的策略与重试记账键；`attempt` 反映真实重试次数（仅诊断用途）
-- 策略回退优先级：`fallbackFn` 在前、`config.fallback` 在后，两者皆缺则抛错；`fallback` 的值可以是 `undefined`（判据是「键是否存在」，别用展开 / 序列化搬运 config）
-- `RESTART` 策略不接受配置（库内无引用，只上报意图）
-
-### ErrorMonitoring
-
-```ts
-new ErrorMonitoring(config: MonitoringConfig)
-report(context) / flushReports() / shutdown() / clear() / addReporter() / removeReporter()
-generateReport() / getErrorGroups() / getAggregationStats() / getDroppedErrors()
-```
-
-> `reportBatch(errors)` 不在 `ErrorMonitoring` 上，它是 `ErrorReporter` 契约的一侧（监控层在每次 flush 里调 `reporter.report` 与 `reporter.reportBatch`）。
-
-| `MonitoringConfig`  | 默认    | 说明                                                                                                                                                                                                                                                                                                                                          |
-| ------------------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `reporters`         | —       | `ErrorReporter[]`                                                                                                                                                                                                                                                                                                                             |
-| `batchThreshold`    | `10`    | 达到条数立即 flush                                                                                                                                                                                                                                                                                                                            |
-| `batchInterval`     | `5000`  | 定时 flush（毫秒）                                                                                                                                                                                                                                                                                                                            |
-| `reportTimeout`     | `10000` | 单个 reporter 的超时（毫秒）                                                                                                                                                                                                                                                                                                                  |
-| `enableAggregation` | `true`  | 是否聚合相同错误                                                                                                                                                                                                                                                                                                                              |
-| `enableConsoleLog`  | `true`  | 是否输出控制台日志                                                                                                                                                                                                                                                                                                                            |
-| `maxQueueSize`      | `1000`  | 队列容量；超容量按最旧优先淘汰。**下限 1**：非有限值回退默认，其余 `Math.max(1, floor(v))`（`0` 会让每条新错误先挤掉上一条、负值会让重入队的 `slice` 算出空数组，整条上报链近乎静默失效——下限因此钉在 1）                                                                                                                                     |
-| `maxFlushRetries`   | `3`     | 「全部 reporter 连续失败」的重入队上限，超过则丢弃该批并告警。**下限 0**（负值会让首批立即被丢弃，故夹到 0）                                                                                                                                                                                                                                  |
-| `maxGroups`         | `100`   | 聚合器同时存活的**错误组数**上限，达上限按「最近最少出现」驱逐旧组（首次驱逐出声一次，不在错误高发路径上刷屏）。归一化与 `maxQueueSize` 同一条 `normalizeCapacity`：非有限值（`NaN` / `Infinity`）回退缺省 100，有限值取 `Math.max(1, Math.floor(v))`（`0` / 负数 / 小数夹到 1——它不是「关掉聚合」，`maxGroups: 0` 只会让刚建的组立刻被踢掉） |
-
-> `batchInterval` / `batchThreshold` / `reportTimeout` 用 `??` 兜底，**显式传入的 `0` 是合法语义**（立即 / 无延迟），不会被替换为默认值；`reportTimeout <= 0` 一律按「不超时」处理（不创建定时器，直接等 reporter 任务）。
-
-- flush 对每个 reporter 做 `ok / fail / timeout` **三态判定**：仅真正 resolve 才算成功；超时告警后批次重入队（上报先落地时取消未到期的定时器，不留句柄）
-- `flushReports()` 排空的是**入口时刻**在册的批次；`isFlushing` 期间的并发调用不会追加排空保证（关闭时的最终 flush 才保证排空）
-- `clear()` 同时复位「连续全部失败」计数（否则新批次会被上一次的失败次数提前判定丢弃）、作废**在途 flush 的重入队**（按代际标记整批丢弃，否则上一代条目会回流进新队列），但**不停止调度器**、也**不断**那条已在网络上的请求本体
-- 溢出丢弃量是可见的：入队淘汰与失败批次重入队时的超容量裁剪都计入 `getDroppedErrors()`，并随 `generateReport().summary.droppedErrors` 一起出去。`summary.totalErrors` 是「观测到的错误」口径（被丢弃者仍是真实发生过的错误，不回退聚合计数），`queuedErrors` 是「还在队列里」口径——**三个口径互不重叠、不能相加核对**：一条被丢弃的错误在它自己那次 `report()` 里已计入 `totalErrors`，而成功投递过的既不在 `queued` 也不在 `dropped`
-- **聚合的两套口径**：`getAggregationStats()` / `ErrorAggregator.getStats()` 的 `totalErrors` / `byCode` / `byStore` **按条独立累计**，不是「把存活组的 count 求和 / 现算」（`sum(byCode) === sum(byStore) === totalErrors` 恒成立，三者自上次 `clear()` 起单调不减），因此 `maxGroups` 驱逐**不会让它们倒退**——「观测到的错误数」这条语义要求已发生过的错误不能被整笔抹掉。另一侧 `totalGroups` 与 `getGroups()` / `getGroupsByStore()` / `summary.topErrors` 只是**当前存活组**的视图，会随驱逐变小；**两者的差额看得见**：`getAggregationStats()` 的 `evictedGroups`（被驱逐的组数）与 `evictedErrors`（随组消失的组内条数）就是那笔留痕，`clear()` 把两套账与留痕一起归零。要看聚合有没有丢数据就读这两项，别拿 `totalGroups` 当「错误种类总数」。`ErrorGroup.sampleError` 是只含标量字段 + `error` 引用的浅拷贝（**不含 `payload`**，避免进程级缓存钉住 store / 页面节点），并随每次命中刷新为最近一次出现；同一指纹的组在邻居被驱逐后仍复用原组 ID（指纹 → 组 ID 是反向索引，不会分裂成两组而把 `count` 归零）
-- `affectedStores` 与全局 `byStore` 都有**基数上限**（单组 50 个 Store、全局 200 个键），超出后并入保留字 `__others__` 溢出桶——它不是某个真实 Store，计数已经并进去了，**截断的只是「列得全不全」这份诊断视图，一条错误都不丢**。因此 `getGroupsByStore(name)` 对溢出组「没返回」不等于「该 Store 没在那组里报错」，要按 Store 拿准确条数请用 `getStats().byStore`
-- 对外一律给**副本**：`ErrorAggregator.getGroups()` / `getGroupsByStore()` / `addError()` 的返回值、`ErrorMonitoring.getErrorGroups()` / `generateReport()` 里的 `topErrors` / `recentErrors` 都是拷贝（`affectedStores` 与 `sampleError` 各再拷一层），改它们不再污染内部账目；同一次 `generateReport()` 里 `topErrors` 与 `recentErrors` 是同一批副本的两个视图
-- 定时器做 `unref` 探测（小程序 / 浏览器无该 API 时自动跳过，不阻止进程退出）
-
-### 上报器
-
-```ts
-class ConsoleReporter implements ErrorReporter   // 基础库缺 console.group 时降级为平铺输出
-class HttpReporter implements ErrorReporter      // 自动选择 wx.request（校验 statusCode）或 fetch（校验 ok）
-defaultErrorHandler / createErrorContext / ErrorHandlerImpl
-```
-
-- `ConsoleReporter` 保证 `groupEnd` 恰好一次（`console.group` 存在但调用即抛的基础库下本次降级为平铺输出，并只试探一次）；组内输出自身抛错时**抛的是那条主错误**，不被 `groupEnd` 的异常顶替（`groupEnd` 仍无条件闭合一次，仅它抛错时算一次真实失败）。分组与平铺两条路径打印的字段与批量级别标签一致，残缺 context（缺 `level` / 非法时间戳）不会让上报自身抛错。`Payload:` 行按「是否 `undefined` / `null`」判定打印，因此 **falsy 的载荷（`0` / `''` / `false` / `NaN`）也会输出一行**——这些恰恰是最需要看的诊断值；批量行缺失 store 名时打 `in UNKNOWN:` 而不再是可读成「有个叫 undefined 的 store」的 `in undefined:`
-- `HttpReporter` 对 `Headers` 形参数走鸭子类型归一化（真实 `Headers` 实例没有自有可枚举属性，直接展开会得到空对象而丢请求头），并把 `timeout` 透传给 `wx.request`；其余 `RequestInit` 字段在 `wx` 分支被忽略。请求体由 `JsonBody` 直接序列化为字符串，不再走 `stringify → parse → 再 stringify`。两条健壮性收口：`context.error` 不是 `Error`（手搓 / `throw 'boom'` / `null`）时该条被投影成可读字符串而**不再让整个 `report` / `reportBatch` 抛 `TypeError`**（否则同批其余上下文一起被拖成 rejection、监控层还会把它当网络失败反复重入队）；含 `BigInt` / 循环引用的 `payload` 在投影阶段降级为字符串标记（`[bigint 10]` / `[Unserializable payload: …]`），坏载荷只伤自己那一条、批次照常发送。使用默认请求实现时会自动补 `Content-Type: application/json`（自带同名头则原样保留、大小写不敏感判重），而**注入自定义 `HttpRequestImpl` 时不补**——发不发这个头属于「这条请求怎么发」的传输细节，注入实现可能把 body 转投别处
-- `defaultErrorHandler` 按级别映射输出通道；`throw null` / `throw 'str'` 之类的抛出值在读取 `message` / `stack` 前统一兜底（非字符串按 `String(error)` 收口），处理器自身不再因取值崩掉而顶替原始失败
-- `ErrorHandler` 交给用户 handler 的是**上下文副本**（改 `ctx.level` / `ctx.error` 不再回写 `errorLog`），`getErrorLog()` 返回的条目同样与内部记录解耦（入库即副本，否则调用方事后改自己那份 `ctx` 仍能改写历史）。handler 签名仍是 `(context) => void`，但**返回 Promise 的 handler 其 rejection 折成一条 `[ErrorHandler] Error in error handler:` 日志**（不留未处理拒绝——那在 Node 下可终止进程）；同步 handler 不为此多付微任务。自建调用点的消费方仍需自行处理 Promise——`ErrorHandler` 是公开类型，兜底只在库内入口那一处
-
----
-
-## extras/enterprise（企业微信集成）
-
-```ts
-createUserStore(config)                // 账号态 Store 工厂：{ userId, syncUrl?, initialState?, persistUserInfoKeys? }
-                                       // actions: setUserInfo / updatePreferences / syncWithServer / refreshData
-class StoreManager { getUserStore / switchUser / logout / getCurrentStore / clearAll }
-export const storeManager: StoreManager
-initHotUpdate(config) / restoreFromHotUpdate()
-class OfflineManager { execute / syncQueue / getQueueLength / getDeadLetters / dispose }
-initBackgroundSync(config) / unregisterBackgroundSync()
-createEnterpriseApp(config): Plugin
-```
-
-**`UserStoreConfig`**
-
-| 字段                  | 默认                           | 说明                                                                                                           |
-| --------------------- | ------------------------------ | -------------------------------------------------------------------------------------------------------------- |
-| `userId`              | —（必填）                      | 非字符串 / 空串 / 纯空白直接抛错（畸形键会让不同账号撞同一存储键）                                             |
-| `syncUrl`             | 无默认                         | `wx.request` 接受的绝对 URL；缺省即「本 Store 不具备服务端同步能力」，`syncWithServer` 在发起请求前直接 reject |
-| `initialState`        | —                              | 额外的初始状态                                                                                                 |
-| `persistUserInfoKeys` | 未设＝整个 `userInfo` 原样落盘 | `readonly string[]`，声明哪些 `userInfo` 字段允许写进本地存储，其余被投影掉 → 注 8                             |
-
-**注 8 · 为什么需要它、缺省为什么不保守**：`syncWithServer` 的响应体 `userInfo` 会被**整体**写进明文的小程序 storage（键 `user-store-<userId>`），服务端顺带下发的 session / token / 手机号因此长期驻留设备。缺省**刻意不作保守白名单**——`UserInfo` 是 `[key: string]: unknown` 的开放形状，内置白名单会让未列出的业务字段在重启后凭空消失（那是破坏性变更），所以收窄必须显式声明。投影按自有键 `defineProperty` 落键。该选项只管 `userInfo`：`preferences` 由宿主自己的 `updatePreferences` 写入，本就不来自服务端响应。
-
-- `getUserStore(userId)` 只「取 / 建」指定账号的 store，**不改变当前登录身份**（切换请显式 `switchUser`）；被 LRU 淘汰或 `logout()` 后的 store 已 `destroy()`，不可继续 dispatch。`clearAll()` 只清内存实例与**当前身份键 `current_user_id`**，不删任何 `user-store-*` 数据键（连带删账号数据会越权，注销请用 `logout()`）。移除 `current_user_id` 是因为它是身份 / 会话标记而非账号数据，与内存里的 `currentUserId = null` 属同一次清理；依赖「`clearAll()` 后冷启动仍恢复旧身份」的宿主需要在调用后自行把该身份键写回存储（键名是 `current_user_id`，库内常量 `CURRENT_USER_KEY`，不在公开导出面上）。
-- **`logout()` 的清理范围（安全口径）**：账号 store 的持久化键 `user-store-<userId>` + 当前身份键 `current_user_id` + 该 store 的离线队列键 `offline_action_queue_<store name>` **及其死信键**（`..._dead_letter`）。后两类键必须一起删：队列载荷是明文 storage 里的操作参数（可能含用户数据），留着它们还会让**重新登录把登出前的操作重放一遍**（`login()` 的构造期 `loadQueue()` 会复活它们）。清理在 `OfflineManager.dispose()` **之前**执行（`clearQueue()` / `clearDeadLetters()` 对已释放实例一律拒绝，顺序是硬要求）；`StoreManager.logout()` 本身不越界删这两个键（它不持有 OfflineManager），归属在 `createEnterpriseApp` 那一侧。要清某账号的数据请走 `logout()`，或按该账号 store 的 `name` 自行删键（`user-store-` 前缀是对外契约，`userStoreKey()` 不在公开导出面上）
-- **`login(userId)` 的入口校验**：与 `createUserStore` 同口径，`userId` 必须是非空字符串，否则直接抛错（`login: userId 必须是非空字符串`）。`switchUser` 抛错时（store 创建、插件安装、LRU 淘汰既有账号失败）透传错误且不污染 `globalData`——此前校验缺失会让空串/非字符串直达 `createUserStore` 入口，抛错时机晚于 `globalData.store` 赋值，状态不一致。账号切换时与 `logout()` 同口径清理旧账号的离线队列与死信（队列键按 store name 派生，不清理会留下旧账号的 payload，且切回时 `loadQueue()` 会重放非幂等操作）
-- `createEnterpriseApp` 的 `onShow`（离线队列补同步）判据是「**是否有一轮同步在途**」：在途时直接返回，因此不会出现第二次 loading 闪烁、也不会去收起别人那一轮的提示（切前台撞上网络恢复的自动同步时，两套 loading 不互相顶）。`globalData.offlineManager` / `getOfflineManager()` 的对外类型仍是 `OfflineManager`
-- `createUserStore` 对 `userId` 严格入口校验：非字符串、空串或纯空白直接抛错（畸形键会让不同账号撞同一存储键）。`syncWithServer()` 先校验响应体再 resolve：`statusCode` 为 2xx 但没有 `userInfo` 对象时 **reject**。同步地址**只能由 `syncUrl` 提供，库内不提供默认端点**：未配置时 `dispatch('syncWithServer')` **不发出任何请求**，直接以 `[UserStore] 未配置 syncUrl…` reject 并记一条日志（内置一个端点去打注定失败的请求，会把配置缺口伪装成网络错误）。`syncUrl` 在类型上仍是可选——`StoreManager.getUserStore` 就以 `createUserStore({ userId })` 建 store，语义是「缺省即该 Store 不具备服务端同步能力」。并发同步按请求序号丢弃被取代的旧响应；`await` 期间 store 被销毁（`logout` / LRU 淘汰）时丢弃结果并告警，不再把 `$patch` 的销毁报错记成「同步用户信息失败」并诱导重试。`lastSyncTime` 是**会话级**字段，刻意不持久化（重启后由 `syncWithServer` 重新写入）。**action 面有四个公开成员**：`setUserInfo` / `updatePreferences` / `syncWithServer` / `refreshData`。`refreshData()` 返回 `Promise<void>`，实现是 `return this.dispatch('syncWithServer')`，它是上面那条后台同步隐式契约的落地，于是 `createEnterpriseApp` / `initBackgroundSync` 注册的自带 handler 切前台真的会刷新数据。按 `{ setUserInfo, updatePreferences, syncWithServer }` 三个 action 枚举过该 store 的宿主（自建 action 列表 / 快照断言）要把 `refreshData` 算进枚举面，见 [MIGRATION.md 的 0.7.0 一节](./MIGRATION.md#升级到-070)
-- `StoreManager` 为真正 LRU（命中刷新顺序），且不会淘汰当前登录用户的 store；无可淘汰候选（只剩当前用户）时会告警而非静默超限；`switchUser` 会写回「当前用户」键（不只 `login` 写，任何入口换号后冷启动都恢复当前身份）。冷启动只在**持久化标识本身无效**（空 / 纯空白 / 非字符串）时才清键按未登录处理；标识有效但 `switchUser` 抛错时只记 error 并保留身份，下次冷启动可重试
-- `initBackgroundSync` 包装全局 `App` 构造器注入 `onShow` / `onHide`（修改 `App.prototype` 在微信中不生效）；注册表在重装包装器时**保留**（清空会静默停用其他模块的前台回调），同一份 `App` 配置被重复包装是幂等的。`App(...)` 传入非对象实参（`null` / 字符串 / 数字）时原样透传给宿主基础库，不再因包装器自己写属性而把一次本会被忽略的调用升级成 App 启动失败；`options` 被冻结 / `onHide` 不可写时整段注入告警并回退为「把原配置交给 App」。`typeof App !== 'function'` 时只告警、**照常登记**回调，App 就位后由 `ensureAppLifecycleHooks()`（`createEnterpriseApp` 已调）或下一次 init 装上
-- **`refreshData` 是后台同步的隐式契约，不是可选装饰**：`BackgroundSyncConfig.maxInactiveTime`（默认 5 分钟）判定时效成立后，实现按**名字** `dispatch('refreshData')`——全库没有任何地方定义这个 action，注册进来的 store 必须自带它（判据是自有键 `hasOwnProperty(store.actions, 'refreshData')`）。两条口径：① 日志**按实际结果打印**（派发一次才打一行，守卫之前不打「刷新状态」这类与事实相反的记录），缺 action 时**每个 handler 一次性 `logger.warn`**，点名缺失的 action 名与后果（`store "<name>" 未定义 action "refreshData"，切前台不会自动刷新数据`），既不静默也不每次切前台刷屏。② 库自带的 `createUserStore` 提供 `refreshData`（见上面那条），`createEnterpriseApp` 注册的两个 handler 因此走得到刷新分支。自研 store 接入后台同步有两条路：提供 `refreshData`（通常委托给自身的同步 action），或干脆不为它注册后台同步
-- `OfflineManager`：`execute(type, action, payload)` 的契约是**失败不外抛**——在线执行抛错时记 `logger.error`、入队并返回 `null`（＝本次未执行、已交队列重放），重放唯一入口是 `syncQueue`，按 `(type, payload)` 组装（传入的 `action` 闭包不会被重放）。**但「入队即等待外部事件」这个读法不成立**：`execute()` 失败入队时（在线态）会**自动补跑一轮重放**，一轮收尾时队列里仍有存货也会补跑，让排队的操作不必等到下一次网络恢复才落地；**离线态不自驱**（那是 `onNetworkChange` / 显式 `syncQueue` 的职责）。补跑排的是 **0 延时的宏任务**（不是微任务），所以 `await execute()` 之后同帧读 `getQueueLength()` 仍能看到刚入的那条——它在下一轮事件循环被带走，`getQueueLength()` 归 0 属正常收敛而非丢单；已 `dispose()`、断网、或另一轮同步在途时该次补跑直接跳过。`getQueueLength()` 不含在途段；`getDeadLetters()` 与 `syncQueue` 同口径过滤损坏条目并告警丢弃条数；已 `dispose()` 的实例上 `execute` 会告警「不会重放」并返回 `null`。同步期间落盘完整联合队列视图；未知 action 走重试 → 死信路径。`showLoading` / `hideLoading` 抛错都不卡死互斥标记、也不跳过本次同步（记 error 后继续 `syncQueue()`）
-- 企业级 `storage` 适配层的字符串往返：`storage.set` 对「回读会被读成另一种值」的字符串加**引号信封**，`storage.get` 的字符串往返自此类型无损（写 `'42'` 不会再读回数字 `42`、写 `'null'` 不会再读回 `null`）；`number` / `boolean` 仍读回原始字符串——标量不算往返安全的类型。热更新备份用带 `'#gs'` 标记的编解码，早前版本写的备份仍可读，支持集含 `Date` / `RegExp` / `Map` / `Set` / `undefined` / 非有限数字 / `BigInt`；类实例恢复后原型丢失、函数与 symbol 成员恢复为 `undefined`，这两种有损情况都会打一条 lossy 告警
-- 热更新：备份在用户确认时执行；**备份写入失败只跳过「待更新标记」的写入（无恢复源必须防），用户确认的更新照常 `applyUpdate`**——更新不会因此整段被静默跳过（用户点了确认不能什么都不知道），损失范围收敛为「本次更新无状态恢复」。`onBeforeUpdate` 回调抛错按自己的名字记日志、同样不再阻断更新；`applyUpdate` 抛错时**成对**清掉标记与备份（否则下一次普通冷启动会被误判为「更新后首启」并回滚备份点之后的全部持久化变更）；备份时间戳非有限值按「已过期」处理（不再静默绕过过期清理）；`onLaunch` 与 `login` 共用同一份热更新配置（换号后 `onBeforeUpdate` 不再在本次会话余下时间里静默丢失）；`createEnterpriseApp` 的 `onLaunch` 四步各自兜异常，热更新失败不再让后台同步与离线队列永不初始化
-- 后台同步的前台 / 后台两条循环都按注册表现状复核成员身份后才回调：本轮内被 `unregisterBackgroundSync` 注销的 handler 不再收到 `onForeground` / `onBackground`
-- 集成层的调试入口（`exposeStoreAPI` / `devtoolsPlugin`）默认以**只读**订阅注册（回调收到只读保护 Proxy；需要就地改载荷请显式传 `{ readOnly: false }`），注入的成员按自有属性写入并在解绑时恢复宿主原值（`__proto__` / `constructor` 不再污染原型链）
+- 错误历史上限 100：`ErrorBoundary.errorHistory` 有上限保护（保留最新 100 条），高频失败下不再无界累积；上限**不对外开放**，`getErrorHistory()` 可读
 
 ---
 
@@ -774,11 +664,10 @@ createEnterpriseApp(config): Plugin
 | 「读取状态」≠「读缓存」                            | `getState()` / `store.state` **不查缓存**，连续读多少次都不产生 `hits`；缓存的唯一读取入口是 `getCached(key)`。`setState` / `$patch` 是**写穿**而非失效——写完再 `getCached` 仍命中且拿到新值；要真失效请用 `invalidateCache()` 或 `$replaceState`                                                                             |
 | 「getter 会缓存结果」                              | **没有这回事**：Store 层无 getter 结果缓存，每次 `getter(name)` 都重算。要记忆化请用 `extras/selector` 的 `createSelector`                                                                                                                                                                                                    |
 | `ComposeOptions.lazy` / `tree` / `NamespaceConfig` | 名字还在公开类型面上，**运行时零消费方**（构造只读 `namespace` / `strict`，分隔符硬编码 `'/'`）：写了编译通过、静默无效，不要按它安排懒加载与前缀策略                                                                                                                                                                         |
-| 后台同步的 `refreshData`                           | `initBackgroundSync` / `createEnterpriseApp` 在切前台时**按名字** `dispatch('refreshData')`；该 action 全库不定义，注册进来的 store 不提供就是「切前台不刷新」（现在会一次性告警，不再打假日志）。库自带的 `createUserStore` 已提供它                                                                                         |
 | 快照对子类与宿主内建值**保留原引用**               | `Map` / `Set` / `Date` / `RegExp` / `Array` 的**子类**实例、`Promise` / 装箱原始值 / TypedArray·ArrayBuffer·DataView / WeakMap·WeakSet / Error / 函数一律不克隆——它们与活状态**同一个对象**，「快照即隔离」对这些值不成立（改 `snap.data.myMap` 会串回活状态）。要隔离请自行 `slice(0)` / 结构化克隆 / 用 `customCloner` 接管 |
 | `extras` 聚合入口                                  | 会把所有可选能力拉进产物，只有调试或确实全都要用时才引入                                                                                                                                                                                                                                                                      |
 | 防抖 / 节流的挂起调用                              | 窗口 / 延迟未到期就卸载宿主时，定时器到点仍会调用被装饰方法（并拖住宿主不被回收）。请在 `onUnload` / `detached` 调 `cancel*`（丢弃）/ `flush*`（立即执行一次）/ `dispose*`（取消并释放状态），见第四节「防抖 / 节流的宿主收尾入口」                                                                                           |
-| `import type`                                      | 类型（`SelectorOptions`、`MonitoringConfig`、`SnapshotResult` 等）请用 `import type` 引入，避免无谓的运行时代码                                                                                                                                                                                                               |
+| `import type`                                      | 类型（`SelectorOptions`、`SnapshotResult` 等）请用 `import type` 引入，避免无谓的运行时代码                                                                                                                                                                                                                                   |
 | 深链内部源码路径                                   | 可选能力的**实现**已移到 `src/extras/**`（快照 / 选择器 / Action 增强）；仅入口在 `extras/*` 的还有 `cache` / `hooks` / `performance`（实现保留在 `core`）                                                                                                                                                                    |
 
 ---

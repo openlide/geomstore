@@ -80,14 +80,13 @@ node --input-type=module -e 'const s = await import("./dist/index.js"); console.
 
 - 子路径转发目录（`store/`、`hooks/`、`plugins/`、`integrations/` 等）由 `prepack` 生成、`postpack` 清理；手动入口为 `pnpm stubs` / `pnpm stubs:clean`
 - 发布走 `prepublishOnly`：`pnpm test && pnpm run build:release && pnpm run build:weapp && pnpm run verify:weapp`。`build:release` 使用**严格压缩**——无可用压缩器时以退出码 1 中止，杜绝静默发出未压缩包
-- **两份产物、两条链路**：`dist/` 是给 Node 与打包器的 ESM（`exports` 指向它）；`dist-weapp/` 是给微信「构建 npm」的 **按模块一比一转译的 CJS**（105 个模块与 `dist` 一一对应、模块间保留相对 `require`），由包根 `miniprogram` 字段指向、工具整目录拷贝。**不要改成「bundle 成单文件」**：esbuild 的 `--splitting` 只支持 esm，CJS 多入口 bundle 会把 core 重复内联（实测 457.1 KB vs 228.3 KB），更要命的是每个入口各持一份模块实例，`.` 与 `./core` 的 `globalRegistry` 会变成两个对象——`verify:weapp` 里的「跨入口单例同一性」断言就是钉这一条的。改 `exports` 时两条链路都要顾：`build-weapp.mjs` 的入口清单是从 `exports` 派生的（`scripts/weapp-entries.mjs` 单一实现），子路径的 `default` 不是 `./dist/**.js` 形状时构建直接失败，而不是悄悄少发一个入口。0.6.0 的坏产物能发出去，就是因为 `test` / `build` / `pack` 没有一个会加载要被微信拷走的那份文件；缺陷特征与判据见 CHANGELOG 的 `[0.6.1]` 一节
+- **两份产物、两条链路**：`dist/` 是给 Node 与打包器的 ESM（`exports` 指向它）；`dist-weapp/` 是给微信「构建 npm」的 **按模块一比一转译的 CJS**（89 个模块与 `dist` 一一对应、模块间保留相对 `require`），由包根 `miniprogram` 字段指向、工具整目录拷贝。**不要改成「bundle 成单文件」**：esbuild 的 `--splitting` 只支持 esm，CJS 多入口 bundle 会把 core 重复内联（实测 457.1 KB vs 228.3 KB），更要命的是每个入口各持一份模块实例，`.` 与 `./core` 的 `globalRegistry` 会变成两个对象——`verify:weapp` 里的「跨入口单例同一性」断言就是钉这一条的。改 `exports` 时两条链路都要顾：`build-weapp.mjs` 的入口清单是从 `exports` 派生的（`scripts/weapp-entries.mjs` 单一实现），子路径的 `default` 不是 `./dist/**.js` 形状时构建直接失败，而不是悄悄少发一个入口。0.6.0 的坏产物能发出去，就是因为 `test` / `build` / `pack` 没有一个会加载要被微信拷走的那份文件；缺陷特征与判据见 CHANGELOG 的 `[0.6.1]` 一节
 - **发版清单**（版本号散在四处，漏一处就有一条陈述变假话）：
   1. `package.json` 的 `version`
-  2. `src/integrations/enterprise/hot-update.ts` 的 `LIBRARY_VERSION` —— 与 1 是**手工镜像**关系（#327 未收口：没有构建期注入）。漏改不会静默过去：`tests/integration/enterprise.test.ts` 会用 `package.json` 的 `version` 断言写入备份的该常量，漏 bump 直接红灯（比对结果本身只用于 `logger.warn`，不拦截恢复）
-  3. `CHANGELOG.md` —— `## [Unreleased]` 改成 `## [x.y.z] - 日期` 并在其上补一个空的 `[Unreleased]`；文末链接区同步：`[Unreleased]` 的 compare 基准换成新 tag、新增 `[x.y.z]` 的 release 链接
-  4. skill —— `pnpm run build && pnpm run skill:api` 重跑生成物（`references/api/*.md` 的「来源版本」行），另需手改 `SKILL.md` 三处版本号（frontmatter 的 `description`、正文「当前版本」、指向 `references/api/index.md` 那条的「当前对应 vX.Y.Z」）。这四处分量**必须一次改齐**：`tests` 里有用例把 `SKILL.md` 的手写版本行与生成物的「来源版本」行钉到 `package.json`，漏改 `SKILL.md` 三处或漏跑 `pnpm skill:api` 现在会让 `pnpm test` 直接变红（不再只是文档措辞过期）
-  5. 门禁 —— `lint:ci` / `Format check` / 四条 `typecheck` / `test:ci` / `build:release` / `build:weapp` + `verify:weapp` / `npm pack --dry-run`（核对文件数，且必须看到 `dist-weapp/**` 与 `miniprogram` 字段随包出去），并在本地复现 CI 那条**走 Node `exports` 解析器的子路径冒烟**
-  6. `git tag` 与 `npm publish` 是**对外不可逆动作**（npm 不允许覆盖已发版本），须单独确认后再做
+  2. `CHANGELOG.md` —— `## [Unreleased]` 改成 `## [x.y.z] - 日期` 并在其上补一个空的 `[Unreleased]`；文末链接区同步：`[Unreleased]` 的 compare 基准换成新 tag、新增 `[x.y.z]` 的 release 链接
+  3. skill —— `pnpm run build && pnpm run skill:api` 重跑生成物（`references/api/*.md` 的「来源版本」行），另需手改 `SKILL.md` 三处版本号（frontmatter 的 `description`、正文「当前版本」、指向 `references/api/index.md` 那条的「当前对应 vX.Y.Z」）。这四处分量**必须一次改齐**：`tests` 里有用例把 `SKILL.md` 的手写版本行与生成物的「来源版本」行钉到 `package.json`，漏改 `SKILL.md` 三处或漏跑 `pnpm skill:api` 现在会让 `pnpm test` 直接变红（不再只是文档措辞过期）
+  4. 门禁 —— `lint:ci` / `Format check` / 四条 `typecheck` / `test:ci` / `build:release` / `build:weapp` + `verify:weapp` / `npm pack --dry-run`（核对文件数，且必须看到 `dist-weapp/**` 与 `miniprogram` 字段随包出去），并在本地复现 CI 那条**走 Node `exports` 解析器的子路径冒烟**
+  5. `git tag` 与 `npm publish` 是**对外不可逆动作**（npm 不允许覆盖已发版本），须单独确认后再做
 - **0.x 的版本号语义**：`^0.5.1` 展开为 `>=0.5.1 <0.6.0`，即 caret **不跨 minor**——所以含破坏性变更的发版必须升 minor（0.6.0 就是这么定的）。发成 patch 会把破坏性变更自动装进按 caret 锁定的宿主并让它们的编译失败
 - 改动 `package.json` 的 `exports` / `files` 后，请用 `pnpm stubs` + `pnpm build` 验证一次真实解析
 

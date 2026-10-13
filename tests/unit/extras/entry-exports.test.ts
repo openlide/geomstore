@@ -8,7 +8,6 @@
 import * as extrasIndex from '@/extras/index.js'
 import * as extrasPlugins from '@/extras/plugins.js'
 import * as extrasPerformance from '@/extras/performance.js'
-import * as extrasEnterprise from '@/extras/enterprise.js'
 import * as extrasError from '@/extras/error/index.js'
 
 describe('extras 子入口导出可达性', () => {
@@ -29,25 +28,12 @@ describe('extras 子入口导出可达性', () => {
     expect(extrasPerformance.createAnalyzerPlugin).toBeDefined()
   })
 
-  it('extras/enterprise：企业级集成门面', () => {
-    expect(extrasEnterprise.createEnterpriseApp).toBeDefined()
-    expect(extrasEnterprise.createUserStore).toBeDefined()
-    expect(extrasEnterprise.StoreManager).toBeDefined()
-    expect(extrasEnterprise.storeManager).toBeDefined()
-    expect(extrasEnterprise.OfflineManager).toBeDefined()
-    expect(extrasEnterprise.initHotUpdate).toBeDefined()
-    expect(extrasEnterprise.restoreFromHotUpdate).toBeDefined()
-    expect(extrasEnterprise.initBackgroundSync).toBeDefined()
-    expect(extrasEnterprise.unregisterBackgroundSync).toBeDefined()
-  })
-
   it('extras/error：错误处理聚合入口', () => {
     expect(extrasError.GeomStoreError).toBeDefined()
     expect(extrasError.ErrorBoundary).toBeDefined()
     expect(extrasError.withErrorBoundary).toBeDefined()
-    expect(extrasError.ErrorRecovery).toBeDefined()
-    expect(extrasError.ErrorMonitoring).toBeDefined()
-    expect(extrasError.createDefaultMonitoring).toBeDefined()
+    expect(extrasError.createError).toBeDefined()
+    expect(extrasError.ErrorCode).toBeDefined()
   })
 
   it('extras 总入口：聚合全部可选能力', () => {
@@ -61,6 +47,5 @@ describe('extras 子入口导出可达性', () => {
     expect(extrasIndex.SnapshotManager).toBeDefined()
     expect(extrasIndex.ActionLoader).toBeDefined()
     expect(extrasIndex.withLog).toBeDefined()
-    expect(extrasIndex.createEnterpriseApp).toBeDefined()
   })
 })

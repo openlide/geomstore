@@ -20,12 +20,7 @@
  */
 // 显式列举公开面：`export *` 会让 ./snapshot/index.js 的任何新增导出自动成为包 API，
 // 其中可能包含仅内部使用的符号。此处与 ./snapshot/index.ts 的导出清单保持同步
-export {
-  SnapshotManager,
-  createSnapshot,
-  createSnapshotAsync,
-  compareSnapshots,
-} from './snapshot/index.js'
+export { SnapshotManager, createSnapshot, createSnapshotAsync, compareSnapshots } from './snapshot/index.js'
 export type {
   SnapshotOptions,
   CloneContext,

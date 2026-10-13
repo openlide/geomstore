@@ -15,9 +15,8 @@
  *    真实 `require` 加载，等价于把微信运行时要走一遍的解析路径先走一遍；
  * 5. 无 `outsideDeps` 残留、无顶层 ESM 语法残留；
  * 6. 导出面与 `dist` 的 ESM 逐项一致（少一个导出＝少一个 API）；
- *    跨入口单例同一性：`.` 与 `./core` 的 `globalRegistry`、`./extras` 与
- *    `./extras/enterprise` 的 `storeManager` 必须是**同一个对象**。这条就是
- *    「bundle 成单文件」方案会当场失败的地方（实测两个 false）；
+ *    跨入口单例同一性：`.` 与 `./core` 的 `globalRegistry` 必须是**同一个对象**。
+ *    这条就是「bundle 成单文件」方案会当场失败的地方（实测两个 false）；
  * 7. 主入口跑一次真实用例（createStore / dispatch / subscribe / getter / `$snapshot`）。
  *
  * 任一项不过 → 退出码 1，发布链（prepublishOnly）当场断。
@@ -170,7 +169,6 @@ try {
   /** 跨入口必须共享同一实例的单例（bundle 形态会在这一条当场失败） */
   const SHARED_SINGLETON_PAIRS = [
     { a: '.', b: './core', key: 'globalRegistry', why: 'Store 名字注册表' },
-    { a: './extras', b: './extras/enterprise', key: 'storeManager', why: '企业端账号/StoreManager 单例' },
   ]
 
   const loaded = new Map()

@@ -514,6 +514,9 @@ class ComposedStore<S extends State = State> implements Store<S> {
       return undefined
     }
 
+    if (this._skipDestroyedChild(targetStore, '跳过对它的 action 调用')) {
+      return undefined
+    }
     return targetStore.dispatch(actualAction, ...args)
   }
 

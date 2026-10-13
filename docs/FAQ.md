@@ -285,7 +285,6 @@ Store 已 `destroy()`：销毁后所有**写接口**都会抛错（`setState` / 
 
 ### 长期运行的进程内存持续增长 / 定时器不退出？
 
-- **错误处理**：`ErrorMonitoring` 的队列与失败重入队都有容量上限与淘汰策略，`ErrorRecovery` 的重试键有容量守卫——动态 operation id（如 `fetchUser:${id}`）不会无界增长。被丢弃的条数读 `getDroppedErrors()` / `summary.droppedErrors`，它与 `totalErrors` 是不同口径、**别相加核对**。见 [CONCEPTS §10 监控](./CONCEPTS.md#监控errormonitoring) 与 [恢复](./CONCEPTS.md#恢复errorrecovery)。
 - **内部定时器做 `unref` 探测**：小程序 / 浏览器无该 API 时自动跳过，不阻止进程退出。
 - **`PerformanceMonitor`**：会清理超时未结束的在途计时条目（调用方遗漏 `end()` 时的兜底）；`record()` 存的是**副本**——之后改入参对象、或复用同一对象连续 record，都不会改写已记录的历史指标，`getMetrics()` / `exportJSON()` 交出的也是副本。契约见 [API.md 五、extras/performance](./API.md#extrasperformance性能监控)。
 - **防抖 / 节流的挂起定时器会拖住宿主**：宿主状态表本身是 `WeakMap`（宿主回收即消失），但没人清定时器时宿主就回收不了——在卸载点调 `cancel*` / `dispose*`；装饰 **store action** 时入口定位不到槽位、静默 no-op，那种定时器只能等窗口 / 延迟自然到期（见[装饰器](#装饰器)一节）。

@@ -7,7 +7,7 @@
  * - Promise/WeakMap/WeakSet 按引用比较
  */
 
-import { deepEqual } from '../../src/core/utils/equality'
+import { deepEqual } from '../../src/core/utils/equality.js'
 
 describe('equality 内建类型比较', () => {
   describe('Error', () => {

@@ -18,9 +18,8 @@
  * 1. bundle 形态下 esbuild 的 `--splitting` 只支持 esm，CJS 多入口必然把 core 重复内联进
  *    每个 bundle —— 11 个入口 457.1 KB，而一比一转译只要 228.3 KB（整目录会被全部计入
  *    小程序包体积，这一倍差值是实打实的）；
- * 2. 更关键的是语义：自包含 bundle 让 `.` 与 `./core` 各持一份 `globalRegistry`、
- *    `./extras` 与 `./extras/enterprise` 各持一份 `storeManager`（实测两个 false），
- *    即「同一个库在一次运行里有两套注册表」。一比一转译保留相对 require，运行时按文件
+ * 2. 更关键的是语义：自包含 bundle 让 `.` 与 `./core` 各持一份 `globalRegistry`（实测
+ *    false），即「同一个库在一次运行里有两套注册表」。一比一转译保留相对 require，运行时按文件
  *    路径去重，跨入口天然共享同一份实例，与 ESM 侧行为一致；
  * 3. 运行时也更细：宿主只 require 得到它真正用到的那些文件。
  *

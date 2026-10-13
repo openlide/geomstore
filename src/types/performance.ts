@@ -14,9 +14,8 @@
  *   `PerformanceMonitor.record` 是公开入口，消费者可自行按这些维度写入并据此过滤；
  *   类型不收窄正是为了放行这种自定义标签，别把它们当成内置一定会给的东西。
  *
- * `'state-update'` 与 `'setState'` 不是同一个桶，别混用：前者是「一次状态更新」的逻辑分类
- * （与 `src/types/error.ts` 的 `OperationType` 同名成员同一口径），后者是 `setState()`
- * 这次调用的计时。按类型统计时它们是两个独立分组，内置路径只会写后者。
+ * `'state-update'` 与 `'setState'` 不是同一个桶，别混用：前者是「一次状态更新」的逻辑分类，
+ * 后者是 `setState()` 这次调用的计时。按类型统计时它们是两个独立分组，内置路径只会写后者。
  */
 export type MetricType = 'setState' | 'patch' | 'replaceState' | 'dispatch' | 'getter' | 'notify' | 'subscribe' | 'plugin' | 'state-update'
 

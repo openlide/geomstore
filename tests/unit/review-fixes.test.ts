@@ -7,19 +7,12 @@
  * - ActionLoader：getAllLoading 的 __proto__ 键；setOptions 的键变更检测
  * - timeTravelPlugin：回放通知回调内重入 goTo 被忽略（索引与状态不错位）
  * - MetricsCollector.sortByDuration：非有限耗时过滤
- * - ErrorRecovery：retryDelay NaN 归一 + 周期窗不锁死 + 退避延迟钳位
- * - ErrorMonitoring：batchInterval/batchThreshold/reportTimeout 的 NaN 归一（0 语义保留）
- * - ErrorAggregator：带过去时间戳的新建组不会被同一次 addError 立刻驱逐
- * - OfflineManager：存储读取失败后拒绝覆写磁盘队列（at-least-once）
  * - PerformanceMonitor：环形缓冲的容量/时序语义与 metrics 兼容访问面
  * - integrations：createMapper/subscribeMappers 单订阅驱动多组映射
  *
  * 第二轮（「已定位暂未实施」5 条的最优方案落地）：
- * - ErrorHandler.isThenable：取值即抛的 then getter 按非 thenable 降级
  * - integrations/utils updateAll：单键 getValue 抛错跳过坏键、批次后原样抛出（onError 可见）
- * - HttpReporter：快路径零试用串化；坏 payload 只在慢路径逐字段降级，隔离语义不变
  * - withCache × withThrottle/withDebounce：占位品牌协议（错序叠加降级为不缓存，不错值）
- * - env.storage.getWithStatus 三态；OfflineManager 迁移后不再依赖 wx.getStorageInfoSync 探测
  */
 
 import { createStore } from '@/index.js'
@@ -30,12 +23,6 @@ import { ActionLoader } from '@/extras/action/ActionLoader.js'
 import { timeTravelPlugin } from '@/plugins/devtools/index.js'
 import { MetricsCollector } from '@/core/performance/metrics.js'
 import { PerformanceMonitor } from '@/core/performance/PerformanceMonitor.js'
-import { ErrorRecovery, RecoveryStrategy, ErrorMonitoring, ErrorAggregator, ErrorHandlerImpl } from '@/extras/error/index.js'
-import { isThenable } from '@/extras/error/ErrorHandler.js'
-import { HttpReporter } from '@/extras/error/reporters/HttpReporter.js'
-import { GeomStoreError } from '@/core/errors/GeomStoreError.js'
-import { OfflineManager } from '@/integrations/enterprise/offline.js'
-import { storage } from '@/integrations/enterprise/env.js'
 import { createMapper, subscribeMappers, bindMappings } from '@/integrations/utils.js'
 import { SelectorComposer } from '@/extras/selector/selectorComposer.js'
 import { persistencePlugin } from '@/plugins/builtin.js'
@@ -250,169 +237,6 @@ describe('MetricsCollector.sortByDuration：非有限耗时过滤', () => {
   })
 })
 
-describe('ErrorRecovery：retryDelay 归一与周期窗不锁死', () => {
-  /** 跳过真实退避等待（沿用 r5-extras-error-recovery 的做法） */
-  function withoutBackoff(recovery: ErrorRecovery): void {
-    const target = recovery as unknown as { delay: () => Promise<void> }
-    target.delay = async () => {}
-  }
-
-  it('configure 与运行期都把 NaN retryDelay 归一到默认 1000', async () => {
-    let now = 1_000_000
-    const nowSpy = jest.spyOn(Date, 'now').mockImplementation(() => now)
-    const recovery = new ErrorRecovery()
-    withoutBackoff(recovery)
-    try {
-      recovery.configure({
-        NAN_DELAY: { strategy: RecoveryStrategy.RETRY, maxRetries: 1, retryDelay: Number.NaN },
-      })
-      expect(recovery.getConfig('NAN_DELAY')?.retryDelay).toBe(1000)
-
-      const mk = () => new GeomStoreError('boom', 'NAN_DELAY', { storeName: 's', operation: 'op' })
-      await expect(recovery.recover(mk())).rejects.toThrow('boom') // 第 1 次：重试信号
-      await expect(recovery.recover(mk())).rejects.toThrow('Max retries') // 第 2 次：额度耗尽
-
-      // 越过周期窗（maxRetries=1 ⇒ cycleWindow = 60s）后应开启新周期：
-      // 修复前 cycleEnd 为 NaN，`now > cycleEnd` 恒假 ⇒ 周期永不过期、额度永久锁死
-      now += 120_000
-      await expect(recovery.recover(mk())).rejects.toThrow('boom')
-    } finally {
-      nowSpy.mockRestore()
-    }
-  })
-})
-
-describe('ErrorMonitoring：计时/阈值字段的 NaN 归一', () => {
-  it('NaN 回落默认值，0 的合法语义保留', () => {
-    const nan = new ErrorMonitoring({ reporters: [], batchInterval: Number.NaN, batchThreshold: Number.NaN, reportTimeout: Number.NaN })
-    const zero = new ErrorMonitoring({ reporters: [], batchInterval: 0, batchThreshold: 0, reportTimeout: 0 })
-    const fields = (m: ErrorMonitoring) => m as unknown as { batchInterval: number; batchThreshold: number; reportTimeout: number }
-
-    expect(fields(nan).batchInterval).toBe(5000)
-    expect(fields(nan).batchThreshold).toBe(10)
-    expect(fields(nan).reportTimeout).toBe(10000)
-    expect(fields(zero).batchInterval).toBe(0)
-    expect(fields(zero).batchThreshold).toBe(0)
-    expect(fields(zero).reportTimeout).toBe(0)
-  })
-})
-
-describe('ErrorAggregator：新建组不被同一次 addError 立刻驱逐', () => {
-  it('带过去时间戳的新组在满员时存活（返回的组在册）', () => {
-    const aggregator = new ErrorAggregator(2)
-    const ctx = (message: string, timestamp?: number) =>
-      ({ error: new Error(message), storeName: 's', timestamp }) as unknown as Parameters<ErrorAggregator['addError']>[0]
-
-    aggregator.addError(ctx('a'))
-    aggregator.addError(ctx('b'))
-
-    // 修复前：新组 lastSeen 来自过去时间戳，是全场最旧 ⇒ 建成即被驱逐，
-    // 而 addError 仍按契约返回这份已不在 Map 里的拷贝
-    const fresh = aggregator.addError(ctx('c', Date.now() - 600_000))
-    expect(fresh).toBeDefined()
-    expect(aggregator.getGroups().map((g) => g.message)).toContain('c')
-    expect(aggregator.getGroups()).toHaveLength(2)
-  })
-
-  it('退化配置 maxGroups=0 下仍收敛（保护不造成无界增长）', () => {
-    const aggregator = new ErrorAggregator(0)
-    const ctx = (message: string) => ({ error: new Error(message), storeName: 's' }) as unknown as Parameters<ErrorAggregator['addError']>[0]
-    for (let i = 0; i < 5; i++) {
-      aggregator.addError(ctx(`e${i}`))
-    }
-    expect(aggregator.getGroups()).toHaveLength(0)
-  })
-})
-
-describe('OfflineManager：存储读取失败后拒绝覆写磁盘队列', () => {
-  const originalWx = (globalThis as unknown as { wx?: unknown }).wx
-  const setWx = (value: unknown): void => {
-    const holder = globalThis as unknown as { wx?: unknown }
-    holder.wx = value
-  }
-
-  afterEach(() => {
-    setWx(originalWx)
-    jest.restoreAllMocks()
-  })
-
-  it('读失败（键存在但取值抛错）后入队不覆写盘上旧队列', async () => {
-    const setCalls: Array<{ key: string; value: unknown }> = []
-    setWx({
-      getStorageSync: (key: string) => {
-        if (key === 'review_queue') throw new Error('read boom')
-        return ''
-      },
-      setStorageSync: (key: string, value: unknown) => {
-        setCalls.push({ key, value })
-      },
-      removeStorageSync: () => {},
-      getStorageInfoSync: () => ({ keys: ['review_queue'] }),
-      getNetworkType: () => ({ isConnected: true }),
-      onNetworkStatusChange: () => {},
-      offNetworkStatusChange: () => {},
-    })
-    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {})
-
-    const store = createStore({
-      name: 'offline-read-failure',
-      state: { n: 0 },
-      actions: {
-        save(this: { setState: (k: string, v: unknown) => void }) {
-          this.setState('n', 1)
-        },
-      },
-    })
-
-    let manager: OfflineManager<{ n: number }> | null = null
-    try {
-      manager = new OfflineManager(store as never, 'review_queue')
-      // 在线执行失败 → 入队 → saveQueue：修复前会用仅含新项的内存队列覆写磁盘
-      const result = await manager.execute('save', () => Promise.reject(new Error('offline')), { n: 1 })
-      expect(result).toBeNull()
-      expect(setCalls.some((call) => call.key === 'review_queue')).toBe(false)
-      expect(errorSpy).toHaveBeenCalled()
-    } finally {
-      manager?.dispose()
-      errorSpy.mockRestore()
-    }
-  })
-
-  it('读取正常时不受影响：入队照常落盘', async () => {
-    const setCalls: Array<{ key: string; value: unknown }> = []
-    setWx({
-      getStorageSync: () => '',
-      setStorageSync: (key: string, value: unknown) => {
-        setCalls.push({ key, value })
-      },
-      removeStorageSync: () => {},
-      getStorageInfoSync: () => ({ keys: [] }),
-      getNetworkType: () => ({ isConnected: true }),
-      onNetworkStatusChange: () => {},
-      offNetworkStatusChange: () => {},
-    })
-
-    const store = createStore({
-      name: 'offline-read-ok',
-      state: { n: 0 },
-      actions: {
-        save(this: { setState: (k: string, v: unknown) => void }) {
-          this.setState('n', 1)
-        },
-      },
-    })
-
-    let manager: OfflineManager<{ n: number }> | null = null
-    try {
-      manager = new OfflineManager(store as never, 'review_queue_ok')
-      await manager.execute('save', () => Promise.reject(new Error('offline')), { n: 1 })
-      expect(setCalls.some((call) => call.key === 'review_queue_ok')).toBe(true)
-    } finally {
-      manager?.dispose()
-    }
-  })
-})
-
 describe('PerformanceMonitor：环形缓冲', () => {
   const mk = (operation: string, duration: number) => ({
     operation,
@@ -514,26 +338,6 @@ describe('integrations：多组映射共享一条订阅', () => {
 
 // ==================== 第二轮：五项「暂未实施」的最优方案落地 ====================
 
-describe('ErrorHandler.isThenable：.then 读取保护', () => {
-  it('取值即抛的 then getter 按非 thenable 降级，handleError 不二次抛错', () => {
-    const nasty = {
-      get then(): unknown {
-        throw new Error('then getter boom')
-      },
-    }
-    // 修复前：读 .then 的异常从 handleError 逃出，错误链路自己抛第二条错
-    expect(isThenable(nasty)).toBe(false)
-
-    const handler = new ErrorHandlerImpl()
-    try {
-      handler.setHandler(() => nasty as never)
-      expect(() => handler.handleError({ storeName: 's', operation: 'dispatch', error: new Error('x'), level: 'error', timestamp: Date.now() })).not.toThrow()
-    } finally {
-      handler.setHandler(() => {})
-    }
-  })
-})
-
 describe('createMapper/updateAll：单键 getValue 抛错的批次容错', () => {
   it('坏键跳过、其余键照常 setData、错误经 store onError 上报，状态恢复后自愈', () => {
     let broken = false
@@ -580,68 +384,6 @@ describe('createMapper/updateAll：单键 getValue 抛错的批次容错', () =>
     expect(data.a).toBe(11)
 
     unsubscribe()
-  })
-})
-
-describe('HttpReporter：快慢路径序列化', () => {
-  const makeReporter = (bodies: string[]): HttpReporter =>
-    new HttpReporter('https://example.com/err', {}, (async (_url: string, body: string) => {
-      bodies.push(body)
-    }) as never)
-
-  const ctx = (message: string, payload?: unknown) => ({
-    error: new Error(message),
-    storeName: 's',
-    operation: 'dispatch' as const,
-    level: 'error' as const,
-    timestamp: 1,
-    payload,
-  })
-
-  it('坏 payload（循环引用 / 嵌套 BigInt）只降级该条，批次其余条目照常交付', async () => {
-    const bodies: string[] = []
-    const reporter = makeReporter(bodies)
-
-    const circular: Record<string, unknown> = { name: 'cyc' }
-    circular.self = circular
-
-    await reporter.reportBatch([ctx('good', { ok: true }), ctx('circular', circular), ctx('bigint', { n: 10n }), ctx('plain')])
-
-    expect(bodies).toHaveLength(1)
-    const parsed = JSON.parse(bodies[0]) as { errors: Array<{ error: { message: string }; payload?: unknown }> }
-    expect(parsed.errors).toHaveLength(4)
-    // 好条目原样通过（快路径一次串化即成功）
-    expect(parsed.errors[0].payload).toEqual({ ok: true })
-    // 坏条目只自己降级：专名标记保留，批次不 reject（否则监控层会按网络失败反复重入队）
-    expect(String(parsed.errors[1].payload)).toContain('[Unserializable payload:')
-    expect(String(parsed.errors[2].payload)).toContain('[Unserializable payload:')
-    // 其余条目不受牵连
-    expect(parsed.errors[3].error.message).toBe('plain')
-  })
-
-  it('bigint 顶层 payload 走快路径的全函数 coercian，不进慢路径', async () => {
-    const bodies: string[] = []
-    const reporter = makeReporter(bodies)
-
-    await reporter.report(ctx('bigint-top', 10n))
-
-    const parsed = JSON.parse(bodies[0]) as { payload?: unknown }
-    expect(parsed.payload).toBe('[bigint 10]')
-  })
-
-  it('好 payload 只序列化一次（快路径零试用串化）', async () => {
-    const bodies: string[] = []
-    const reporter = makeReporter(bodies)
-    const stringifySpy = jest.spyOn(JSON, 'stringify')
-
-    try {
-      await reporter.report(ctx('good', { ok: true, nested: { deep: [1, 2, 3] } }))
-      // 修复前：toSerializablePayload 先试用串一遍（结果丢弃）、buildRequestBody 再串一遍 = 2 次；
-      // 修复后：快路径整体串化一次 = 1 次（畸形条目才在慢路径付额外代价）
-      expect(stringifySpy).toHaveBeenCalledTimes(1)
-    } finally {
-      stringifySpy.mockRestore()
-    }
   })
 })
 
@@ -737,52 +479,6 @@ describe('withCache × 节流/防抖：占位品牌协议', () => {
   })
 })
 
-describe('env.storage.getWithStatus 三态', () => {
-  const originalWx = (globalThis as unknown as { wx?: unknown }).wx
-  const setWx = (value: unknown): void => {
-    const holder = globalThis as unknown as { wx?: unknown }
-    holder.wx = value
-  }
-
-  afterEach(() => {
-    setWx(originalWx)
-    jest.restoreAllMocks()
-  })
-
-  it('hit / miss / error 三态可分，get 的既有 null 契约不变', () => {
-    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {})
-    try {
-      setWx({
-        getStorageSync: (key: string) => {
-          if (key === 'boom') throw new Error('read boom')
-          if (key === 'empty') return ''
-          if (key === 'obj') return '{"a":1}'
-          if (key === 'num') return '1001'
-          return ''
-        },
-      })
-
-      expect(storage.getWithStatus('obj').status).toBe('hit')
-      expect(storage.getWithStatus('obj').value).toEqual({ a: 1 })
-      expect(storage.getWithStatus('num').status).toBe('hit')
-      // number 原文返回的既有契约在三态下保持
-      expect(storage.getWithStatus('num').value).toBe('1001')
-      expect(storage.getWithStatus('empty').status).toBe('miss')
-      expect(storage.getWithStatus('missing').status).toBe('miss')
-      expect(storage.getWithStatus('boom').status).toBe('error')
-      expect(storage.getWithStatus('boom').value).toBeNull()
-
-      // get 的行为逐字不变：error 与 miss 都回落 null
-      expect(storage.get('obj')).toEqual({ a: 1 })
-      expect(storage.get('boom')).toBeNull()
-      expect(storage.get('missing')).toBeNull()
-      expect(errorSpy).toHaveBeenCalled()
-    } finally {
-      errorSpy.mockRestore()
-    }
-  })
-})
-
 // ==================== 第三轮：二次审查（diff 对抗审查 + 未覆盖文件补审） ====================
 
 /**
@@ -844,71 +540,6 @@ describe('subscribeMappers：单个映射器抛错不得阻断同宿主其余映
     expect(onError).toHaveBeenCalled()
 
     unsubscribe()
-  })
-})
-
-describe('ErrorRecovery：指数退避溢出取上限而非「立即重试」', () => {
-  it('rawDelay 溢出为 Infinity 时排定 MAX_TIMER_DELAY（不是 0）', async () => {
-    jest.useFakeTimers()
-    const captured = captureTimerDelays()
-    try {
-      const recovery = new ErrorRecovery()
-      // 巨大的**有限** baseDelay：attempt 0 的退避仍有限（被钳到上限），
-      // attempt 1 的 baseDelay * 2 溢出为 Infinity——只有这一档能区分新旧行为
-      recovery.configure({ HUGE_BACKOFF: { strategy: RecoveryStrategy.RETRY, maxRetries: 3, retryDelay: 1e300 } })
-      const mk = () => new GeomStoreError('boom', 'HUGE_BACKOFF', { storeName: 's', operation: 'op' })
-
-      // 断言必须在推进时钟**之前**挂上：recover 的 rejection 落地在假时钟推进期间，
-      // 晚付带 handler 会被 Node 记为未处理拒绝（测试虽稍后 awaiting 仍判失败）
-      const first = recovery.recover(mk())
-      const firstSettles = expect(first).rejects.toThrow('boom')
-      await jest.advanceTimersByTimeAsync(MAX_TIMER_DELAY + 1)
-      await firstSettles
-      expect(captured.delays()[0]).toBe(MAX_TIMER_DELAY)
-
-      const second = recovery.recover(mk())
-      const secondSettles = expect(second).rejects.toThrow('boom')
-      await jest.advanceTimersByTimeAsync(0)
-      // 修复前：Infinity 落到 `: 0` 分支 ⇒ setTimeout(fn, 0)，最后几次重试紧贴执行；
-      // 修复后按「能等多久等多久」排到上限（与 async-core 的 retryWithBackoff 同口径）
-      // 同上：拒绝必须先有 handler 才能推进时钟
-      expect(captured.delays()[1]).toBe(MAX_TIMER_DELAY)
-      await jest.advanceTimersByTimeAsync(MAX_TIMER_DELAY + 1)
-      await secondSettles
-    } finally {
-      captured.restore()
-      jest.useRealTimers()
-    }
-  })
-})
-
-describe('ErrorMonitoring：超大 reportTimeout 不得让超时在下一个宏任务就落地', () => {
-  it('reportTimeout 越界时按上限排定超时定时器', async () => {
-    jest.useFakeTimers()
-    const captured = captureTimerDelays()
-    try {
-      // 永不结算的上报：为了让超时定时器成为唯一的结算路径（Await 它就没有观察窗口了）
-      const reporter = {
-        report: jest.fn(() => new Promise<void>(() => {})),
-        reportBatch: jest.fn(() => Promise.resolve()),
-        getName: () => 'r3-never-settling',
-      }
-      const monitoring = new ErrorMonitoring({
-        reporters: [reporter],
-        batchThreshold: 1,
-        batchInterval: 3_600_000,
-        // 有限但远超 2^31-1：宿主会把它夹成 ~1ms，每次 flush 都把所有在途上报判成超时
-        reportTimeout: 5e9,
-        enableConsoleLog: false,
-      })
-
-      await monitoring.report({ storeName: 's', operation: 'dispatch', error: new Error('boom'), level: 'error', timestamp: 1 })
-
-      expect(captured.delays()).toContain(MAX_TIMER_DELAY)
-    } finally {
-      captured.restore()
-      jest.useRealTimers()
-    }
   })
 })
 

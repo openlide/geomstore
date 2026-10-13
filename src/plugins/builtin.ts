@@ -492,8 +492,10 @@ export const devtoolsPlugin: Plugin = {
 
       subscribe: (callback: (state: unknown) => void, options?: { readOnly?: boolean }) => {
         // 默认只读：调试入口的订阅只观察状态，以可写订阅登记会翻转 Store 的
-        // needsClone 判定，让 persistence/logger 等只读订阅者一并承担整树深拷贝
-        return store.subscribe(callback, options ?? { readOnly: true })
+        // needsClone 判定，让 persistence/logger 等只读订阅者一并承担整树深拷贝。
+        // 用 `options?.readOnly ?? true` 而非 `options ?? { readOnly: true }`：后者在传 `{}`
+        // 时不会默认只读、退化成可写订阅（与 integrations/utils.ts 的 exposeStoreAPI 同口径）
+        return store.subscribe(callback, { readOnly: options?.readOnly ?? true })
       },
 
       // 与上面几处不同，这里不需要断言：`Plugin`（默认泛型即 Plugin<State>）

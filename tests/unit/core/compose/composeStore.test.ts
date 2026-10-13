@@ -423,6 +423,20 @@ describe('composeStore', () => {
       expect(store1.getState().name).toBe('Bob')
     })
 
+    test('子 store 被独立销毁后 dispatch 跳过并返回 undefined（不抛错）', () => {
+      const composed = composeStore([store1, store2])
+      store1.destroy()
+
+      // 已销毁的子 store 被跳过（与 setState / $patch 写侧同口径），
+      // 返回 undefined 而非抛出「Cannot call dispatch on a destroyed Store」
+      const result = composed.dispatch('setName', 'Bob')
+      expect(result).toBeUndefined()
+
+      // 其余存活子 store 不受影响
+      composed.dispatch('setTheme', 'dark')
+      expect(store2.getState().theme).toBe('dark')
+    })
+
     test('命名空间模式下多级路径（三段）应该解析为 store + 成员名', () => {
       // parseActionName 对 parts.length >= 2 时取首段为 store 名、其余段合并为成员名
       const composed = composeStore([store1, store2], { namespace: 'myapp', strict: false })

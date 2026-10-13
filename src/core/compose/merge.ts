@@ -81,10 +81,7 @@ export function mergeStateMaps(
           // 冲突键用实例身份而非名字：同名多实例正是本告警要拦截的场景，
           // 用名字做键会让 A1/B1 与 A2/B2（A1===A2, B1!==B2）被判为同一冲突
           // 用按名字排序的配对键保证 (A,B) 与 (B,A) 归一
-          const pairKey =
-            previousOwner.name < store.name
-              ? `${previousOwner.name}|${store.name}`
-              : `${store.name}|${previousOwner.name}`
+          const pairKey = previousOwner.name < store.name ? `${previousOwner.name}|${store.name}` : `${store.name}|${previousOwner.name}`
           let pairSet = warnedConflicts.get(key)
           if (!pairSet) {
             pairSet = new Set()

@@ -595,6 +595,25 @@ describe('Builtin Plugins - 内置插件', () => {
       expect((global as any).__GEOMSTORE_STORES__['store2']).toBe(store2)
     })
 
+    it('DEVTOOLS-008: 调试入口的 subscribe 传 {} 时仍默认只读，不翻转 needsClone', () => {
+      const store = createStore({ name: 'test-store', state: { count: 0 } })
+      store.use(devtoolsPlugin)
+
+      const api = (global as any).__GEOMSTORE_DEVTOOLS__['test-store']
+      const subscriptionManager = (store as unknown as { _subscriptionManager: { hasWritableListeners(): boolean } })._subscriptionManager
+
+      // 传 {} 也应按只读注册（修复前 `options ?? { readOnly: true }` 会把 {} 当成可写）
+      const unsubscribe = api.subscribe(() => {}, {})
+      expect(subscriptionManager.hasWritableListeners()).toBe(false)
+
+      // 显式要求可写时仍按调用方意愿注册
+      const writableUnsubscribe = api.subscribe(() => {}, { readOnly: false })
+      expect(subscriptionManager.hasWritableListeners()).toBe(true)
+      writableUnsubscribe()
+      unsubscribe()
+      expect(subscriptionManager.hasWritableListeners()).toBe(false)
+    })
+
     it('DEVTOOLS-007: globalThis不存在时不应该报错', () => {
       const store = createStore({ name: 'test-store', state: { count: 0 } })
 

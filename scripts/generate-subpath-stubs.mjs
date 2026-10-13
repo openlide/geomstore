@@ -84,7 +84,6 @@ const subpathEntries = {
   'plugins/devtools': 'plugins/devtools',
   'plugins/performance': 'plugins/performance',
   integrations: 'integrations',
-  'integrations/enterprise': 'integrations/enterprise',
   error: 'extras/error',
   compose: 'core/compose',
   selectors: 'extras/selector',

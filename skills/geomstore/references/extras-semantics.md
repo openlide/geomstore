@@ -13,11 +13,7 @@
 - [3. Action 装饰器与增强（`extras/action`）](#3-action-装饰器与增强extrasaction)
 - [4. 错误处理（`extras/error`）](#4-错误处理extraserror)
   - [ErrorBoundary](#errorboundary)
-  - [ErrorRecovery 与重试额度](#errorrecovery-与重试额度)
-  - [聚合与计数口径](#聚合与计数口径)
-  - [报告器](#报告器)
 - [5. 性能监控（`extras/performance`）](#5-性能监控extrasperformance)
-- [6. 企业集成（`extras/enterprise`）](#6-企业集成extrasenterprise)
 
 ---
 
@@ -147,7 +143,7 @@ const byId = createParametricSelector((s: CounterState, id: string) => /* ... */
 ## 4. 错误处理（`extras/error`）
 
 ```ts
-import { ErrorBoundary, ErrorRecovery, RecoveryStrategy, ErrorCode, createError } from '@openlide/geomstore/extras/error'
+import { ErrorBoundary, GeomStoreError, ErrorCode, createError } from '@openlide/geomstore/extras/error'
 
 const boundary = new ErrorBoundary({ fallback: [], onError: (e) => console.error(e) })
 boundary.execute(() => riskyOperation()) // 未给 fallback 时默认 fail-loud（重抛）
@@ -156,38 +152,6 @@ boundary.execute(() => riskyOperation()) // 未给 fallback 时默认 fail-loud�
 ### ErrorBoundary
 
 **默认 fail-loud**：未配置 `fallback` 时错误重抛；提供 `fallback` 即声明恢复意图。`fallback` 自身抛错时**重抛原始错误**。非 `Error` 的抛出值先归一化为 `Error` 再记账；重抛时仍是原始值。显式 `recoverable: true` 而未配 `fallback` 时返回 `undefined`。
-
-### ErrorRecovery 与重试额度
-
-**`RETRY` 不在库内重跑原操作**（它不持有原操作引用）：按退避延迟后**重抛原错误**，由调用方自己重试。
-
-- 重试额度按「`(store, operation)` 键 + 时间窗」累计（两处都缺时全部未归因调用共用一份额度，键名为 `<code>:unattributed`），窗口 = `max(60s, 本周期退避总时长 × 2)`
-- 达到 `maxRetries` 时抛 `INTERNAL_ERROR`（context 带 `retryKey` / `attempts`）并**保留**计数与周期键——同一失败循环里继续调用**不会**每轮领到全新额度；新周期只由周期窗过期开启，或在该键恢复成功 / `RESTART` 策略 / `clearAllRetryCounts()` 时清零
-- `recover` 只接受 `GeomStoreError`：非 GeomStoreError 与未配置策略的错误都抛 `GeomStoreError`（`PARAMETER_ERROR` / `INTERNAL_ERROR`）并把原始值挂 `cause`。按 `error.code` 分支即可，不要按 `instanceof Error` 猜
-- 配置键必须是**真实 `ErrorCode` 值**（无 `E_` 前缀）
-
-### 聚合与计数口径
-
-**聚合有两套口径，别混成一件事**：
-
-| 口径                                                     | 性质                                                                                                                         |
-| -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| `totalErrors` / `byCode` / `byStore`                     | **按条独立累计**的账目，自上次 `clear()` 起单调不减，恒有 `sum(byCode) === sum(byStore) === totalErrors`，**不随组驱逐倒退** |
-| `totalGroups` / `getErrorGroups()` / `summary.topErrors` | 只是**当前存活组**的视图，会随驱逐变小                                                                                       |
-
-两者的差额读 `getAggregationStats()` 的 `evictedGroups`（被驱逐的组数）与 `evictedErrors`（随组消失的条数）——**「聚合有没有丢数据」只在这里可见**。组数上限由 `MonitoringConfig.maxGroups` 配置（默认 100；非有限值回默认、有限值 `Math.max(1, floor(v))`）。
-
-> **`maxGroups: 0` 不是「关掉聚合」而是「刚建的组立刻被踢掉」**，要关请传 `enableAggregation: false`。
-
-`affectedStores`（单组 50 个 Store）与 `byStore`（全局 200 个键）都有基数上限，超出并入保留字 `__others__` 溢出桶——**计数一条不丢，截断的只是「列得全不全」**。所以 `getGroupsByStore(name)` 对溢出组「没返回」**不等于**「没在那组里报错」，要准确条数请用 `getStats().byStore`。
-
-**`ErrorMonitoring.generateReport().summary` 的三个口径互不重叠，不能相加核对**：`totalErrors`（观测到的错误数）/ `queuedErrors`（仍在上报队列里）/ `droppedErrors`（队列溢出被挤出去、从未投递给任何 reporter）——被丢弃的那条在它自己那次 `report()` 里已计入 `totalErrors`；成功投递过的既不在 `queuedErrors` 也不在 `droppedErrors` 里。
-
-### 报告器
-
-`reporters` 传非数组时 `report()` 不 reject，退回无报告器并 `console.warn` 留痕；`new ErrorMonitoring({ reporters: arr })` 之后库**不修改**调用方那个数组；批量 flush 对每个 reporter 做 `ok / fail / timeout` 三态判定（仅真正 resolve 才算成功）；容量类入参被下限裁剪（`maxQueueSize` 最小 1 默认 1000、`maxFlushRetries` 最小 0 默认 3）。`getGroups()` / `addError()` / `generateReport()` 交出的都是**副本**。`HttpReporter` 自动选择 `wx.request`（校验 `statusCode`）或 `fetch`（校验 `ok`），可注入自定义实现。
-
-**到点结束的方式两条路径不同**：`fetch` 规范没有 `timeout` 字段，由本实现翻译成 `AbortController` 中止，**缺省 10s**（与 `reportTimeout` 同口径），`<= 0` 表示不超时，并与调用方自带的 `signal` 合并（任一中止即中止；请求先落地时清掉定时器与外部监听器）。`wx.request` 走平台原生 `timeout`，**本库不注入默认值**（未配置时不加该键，由平台自身的请求上限兜底）——要与 fetch 侧同口径请显式传 timeout。两条路径都会把 `NaN` / `Infinity` 归一到默认 10s：`Infinity` 会被 `setTimeout` 钳成 1ms（每次上报瞬间自我中止），`NaN` 则让定时器根本不起（挂起请求永不结束）。**为什么必须能中止**：flush 层的 `reportTimeout` 只是 `Promise.race`，只放行 flush 而不终止输掉竞速的请求——底层请求若仍在飞，超时后重入队的批次就会与迟到落地的那次投递撞成重复上报。注入自定义 `ErrorReporter` 时可取消性由注入实现负责。
 
 ## 5. 性能监控（`extras/performance`）
 
@@ -199,23 +163,3 @@ store.use(analyzerPlugin) // 调试入口：globalThis.__GEOMSTORE_ANALYZER__[st
 - **`duration` 为 `NaN` / `±Infinity` 的样本不进入 `avg` / `max` / `min`**，只计入次数（`totalCount` / `exceedThreshold` 口径不变）；一组样本全非有限时耗时统计为 `0`。被排除的样本数**没有**对外字段
 - `analyzeBottlenecks(threshold)` / `detectRegression(threshold)` 的**非法阈值**按默认值 / 0 归一：`NaN` 会让判据整体恒假（瓶颈列表变空、回归检测「一条都没退化」，看着像「没有性能问题」），负阈值会让 `0ms` 的操作被判 `severity: 'high'`
 - 调试表只在非生产环境挂载，表键是 `store.name`（见 `core-semantics.md` §6）
-
-## 6. 企业集成（`extras/enterprise`）
-
-本入口是**企业微信集成（WeCom）**，与主入口的**微信小程序集成**（`withPageStore` 等）是两回事：前者是可选能力，后者属核心。
-
-**后台同步的 `refreshData` 是隐式契约**：`initBackgroundSync` / `createEnterpriseApp` 在切前台且非活跃超 `maxInactiveTime`（默认 5 分钟）时**按名字** `dispatch('refreshData')`。注册的 store 没有这个 action 就不会刷新——**每个 handler 一次性 `logger.warn`** 点名缺失的 action 与后果。**修复方式**：给该 store 提供 `refreshData`（通常委托自身的同步 action——库自带的 `createUserStore` 已提供），或不要为它注册后台同步。
-
-**`createUserStore`**：
-
-- 自带 action 清单为 `{ setUserInfo, updatePreferences, syncWithServer, refreshData }`（`refreshData` 的实现是 `return this.dispatch('syncWithServer')`）——按 action 枚举该 store 的宿主（自建清单、快照断言）需据此更新
-- 可选项 **`persistUserInfoKeys?: readonly string[]`**：宿主可声明哪些 `userInfo` 字段**不**落本地存储（缺省整体落盘——刻意不作内置白名单，`UserInfo` 是开放形状，白名单会让未列出的业务字段重启后凭空消失）
-- `logout()` 的清理范围包含 `offline_action_queue_<store name>` 及其 `_dead_letter` 两个键：**登出后不会残留离线队列 / 死信，也不会重放登出前的操作**（避免非幂等操作二次执行）
-
-**`OfflineManager.execute()` 失败入队后会自驱补跑一轮重放**：在线态下入队即排一个 0 延时**宏任务**重放、一轮收尾仍有存货时同样补跑；离线态不自驱，入队后等待外部事件。
-
-**`createEnterpriseApp` 的 `onShow`** 判据是「是否有一轮同步在途」，在途时直接返回——切前台若已有同步在跑，不会出现第二次 loading 闪烁。
-
-**热更新备份**：格式为带 `'#gs'` 标记的编解码，旧备份仍可读；支持集含 JSON 可表达的值与 Date / RegExp / Map / Set / `undefined` / 非有限数字 / BigInt。**类实例恢复后原型丢失、函数与 symbol 成员恢复为 `undefined`**（两者都打 lossy 告警）。
-
-**企业级 `storage`** 对「会被读成另一种值」的字符串加引号信封，字符串往返类型无损（不对称处：`number` / `boolean` 读回原始字符串）。

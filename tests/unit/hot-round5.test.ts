@@ -5,8 +5,6 @@
  * 修复前这些断言全部会失败（失败原因即报告描述的那条路径）。
  *
  * 未在本文件出现的 R5 编号由既有测试承接：
- * R5-192 → tests/unit/extras/error/*（按 store 汇总的账目自洽）、
- * R5-201 → tests/unit/core/error/ErrorRecovery.test.ts 的 BUG-13、
  * R5-279 → tests/unit/plugins/wx-storage-backend.test.ts（缺失即抛错）、
  * R5-018 / R5-022 → scripts/*.mjs 不在 jest 采集范围内，验证方式为命令级冒烟
  * （junction 目标文件不被删、main 含 "dist" 字样的真实目录不被递归删除）。
@@ -17,12 +15,10 @@ import { composeStore } from '@/core/compose/composeStore.js'
 import type { Store } from '@/types/store.js'
 import { withLog } from '@/extras/action/decorators/log.js'
 import { withThrottle } from '@/extras/action/decorators/throttle.js'
-import { ErrorAggregator } from '@/extras/error/ErrorAggregator.js'
 import { createRetrySelector, createRetrySelectorAsync } from '@/extras/selector/retrySelector.js'
 import { createSelector } from '@/extras/selector/createSelector.js'
 import { deepEqual } from '@/core/utils/helpers.js'
 import { SnapshotManager } from '@/extras/snapshot/SnapshotManager.js'
-import { ensureAppLifecycleHooks } from '@/integrations/enterprise/background-sync.js'
 import { registerGlobalEntry } from '@/plugins/globalRegistry.js'
 
 /** 取装饰后的方法并调用（host 是 Record<string|symbol, unknown>，直接点调用会判为 unknown） */
@@ -194,28 +190,6 @@ describe('R5-193 withThrottle 对 thenable / 跨 realm Promise 的判定', () =>
   })
 })
 
-// ==================== R5-192 非 Error 抛出值不得破坏计数账目 ====================
-
-describe('R5-192 ErrorAggregator 处理非 Error 抛出值', () => {
-  it('context.error 为 null 时仍建组，byStore 合计与 totalErrors 一致', () => {
-    const aggregator = new ErrorAggregator()
-
-    const group = aggregator.addError({
-      storeName: 's1',
-      operation: 'dispatch',
-      error: null as unknown as Error,
-      level: 'error',
-    })
-
-    expect(group).toBeDefined()
-    expect(group?.type).toBe('Error')
-    expect(group?.message).toBe('null')
-    const stats = aggregator.getStats()
-    expect(stats.totalErrors).toBe(1)
-    expect(Object.values(stats.byStore).reduce((sum, n) => sum + n, 0)).toBe(1)
-  })
-})
-
 // ==================== R5-220 重试选择器不得丢弃 falsy 抛出值 ====================
 
 describe('R5-220 createRetrySelector 保留 falsy 抛出值', () => {
@@ -318,44 +292,6 @@ describe('R5-258 SnapshotManager 的 batchSize 守卫', () => {
     const result = await manager.createSnapshotAsync({ deep: { x: 1 } }, { batchSize: -5 })
 
     expect(result.data).toEqual({ deep: { x: 1 } })
-  })
-})
-
-// ==================== R5-247 App 的非对象实参原样透传 ====================
-
-describe('R5-247 background-sync 的 App 包装实参校验', () => {
-  let previousApp: unknown
-
-  beforeEach(() => {
-    previousApp = g.App
-  })
-
-  afterEach(() => {
-    g.App = previousApp
-  })
-
-  it.each([[null], ['x'], [123]])('App(%p) 不抛错，且原样交给宿主 App', (value) => {
-    const original = jest.fn()
-    g.App = original
-    ensureAppLifecycleHooks()
-    const wrapped = g.App as (options: unknown) => unknown
-
-    // 修复前：默认参数只挡 undefined，非对象实参在属性读取 / 赋值 / defineProperty 处抛 TypeError
-    expect(() => wrapped(value)).not.toThrow()
-    expect(original).toHaveBeenCalledWith(value)
-  })
-
-  it('正常配置仍被包装（onShow 被替换）', () => {
-    const original = jest.fn()
-    g.App = original
-    ensureAppLifecycleHooks()
-    const userOnShow = jest.fn()
-    const wrapped = g.App as (options: unknown) => unknown
-
-    wrapped({ onShow: userOnShow })
-
-    const passed = original.mock.calls[0][0] as { onShow: () => void }
-    expect(passed.onShow).not.toBe(userOnShow)
   })
 })
 

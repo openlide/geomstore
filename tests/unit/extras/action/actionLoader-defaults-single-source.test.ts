@@ -1,5 +1,5 @@
 /**
- * ActionLoader 缺省值的单一来源（ocr #243 跨文件收口）
+ * ActionLoader 缺省值的单一来源
  *
  * 曾经的形态是「`ActionLoader` 构造器与 `withLoading` 各写一份字面量」，并且真的漂移过
  * （一处用大写级别、一处用小写）。本文件从三个方向钉住「只剩一处」：

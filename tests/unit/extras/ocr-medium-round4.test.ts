@@ -1,7 +1,7 @@
 /**
  * 第四轮 ocr 复审 · 分组 G2-extras（medium 分片 1/3）修复的回归测试
  *
- * 用例名带 finding 编号（#N），与 .ocr-fix/groups/G2-extras-medium-p1.md 对照。
+ * 用例名带 finding 编号（#N）。
  */
 
 import { ActionLoader, ActionUtils, ActionExecutor, type ActionStats } from '@/extras/action/index.js'
@@ -21,8 +21,6 @@ import type {
   ThrottleDecoratorOptions,
 } from '@/extras/action/decorators/index.js'
 import { withErrorBoundary } from '@/extras/error/ErrorBoundary.js'
-import { ErrorHandlerImpl } from '@/extras/error/ErrorHandler.js'
-import { createErrorContext } from '@/types/error.js'
 import type { ActionResult } from '@/types/action.js'
 
 /** 造一条执行历史记录 */
@@ -984,41 +982,5 @@ describe('#227 withTimeout 在装饰阶段校验 timeout', () => {
     withTimeout(5)({}, 'load', descriptor)
 
     await expect((descriptor.value as () => Promise<unknown>)()).rejects.toThrow('Timeout after 5ms')
-  })
-})
-
-describe('#234 错误查询接口返回副本', () => {
-  beforeEach(() => {
-    // 默认 handler 会把每条错误打到 console，这里只验证副本语义
-    jest.spyOn(console, 'error').mockImplementation()
-  })
-
-  it('#234 修改返回的上下文不会污染内部日志与统计', () => {
-    const handler = new ErrorHandlerImpl()
-    handler.handle('user-store', 'action-execution', new Error('first'), 'error')
-
-    const last = handler.getLastError()
-    expect(last).toBeDefined()
-    last!.level = 'critical'
-    last!.storeName = 'tampered'
-    expect(handler.getLastError()?.level).toBe('error')
-    expect(handler.getLastError()?.storeName).toBe('user-store')
-
-    const log = handler.getErrorLog()
-    log[0].error = new Error('replaced')
-    expect(handler.getErrorLog()[0].error.message).toBe('first')
-
-    expect(handler.getErrorsByLevel('error')[0].storeName).toBe('user-store')
-    expect(handler.getErrorsByOperation('action-execution')[0].storeName).toBe('user-store')
-    expect(handler.getErrorStats().byLevel.error).toBe(1)
-  })
-
-  it('#234 返回的条目仍保留 error 的引用身份', () => {
-    const handler = new ErrorHandlerImpl()
-    const error = new Error('same instance')
-    handler.handleError(createErrorContext('store', 'state-update', error))
-
-    expect(handler.getLastError()?.error).toBe(error)
-    expect(handler.getErrorLog()[0]?.error).toBe(error)
   })
 })

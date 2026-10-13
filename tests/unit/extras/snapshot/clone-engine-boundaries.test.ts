@@ -180,4 +180,17 @@ describe('自定义克隆器的非 Error 抛出物', () => {
 
     expect(result.success).toBe(false)
   })
+
+  it('异步快照保留对象上的可枚举 Symbol 键（与同步口径一致）', async () => {
+    const sym = Symbol('meta')
+    const source: any = { plain: 1 }
+    source[sym] = 'symbol-value'
+
+    const syncResult = createSnapshot(source)
+    const asyncResult = await createSnapshotAsync(source)
+
+    // 修复前异步对象分支用 Object.keys / getOwnPropertyNames 取键，Symbol 键被静默丢弃
+    expect(syncResult.data[sym]).toBe('symbol-value')
+    expect(asyncResult.data[sym]).toBe('symbol-value')
+  })
 })

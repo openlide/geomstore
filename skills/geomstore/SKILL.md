@@ -7,12 +7,12 @@ description: 微信小程序状态管理库 GeomStore（@openlide/geomstore，v0
 
 ## Overview
 
-GeomStore 是轻量级微信小程序状态管理库，提供类 Pinia 的 API、完整的 TypeScript 类型推断、企业级能力（Store 组合、插件、错误处理、性能监控、快照、Action 增强）与原生小程序集成（Skyline / Webview）。
+GeomStore 是轻量级微信小程序状态管理库，提供类 Pinia 的 API、完整的 TypeScript 类型推断、可选能力（Store 组合、插件、错误处理、性能监控、快照、Action 增强）与原生小程序集成（Skyline / Webview）。
 
 当前版本 **v0.8.3**。两条硬性特征决定了绝大多数误用：
 
 - **纯 ESM**：只有 ESM 产物，**无 CJS 入口**（`exports` 里也没有 `require` 条件）。一律写 `import`。
-- **瘦核心 + 按需子入口**：主入口只含运行必需 API；快照 / 选择器 / 性能 / Action 增强 / 插件实现 / 企业集成等**不在主入口**，必须从 `extras/*` 引入。
+- **瘦核心 + 按需子入口**：主入口只含运行必需 API；快照 / 选择器 / 性能 / Action 增强 / 插件实现等**不在主入口**，必须从 `extras/*` 引入。
 
 本文件是**速查层**：下面「使用规则」每条只给结论与最容易踩的坑，完整边界语义一律指向 `references/`。两者都不与源码争权威——签名以 `references/api/`（脚本从 `.d.ts` 生成）为准，仓库内另可读 `docs/`。
 
@@ -30,13 +30,13 @@ GeomStore 是轻量级微信小程序状态管理库，提供类 Pinia 的 API�
 1. **写代码前先查签名，不要凭记忆**：先看 [`references/api/index.md`](./references/api/index.md) 的入口一览，再只打开所需入口的文件（生成物，勿手改）。默认值与语义契约看 `references/*-semantics.md`；在 GeomStore 仓库内另可读 `docs/`——两条分流见文末 [Resources](#resources)。
 2. **导入路径**：`exports` 仅声明下表子路径，不要深链叶子模块。日常用第一行即可，可选能力按需从 `extras/*` 引入。
 
-   | 引入路径                                                                                     | 内容                                                                                                                                                                                                |
-   | -------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-   | `@openlide/geomstore`（或 `/core`）                                                          | `createStore` / `Store` / 工具函数 / `HookSystem` / `usePlugin` / `withPageStore` / `withComponentStore` / `withAppStore` / `composeStore` / `LRUCache`                                             |
-   | `@openlide/geomstore/integrations`                                                           | 上述 `with*` 三件套 + 底层绑定工具 + 企业级（user store / StoreManager / 离线队列 / 后台同步 / 热更新 / createEnterpriseApp）；符号全名见 [`api/integrations.md`](./references/api/integrations.md) |
-   | `@openlide/geomstore/extras/{snapshot,selector,action,performance,plugins,error,enterprise}` | 各可选能力（推荐按子入口精确引入）                                                                                                                                                                  |
-   | `@openlide/geomstore/extras`                                                                 | 全部可选能力聚合，会整体拉入产物，仅调试或确实全都要用时引入                                                                                                                                        |
-   - **微信「构建 npm」不走 `exports`**：它读包根 `miniprogram` 字段 → 包内 `dist-weapp/`，把**整目录**拷进 `miniprogram_npm`，不拼接、不做依赖分析。该目录是与 `dist` 按模块一比一转译的 CJS 镜像，11 个公开子路径入口齐备、导出面逐项一致。
+   | 引入路径                                                                          | 内容                                                                                                                                                    |
+   | --------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+   | `@openlide/geomstore`（或 `/core`）                                               | `createStore` / `Store` / 工具函数 / `HookSystem` / `usePlugin` / `withPageStore` / `withComponentStore` / `withAppStore` / `composeStore` / `LRUCache` |
+   | `@openlide/geomstore/integrations`                                                | 上述 `with*` 三件套 + 底层绑定工具；符号全名见 [`api/integrations.md`](./references/api/integrations.md)                                                |
+   | `@openlide/geomstore/extras/{snapshot,selector,action,performance,plugins,error}` | 各可选能力（推荐按子入口精确引入）                                                                                                                      |
+   | `@openlide/geomstore/extras`                                                      | 全部可选能力聚合，会整体拉入产物，仅调试或确实全都要用时引入                                                                                            |
+   - **微信「构建 npm」不走 `exports`**：它读包根 `miniprogram` 字段 → 包内 `dist-weapp/`，把**整目录**拷进 `miniprogram_npm`，不拼接、不做依赖分析。该目录是与 `dist` 按模块一比一转译的 CJS 镜像，10 个公开子路径入口齐备、导出面逐项一致。
    - ⚠️ **别拿 Node 去验证 `dist-weapp/`**：目录内不带 `package.json`，Node 会按根包的 `"type": "module"` 把它的 `.js` 判成 ESM，直接加载报 `require is not defined in ES module scope`。那是 Node 的解析规则、不是产物缺陷——它的 CJS 语义只对微信工具自己的加载器成立。
    - **包内还有 11 个转发子目录**（`store` / `hooks` / `plugins` / `integrations` / `compose` / `selectors` / `snapshot` / `performance` / `actions` / `cache` / `error`），只给不解析 `exports` 的老式场景按目录裸导入。**Node 与打包器下一律以上表为准**：快照用 `extras/snapshot`，不要用 `/snapshot`。
 
@@ -231,26 +231,14 @@ class UserService {
 ### 错误处理（`extras/error`）
 
 ```ts
-import { ErrorBoundary, ErrorRecovery, RecoveryStrategy, ErrorCode, createError } from '@openlide/geomstore/extras/error'
+import { ErrorBoundary, GeomStoreError, ErrorCode, createError } from '@openlide/geomstore/extras/error'
 
 const boundary = new ErrorBoundary({ fallback: [], onError: (e) => console.error(e) })
 boundary.execute(() => riskyOperation()) // 未给 fallback 时默认 fail-loud（重抛）
-
-const recovery = new ErrorRecovery()
-recovery.configure({
-  [ErrorCode.ACTION_EXECUTION_ERROR]: {
-    // 键必须是真实 ErrorCode 值（无 E_ 前缀）
-    strategy: RecoveryStrategy.RETRY,
-    maxRetries: 3,
-    retryDelay: 500,
-  },
-})
-await recovery.recover(createError(ErrorCode.ACTION_EXECUTION_ERROR, 'msg'))
 ```
 
-- `ErrorRecovery` 的 `RETRY` **不在库内重跑原操作**：按退避延迟后**重抛原错误**，由调用方自己重试。额度按「键 + 时间窗」累计，用尽后同一周期内持续拦截。
-- `recover` 只接受 `GeomStoreError`，按 `error.code` 分支，不要按 `instanceof Error` 猜。
-- `totalErrors` / `queuedErrors` / `droppedErrors` 是**三个互不重叠的口径，不能相加核对**。
+- 错误类族（`GeomStoreError` / 派生类 / `ErrorCode` / `createError` / 守卫）用于结构化抛错、按 `error.code` 分类。
+- 全进程收集 / 聚合 / 上报错误请接入 `Store` 的 `onError` 钩子 + 第三方监控（`wx.reportError` / Sentry 等）。
   详见 [`extras-semantics.md` §4](./references/extras-semantics.md#4-错误处理extraserror)。
 
 ### 快照与性能（`extras/snapshot` / `extras/performance`）
@@ -296,7 +284,6 @@ const diff = new SnapshotManager().compareSnapshots(result, createSnapshot(next)
 | `compareSnapshots` 报 `changed: true` 但看不出改了啥                                    | 先看 `inputTrusted`：任一侧快照 `success: false` 时它是 `false`，那条 `path: 'root'` 差异只代表**输入不可信**，不代表内容真变了                                   |
 | 组合 store 读起来少了某个子店的键、且日志里一条 `子 store "x" 已销毁，读取按空视图处理` | 该子店在组合之外被 `destroy()` 了。三条读路径都按**空视图**并入并只告警一次；显式判 `store.destroyed`、把该店从组合里摘掉，别把告警当噪音                         |
 | `store.state.frozenNode.child = 1` 在生产里悄悄改成功了                                 | 冻结 / 不可写属性拿到的是**裸引用**，不受写保护、不标脏、不通知；把需要保护的状态放可配置可写的属性上，或整体 `setState` / `$patch` 替换                          |
-| 切前台不自动刷新数据                                                                    | `initBackgroundSync` / `createEnterpriseApp` **按名字** `dispatch('refreshData')`；给该 store 提供 `refreshData`（`createUserStore` 已提供）                      |
 | 组件生命周期不执行                                                                      | 微信要求写在 `lifetimes` / `pageLifetimes` 内，配置顶层的 `attached` 等不会被执行                                                                                 |
 | `withRetry(fn, opts)` 报错                                                              | 装饰器只能用于类方法且需 `experimentalDecorators`；函数式场景用 `ActionExecutor`                                                                                  |
 | 持久化恢复失败                                                                          | 恢复值须为纯对象；`validate` 不通过会跳过恢复；自定义 `storage` 必须同步且三方法齐备（否则 `store.use()` 安装期就抛 `TypeError`）                                 |
@@ -308,7 +295,7 @@ const diff = new SnapshotManager().compareSnapshots(result, createSnapshot(next)
 
 - [`references/api/index.md`](./references/api/index.md) —— **自动生成的 API 参考**（从 `dist/**/*.d.ts`，含精确签名、JSDoc 与完整重载，当前对应 v0.8.3）。按入口拆分，先看索引的入口一览再只打开所需那一个；重新生成 `pnpm build && pnpm skill:api`。**不要手工编辑**，检索方式见该文件自身。
 - [`references/core-semantics.md`](./references/core-semantics.md) —— 核心的逐条边界语义：写入路径与状态保护、订阅与通知、getter、内置缓存、组合、插件与调试表、小程序集成。
-- [`references/extras-semantics.md`](./references/extras-semantics.md) —— 可选能力的逐条边界语义：快照、选择器、Action 装饰器、错误处理、性能监控、企业集成。
+- [`references/extras-semantics.md`](./references/extras-semantics.md) —— 可选能力的逐条边界语义：快照、选择器、Action 装饰器、错误处理、性能监控。
 
 ### 2）在 GeomStore 仓库内开发（`docs/` 与 `src/` 可见）
 

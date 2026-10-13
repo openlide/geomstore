@@ -95,7 +95,7 @@ function installDefaultMocks(): void {
   } else if (g.wx.clearStorageSync === mockClearStorageSync) {
     mockClearStorageSync.mockImplementation(defaultStorageImpl.clearStorageSync)
   }
-  
+
   // 其余 wx API 如果不存在就创建，如果存在且是我们的 mock 就重置实现
   if (!g.wx.request) {
     g.wx.request = jest.fn((options: { success?: (res: { statusCode: number; data: unknown; errMsg: string }) => void } = {}) => {

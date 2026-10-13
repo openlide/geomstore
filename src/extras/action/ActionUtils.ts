@@ -109,7 +109,12 @@ export class ActionUtils<A extends Actions = AsyncActions> {
     // ActionExecutor.run 抛的是 `actions[actionName] is not a function`，
     // 且这次失败还会被写进 executor 历史（getStats/getHistory 多出一条并非 action 执行的记录）
     const target: unknown = actions
-    if (target === null || target === undefined || !Object.prototype.hasOwnProperty.call(target, actionName) || typeof (target as A)[actionName] !== 'function') {
+    if (
+      target === null ||
+      target === undefined ||
+      !Object.prototype.hasOwnProperty.call(target, actionName) ||
+      typeof (target as A)[actionName] !== 'function'
+    ) {
       throw new TypeError(`ActionUtils.execute: action "${String(actionName)}" 不存在或不是函数`)
     }
 

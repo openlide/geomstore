@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+**破坏性变更（0.9.0）**
+
+- **`extras/enterprise`（企业微信集成）整体移除**：`createUserStore` / `StoreManager` / `storeManager` / `initHotUpdate` / `restoreFromHotUpdate` / `OfflineManager` / `initBackgroundSync` / `unregisterBackgroundSync` / `createEnterpriseApp` 及其类型不再提供；`@openlide/geomstore/extras/enterprise` 子路径与 `@openlide/geomstore/integrations` 里的企业符号一并移除。需要账号态 / 离线队列 / 后台同步 / 热更新请自行实现或另立包。
+- **`extras/error` 精简**：移除 `ErrorHandler` / `ErrorRecovery` / `ErrorMonitoring` / `ErrorAggregator` 与 `ConsoleReporter` / `HttpReporter`（越界的应用级 APM / 恢复能力）。`extras/error` 现仅导出错误类族（`GeomStoreError` 及派生类 / `ErrorCode` / `createError` / 守卫）与 `ErrorBoundary` / `withErrorBoundary`。全进程收集 / 聚合 / 上报错误请接入 `Store` 的 `onError` 钩子 + 第三方监控（`wx.reportError` / Sentry 等）。
+
 ### Fixed
 
 **集成层低优先级缺陷修复（OCR 扫描报告）**

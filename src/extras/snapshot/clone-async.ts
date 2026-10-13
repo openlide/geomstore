@@ -14,7 +14,7 @@
  */
 
 import type { AsyncSnapshotOptions, CloneContext, SnapshotError, SnapshotStats } from './types.js'
-import { isExactly, isIndexKey, isSlotBearingBuiltin } from '../../core/utils/clone.js'
+import { isExactly, isIndexKey, isSlotBearingBuiltin, ownEnumerableKeys } from '../../core/utils/clone.js'
 import {
   SKIP_CLONE_NODE,
   cloneDeep,
@@ -68,7 +68,7 @@ export interface AsyncCloneTask {
 function copyOwnKeyAsync(
   source: Record<string, unknown>,
   cloned: Record<string, unknown>,
-  key: string,
+  key: string | symbol,
   context: CloneContext,
   options: Required<AsyncSnapshotOptions>,
   errors: SnapshotError[],
@@ -110,7 +110,7 @@ function copyOwnKeyAsync(
         value: sourceValue,
         context: {
           ...context,
-          path: `${context.path}.${key}`,
+          path: `${context.path}.${typeof key === 'symbol' ? key.toString() : key}`,
           depth: context.depth + 1,
           parent: source,
           key,
@@ -129,7 +129,15 @@ function copyOwnKeyAsync(
     } else {
       // 原始值同样走 clonePrelude 计数：同步路径的 copyOwnKey 经 cloneDeep 对每个属性
       // 都跑一遍 prelude（含原始值），异步必须同口径，否则 nodeCount/estimatedSize 会偏低
-      clonePrelude(sourceValue, { ...context, path: `${context.path}.${key}`, depth: context.depth + 1 }, options.maxDepth, options, errors, stats, counters)
+      clonePrelude(
+        sourceValue,
+        { ...context, path: `${context.path}.${typeof key === 'symbol' ? key.toString() : key}`, depth: context.depth + 1 },
+        options.maxDepth,
+        options,
+        errors,
+        stats,
+        counters,
+      )
       Object.defineProperty(cloned, key, {
         value: sourceValue,
         ...descriptorFlags,
@@ -140,7 +148,7 @@ function copyOwnKeyAsync(
     handleCloneError(
       error,
       {
-        path: `${context.path}.${key}`,
+        path: `${context.path}.${typeof key === 'symbol' ? key.toString() : key}`,
         depth: context.depth,
         // 描述符可用时直接取 value：访问器描述符没有 value 字段、恒为 undefined，
         // 与原「识别访问器后显式返回 undefined」等价，故无需再区分描述符种类；
@@ -351,7 +359,17 @@ export function processNodeAsync(
       }
 
       for (const key of extraKeys) {
-        copyOwnKeyAsync(value as unknown as Record<string, unknown>, cloned, key, context, options, errors, stats, counters, enqueue)
+        copyOwnKeyAsync(
+          value as unknown as Record<string, unknown>,
+          cloned as unknown as Record<string, unknown>,
+          key,
+          context,
+          options,
+          errors,
+          stats,
+          counters,
+          enqueue,
+        )
       }
 
       stats.cloneOperations++
@@ -378,9 +396,9 @@ export function processNodeAsync(
   // 收尾同样是「丢节点」而不是交出空壳：外壳此刻已登记进 visited，交出它等于在交付的 data 里
   // 留下源数据中不存在的 `{}`，且同一源对象的后续引用会命中登记、静默复用这副没有属性的壳。
   // 本分支不会有子任务悬在半路——对象子值的 enqueue 发生在下方的属性循环里
-  let keys: string[]
+  let keys: Array<string | symbol>
   try {
-    keys = options.includeNonEnumerable ? Object.getOwnPropertyNames(value) : Object.keys(value)
+    keys = options.includeNonEnumerable ? [...Object.getOwnPropertyNames(value), ...Object.getOwnPropertySymbols(value)] : ownEnumerableKeys(value)
   } catch (error) {
     dropFailedNode(value, context, error, options, errors, stats)
     return SKIP_CLONE_NODE

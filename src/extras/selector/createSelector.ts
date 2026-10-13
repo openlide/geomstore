@@ -419,10 +419,7 @@ export class SelectorFactory<S extends State = Record<string, unknown>, R = unkn
  * console.log(result) // 20
  * ```
  */
-export function createSelector<S extends State, R>(
-  selectorFn: Selector<S, R>,
-  options?: SelectorOptions,
-): Selector<S, R> & { factory: SelectorFactory<S, R> } {
+export function createSelector<S extends State, R>(selectorFn: Selector<S, R>, options?: SelectorOptions): Selector<S, R> & { factory: SelectorFactory<S, R> } {
   const factory = new SelectorFactory(selectorFn, options)
 
   // Object.assign 附加 factory 对象（用于测试和高级用法），避免 any 断言

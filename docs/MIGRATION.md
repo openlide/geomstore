@@ -6,7 +6,24 @@
 
 **直接跳到你那一档**（多数升级只需看目标版本那一节；跨多个 minor 的请把中间各档的「需要改代码」都读一遍）：
 
-[0.8.1](#升级到-081) · [0.8.0](#升级到-080) · [0.7.0](#升级到-070) · [0.6.0](#升级到-060) · [0.5.1](#升级到-051) · [0.5.0](#升级到-050) · [0.4.0](#升级到-040) · [0.3.0](#升级到-030) · [0.2.x](#升级到-02x) · [0.1.3](#升级到-013) · [0.1.1 / 0.1.2](#升级到-011--012)
+[0.9.0](#升级到-090) · [0.8.1](#升级到-081) · [0.8.0](#升级到-080) · [0.7.0](#升级到-070) · [0.6.0](#升级到-060) · [0.5.1](#升级到-051) · [0.5.0](#升级到-050) · [0.4.0](#升级到-040) · [0.3.0](#升级到-030) · [0.2.x](#升级到-02x) · [0.1.3](#升级到-013) · [0.1.1 / 0.1.2](#升级到-011--012)
+
+## 升级到 0.9.0
+
+0.8.x → 0.9.0 是**破坏性变更**：移除整个 `extras/enterprise`、精简 `extras/error`。两条都需要改代码。
+
+### `extras/enterprise` 已整体移除
+
+`@openlide/geomstore/extras/enterprise` 子路径与 `@openlide/geomstore/integrations` 里的企业符号（`createUserStore` / `StoreManager` / `storeManager` / `initHotUpdate` / `restoreFromHotUpdate` / `OfflineManager` / `initBackgroundSync` / `unregisterBackgroundSync` / `createEnterpriseApp` 及对应类型）不再提供。需要账号态 / 离线队列 / 后台同步 / 热更新请自行实现或另立包。
+
+### `extras/error` 精简到错误类族 + 错误边界
+
+`ErrorHandler` / `ErrorRecovery` / `ErrorMonitoring` / `ErrorAggregator` 与 `ConsoleReporter` / `HttpReporter`（含相关类型 `MonitoringConfig` / `RecoveryConfig` / `RecoveryStrategy` / `ErrorReporter` 等）已移除。`extras/error` 现仅导出：
+
+- 错误类族：`GeomStoreError` / `ActionError` / `StateError` / `SelectorError` / `PluginError` / `ComposeError` / `ValidationError` / `ErrorCode` / `createError` 及 `is*Error` 守卫。
+- 错误边界：`ErrorBoundary` / `withErrorBoundary`。
+
+迁移：全进程收集 / 聚合 / 上报错误请接入 `Store` 的 `onError` 钩子（`store.hooks.on('onError', …)`）再转交第三方监控（`wx.reportError` / Sentry 等）；重试与恢复请在 action 侧自管（`extras/action` 的 `withRetry` 装饰器可覆盖部分场景）。
 
 ## 升级到 0.8.1
 
@@ -233,8 +250,8 @@ composeStore([userStore, cartStore])
 **错误子系统从核心入口下沉到 `extras/error`**（Breaking）：主入口不再导出 `GeomStoreError`、`createError`、`ErrorCode`、`isGeomStoreError` 及其子类、`ErrorRecovery`、`ErrorMonitoring`、`ErrorBoundary`、`ErrorHandler` 等。
 
 ```diff
-- import { createError, ErrorCode, ErrorRecovery } from '@openlide/geomstore'
-+ import { createError, ErrorCode, ErrorRecovery } from '@openlide/geomstore/extras/error'
+- import { createError, ErrorCode } from '@openlide/geomstore'
++ import { createError, ErrorCode } from '@openlide/geomstore/extras/error'
 ```
 
 同时移除 `TypeValidator` 模块与 `core/index` 中已废弃的零碎 barrel / 工厂函数（死代码收口）。

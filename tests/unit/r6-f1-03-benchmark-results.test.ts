@@ -3,8 +3,7 @@
  *
  * 覆盖 R6-020（datasetSize 反推）、R6-021（合并分位数口径）、R6-022（恒在的 getCached
  * 绕过 readKey 退化路径）、R6-072（异步预热静默不等待）、R6-075（formatNumber 非有限值）。
- * 每条都写成「旧实现会红、新实现绿」的形状；旧实现侧的实测输出记在
- * `.ocr-fix/verdicts6/f1-03.md` 的新旧对照探针里。
+ * 每条都写成「旧实现会红、新实现绿」的形状。
  */
 
 import { ResultBuilder, executeWarmup, executeWarmupAsync, type TimeStats } from '../../packages/benchmark/src/helpers.js'

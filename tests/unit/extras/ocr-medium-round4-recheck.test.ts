@@ -2,7 +2,7 @@
  * G2 extras medium 补审计（#180/#194/#196-#234 无判定记录的 25 条）的回归用例
  *
  * 逐条锁定「已落盘修复」的行为；#226 的 withRetry 守卫为本轮补做。
- * 用例名带 finding 编号，便于对照 .ocr-fix/verdicts/G2-extras-medium-p1-recheck.md。
+ * 用例名带 finding 编号，便于对照原评审条目。
  */
 
 import { ActionHistoryTracker } from '@/extras/action/ActionHistory.js'
@@ -17,7 +17,6 @@ import { withCache } from '@/extras/action/decorators/cache.js'
 import { withRetry } from '@/extras/action/decorators/retry.js'
 import { withTimeout } from '@/extras/action/decorators/timeout.js'
 import { withLog } from '@/extras/action/decorators/log.js'
-import { ErrorHandlerImpl } from '@/extras/error/ErrorHandler.js'
 // #221/#225：装饰器选项类型必须能且仅能从桶入口取到（编译期断言）
 import type {
   DecoratorOptions,
@@ -554,43 +553,5 @@ describe('#222/#224 withLog 支持 sink 注入与 redact', () => {
     } finally {
       consoleSpy.mockRestore()
     }
-  })
-})
-
-describe('#234 错误查询出口返回防御性拷贝', () => {
-  it('改 getLastError/getErrorsBy*/getErrorLog 的结果不污染内部日志', () => {
-    const handler = new ErrorHandlerImpl()
-    handler.handle('store1', 'action-execution', new Error('e1'), 'error')
-    handler.handle('store1', 'patch', new Error('e2'), 'warn')
-
-    const last = handler.getLastError()
-    expect(last).toBeDefined()
-    if (last) {
-      last.level = 'critical'
-      last.error = new Error('tampered')
-    }
-
-    expect(handler.getLastError()?.level).toBe('warn')
-    expect(handler.getLastError()?.error.message).toBe('e2')
-
-    const byOp = handler.getErrorsByOperation('action-execution')
-    expect(byOp).toHaveLength(1)
-    if (byOp[0]) {
-      byOp[0].storeName = 'tampered-store'
-    }
-    expect(handler.getErrorsByOperation('action-execution')[0]?.storeName).toBe('store1')
-
-    const byLevel = handler.getErrorsByLevel('error')
-    if (byLevel[0]) {
-      byLevel[0].timestamp = 0
-    }
-    expect(handler.getErrorsByLevel('error')[0]?.timestamp).not.toBe(0)
-
-    const log = handler.getErrorLog()
-    expect(log).toHaveLength(2)
-    if (log[0]) {
-      log[0].storeName = 'tampered-store'
-    }
-    expect(handler.getErrorLog()[0]?.storeName).toBe('store1')
   })
 })

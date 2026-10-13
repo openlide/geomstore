@@ -8,8 +8,6 @@
 import { createStore } from '@/index.js'
 import { composeStore } from '@/core/compose/composeStore.js'
 import { SnapshotManager } from '@/extras/snapshot/SnapshotManager.js'
-import { initBackgroundSync, unregisterBackgroundSync } from '@/integrations/enterprise/background-sync.js'
-import { createUserStore } from '@/integrations/enterprise/user-store.js'
 
 describe('R6-007 setState 的原型链敏感键', () => {
   it('写 __proto__ 不得换掉状态对象的原型，须按自有数据属性承载（与 $patch 同口径）', () => {
@@ -275,102 +273,5 @@ describe('R6-001 组合层通知按微任务合并（示例口径）', () => {
 
     root.destroy()
     settings.destroy()
-  })
-})
-
-describe('R6-009 前台刷新依赖的 refreshData 是隐式契约', () => {
-  const g = global as unknown as { App?: unknown }
-  const originalApp = g.App
-  let captured: Record<string, () => void> | null = null
-
-  const registerApp = (): Record<string, () => void> => {
-    // 先取名再调用：`(g.App as ...)({})` 需要前置分号防 ASI，而 no-extra-semi 会把它判成多余分号
-    const app = g.App as (options: Record<string, () => void>) => void
-    app({})
-    return captured as unknown as Record<string, () => void>
-  }
-
-  beforeEach(() => {
-    captured = null
-    g.App = (options: Record<string, () => void>) => {
-      captured = options
-    }
-  })
-
-  afterEach(() => {
-    g.App = originalApp
-  })
-
-  it('store 未提供 refreshData：告警点名缺失的 action，且不再打印“刷新状态”', () => {
-    const store = createStore({ name: 'r6-009-missing', state: { a: 1 } })
-    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {})
-    const log = jest.spyOn(console, 'log').mockImplementation(() => {})
-    initBackgroundSync({ store: store as never, maxInactiveTime: -1 })
-
-    const options = registerApp()
-    options.onShow()
-    options.onShow()
-
-    const missing = warn.mock.calls.filter((args) => String(args[0]).includes('未定义 action "refreshData"'))
-    expect(missing).toHaveLength(1)
-    expect(log.mock.calls.filter((args) => String(args[0]).includes('刷新状态'))).toHaveLength(0)
-
-    warn.mockRestore()
-    log.mockRestore()
-    unregisterBackgroundSync(store as never)
-    store.destroy()
-  })
-
-  it('store 提供 refreshData：按实际结果打印一次刷新日志并派发动作', () => {
-    let refreshed = 0
-    const store = createStore({
-      name: 'r6-009-present',
-      state: { a: 1 },
-      actions: {
-        refreshData() {
-          refreshed++
-        },
-      },
-    })
-    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {})
-    const log = jest.spyOn(console, 'log').mockImplementation(() => {})
-    initBackgroundSync({ store: store as never, maxInactiveTime: -1 })
-
-    registerApp().onShow()
-
-    expect(refreshed).toBe(1)
-    expect(log.mock.calls.filter((args) => String(args[0]).includes('刷新状态'))).toHaveLength(1)
-    expect(warn.mock.calls.filter((args) => String(args[0]).includes('未定义 action'))).toHaveLength(0)
-
-    warn.mockRestore()
-    log.mockRestore()
-    unregisterBackgroundSync(store as never)
-    store.destroy()
-  })
-
-  it('createUserStore 自带 refreshData：切前台真的走一次服务端同步', async () => {
-    const wxGlobal = (globalThis as unknown as { wx: Record<string, unknown> }).wx
-    const originalRequest = wxGlobal.request
-    let requested = 0
-    wxGlobal.request = (opts: Record<string, unknown>) => {
-      requested++
-      ;(opts.success as (res: unknown) => void)({ statusCode: 200, data: { userInfo: { id: 'u1', name: 'Ada' } } })
-    }
-
-    const store = createUserStore({ userId: 'r6-009', syncUrl: 'https://example.test/user' })
-    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {})
-    initBackgroundSync({ store: store as never, maxInactiveTime: -1 })
-
-    registerApp().onShow()
-    await new Promise((resolve) => setTimeout(resolve, 10))
-
-    expect(requested).toBe(1)
-    expect(store.getState().userInfo?.name).toBe('Ada')
-    expect(warn.mock.calls.filter((args) => String(args[0]).includes('未定义 action'))).toHaveLength(0)
-
-    warn.mockRestore()
-    unregisterBackgroundSync(store as never)
-    store.destroy()
-    wxGlobal.request = originalRequest
   })
 })
