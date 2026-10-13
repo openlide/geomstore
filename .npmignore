@@ -50,7 +50,6 @@ coverage-*.json
 .vscode/
 .idea/
 .codebuddy/
-.ocr-fix/
 *.log
 .DS_Store
 

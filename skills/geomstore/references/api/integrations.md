@@ -74,7 +74,7 @@ export interface ConnectOptions<S extends State = State, A extends Actions = Act
     /**
      * 是否在页面 `onShow` / 组件 `pageLifetimes.show` / App `onShow` 时按 `getCached` 重新注入一次。
      *
-     * 生效条件（三者同时，缺一即整项无效且**不会告警**，#R6-062）：
+     * 生效条件（三者同时，缺一即整项无效且**不会告警**）：
      * `autoUpdateOnShow && autoInject && Object.keys(injectMapping).length > 0`
      * —— 见 `with-store.ts` 的 page/component 两处判定与 `with-app-store.ts:267`，
      * 只写本项（或把 `injectMapping` 给成 `{}`）时连包装器都不安装。

@@ -676,7 +676,7 @@ export interface SelectorOptions {
      * 但 `unknown` 形参在 `strictFunctionTypes` 下会**拒掉调用方按具体状态标注的比较器**：
      * `{ equalityFn: (x: OrderState, y: OrderState) => x.id === y.id }` 实测报
      * `TS2322: Type 'unknown' is not assignable to type 'OrderState'`（属性式函数按逆变比较）。
-     * 与 `AsyncActions`（R5-316）同一处方：形参取 `any` 让这类写法可赋——`any` 在这里只出现在
+     * 与 `AsyncActions` 同一处方：形参取 `any` 让这类写法可赋——`any` 在这里只出现在
      * **逆变的形参位**，返回值仍是 `boolean`，不会把错误结果放过去；实现侧传进来的本来就是
      * `unknown`（缓存条目存的 state 与调用方给的 state），因此内部调用点不因它失去检查。
      */

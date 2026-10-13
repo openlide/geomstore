@@ -33,7 +33,6 @@ coverage-report.json
 # 同类：其他编码助手的会话记忆目录，同样是本地数据，不随仓库分发。
 # 不显式忽略时 `git add -A` 会把它们提交进来（.workbuddy 已实测踩过）。
 .workbuddy/
-# 文档重构的跨片台账与中间产物（.docfix/LEDGER.md 是工作底稿，结论沉淀进 docs/ 与 CONTRIBUTING 后即可删）
 .docfix/
 .workbuddy/*
 .vscode/
@@ -47,7 +46,6 @@ coverage-report.json
 *.tmp
 *.temp
 .cache/
-.ocr-fix/
 
 # 示例工程 examples/ 是仓库源码，不忽略：tools/tsconfig.examples.json 的 include 覆盖整个
 # examples/**，CI 的「Typecheck (examples)」步骤就跑在它上面；整目录忽略会让干净检出缺文件
@@ -61,22 +59,4 @@ coverage-report.json
 .env
 .env.*
 !.env.example
-
-# 审查素材与逐条判定台账
-# ocr*.md / review.json 是外部审查工具的原始输出，只作输入不作产物；
-# .ocr-fix 下除「判定结论」（decisions*.md 与 verdicts*/）外全部是可由原始报告重新生成的
-# 中间产物（ledger / state / groups 分片 markdown、切分脚本），故整目录忽略后白名单放开结论文件。
-# 三份素材都钉在仓库根：不加前导 / 时它们会命中任意层级，docs/ocr.md、packages/*/review.json
-# 这类合法文件名会被静默忽略。
-/ocr.md
-/ocrreview*.md
-/review.json
-# 白名单按**模式**写，不按轮次点名。逐轮加 `!.ocr-fix/decisionsN.md` 已经两次漏放新一轮的
-# 台账（第五轮补 decisions5/verdicts5 时第六轮还不存在，第六轮的 decisions6.md、verdicts6/**
-# 同样落在 `.ocr-fix/*` 里）：被忽略的文件 `git status` 不列、`git add` 只安静跳过，
-# 断链要等到下一轮在干净检出上读不到判定结论才暴露。改成模式后每轮自动覆盖。
-.ocr-fix/*
-!.ocr-fix/decisions*.md
-!.ocr-fix/verdicts*/
-!.ocr-fix/verdicts*/**
 

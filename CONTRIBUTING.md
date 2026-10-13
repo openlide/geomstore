@@ -42,7 +42,7 @@ npx tsc -p packages/benchmark/tsconfig.json && node packages/benchmark/dist/smok
 
 `packages/benchmark` 不在 pnpm 工作区内，所以 `pnpm --filter` / 子包目录下的 `pnpm install` 都不适用：它借根装的 `typescript` 编译，产物落 `packages/benchmark/dist/`（被 `dist/` 规则忽略）。要把它接进工作区，前提是先补齐它自己的 devDependencies 安装路径并重生成锁文件——否则保持「声明了却没接入」的自相矛盾状态就是缺陷。
 
-**格式门禁**：CI 的 `Format check` 步就是 `pnpm format:check`（glob 只在 `package.json` 里定义一次，这里不重抄），覆盖 `src` / `tests` 的 TS 与**全部手写文档 md**。生成物 `.codebuddy/skills/geomstore/references/api/**` 由 `.prettierignore` 排除：对它跑格式化器会**改动内容**（转义块引用内粗体跨度里的星号、把三反引号围栏抬成四反引号、并按 `semi:false` 删掉 `.d.ts` 声明行末的分号——实测某文件 20 行剩 1 行），而这份文件的契约恰恰是「逐字取自类型声明原文」，它的正确性由「与 `.d.ts` 一致」保证、不由排版门禁保证。手写文档实测幂等且不改动内容。`.ocr-fix/**` 是复审工作记录、不是文档产品，门禁的 glob 从不点名它。
+**格式门禁**：CI 的 `Format check` 步就是 `pnpm format:check`（glob 只在 `package.json` 里定义一次，这里不重抄），覆盖 `src` / `tests` 的 TS 与**全部手写文档 md**。生成物 `.codebuddy/skills/geomstore/references/api/**` 由 `.prettierignore` 排除：对它跑格式化器会**改动内容**（转义块引用内粗体跨度里的星号、把三反引号围栏抬成四反引号、并按 `semi:false` 删掉 `.d.ts` 声明行末的分号——实测某文件 20 行剩 1 行），而这份文件的契约恰恰是「逐字取自类型声明原文」，它的正确性由「与 `.d.ts` 一致」保证、不由排版门禁保证。手写文档实测幂等且不改动内容。
 
 **换行符口径（已归一，不要再改回 `auto`）**：仓库根 `.gitattributes` 用 `* text=auto eol=lf` 把仓库内与检出侧统一钉成 LF，`.prettierrc.json` 因此直接判 `endOfLine: lf`——`Format check` 现在**既判格式也判换行**，本地与 Linux runner 判据一致。归一是在检出侧做的（把工作树文件写成 LF），仓库侧一个字节都没变：index 侧 461 个文件本来就全是 LF，所以 `git add --renormalize .` 是**空操作**，那次提交不含 400 文件的churn。`core.autocrlf=true` 会被 `.gitattributes` 覆盖，本机不必再调 `git config`。
 
@@ -108,7 +108,7 @@ node --input-type=module -e 'const s = await import("./dist/index.js"); console.
 | 门禁、构建、发版、目录树               | 本文件（目录树正本在 ARCHITECTURE §3）                               |
 | agent 速查（一句结论 + §N）            | `.codebuddy/skills/geomstore/SKILL.md` → `references/*-semantics.md` |
 
-- **文档以源码为唯一依据**：写完一段结论就回 `src/` 核一遍。复审报告 / 判定台账里的措辞不是真相，代码才是。
+- **文档以源码为唯一依据**：写完一段结论就回 `src/` 核一遍。代码才是真相。
 - **正文只写当前行为**：不写「此前 X、现在 Y」「旧实现」「0.x.0 变更」这类时间对比，也不留版本标签。要交代升级影响就写进 `MIGRATION.md` 并在正文放一个链接。
 - `examples/` 是**唯一被编译的示例**（CI 的 `typecheck:examples`）。文档里的代码片段没有任何机制会编译它，所以照抄 `examples/` 里已验证的写法，比现编一段更稳。
 - **文档不写实测数字**：覆盖率阈值的唯一事实来源是 `jest.config.js` 的 `coverageThreshold`（当前 global 语句 / 函数 / 行 98、分支 95；`core` 与 snapshot / selector / action 另设单文件分支 85 下限）——本文件是它面向人的正本，其余文档一律链接过来、**不抄数值**，本文件那串数值由文档门禁反查 `jest.config.js` 钉住，改了配置忘了改文档会变红。套件数 / 用例数 / 实测百分比**不写进任何文档**：它们随轮次变动，写下来就是等着漂移的假话，要数字当场跑 `pnpm test`。**严禁留「等收口时填」这类空占位**——占位进仓库就是对读者宣称「这里有数字但我没算」，宁可不写。同理不写「100% 覆盖」「全绿」这类不实措辞：**没跑过门禁就不要替它说话**

@@ -18,7 +18,7 @@
 
 ## 升级到 0.8.0
 
-0.7.x → 0.8.0 是一轮全库复审（`@alibaba-group/open-code-review` delegate 模式，两轮：第一轮全库找问题、第二轮只评审修复本身）的产出，对外语义变化以 [CHANGELOG](../CHANGELOG.md) 的 0.8.0 一节为准，本节只展开**需要改代码的 1 条**与**无需改代码但断言 / 监控要复核的 3 条**，其余属「原本就该如此」的缺陷修正。**无破坏性类型面变更**——本版只增类型导出，不删、不收紧，既有代码不需要为升级改任何 import。
+0.7.x → 0.8.0 的对外语义变化以 [CHANGELOG](../CHANGELOG.md) 的 0.8.0 一节为准，本节只展开**需要改代码的 1 条**与**无需改代码但断言 / 监控要复核的 3 条**，其余属「原本就该如此」的缺陷修正。**无破坏性类型面变更**——本版只增类型导出，不删、不收紧，既有代码不需要为升级改任何 import。
 
 > **同样不会自动发生**：本版含行为变更，按 0.x 的语义升的是 **minor**（0.7.0 → 0.8.0）。`^0.7.0` 展开为 `>=0.7.0 <0.8.0`，要拿到这一轮修复请把依赖显式改成 `^0.8.0`。
 
@@ -34,23 +34,23 @@
 
 ## 升级到 0.7.0
 
-0.6.x → 0.7.0 是一轮全库复审的产出，对外语义变化以 [CHANGELOG](../CHANGELOG.md) 的 0.7.0 一节为准，本节只展开**需要改代码的 5 条**与**无需改代码但断言 / 监控要复核的 5 条**，其余属于「原本就该如此」的缺陷修正。0.6.1 那一档只动微信产物链（`dist-weapp/` 的编译与 `verify:weapp` 门禁），对调用方无影响，所以本节从 0.6.0 的行为差异整体算起。下面各条括号里的编号是 CHANGELOG 同批条目的追溯号。
+0.6.x → 0.7.0 的对外语义变化以 [CHANGELOG](../CHANGELOG.md) 的 0.7.0 一节为准，本节只展开**需要改代码的 5 条**与**无需改代码但断言 / 监控要复核的 5 条**，其余属于「原本就该如此」的缺陷修正。0.6.1 那一档只动微信产物链（`dist-weapp/` 的编译与 `verify:weapp` 门禁），对调用方无影响，所以本节从 0.6.0 的行为差异整体算起。
 
 > **同样不会自动发生**：本版含破坏性变更，按 0.x 的语义升的是 **minor**（0.6.1 → 0.7.0）。`^0.6.1` 展开为 `>=0.6.1 <0.7.0`，要拿到这一轮修复请把依赖显式改成 `^0.7.0`。
 
 ### 需要改代码
 
-- **`setState('__proto__', …)` 不再换原型**（R6-007）：`__proto__` / `constructor` / `prototype` 这三个键现在与 `$patch` / `$replaceState` 同口径，走 DefineOwnProperty 语义——值成为状态对象上的**自有数据属性**，`Object.getPrototypeOf(state)` 不变。仍然依赖旧行为（用 `setState('__proto__', obj)` 给状态树挂原型、或指望 `state.someMissingKey` 经那条链取到值）的代码要改成显式建模；反过来，指望「非对象值时那次写入什么也没发生」的分支也没了：现在它会真的落下一个自有键并照常推进变更计数。读回自己写进去的值请用 `Object.getOwnPropertyDescriptor(state, '__proto__')`，`state.__proto__` 这个表达式返回的仍是原型。
-- **不要再靠组合层的抛错发现子 store 被销毁**（R6-005）：子 store 在组合之外被 `destroy()` 后，`composed.getState()` / `composed.state` / `composed.$snapshot()` 与平铺模式的归属判定都不再抛 `Cannot call getState on a destroyed Store`——该子店按**空视图**并入、按 store 去重告警一次，其余子店照常读写。三处要检查：① `try { composed.getState() } catch {}` 这类「抛错＝子店没了」的探测逻辑，改成看告警或自己持有引用；② 把 `composed.getState().child === undefined` 当「子店不在」的判断——现在它是一个**空对象**而不是缺失键；③ 依赖「合并状态里键数不变」的深比较断言。销毁整个组合仍是 `composed.destroy()`，语义未变。
-- **手工构造 `SnapshotDiff` 的代码要补 `inputTrusted`**（R6-050）：该字段是**新增必填**（`SnapshotDiff.inputTrusted: boolean`，库产出的对象一定带它）。写测试夹具 / 自造 diff 对象的地方直接补 `inputTrusted: true`，否则编译报错。同时注意判读顺序：任一侧快照 `success: false` 时 `compareSnapshots` 不再逐路径比对，而是交付一条 root 级整体差异并把 `changed` 置为 `true`——那表示「输入不可信」，不表示「确有差异」，先判 `success`、再判 `inputTrusted`、最后才读 `changes`。旧实现会把两份失败快照报成 `changed: false`（把「快照没做成」伪装成「状态没变」）。
-- **按 `root[0]` 这类下标聚合 `Map` 条目路径的消费方要改成按键身份**（R6-101）：`compareSnapshots` 的 `changes[].path` 现在与克隆账本 `errors[].path` 同一份方言——`Map` **值差异**记 `parent.<String(key)>`、**键新增 / 删除**记 `parent.key.<String(key)>`（旧写法是 `root.key[0]` 这种「两侧各自的迭代下标」，会随插入顺序漂移、双向比对给出不同路径）。正则按 `\.key\[\d+\]` 解析的请改按 `\.key\.<键串>`；`Symbol` 键串是 `String(key)`、`toString` 抛错的键退回 `<unstringifiable key>`。`Set` 的 `[removed:i]` / `[added:i]` 里的 `i` 仍是**报告序下标、不是条目身份**（集合元素没有可当身份的键），跨快照配对 `Set` 变化请读 `oldValue` / `newValue` 而不是按下标配。
-- **别指望快照把子类与「内部槽位承载值」克隆成独立副本**（R6-008 / R6-099 / R6-100）：`Date` / `RegExp` / `Map` / `Set` / `Array` 的**子类实例**，以及 `Promise`、装箱原始值（`new Number(1)` / `new String('x')`）、`ArrayBuffer` / TypedArray / DataView、`WeakMap` / `WeakSet`、`Error`、生成器，现在一律**保留原引用**（与核心 `deepCloneState` 同口径，同步与异步两条路径一致）。此前它们分别被 `new X()` 重建（子类字段与方法丢失）或被拷成「`instanceof` 仍真、内部槽位为空」的壳（`await snap.data.p`、`Number(snap.data.n)` 当场抛 `TypeError`；`compareSnapshots` 对 `new Number(1)` vs `new Number(2)` 恒判无差异）。如果你的代码依赖「快照之后改原对象不影响快照」，对这两类节点请改用 `customCloner` 自己接管；类实例仍按既有契约重建为同类实例。另两条同批口径：数组上的**附加自有键**（非下标、非 `length`）现在同步与异步两条路径都跟着克隆；`includeNonEnumerable: true` 拷进来的键一律落为可枚举（`Object.keys` / `JSON.stringify` / diff 键集比对从此看得见它们，若你的断言按「不可枚举」写需要复核）。
+- **`setState('__proto__', …)` 不再换原型**：`__proto__` / `constructor` / `prototype` 这三个键现在与 `$patch` / `$replaceState` 同口径，走 DefineOwnProperty 语义——值成为状态对象上的**自有数据属性**，`Object.getPrototypeOf(state)` 不变。仍然依赖旧行为（用 `setState('__proto__', obj)` 给状态树挂原型、或指望 `state.someMissingKey` 经那条链取到值）的代码要改成显式建模；反过来，指望「非对象值时那次写入什么也没发生」的分支也没了：现在它会真的落下一个自有键并照常推进变更计数。读回自己写进去的值请用 `Object.getOwnPropertyDescriptor(state, '__proto__')`，`state.__proto__` 这个表达式返回的仍是原型。
+- **不要再靠组合层的抛错发现子 store 被销毁**：子 store 在组合之外被 `destroy()` 后，`composed.getState()` / `composed.state` / `composed.$snapshot()` 与平铺模式的归属判定都不再抛 `Cannot call getState on a destroyed Store`——该子店按**空视图**并入、按 store 去重告警一次，其余子店照常读写。三处要检查：① `try { composed.getState() } catch {}` 这类「抛错＝子店没了」的探测逻辑，改成看告警或自己持有引用；② 把 `composed.getState().child === undefined` 当「子店不在」的判断——现在它是一个**空对象**而不是缺失键；③ 依赖「合并状态里键数不变」的深比较断言。销毁整个组合仍是 `composed.destroy()`，语义未变。
+- **手工构造 `SnapshotDiff` 的代码要补 `inputTrusted`**：该字段是**新增必填**（`SnapshotDiff.inputTrusted: boolean`，库产出的对象一定带它）。写测试夹具 / 自造 diff 对象的地方直接补 `inputTrusted: true`，否则编译报错。同时注意判读顺序：任一侧快照 `success: false` 时 `compareSnapshots` 不再逐路径比对，而是交付一条 root 级整体差异并把 `changed` 置为 `true`——那表示「输入不可信」，不表示「确有差异」，先判 `success`、再判 `inputTrusted`、最后才读 `changes`。旧实现会把两份失败快照报成 `changed: false`（把「快照没做成」伪装成「状态没变」）。
+- **按 `root[0]` 这类下标聚合 `Map` 条目路径的消费方要改成按键身份**：`compareSnapshots` 的 `changes[].path` 现在与克隆账本 `errors[].path` 同一份方言——`Map` **值差异**记 `parent.<String(key)>`、**键新增 / 删除**记 `parent.key.<String(key)>`（旧写法是 `root.key[0]` 这种「两侧各自的迭代下标」，会随插入顺序漂移、双向比对给出不同路径）。正则按 `\.key\[\d+\]` 解析的请改按 `\.key\.<键串>`；`Symbol` 键串是 `String(key)`、`toString` 抛错的键退回 `<unstringifiable key>`。`Set` 的 `[removed:i]` / `[added:i]` 里的 `i` 仍是**报告序下标、不是条目身份**（集合元素没有可当身份的键），跨快照配对 `Set` 变化请读 `oldValue` / `newValue` 而不是按下标配。
+- **别指望快照把子类与「内部槽位承载值」克隆成独立副本**：`Date` / `RegExp` / `Map` / `Set` / `Array` 的**子类实例**，以及 `Promise`、装箱原始值（`new Number(1)` / `new String('x')`）、`ArrayBuffer` / TypedArray / DataView、`WeakMap` / `WeakSet`、`Error`、生成器，现在一律**保留原引用**（与核心 `deepCloneState` 同口径，同步与异步两条路径一致）。此前它们分别被 `new X()` 重建（子类字段与方法丢失）或被拷成「`instanceof` 仍真、内部槽位为空」的壳（`await snap.data.p`、`Number(snap.data.n)` 当场抛 `TypeError`；`compareSnapshots` 对 `new Number(1)` vs `new Number(2)` 恒判无差异）。如果你的代码依赖「快照之后改原对象不影响快照」，对这两类节点请改用 `customCloner` 自己接管；类实例仍按既有契约重建为同类实例。另两条同批口径：数组上的**附加自有键**（非下标、非 `length`）现在同步与异步两条路径都跟着克隆；`includeNonEnumerable: true` 拷进来的键一律落为可枚举（`Object.keys` / `JSON.stringify` / diff 键集比对从此看得见它们，若你的断言按「不可枚举」写需要复核）。
 
 ### 行为变更（无需改代码，但断言 / 监控需复核）
 
-- **异步 action 的同步段现在会当场补发一次通知**（R6-037）：默认模式下「同步段有写入且最终 settle」的一次异步 action，通知数由 **1 变 2**（结算那一轮保留，覆盖 `await` 之后的续段）。`notify.async`（同 tick 微任务合并）与 `notify.onlyOnChange`（按写入计数去重，同步段无写入就不多刷）都会把它吸收回 1 次；`batch` 内不提前补发。动机是 Promise 永不 settle 时同步段的写入此前要等「下一个不相干通知」才浮出来。按「一次 dispatch 一次回调」写断言的测试、以及靠通知次数做上报去重的插件需要重算；`notify.async` 合并窗口下可能多出一个**脏键为空**的投递批次（内容已在上一批投完，集成层据此跳过 `setData`）。
-- **状态保护不再对冻结 / 不可写属性抛错，读取拿到裸引用**（R6-006）：自有属性「既不可配置也不可写」时（`Object.freeze` 过的子树、`defineProperty` 成 `writable:false + configurable:false` 的键；最省事的来路就是把 `$snapshot()` 的深冻结结果 `setState` 回状态），深代理与数组代理都原样返回目标值——这是 Proxy `[[Get]]` 不变量的硬要求，修复前连**读取**都会抛 `TypeError: 'get' on proxy: property 'x' is a read-only and non-configurable data property…`。代价写在文档里：这类子树不受写保护、不计变更与脏键，`state.frozen.x = 1` 在严格模式下仍按 JS 自身规则抛 `TypeError`（那不是本库的守卫，报错文本与可捕获性都变了口径）。要复核的用例形状是「读冻结子树会抛 Proxy invariant 错」——那种读取现在不再抛。
-- **`withDebounce` / `withThrottle` 的 `cancel*` / `flush*` / `dispose*` 在 store action 上不可用**（R6-046，文档纠正而非新增限制）：这六个入口按「被装饰方法被调用时的 `this`」定位状态槽位，而 store action 的 `this` 是 `ActionManager` 每次 dispatch 现造的 action 上下文代理、不挂在任何公开成员上，于是 `cancelDebouncedCalls(this)` 之类调用命中空槽位、**静默 no-op**（不抛错、也不清定时器）。本库刻意不暴露那个宿主（否则「装饰器内部槽位键」升为跨 core 与 extras 的公开契约）。改写法即可：① 装饰 Page / Component 上的方法、让它去 `dispatch`；② 在 store 外面自己包一层并把那一层当宿主传进去。此前文档（`docs/GUIDE.md` §3、`docs/FAQ.md` 装饰器一节）按「对 store action 同样成立」写过，已改正——照旧抄写的代码不会崩，但以为「已收尾」的挂起定时器会照旧到点执行。
+- **异步 action 的同步段现在会当场补发一次通知**：默认模式下「同步段有写入且最终 settle」的一次异步 action，通知数由 **1 变 2**（结算那一轮保留，覆盖 `await` 之后的续段）。`notify.async`（同 tick 微任务合并）与 `notify.onlyOnChange`（按写入计数去重，同步段无写入就不多刷）都会把它吸收回 1 次；`batch` 内不提前补发。动机是 Promise 永不 settle 时同步段的写入此前要等「下一个不相干通知」才浮出来。按「一次 dispatch 一次回调」写断言的测试、以及靠通知次数做上报去重的插件需要重算；`notify.async` 合并窗口下可能多出一个**脏键为空**的投递批次（内容已在上一批投完，集成层据此跳过 `setData`）。
+- **状态保护不再对冻结 / 不可写属性抛错，读取拿到裸引用**：自有属性「既不可配置也不可写」时（`Object.freeze` 过的子树、`defineProperty` 成 `writable:false + configurable:false` 的键；最省事的来路就是把 `$snapshot()` 的深冻结结果 `setState` 回状态），深代理与数组代理都原样返回目标值——这是 Proxy `[[Get]]` 不变量的硬要求，修复前连**读取**都会抛 `TypeError: 'get' on proxy: property 'x' is a read-only and non-configurable data property…`。代价写在文档里：这类子树不受写保护、不计变更与脏键，`state.frozen.x = 1` 在严格模式下仍按 JS 自身规则抛 `TypeError`（那不是本库的守卫，报错文本与可捕获性都变了口径）。要复核的用例形状是「读冻结子树会抛 Proxy invariant 错」——那种读取现在不再抛。
+- **`withDebounce` / `withThrottle` 的 `cancel*` / `flush*` / `dispose*` 在 store action 上不可用**（文档纠正而非新增限制）：这六个入口按「被装饰方法被调用时的 `this`」定位状态槽位，而 store action 的 `this` 是 `ActionManager` 每次 dispatch 现造的 action 上下文代理、不挂在任何公开成员上，于是 `cancelDebouncedCalls(this)` 之类调用命中空槽位、**静默 no-op**（不抛错、也不清定时器）。本库刻意不暴露那个宿主（否则「装饰器内部槽位键」升为跨 core 与 extras 的公开契约）。改写法即可：① 装饰 Page / Component 上的方法、让它去 `dispatch`；② 在 store 外面自己包一层并把那一层当宿主传进去。此前文档（`docs/GUIDE.md` §3、`docs/FAQ.md` 装饰器一节）按「对 store action 同样成立」写过，已改正——照旧抄写的代码不会崩，但以为「已收尾」的挂起定时器会照旧到点执行。
 - **异步快照的超时判定**：只有「仍有未处理任务、或超时后丢掉过入队任务」才让 `success: false`；收尾竞态下交付的完好克隆不再被判为失败（此前会出现 `success: false` 但 `data` 是完整副本的自相矛盾结果）。
 
 ### 版本号与文档同步
@@ -59,9 +59,9 @@
 
 ## 升级到 0.6.0
 
-0.5.1 → 0.6.0 是两轮全库复审合并发布的产出。多数为「原本就该如此」的缺陷修复，本节只列**需要动调用方**或**会改变可观测行为**的点；完整清单见 [CHANGELOG](../CHANGELOG.md)，后半批条目见本节末尾的「同批发布的其余可观测变更」。
+0.5.1 → 0.6.0 的多数变更为「原本就该如此」的缺陷修复，本节只列**需要动调用方**或**会改变可观测行为**的点；完整清单见 [CHANGELOG](../CHANGELOG.md)，后半批条目见本节末尾的「同批发布的其余可观测变更」。
 
-> **这次升级不会自动发生**：本库还在 0.x，而本版含破坏性变更（下面「需要改代码」一节的类型收紧与判据反转），所以升的是 **minor**（0.5.1 → 0.6.0）。`^0.5.1` 展开为 `>=0.5.1 <0.6.0`，包管理器不会把 0.6.0 塞给你——想拿到这两轮复审的修复，要把依赖显式改成 `^0.6.0`，并按本节逐条改代码。
+> **这次升级不会自动发生**：本库还在 0.x，而本版含破坏性变更（下面「需要改代码」一节的类型收紧与判据反转），所以升的是 **minor**（0.5.1 → 0.6.0）。`^0.5.1` 展开为 `>=0.5.1 <0.6.0`，包管理器不会把 0.6.0 塞给你——要拿到这一版的修复，要把依赖显式改成 `^0.6.0`，并按本节逐条改代码。
 
 ### Breaking
 
@@ -97,46 +97,46 @@
 
 ### 同批发布的其余可观测变更（同一版）
 
-这批修复与上面 0.6.0 的条目一起发布。这里只列**升级时需要动手**或**要复核断言 / 监控**的点，括号内是与 [CHANGELOG](../CHANGELOG.md) 同批条目的追溯号。
+这批修复与上面 0.6.0 的条目一起发布。这里只列**升级时需要动手**或**要复核断言 / 监控**的点。
 
 #### 需要改代码
 
-- **引用相等的比较器必须补 `snapshotState: false`**（R5-224）：新增 `SelectorOptions.snapshotState`（默认 `true` = 写缓存时克隆一份状态内容），取代旧判据「`equalityFn` 的函数引用是否恰好等于内置 `deepEqual`」。只传 `equalityFn: (a, b) => a === b` 而不传 `snapshotState: false` 的调用方，在状态无版本号时从「命中」变成**永不命中**（不返回错值，memo 失效）。旧判据对自定义深比较器（lodash `isEqual`、`(a, b) => deepEqual(a, b)`、ESM/CJS 双副本）是错的——那类调用方现在行为变对（能看见就地变异），无需改动。`createParametricSelector` **没有**这个选项（state 侧判据写死 `deepEqual`，关掉快照等于删掉唯一的失效信号）。
-- **`StoreCacheManager.clearOldState(stateKeys)` 已从类面移除**（R5-113）：`src` 内无调用方，`$replaceState` 走的是 `invalidate()` 整表清空（按键遍历会漏掉已从状态删除的键）。该类只经 `core/store` 的 barrel 出口、而该子路径不在 `package.json` 的 `exports` 映射里；深链过它的代码请改走 `invalidate()` / `invalidate(key)`。
-- **`syncUrl` 不再有内置默认端点**（R5-273）：`DEFAULT_SYNC_URL = '/api/user/sync'` 已删除，未配置 `syncUrl` 时 `dispatch('syncWithServer')` **不发请求**、直接 reject 并记日志（此前是发一次注定失败的请求、把配置缺口伪装成网络错误）。`syncUrl` 仍是可选类型，语义变为「缺省即该 Store 不具备服务端同步能力」；要同步请显式给地址。
-- **`new WxStorageBackend()` 在缺 `wx` 时抛错**（R5-279）：`wx` 或对应的 `getStorageSync` / `setStorageSync` / `removeStorageSync` 缺失、非函数即抛错，不再把 `?.` 短路成静默 no-op（旧行为：写删「看起来成功」、`clearOnUninstall` 误报已清除、读被洗成「键无数据」后一次落盘覆盖真实数据）。`persistencePlugin` 未传 `storage` 的路径不受影响——它先用 `isWxStorageSyncAvailable()` 探测，探测不过才降级内存；直接自建实例复用它的代码需要自己保证环境或改传后端。
-- **`StoreRegistry` 的别名与覆盖注册**（R5-073 / R5-072 / R5-074）：`unregister(name)` 与同名覆盖现在摘除同一实例的**全部**名字并只 `destroy()` 一次（此前其余名字继续返回已销毁实例，`getDefault()` 也可能悬空）；`destroy` 回调里重入登记同名的那个实例会被摘链销毁，返回后 `get(name)` 一定是本次注册的实例；旧实例不可销毁时 `already registered` 告警不再声称 "destroying old store"；`register()` 无效 store 的文案变为 `[StoreRegistry] Invalid store object for name "<name>"`（旧串仍是前缀）。
-- **`HookSystem.on()` 的退订句柄改为一次性**（R5-087）：第二次调用是 no-op，`on → off → on → off(旧句柄)` 不再摘掉新那次注册。`AsyncBatchNotifier.subscribe()` 同口径（R5-100）。
-- **`PerformanceMonitor.record(metric)` 不再持有入参引用**（R5-090）：入参先被浅拷一份再入缓冲区。此前「复用同一个对象连续 `record`」的写法会让历史条目全变成最后一次的值——那种调用方现在自动修好，但别再去读缓冲区里的元素当自己传进来的那个对象。
-- **`@withErrorBoundary` 的回退值不再被 await**（R5-206）：只对**被包裹方法的原始返回值**做 thenable 判定。带可调用 `then` 的 `fallback` 现在原样返回（此前返回 `Promise<fallback>`，把同步方法的返回形状改掉）。
-- **`ErrorRecovery` 的上限语义**（R5-201 / R5-203 / R5-205）：抛 `Max retries (n) exceeded` 时**保留**计数与周期窗，同一故障周期内的后续 `recover()` 持续被拦截（旧行为是清键 → 紧接着下一次又领到一整个新额度，防重试风暴只对触发超限那一次生效）；抛出物由裸 `Error` 变为 `GeomStoreError`（`code: INTERNAL_ERROR`、带 `cause`，`context.retryKey` 指明被用满的是哪一份额度，两个来源都缺时键名为 `<code>:unattributed`）。按 `message` 前缀匹配的调用方不受影响，要按类型分支处理超限的请改读 `code`。
-- **越界的 `stateProtection.productionHandler` 改为建店即失败**（R5-115）：非 `'error' | 'warn' | 'silent'` 的取值让 `createStore` 当场抛 `TypeError`（此前留到很远的一次非法写入才以别的面目炸）。
-- **以 `Object.prototype` 成员名当错误码时**（R5-204）：`ErrorRecovery.getConfig('constructor')` 由「返回原型链成员」变为 `undefined`，`recover()` 改报「No recovery strategy configured for error code: constructor」。策略表已换成 `Map`。
+- **引用相等的比较器必须补 `snapshotState: false`**：新增 `SelectorOptions.snapshotState`（默认 `true` = 写缓存时克隆一份状态内容），取代旧判据「`equalityFn` 的函数引用是否恰好等于内置 `deepEqual`」。只传 `equalityFn: (a, b) => a === b` 而不传 `snapshotState: false` 的调用方，在状态无版本号时从「命中」变成**永不命中**（不返回错值，memo 失效）。旧判据对自定义深比较器（lodash `isEqual`、`(a, b) => deepEqual(a, b)`、ESM/CJS 双副本）是错的——那类调用方现在行为变对（能看见就地变异），无需改动。`createParametricSelector` **没有**这个选项（state 侧判据写死 `deepEqual`，关掉快照等于删掉唯一的失效信号）。
+- **`StoreCacheManager.clearOldState(stateKeys)` 已从类面移除**：`src` 内无调用方，`$replaceState` 走的是 `invalidate()` 整表清空（按键遍历会漏掉已从状态删除的键）。该类只经 `core/store` 的 barrel 出口、而该子路径不在 `package.json` 的 `exports` 映射里；深链过它的代码请改走 `invalidate()` / `invalidate(key)`。
+- **`syncUrl` 不再有内置默认端点**：`DEFAULT_SYNC_URL = '/api/user/sync'` 已删除，未配置 `syncUrl` 时 `dispatch('syncWithServer')` **不发请求**、直接 reject 并记日志（此前是发一次注定失败的请求、把配置缺口伪装成网络错误）。`syncUrl` 仍是可选类型，语义变为「缺省即该 Store 不具备服务端同步能力」；要同步请显式给地址。
+- **`new WxStorageBackend()` 在缺 `wx` 时抛错**：`wx` 或对应的 `getStorageSync` / `setStorageSync` / `removeStorageSync` 缺失、非函数即抛错，不再把 `?.` 短路成静默 no-op（旧行为：写删「看起来成功」、`clearOnUninstall` 误报已清除、读被洗成「键无数据」后一次落盘覆盖真实数据）。`persistencePlugin` 未传 `storage` 的路径不受影响——它先用 `isWxStorageSyncAvailable()` 探测，探测不过才降级内存；直接自建实例复用它的代码需要自己保证环境或改传后端。
+- **`StoreRegistry` 的别名与覆盖注册**：`unregister(name)` 与同名覆盖现在摘除同一实例的**全部**名字并只 `destroy()` 一次（此前其余名字继续返回已销毁实例，`getDefault()` 也可能悬空）；`destroy` 回调里重入登记同名的那个实例会被摘链销毁，返回后 `get(name)` 一定是本次注册的实例；旧实例不可销毁时 `already registered` 告警不再声称 "destroying old store"；`register()` 无效 store 的文案变为 `[StoreRegistry] Invalid store object for name "<name>"`（旧串仍是前缀）。
+- **`HookSystem.on()` 的退订句柄改为一次性**：第二次调用是 no-op，`on → off → on → off(旧句柄)` 不再摘掉新那次注册。`AsyncBatchNotifier.subscribe()` 同口径。
+- **`PerformanceMonitor.record(metric)` 不再持有入参引用**：入参先被浅拷一份再入缓冲区。此前「复用同一个对象连续 `record`」的写法会让历史条目全变成最后一次的值——那种调用方现在自动修好，但别再去读缓冲区里的元素当自己传进来的那个对象。
+- **`@withErrorBoundary` 的回退值不再被 await**：只对**被包裹方法的原始返回值**做 thenable 判定。带可调用 `then` 的 `fallback` 现在原样返回（此前返回 `Promise<fallback>`，把同步方法的返回形状改掉）。
+- **`ErrorRecovery` 的上限语义**：抛 `Max retries (n) exceeded` 时**保留**计数与周期窗，同一故障周期内的后续 `recover()` 持续被拦截（旧行为是清键 → 紧接着下一次又领到一整个新额度，防重试风暴只对触发超限那一次生效）；抛出物由裸 `Error` 变为 `GeomStoreError`（`code: INTERNAL_ERROR`、带 `cause`，`context.retryKey` 指明被用满的是哪一份额度，两个来源都缺时键名为 `<code>:unattributed`）。按 `message` 前缀匹配的调用方不受影响，要按类型分支处理超限的请改读 `code`。
+- **越界的 `stateProtection.productionHandler` 改为建店即失败**：非 `'error' | 'warn' | 'silent'` 的取值让 `createStore` 当场抛 `TypeError`（此前留到很远的一次非法写入才以别的面目炸）。
+- **以 `Object.prototype` 成员名当错误码时**：`ErrorRecovery.getConfig('constructor')` 由「返回原型链成员」变为 `undefined`，`recover()` 改报「No recovery strategy configured for error code: constructor」。策略表已换成 `Map`。
 - **`deepEqual` 改为「原型一致」先于一切内建内容判定，并新增装箱原始值一档**：空的 `class MyMap extends Map` 实例此前与空 `new Map()` 判等（`Set` / `Date` / `RegExp` 同理），`new Number(1)` 与 `new Number(2)` 判等（`String` / `Boolean` / `BigInt` / `Symbol` 同理），现在都判不等。两类状态若混在一条选择器链上，此前是「命中并返回陈旧值」，现在会正确地重算——**性能敏感路径请复核**：把子类实例与基类实例当同一状态来源的写法（例如自己 `new` 一个 `Map` 子类再和反序列化出来的基类 `Map` 比），现在要显式统一成同一个类。装箱原始值不建议放进状态：`clone` 对它们保留原引用，比较又只看 `valueOf`，既拿不到子类语义也拿不到不可变性。
 
 #### 断言 / 监控需要复核（无需改代码）
 
-- **同一轮通知里两个可写订阅者的载荷不再是同一引用**（R5-122）：拷贝改由 `SubscriptionManager` **按注册分配**——可写注册各一份独立深拷贝、只读注册共用一份。只有全只读时仍是零拷贝；`false` 档（调用方自备载荷）零变化。
-- **`maxSubscribers` 变成硬上界**（R5-123）：门禁覆盖每一次注册（含同一函数的重复注册），达限时 `evict-oldest` 让**本次重复注册自己最早的一份**让位、`throw` 抛错；`size()` 不再可能高于上限（唯一例外是 `maxSubscribers <= 0` 配 `evict-oldest`）。
+- **同一轮通知里两个可写订阅者的载荷不再是同一引用**：拷贝改由 `SubscriptionManager` **按注册分配**——可写注册各一份独立深拷贝、只读注册共用一份。只有全只读时仍是零拷贝；`false` 档（调用方自备载荷）零变化。
+- **`maxSubscribers` 变成硬上界**：门禁覆盖每一次注册（含同一函数的重复注册），达限时 `evict-oldest` 让**本次重复注册自己最早的一份**让位、`throw` 抛错；`size()` 不再可能高于上限（唯一例外是 `maxSubscribers <= 0` 配 `evict-oldest`）。
 - **驱逐订阅者会发一次 `onError`**：`evict-oldest` 触发时 `emit('onError', Error, 'subscribe')`——生产环境从完全静默变为可观测，只订阅 `onError` 做监控的调用方会多看到一类事件。
-- **`withLog` 的生产摘要不再输出 `Error` 的 message**（R5-178），且生产构建下 `redact` 之后仍会再过一层摘要，除非显式 `summarizeInProduction: false`（R5-177 新增该选项）。依赖摘要文本的日志解析需同步。
-- **非法构造参数改为归一或拒绝**：`cacheConfig.ttl` 非有限 / 负值归一为 `0`（＝不过期）并打一条开发期告警（R5-111）；`cacheTTL` 的 `NaN` / `<= 0` / 非数值回落 `5000`，`Infinity` 有意放行（R5-225）；`maxEntries` 归一为 `Number.isFinite(v) ? max(1, floor(v)) : 1000`（R5-229）；`ErrorMonitoring` 的 `maxQueueSize` 最小 1、`maxFlushRetries` 最小 0（R5-212）；`SnapshotManager` 的 `batchSize` 在构造期与逐次调用共用一个归一化函数（R5-258），`timeout` / `batchInterval` 的非有限值与非正值统一按「不设超时 / 无延迟」（R5-260）；`timeTravelPlugin({ maxSize })` 的非法值按默认 50 生效（R5-298）；`withDebounce` 的 `delay` 与 `withThrottle` 同口径归一到默认值（R5-173）；`withRetry` 的 `delay` 为正 `Infinity` 时钳到定时器上限而不是折成 0（R5-148）。
-- **快照账本与计数变化**：`result.errors` 现在含 `circular` 条目（先入账再用同一条记录咨询 `onError`，R5-254）；`stats.cloneOperations` 对含 Date / RegExp 的数据变大（R5-255）；失败结果的 `stats` 交出中止点的实际累计值（R5-261）；Proxy `ownKeys` 抛错且允许继续时该节点消失而不再留 `{}` 空壳（R5-251 / R5-252）。
-- **性能指标的两处口径**：`getHotPaths(limit)` 的负数与 `Infinity` 改为返回空数组（R5-096）；在途计时超过 10 分钟未 `end()` 时，此后任意一次 `start()` 就会摘除它（此前还需一次 `record()`，R5-093）。
-- **`isProduction()` 在内联产物里的判定**（R5-140）：构建工具只内联 `process.env.NODE_ENV` 成员表达式、而产物里没有 `process` 全局时，判定结果由 `false` 变 `true`（生产分支才真正生效，直写状态由崩溃变回 warn）。
-- **变异报错文案**：写入函数 / Symbol 时的 `Attempted value:` 不再是 `undefined`（R5-142）；非法写入落在嵌套数组时路径形如 `[0].v`（R5-116 / R5-118）。
-- **`usePlugin(plugin, store)` 在已销毁 Store 上原样抛出 `use` 的异常**（R5-088），不再只 `console.error` + 返回空卸载函数。
-- **被同步中止的 dispatch，其 `onError` 带第二参 `'dispatch'`**：`analyzerPlugin` 据此作废该次进行中计时并产出一条「到抛错为止」的耗时指标（R5-319 落地的「`onError` 一律不弹栈」由这条接线补全）。
+- **`withLog` 的生产摘要不再输出 `Error` 的 message**，且生产构建下 `redact` 之后仍会再过一层摘要，除非显式 `summarizeInProduction: false`（新增该选项）。依赖摘要文本的日志解析需同步。
+- **非法构造参数改为归一或拒绝**：`cacheConfig.ttl` 非有限 / 负值归一为 `0`（＝不过期）并打一条开发期告警；`cacheTTL` 的 `NaN` / `<= 0` / 非数值回落 `5000`，`Infinity` 有意放行；`maxEntries` 归一为 `Number.isFinite(v) ? max(1, floor(v)) : 1000`；`ErrorMonitoring` 的 `maxQueueSize` 最小 1、`maxFlushRetries` 最小 0；`SnapshotManager` 的 `batchSize` 在构造期与逐次调用共用一个归一化函数，`timeout` / `batchInterval` 的非有限值与非正值统一按「不设超时 / 无延迟」；`timeTravelPlugin({ maxSize })` 的非法值按默认 50 生效；`withDebounce` 的 `delay` 与 `withThrottle` 同口径归一到默认值；`withRetry` 的 `delay` 为正 `Infinity` 时钳到定时器上限而不是折成 0。
+- **快照账本与计数变化**：`result.errors` 现在含 `circular` 条目（先入账再用同一条记录咨询 `onError`）；`stats.cloneOperations` 对含 Date / RegExp 的数据变大；失败结果的 `stats` 交出中止点的实际累计值；Proxy `ownKeys` 抛错且允许继续时该节点消失而不再留 `{}` 空壳。
+- **性能指标的两处口径**：`getHotPaths(limit)` 的负数与 `Infinity` 改为返回空数组；在途计时超过 10 分钟未 `end()` 时，此后任意一次 `start()` 就会摘除它（此前还需一次 `record()`）。
+- **`isProduction()` 在内联产物里的判定**：构建工具只内联 `process.env.NODE_ENV` 成员表达式、而产物里没有 `process` 全局时，判定结果由 `false` 变 `true`（生产分支才真正生效，直写状态由崩溃变回 warn）。
+- **变异报错文案**：写入函数 / Symbol 时的 `Attempted value:` 不再是 `undefined`；非法写入落在嵌套数组时路径形如 `[0].v`。
+- **`usePlugin(plugin, store)` 在已销毁 Store 上原样抛出 `use` 的异常**，不再只 `console.error` + 返回空卸载函数。
+- **被同步中止的 dispatch，其 `onError` 带第二参 `'dispatch'`**：`analyzerPlugin` 据此作废该次进行中计时并产出一条「到抛错为止」的耗时指标（「`onError` 一律不弹栈」由这条接线补全）。
 
 #### 类型面（会编译报错，都是把原本写错的一侧显形）
 
-- `SnapshotResult<T>.data`：`T` → `T | undefined`（R5-238，运行期取值不变；不判空取属性直接报错）
-- `SnapshotErrorContext.recoverable`：字段删除（R5-239，恒真、不参与走向判定，分流请读 `SnapshotError.type`）
-- `SelectorOptions.equalityFn` 形参：`(a: unknown, b: unknown)` → `(a: any, b: any)`（与 R5-316 给 `AsyncActions` 的同一处方；只放宽逆变的形参位，返回位仍受检查，业务侧按具体状态标注的比较器现在可赋）
-- `Store.isStateKeyDirty` / 组合层同名方法形参：`string` → `string | symbol`（R5-135，向后兼容的放宽）
-- `SelectorComposer.combine` 入参：`SelectorComposerInput<S, T>` → `SelectorComposerInput<S, T, R>`（R5-232，两处 `as` 断言随之删除）
-- `ActionLoader.getErrorData()` 返回类型：`unknown` → `ActionErrorData | undefined`（R5-163，纯收窄）
-- `ComposedStore` 别名形状扩为整个 `Store<S>` 面、`HostStoreApi` 新增 `__store__` 与 `subscribe` 的可选形参、`ExtractPageData` 撞名键由 `never` 改为 getter 返回类型、`AppThis.globalData` 不再可调用、`StoreConfig` 的 `S` 默认值 `unknown` → `Record<string, unknown>`（R5-312 / R5-327 / R5-328 / R5-330 / R5-326）
+- `SnapshotResult<T>.data`：`T` → `T | undefined`（运行期取值不变；不判空取属性直接报错）
+- `SnapshotErrorContext.recoverable`：字段删除（恒真、不参与走向判定，分流请读 `SnapshotError.type`）
+- `SelectorOptions.equalityFn` 形参：`(a: unknown, b: unknown)` → `(a: any, b: any)`（只放宽逆变的形参位，返回位仍受检查，业务侧按具体状态标注的比较器现在可赋）
+- `Store.isStateKeyDirty` / 组合层同名方法形参：`string` → `string | symbol`（向后兼容的放宽）
+- `SelectorComposer.combine` 入参：`SelectorComposerInput<S, T>` → `SelectorComposerInput<S, T, R>`（两处 `as` 断言随之删除）
+- `ActionLoader.getErrorData()` 返回类型：`unknown` → `ActionErrorData | undefined`（纯收窄）
+- `ComposedStore` 别名形状扩为整个 `Store<S>` 面、`HostStoreApi` 新增 `__store__` 与 `subscribe` 的可选形参、`ExtractPageData` 撞名键由 `never` 改为 getter 返回类型、`AppThis.globalData` 不再可调用、`StoreConfig` 的 `S` 默认值 `unknown` → `Record<string, unknown>`
 
 ## 升级到 0.5.1
 

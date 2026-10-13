@@ -173,7 +173,7 @@ export type CloneMode = 'deep' | 'shallow' | 'safe' | 'json';
  * 合并进 `config.methods`，再由微信提升到实例），故这里不在顶层重复声明——否则返回类型会
  * 声明出配置对象上并不存在的顶层方法（`config.add()` 能编译却在运行时失败）。
  *
- * 同样不声明 `setData`（#R6-063），`data` 的读法约定见 {@link InjectedConfigDataShape}。
+ * 同样不声明 `setData`，`data` 的读法约定见 {@link InjectedConfigDataShape}。
  */
 export type ComponentConfig<S extends State, A extends Actions, G extends Getters<S> = Getters<S>, M extends ConnectOptions<S, A, G> = ConnectOptions<S, A, G>, ExtraMethods extends object = object> = InjectedConfigDataShape<S, M, G> & ComponentMethodsShape<ExtraMethods, A, M>;
 ```
@@ -214,7 +214,7 @@ export type ComponentThis<S extends State, A extends Actions, G extends Getters<
  *
  * ⚠️ 本接口有三个成员，但运行时只消费两个：`namespace` 与 `strict`
  * （`core/compose/composeStore.ts` 的构造函数仅读这两项，`createStoreTree` 只读 `namespace`）。
- * `lazy` / `tree` 是**已声明未实现**的历史遗留项，见各自注释（#R6-061）。
+ * `lazy` / `tree` 是**已声明未实现**的历史遗留项，见各自注释。
  * 未实现项刻意保留在公开类型面上：`ComposeOptions` 已随 0.x 发布，删成员属破坏性变更，
  * 需走主版本窗口，故本轮只把「写了也不生效」写在明面上，不做静默删除。
  */
@@ -224,7 +224,7 @@ export interface ComposeOptions {
     /**
      * 延迟初始化
      *
-     * **未实现**（#R6-061）：全库没有任何读取方（`grep lazy src/` 只命中本文件），
+     * **未实现**：全库没有任何读取方（`grep lazy src/` 只命中本文件），
      * `composeStore(stores, { lazy: true })` 编译通过、静默无效，且 `docs/API.md` 无对应条目。
      * 需要「按访问才建组合 Store」请另提实现，勿依赖本项。
      */
@@ -234,7 +234,7 @@ export interface ComposeOptions {
     /**
      * Store树结构
      *
-     * **未实现**（#R6-061）：与 `lazy` 同判据——`ComposedStore` 从不读它，
+     * **未实现**：与 `lazy` 同判据——`ComposedStore` 从不读它，
      * 树结构由独立入口 `createStoreTree`（同样只读 `namespace`）提供，本项不构成开关。
      */
     tree?: boolean;
@@ -500,7 +500,7 @@ declare class ComposedStore<S extends State = State> implements Store<S> {
 
 ```ts
 /**
- * `StoreConfig.getters` 的 state 形参形状（#R5-326 把它从内联表达式提成命名口径）
+ * `StoreConfig.getters` 的 state 形参形状（把它从内联表达式提成命名口径）
  *
  * 与 {@link ResolvedState} 只差归一失败的兜底：这里退回 `Record<string, unknown>` 而不是
  * `State`（= `object`）——getter 拿到的即使是没有键信息的退化状态，也仍要能按
@@ -540,7 +540,7 @@ export interface ConnectOptions<S extends State = State, A extends Actions = Act
     /**
      * 是否在页面 `onShow` / 组件 `pageLifetimes.show` / App `onShow` 时按 `getCached` 重新注入一次。
      *
-     * 生效条件（三者同时，缺一即整项无效且**不会告警**，#R6-062）：
+     * 生效条件（三者同时，缺一即整项无效且**不会告警**）：
      * `autoUpdateOnShow && autoInject && Object.keys(injectMapping).length > 0`
      * —— 见 `with-store.ts` 的 page/component 两处判定与 `with-app-store.ts:267`，
      * 只写本项（或把 `injectMapping` 给成 `{}`）时连包装器都不安装。
@@ -1160,7 +1160,7 @@ export interface LRUCacheStats {
 /**
  * 命名空间配置
  *
- * **未接线**（#R6-061）：本库没有任何 API 接受该配置对象——命名空间分隔符在
+ * **未接线**：本库没有任何 API 接受该配置对象——命名空间分隔符在
  * `core/compose/helpers.ts`（`key.indexOf('/')`）里是**硬编码**的 `/`，
  * `ComposeOptions.namespace` 只接受「布尔 / 前缀字符串」两档，`autoPrefix` 亦无读取方。
  * 它经 `core/index.ts:80`、`core/compose/index.ts:7`、`core/compose/composeStore.ts:958`
@@ -1183,7 +1183,7 @@ export interface NamespaceConfig {
  *
  * 与 `PageThis` 的分工：`PageThis` 描述**方法内的 `this`**（含映射 action，注入于页面实例），
  * 本类型描述**装饰器返回的配置对象**——注入的 action 运行时绑定在实例上、并不存在于配置对象，
- * 故这里不含 action；`setData` 同理（#R6-063：框架只在实例上提供它，配置对象是用户字面量的
+ * 故这里不含 action；`setData` 同理（框架只在实例上提供它，配置对象是用户字面量的
  * 浅拷贝，见 {@link InjectedConfigDataShape}）。
  *
  * 读法约定：本类型的 `data` 是**实例 data** 的口径（映射值并入后的形状），
@@ -1731,7 +1731,7 @@ export declare class Store<S extends State = State, A extends Actions = Actions,
  * （基于推断出的 S/A）。共享选项见 `StoreOptionsBase`。
  *
  * `S` 的默认值是「没有状态类型可言」时的形状 `Record<string, unknown>`，与 {@link ConfigState}
- * 的退化兜底同一口径（#R5-326）：默认值为 `unknown` 时 `state?: unknown` 什么都能装，
+ * 的退化兜底同一口径：默认值为 `unknown` 时 `state?: unknown` 什么都能装，
  * 但 `cacheKeys?: Array<keyof ResolvedState<S>>` 退化成 `never[]`——裸写 `StoreConfig`
  * 的人连 `cacheKeys: ['count']` 都写不出来，而同一份配置里的 `getters` 却能正常按键读状态。
  * 走 `createStore` 的调用不受影响：它的 S 由重载签名显式传入本接口，默认值不参与推断。
@@ -1763,7 +1763,7 @@ export interface StoreConfig<S = Record<string, unknown>, A = unknown, G = unkno
      * 「#153 cacheKeys 为空数组时告警并保持「不缓存任何键」语义」用例。
      *
      * 退化输入（裸写 `StoreConfig`、不传类型参数）下 S 即 `Record<string, unknown>`，
-     * 键集随之是 `string | number`，任何字符串键都接受（#R5-326）。
+     * 键集随之是 `string | number`，任何字符串键都接受。
      */
     cacheKeys?: Array<keyof ResolvedState<S>>;
 }
