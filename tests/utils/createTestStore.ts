@@ -89,6 +89,12 @@ export function createTestStore<S extends State = Record<string, unknown>, A ext
   // `Store` 构造函数写的正是 `options.name || 'store-N'`（src/core/store/Store.ts，
   // 由 tests/unit/store/store.test.ts 的 STORE-088 锁定）。`''` 若被原样透传，
   // 最终仍会被 Store 换成非确定性的 `store-N`，恰恰丢掉本工厂要保证的唯一名可复现性
+  //
+  // ⚠️ `_seq` 依赖模块内的调用顺序：`.only` 单跑与全量跑会得到不同的 `test-store-N`；
+  // 若在 `test.concurrent` / Vitest concurrent 下并发进入，`++_seq` 交错也非确定。
+  // 目前测试不直接断言 store name（只关心唯一性），故接受此设计；如需把 name 纳入
+  // snapshot / 断言，改从 `crypto.randomUUID().slice(0,8)` 派生稳定后缀，
+  // 不再依赖全局计数
   const resolved: TestStoreConfig<S, A, G> = options.name ? options : { ...options, name: `test-store-${++_seq}` }
   return createStoreFromOptions(resolved)
 }
