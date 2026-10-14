@@ -112,6 +112,12 @@ async function demoComposeSubscription(): Promise<void> {
   console.log('退订后再次 dispatch，仍是:', received.join(', '))
 }
 
+// 示例顶层不 await 会让 rejection 变成 unhandledRejection、完成日志抢在异步之前；
+// 挂 .catch 兜住 rejection 并把完成日志放进 then
 void demoComposeSubscription()
-
-console.log('\n✅ Store 组合示例完成')
+  .then(() => {
+    console.log('\n✅ Store 组合示例完成')
+  })
+  .catch((error) => {
+    console.error('[compose-stores] 异步 demo 失败:', error)
+  })

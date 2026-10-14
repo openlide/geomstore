@@ -77,9 +77,11 @@ builtinPlugins.forEach((plugin) => another.use(plugin))
 // 泛型化后可标注精确的状态类型（`Plugin<DemoState>`），install 的 store 参数随之精确
 const myLoggerPlugin = {
   name: 'my-logger',
-  install(target: { subscribe: (fn: (state: DemoState) => void) => () => void }) {
+  install(target: { subscribe: (fn: (state: DemoState) => void, options?: { readOnly?: boolean }) => () => void }) {
     console.log('\n[MyLogger] 插件已安装')
-    const unsubscribe = target.subscribe((state) => console.log('[MyLogger] 状态变化:', state))
+    // 只读订阅：只要日志、不写回 state。传 readOnly 让 Store 跳过对整棵状态树的
+    // 深克隆（否则每条变更多付一次克隆，与内置 loggerPlugin 同口径）
+    const unsubscribe = target.subscribe((state) => console.log('[MyLogger] 状态变化:', state), { readOnly: true })
     return () => {
       unsubscribe()
       console.log('[MyLogger] 插件已卸载')

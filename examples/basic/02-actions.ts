@@ -61,12 +61,20 @@ const created = todoStore.dispatch('add', '写文档')
 console.log('新增:', created)
 
 todoStore.dispatch('toggle', created.id)
-console.log('切换完成状态:', todoStore.getState().items[0].done)
+// 按 id 查找而非按下标取，避免数组为空/顺序变化时 TypeError
+console.log('切换完成状态:', todoStore.getState().items.find((item) => item.id === created.id)?.done)
 
-// 异步 action：dispatch 返回 Promise
-todoStore
-  .dispatch('load')
-  .then((count) => console.log('异步加载条数:', count))
-  .catch((error) => console.error('加载失败:', error))
+// 异步 action：dispatch 返回 Promise。用 async/await + try/catch 与
+// `load` action 自身的 async/await 风格保持一致
+async function runAsyncLoad(): Promise<void> {
+  try {
+    const count = await todoStore.dispatch('load')
+    console.log('异步加载条数:', count)
+  } catch (error) {
+    console.error('加载失败:', error)
+  }
+}
 
-console.log('\n✅ 基础示例 2 完成')
+void runAsyncLoad().then(() => {
+  console.log('\n✅ 基础示例 2 完成')
+})
