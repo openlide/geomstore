@@ -90,7 +90,10 @@ export function createStore<S extends State, A extends Actions = Actions, G exte
 ): Store<S, A, G>
 
 // 重载 2：state 对象字面量形式（state: S）
-export function createStore<S extends State, A extends Actions = Actions, G extends Getters<S> = Getters<S>>(
+// #113: S 需排除可调用类型，否则 `state: () => ({...})` 可能匹配此重载，
+// 将 S 推断为函数类型而非返回值类型，导致 getter/action 上下文退化。
+// 工厂重载置于上方（line 88），此处的排除约束确保函数形态的 state 只能走工厂路径
+export function createStore<S extends Exclude<State, (...args: never[]) => unknown>, A extends Actions = Actions, G extends Getters<S> = Getters<S>>(
   options: LiteralStoreConfig<S, A, G>,
 ): Store<S, A, G>
 

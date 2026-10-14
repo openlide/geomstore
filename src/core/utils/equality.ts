@@ -45,16 +45,11 @@ const optionalBoxedTagOf = (value: object): string => Object.prototype.toString.
  * 注：`Number`/`String`/`Boolean` 三个全局自 ES1 起必在，无需探测。
  */
 const isBoxedPrimitive = (value: object): boolean => {
-  if (value instanceof Number || value instanceof String || value instanceof Boolean) return true
-  if (typeof globalThis.BigInt === 'function') {
-    if (value instanceof globalThis.BigInt) return true
-  } else if (optionalBoxedTagOf(value) === '[object BigInt]') {
-    return true
-  }
-  if (typeof globalThis.Symbol === 'function') {
-    return value instanceof globalThis.Symbol
-  }
-  return optionalBoxedTagOf(value) === '[object Symbol]'
+  // #126: instanceof 对跨 realm 的装箱值会落空（分包/多运行时下的构造器不是同一份）。
+  // 改用 [[Class]] tag 判定，天然跨 realm。Number/String/Boolean 自 ES1 起必在，
+  // 但 tag 判定与 instanceof 语义等价且统一口径，故一律走 tag
+  const tag = optionalBoxedTagOf(value)
+  return tag === '[object Number]' || tag === '[object String]' || tag === '[object Boolean]' || tag === '[object BigInt]' || tag === '[object Symbol]'
 }
 
 /**

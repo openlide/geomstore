@@ -113,15 +113,17 @@ export class StoreRegistry {
       this._detachInstance(name, existingStore)
       superseded.push(existingStore)
 
-      // 重入保护：destroy() 回调可以再次 register 同名 store（clear() 为这类重入
-      // 预留了「先摘链再销毁」的顺序，这里同样要显式处理）。上面的 set 若无条件执行，
-      // 重入写入的实例会被顶掉且永不被销毁 —— 那是个没人持有、也没人清理的悬挂 store。
-      // 本次调用是更外层的注册意图（其契约是「返回后 get(name) === store」），
-      // 故让重入实例走同一条覆盖流程退场，两个实例都不被静默遗弃。
-      // 例外：重入写入的正是本次要注册的实例（回调替调用方先行装好），摘毁它会让
-      // 下面的 set 把一个已销毁的实例登记为在册 store
-      const reentrant = this.stores.get(name)
-      if (reentrant !== undefined && reentrant !== existingStore && reentrant !== store) {
+      // #89: 重入保护需循环直至槽位稳定。destroy() 回调可以再次 register 同名 store
+      // （clear() 为这类重入预留了「先摘链再销毁」的顺序，这里同样要显式处理）。
+      // 单层检查不够：重入实例的 destroy() 可能又触发一次 register，产生第二层、第三层...
+      // 循环直至 get(name) 为空或等于本次要注册的实例（说明没有新的重入写入）
+      while (true) {
+        const reentrant = this.stores.get(name)
+        if (reentrant === undefined || reentrant === existingStore || reentrant === store) {
+          break
+        }
+        // 重入写入的正是本次要注册的实例（回调替调用方先行装好），摘毁它会让
+        // 下面的 set 把一个已销毁的实例登记为在册 store
         if (!isProduction()) {
           console.warn(`[StoreRegistry] Store "${name}" 在旧实例 destroy() 期间被重新注册，本次注册覆盖该重入实例`)
         }
@@ -388,7 +390,13 @@ export class StoreRegistry {
     this.stores.clear()
     this.defaultStore = undefined
 
+    // #88: 多个名字可能映射到同一 store 实例（别名），按实例去重后再销毁，
+    // 避免同一实例被 _destroyInstance 多次（第二次会因 store.destroyed=true 跳过，
+    // 但仍会产生冗余日志与遍历开销）
+    const destroyed = new Set<Store>()
     for (const [name, store] of entries) {
+      if (destroyed.has(store)) continue
+      destroyed.add(store)
       // 守卫与异常兜底统一走 _destroyInstance：已在外部销毁的实例跳过、
       // 缺 destroy 的鸭子类型实例不会以 TypeError 收场
       this._destroyInstance(name, store)
@@ -531,6 +539,14 @@ export class StoreRegistry {
    * ```
    */
   restoreSnapshot(snapshot: Record<string, unknown>): void {
+    // #90: 入参形状守卫，与 register/registerAll 同口径。null/undefined/数组/非对象
+    // 一律拒绝，避免 Object.entries 抛 bare TypeError 或被当成空对象静默跳过
+    if (snapshot === null || typeof snapshot !== 'object' || Array.isArray(snapshot)) {
+      throw new Error(
+        `[StoreRegistry] restoreSnapshot expects a plain object, got ${Array.isArray(snapshot) ? 'array' : snapshot === null ? 'null' : typeof snapshot}`,
+      )
+    }
+
     const restored = new Set<string>()
 
     for (const [name, state] of Object.entries(snapshot)) {

@@ -10,6 +10,7 @@
 
 import { assignOwn, deepCloneState, isExactly, isIndexKey, ownEnumerableKeys } from './clone.js'
 import { deepEqual } from './equality.js'
+import { isProduction } from '../store/utils.js'
 
 // ==================== 类型判断 ====================
 
@@ -220,6 +221,12 @@ export function deepMerge<T extends Record<string, unknown>>(target: T, ...sourc
     if (isObject(target) && isObject(source)) {
       // Object.keys 仅取自有可枚举键，天然排除原型链属性
       mergeInto(target as Record<string, unknown>, source as Record<string, unknown>)
+    } else if (!isProduction()) {
+      // #133: target 或 source 非纯对象（数组/Map/Set/null）时静默跳过，
+      // 调用方可能误以为合并成功。开发期告警，与同文件 set()(:287) 同口径
+      console.warn(
+        `[GeomStore] deepMerge skipped: target or source is not a plain object (target: ${Array.isArray(target) ? 'array' : target === null ? 'null' : typeof target}, source: ${Array.isArray(source) ? 'array' : source === null ? 'null' : typeof source})`,
+      )
     }
   }
 
