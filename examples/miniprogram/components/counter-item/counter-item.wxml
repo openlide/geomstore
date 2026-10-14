@@ -1,0 +1,6 @@
+<view class="item-row">
+  <text>{{name}}</text>
+  <text>count = {{count}}</text>
+  <button size="mini" bindtap="onTapLocal">local={{local}}</button>
+  <button size="mini" type="primary" bindtap="onTapShared">+1 共享</button>
+</view>

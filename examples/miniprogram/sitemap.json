@@ -1,0 +1,7 @@
+{
+  "desc": "本项目不提供索引",
+  "rules": [{
+    "action": "allow",
+    "page": "*"
+  }]
+}

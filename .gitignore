@@ -11,6 +11,15 @@ yarn.lock
 dist/
 # 微信「构建 npm」专用产物（`miniprogram` 字段指向的目录，由 pnpm run build:weapp 生成）
 dist-weapp/
+# examples 整体不入库（那是本地跑着看的片段），唯一例外是 **小程序 demo 工程**——
+# 它是「上线前必做配置」的可执行验收品，必须在版本库里才能复用。
+# 写法必须逐级解除：`examples/**` 会把 `examples/miniprogram` 这个目录本身排掉，
+# Git 因此不再进去检查它的内容，只写一条 `!examples/miniprogram/**` 永远轮不上。
+# 先否定目录本身（让 Git 走进去），再否定目录内容，最后把它的构建产物重新排掉。
+examples/**
+!examples/miniprogram/
+!examples/miniprogram/**
+examples/miniprogram/miniprogram_npm/
 build/
 *.log
 *.tsbuildinfo

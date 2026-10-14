@@ -1,0 +1,20 @@
+{
+  "description": "GeomStore demo（本地运行用，appid 填测试号或无 appid）",
+  "appid": "touristappid",
+  "projectname": "geomstore-demo",
+  "miniprogramRoot": "./",
+  "compileType": "miniprogram",
+  "libVersion": "3.5.0",
+  "setting": {
+    "urlCheck": false,
+    "es6": true,
+    "enhance": true,
+    "postcss": true,
+    "minified": true,
+    "packNpmManually": false,
+    "coverView": true,
+    "lazyloadPlaceholderEnable": false,
+    "ignoreUploadUnusedFiles": true
+  },
+  "condition": {}
+}

@@ -1,0 +1,6 @@
+{
+  "navigationBarTitleText": "订阅容量",
+  "usingComponents": {
+    "counter-item": "/components/counter-item/counter-item"
+  }
+}

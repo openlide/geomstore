@@ -1,0 +1,15 @@
+<view class="container">
+  <view class="hint">列表页 · 每个 item 组件订阅同一份 Store（各占 1 条注册，默认上限 50）</view>
+  <view class="row">
+    <text>count = {{count}}</text>
+    <text class="muted">组件数 = {{itemCount}}</text>
+    <text class="muted">已驱逐 = {{evicted}}</text>
+  </view>
+  <view class="row">
+    <button class="btn-inc" size="mini" type="primary" bindtap="onTapIncrement">+1（所有 item 应同步）</button>
+    <button class="btn-more" size="mini" bindtap="onTapMore">再加 20 个组件</button>
+  </view>
+  <view wx:for="{{items}}" wx:key="id">
+    <counter-item seq="{{item.id}}" name="{{item.name}}" />
+  </view>
+</view>
