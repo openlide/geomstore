@@ -31,27 +31,38 @@ import { registerGlobalEntry } from '../globalRegistry.js'
  */
 function jsonStringifySafe(value: unknown, space?: number): string {
   const stack: unknown[] = []
-  return JSON.stringify(
-    value,
-    function (this: unknown, _key: string, val: unknown): unknown {
-      if (stack.length > 0) {
-        const thisPos = stack.indexOf(this)
-        if (thisPos !== -1) {
-          // 回到祖先层：截断该层之后的路径
-          stack.splice(thisPos + 1)
+  try {
+    return JSON.stringify(
+      value,
+      function (this: unknown, _key: string, val: unknown): unknown {
+        // BigInt 不能直接进 JSON.stringify（会抛 TypeError），转为带标记的字符串
+        // 使 exportHistory 不因状态里有 BigInt 而崩；importHistory 原样回读为字符串
+        if (typeof val === 'bigint') {
+          return `__geomstore_bigint__${val.toString()}__`
+        }
+        if (stack.length > 0) {
+          const thisPos = stack.indexOf(this)
+          if (thisPos !== -1) {
+            // 回到祖先层：截断该层之后的路径
+            stack.splice(thisPos + 1)
+          } else {
+            stack.push(this)
+          }
+          if (stack.indexOf(val) !== -1) {
+            return '[Circular]'
+          }
         } else {
-          stack.push(this)
+          stack.push(val)
         }
-        if (stack.indexOf(val) !== -1) {
-          return '[Circular]'
-        }
-      } else {
-        stack.push(val)
-      }
-      return val
-    },
-    space,
-  )
+        return val
+      },
+      space,
+    )
+  } catch (error) {
+    // 兜底降级：JSON.stringify 抛错（如函数、Symbol 无法序列化）时不冒给调用方，
+    // 返回诊断串保证 exportHistory 的「never throws」契约
+    return `"[Unserializable: ${error instanceof Error ? error.message : String(error)}]"`
+  }
 }
 
 /**
@@ -422,7 +433,15 @@ export const timeTravelPlugin = <S extends State = State>(options: TimeTravelOpt
             // 快照状态非纯对象）时若先改索引，索引会指向一个从未生效的快照而真实状态
             // 仍是旧的——此后 recordSnapshot 以该索引为分支点截断 redo 历史，
             // 且 undo/redo 每次都会把这个坏索引一路继承下去、反复抛同一个错
-            currentIndex = index
+            //
+            // 同步通知模式下 $replaceState 会内联跑用户订阅者，订阅者可能在
+            // traveling 窗口内回调到 exposed API（clear / importHistory / record）
+            // 改变 snapshots.length 甚至清空历史。这里对 index 重校验，
+            // 保证 currentIndex ∈ [-1, snapshots.length - 1] 不变量；若已失效，
+            // 保持旧 currentIndex 让 canUndo/redo 继续自洽
+            if (index < snapshots.length && snapshots[index] === snapshot) {
+              currentIndex = index
+            }
             // 同步通知下回放已在 traveling 窗口内被吞掉；这里为异步通知留下识别标记，
             // 版本号在本次回放后再未前进时，下一次通知即为该回放本身
             pendingTravelVersion = getStateVersion(store.state)
