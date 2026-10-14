@@ -88,7 +88,9 @@ function defineOwnValue(target: Record<string, unknown>, key: string, value: unk
   Object.defineProperty(target, key, {
     value,
     writable: true,
-    enumerable: locked ? original.enumerable : true,
+    // 可配置成员同样保留原 enumerable：硬编 true 会在绑定期间把宿主的非枚举属性
+    // 悄悄翻成枚举，Object.keys / 框架的属性遍历会看到与绑定前不同的形状（解绑才复原）
+    enumerable: original ? original.enumerable : true,
     configurable: locked ? false : true,
   })
 }
@@ -158,18 +160,17 @@ export function createStoreSubscriber<S extends State>(store: Store<S>): (callba
  * @param setter - 批量设置本地值的函数（接收全部映射键的更新对象；
  *   载荷的键即用户配置的本地键，可能含 `'__proto__'`，宿主侧需按自有属性语义写入，
  *   见 copyOwnEntries / Page & Component 的 setData）
- * @param subscribeStore - 订阅 Store 变化的函数
- * @returns 取消绑定函数数组
+ * @returns 映射更新器（`{ update }`，调用 `update()` 触发一次批量同步；非取消绑定函数）
  *
  * @example
  * ```typescript
- * const unbinds = bindMappings(
+ * const mapper = createMapper(
  *   pageInstance,
  *   { count: 'counter', name: 'userName' },
  *   (storeKey) => store.state[storeKey],
  *   (updates) => pageInstance.setData(updates),
- *   (callback) => store.subscribe(callback)
  * )
+ * mapper.update() // 手动触发一次同步
  * ```
  */
 export function createMapper(
@@ -316,6 +317,35 @@ export function subscribeMappers(
   )
 }
 
+/**
+ * 绑定 Store 状态到目标对象（Page/Component/App 实例），返回取消绑定函数数组
+ *
+ * 内部先用 createMapper 建立映射，再按需订阅 Store 变化，把 state 与 getter 的
+ * 更新合并写入宿主（小程序 setData 一次调用）。返回值是取消订阅函数数组，
+ * 调用方应在宿主生命周期（onUnload / detached 等）里逐个调用它们，避免订阅泄漏。
+ *
+ * @param _target - 目标对象
+ * @param mappings - 本地键 → Store 键映射（源键 → 目标键方向）
+ * @param getValue - 读取 Store 侧值的函数
+ * @param setter - 批量写入本地值的函数，签名 `(updates: Record<string, unknown>) => void`
+ * @param subscribeStore - 订阅 Store 变化的函数，返回取消订阅回调
+ * @param changedKeys - 判断某键自上次通知以来是否变更（仅 state 映射可传入；
+ *   getters 缺失时对象值按「宁多勿漏」始终发送）
+ * @returns 取消绑定函数数组
+ *
+ * @example
+ * ```typescript
+ * const unbinds = bindMappings(
+ *   pageInstance,
+ *   { count: 'counter', name: 'userName' }, // 本地键 count 对应 Store 键 counter
+ *   (storeKey) => store.state[storeKey],
+ *   (updates) => pageInstance.setData(updates),
+ *   (callback) => store.subscribe(callback),
+ * )
+ * // onUnload 里
+ * unbinds.forEach((unbind) => unbind())
+ * ```
+ */
 export function bindMappings(
   _target: unknown,
   mappings: Record<string, string>,
