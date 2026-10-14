@@ -120,7 +120,9 @@ export interface IHookSystem {
    * 按当前实现：
    * - 单个处理器抛错既不中断本次触发的其余处理器，也**不会传播给 `emit` 的调用方**
    *   （实现按快照逐个 try/catch）。
-   * - 错误先 `console.error` 记录，再转投 `onError` 钩子（`emit('onError', error, hookName)`），
+   * - 错误先 `console.error` 记录（**生产期静默**，与 SubscriptionManager 的监听器异常
+   *   同口径：钩子挂在写路径热线上，不门控会让持续抛错的处理器刷满发布包控制台），
+   *   再转投 `onError` 钩子（`emit('onError', error, hookName)`），
    *   故 `onError` 是该实现唯一的上报通道；要接监控系统，注册 `onError` 处理器即可。
    * - `onError` 自身抛错只落 `console.error`，不再递归转投自己。
    * - 需要「让抛错冒泡到业务调用方」的语义不能靠钩子实现，请走 action 的错误边界。

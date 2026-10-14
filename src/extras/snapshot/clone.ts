@@ -600,18 +600,17 @@ export function cloneDeep<T>(
           stats,
           counters,
         )
-        // 被丢弃的元素（下标不被赋值）不是「留洞」：洞只在中段出现——后续元素照常
-        // 按下标写入，把它前面的空位顶成真实的稀疏位；被丢弃的若是末尾元素则没人再写那个
-        // 下标，克隆品直接比源数组短（`[{a:1},{a:2},{a:3}]` 丢第三项 → `length === 2`）。
-        // 后果是这份长度差会被 compareSnapshots 的数组分支读成调用方从未做过的
-        // `[removed:i]` 变更；异步路径的 target:index 写法同此语义（同样不预分配长度）
+        // 被丢弃的元素（SKIP_CLONE_NODE）不写对应下标：后续元素照常按下标写入，把前面的
+        // 空位顶成真实的稀疏位；末尾丢弃则没人再写那个下标，克隆品直接比源数组短
+        //（`[{a:1},{a:2},{a:3}]` 丢第三项 → `length === 2`）。异步路径的 target:index
+        // 写法同此语义（同样不预分配长度）
         if (clonedItem !== SKIP_CLONE_NODE) {
           cloned[i] = clonedItem
         }
       }
-      // 被丢弃的元素（SKIP_CLONE_NODE）不写对应下标，尾部丢弃会让 cloned.length 比源短，
-      // 中段丢弃会留稀疏洞——compareSnapshots 的数组分支会把长度差读成 [removed:i] 变更。
-      // 统一把长度对齐到源：中段洞填 undefined（JSON 序列化为 null，与丢弃语义一致）
+      // 上一步留下的长度差必须对齐到源：否则 compareSnapshots 的数组分支会把它读成调用方
+      // 从未做过的 `[removed:i]` 变更。对齐后中段洞填 undefined（JSON 序列化为 null，
+      // 与丢弃语义一致）
       if (cloned.length !== value.length) {
         cloned.length = value.length
       }
@@ -641,7 +640,9 @@ export function cloneDeep<T>(
 
     // 处理普通对象
     // 保留源对象原型：类实例快照后仍是该类实例（方法/继承链可用），
-    // 仅复制自有可枚举属性，不触发任何构造器或 getter
+    // 仅复制自有可枚举属性，不触发构造器——但 getter **会**被求值：访问器属性由 copyOwnKey
+    // 用描述符里捕获的 getter 求值后落为数据属性（理由见该函数注释），故这里是
+    //「不触发构造器」而不是「不触发 getter」
     objectShell = Object.create(Object.getPrototypeOf(value) as object | null) as Record<string, unknown>
     context.visited.set(value as object, objectShell)
   } catch (error) {

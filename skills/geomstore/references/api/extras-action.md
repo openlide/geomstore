@@ -901,7 +901,7 @@ export declare class ActionUtils<A extends Actions = AsyncActions> {
      * @returns {Promise<Awaited<ReturnType<A[K]>>>} Action执行结果
      * @throws {TypeError} 入参形态不对（缺 actionName、actionName 在该 actions 上不存在或不是
      *   函数）时**就地**抛出：不经过执行器，因此不会在 `getStats`/`getHistory` 里留下记录
-     * @throws 被装饰 action 自身抛出的错误会**原样**向上抛出（同 `ActionExecutor.execute`）：
+     * @throws 目标 action 自身抛出的错误会**原样**向上抛出（同 `ActionExecutor.execute`）：
      *   本方法只是门面，不做包装、也不转成「失败结果」。executor 已把该次执行按失败记入历史
      *   （`getStats`/`getHistory` 可见），随后 rethrow 原始值——调用方 `catch (e) => e === thrown`
      *   的身份判断成立
@@ -1240,7 +1240,6 @@ export declare function cancelThrottledCalls(host: unknown, method?: string | sy
  *
  * 创建一个通用装饰器，可以在Action执行前后执行自定义逻辑
  *
- * @static
  * @param {DecoratorOptions} [options={}] - 装饰器选项
  * @returns {MethodDecorator} 方法装饰器
  *
@@ -1418,37 +1417,6 @@ export declare function withCache(options?: CacheDecoratorOptions): MethodDecora
 ### `withDebounce`
 
 ````ts
-/**
- * GeomStore - 防抖装饰器
- *
- * 延迟执行方法，如果在延迟时间内再次调用，则重置定时器
- *
- * 修复说明：原实现将 timeoutId / pendingResolves 等状态声明在工厂函数作用域，
- * 导致同一装饰器装饰的所有方法/实例共享同一份状态（闭包陷阱）。
- * 现改为按宿主对象（this）隔离状态，每个实例拥有独立的定时器与 pending 队列。
- *
- * 宿主生命周期收尾：等待期由 `setTimeout` 驱动，宿主（小程序 Page / Component 实例）
- * 卸载后它仍会到期执行被装饰方法。为此本模块提供三个语义互斥的公开入口
- * （`cancelDebouncedCalls` / `flushDebouncedCalls` / `disposeDebouncedState`），
- * 在 `onUnload` / `detached` 里按宿主调用。
- *
- * 这三个入口定位的是**调用被装饰方法时的 `this`**（状态表 `debounceStates` 的键就是它），
- * 因此只对「`this` 可被业务侧拿到」的宿主有效：Page / Component 实例、类实例、普通对象。
- * **装饰 store action 时本组入口不可用**——`ActionManager` 把每个 action 包成
- * `originalAction.call(actionContext, ...)`，运行时的 `this` 是 store 内部的 action 上下文
- * 代理（只被那批箭头闭包捕获，不挂在任何公开成员上；`store.actions` 拿到的是另一个对象），
- * 在 Page/Component 的卸载点上传 `this` 会拿到空数组并**静默 no-op**，挂起的防抖 action
- * 照样到点执行并往（可能已销毁的）store 里写。装饰 store action 时请在业务侧自判存活标记
- * （action 体内先确认页面/store 仍存活再落状态），与「`withCache` / `withRetry` 没有对应的
- * 收尾入口」同一口径。`withThrottle` 的三个同名入口受同一条限制，见其模块头。
- *
- * 与 `withCache` 的叠加顺序：**防抖必须在外、缓存在内**（`@withDebounce` 写在 `@withCache`
- * 上方）。此时每次真实执行都经由缓存包装，合并执行与缓存两种能力完整生效；反向叠加
- * （缓存在外）时，本装饰器返回的每个 Promise 都带 {@link PLACEHOLDER_RESULT} 品牌
- * （窗口内所有调用共享最新参数那一次执行的结果），缓存见标即原样返回——该路径退化为
- * 「不缓存、不去重」，而不会把别种参数的结果写进缓存键。
- *
- */
 /**
  * 创建防抖装饰器
  *

@@ -79,8 +79,10 @@ function warnDestroyedChildOnce(store: Store): void {
  * 已处理的 store 写入了、之后的 store 永不写入——既没保住一致性又抛了错，
  * 交付的是调用方无法解释的半更新状态。
  *
- * 跳过口径与 _startBatchOnStores / _endBatchOnStores / 企业版 runForegroundChecks
- * 三处一致（均为「子 store 可被独立销毁 → 跳过」）。不受 strict 影响：
+ * 跳过口径与 composeStore 的 _skipDestroyedChild（setState / dispatch / getter /
+ * getCached / enableCache / disableCache / invalidateCache / getCacheStats / 读路径）
+ * 及 _startBatchOnStores / _endBatchOnStores 一致（均为「子 store 可被独立销毁 → 跳过」）。
+ * 不受 strict 影响：
  * strict 的既有语义是「访问不存在的 Store 报错」，而「存在但已销毁」是另一种故障，
  * 混进去会让 strict 模式重新产生半更新。
  */

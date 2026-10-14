@@ -25,6 +25,15 @@
 
 迁移：全进程收集 / 聚合 / 上报错误请接入 `Store` 的 `onError` 钩子（`store.hooks.on('onError', …)`）再转交第三方监控（`wx.reportError` / Sentry 等）；重试与恢复请在 action 侧自管（`extras/action` 的 `withRetry` 装饰器可覆盖部分场景）。
 
+### 类型面放宽（无需改代码，但可以先按新写法收一遍类型）
+
+同一版还放宽了组合 Store 的类型面。**既有代码照常编译，不用改任何一行**；下面两条是「以前写不了、现在能写」：
+
+- **`composeStore(...)` 的结果现在可以用 `ComposedStore` 标注**。此前 `composeStore` 返回结构化的 `Store<…>`，而公开出口上的 `ComposedStore` 是含 `private` 成员的实现类（名义类型），`const s: ComposedStore = composeStore([a, b])` 会报 TS2740。现在返回「结构面 × 名义面」交叉类型，该标注成立。`ComposedStore` 也补上了 `A` / `G` 两个泛型参数，`actions` 与 `getters` 因此是精确类型，不再是 `Record<string, (...args: unknown[]) => unknown>`。
+- **`Store` 接口的 `destroy` 带上可选参数** `destroy(destroyStores?: boolean)`，与组合层 `ComposedStore.destroy(destroyStores = true)` 对齐。经 `Store` 接口持有组合 Store 时，现在可以传 `false` 让销毁只退订组合层订阅、不级联销毁子 Store（子 Store 在组合之外仍被持有时要这么写）。零参调用语义不变。
+
+> 附注：`src/types/compose.ts` 里另有一个**同名**的结构化别名 `ComposedStore<S>`，它不在任何发布入口上（包外不可达），只供仓库内部的类型级测试使用。对外请按上面的类来写，不要按它。
+
 ## 升级到 0.8.1
 
 0.8.0 → 0.8.1 只有一个出口面修复，**没有任何需要改代码的地方**——既有代码照常编译运行。

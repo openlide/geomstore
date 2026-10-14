@@ -59,7 +59,10 @@ function isRestorablePayload(value: unknown): boolean {
 }
 
 /**
- * 日志插件：将 Action 调用（名称、参数、耗时、异常）输出到控制台
+ * 日志插件：把状态变更与 setState / dispatch 的前后事件打印到控制台
+ *
+ * 只输出键名与载荷，**不统计耗时、也不捕获异常**（要耗时/失败可见请装性能插件或接 `onError`
+ * 钩子）。生产环境在 install 期直接早退，不注册任何订阅与钩子。
  */
 export const loggerPlugin: Plugin = {
   name: 'logger',
@@ -327,8 +330,8 @@ function installPersistence<S extends State>(store: Store<S>, rawOptions?: Persi
   let isUninstalled = false // 标记是否已卸载，防止卸载后定时器回调仍执行
   // 防抖窗口内最近一次待写入的状态：卸载时用于同步补写，避免最后一次变更丢失
   let pendingState: Partial<S> | null = null
-  // 最近一次成功落盘的序列化结果：卸载补写时据此跳过无变化的重复写入。
-  // lastSaved 已在恢复块之前声明（提前到 absorbedSerialized 旁），此处不再重复
+  // 最近一次成功落盘的序列化结果：卸载补写时据此跳过无变化的重复写入
+  //（声明位置提前到恢复块之前的理由见上面 lastSaved 一行）
 
   // 只读订阅：仅序列化后落盘，不修改载荷，避免为持久化引入整树深拷贝
   const unsubscribe = store.subscribe(

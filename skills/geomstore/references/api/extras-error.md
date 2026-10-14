@@ -87,7 +87,9 @@ export declare class ComposeError extends GeomStoreError {
  *
  * @example
  * ```typescript
- * const boundary = new ErrorBoundary<MyState>({
+ * // 两个实参都要显式给：第二参 F 是回退值类型，默认 `undefined`，
+ * // 只写 S 时 `fallback` 会被要求符合 `undefined`
+ * const boundary = new ErrorBoundary<MyState, MyState>({
  *   fallback: { count: 0, user: null },
  *   recoverable: true,
  *   onError: (error) => {
@@ -171,7 +173,9 @@ export declare class ErrorBoundary<S = unknown, F = undefined> {
      * const safeResult = boundary.execute(() => {
      *   throw new Error('Error')
      * }, state)
-     * // safeResult will be undefined, error is handled
+     * // safeResult 是回退值（本例为 { count: 0, user: null }）；
+     * // 只有「显式 recoverable: true 且不配 fallback」时才是 undefined，
+     * // 未配 fallback 又未显式 recoverable 时错误原样重抛
      * ```
      */
     execute<T>(fn: () => T, currentState?: S): T | F | undefined;
@@ -366,7 +370,8 @@ export declare enum ErrorCode {
  * 回退状态：支持固定值或根据错误/当前状态动态计算
  *
  * **`F` 本身可调用时这个联合是二义的**：消费侧一律以 `typeof fallback === 'function'` 判别形态
- * （见 `ErrorBoundary.resolveFallback` 与 `getFallbackState`），因此「恰好是函数的**静态**回退值」
+ * （见 `ErrorBoundary.handleError` 与 `getFallbackState`：二者都以 `typeof fallback === 'function'`
+ * 判别形态），因此「恰好是函数的**静态**回退值」
  * 会被当成计算函数、以 `(error, currentState)` 调用，而不是原样返回。需要把函数本身当回退值时
  * 请包一层对象（如 `{ fn }`），别直接传裸函数。
  *

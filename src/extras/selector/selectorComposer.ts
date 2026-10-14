@@ -343,9 +343,7 @@ export class SelectorComposer {
         const value = selector(state)
         return value === undefined ? defaultValue : value
       } catch (error) {
-        // 兜底不等于静默：本家族（retrySelector 的 shouldRetry / delay 异常）都留一条
-        // console.error。不记的话「selector 抛了 TypeError（属性名拼错）」与
-        // 「selector 合法返回 undefined」在结果上完全同形，都只看到 defaultValue
+        // 留痕理由见上方 @remarks（此处 selector 抛错与合法返回 undefined 完全同形）
         console.error('[SelectorComposer] Default selector failed, falling back to defaultValue:', error)
         return defaultValue
       }
@@ -353,7 +351,7 @@ export class SelectorComposer {
   }
 
   // 重试族实现已拆至 ./retrySelector.js；保留同名静态方法以维持 SelectorComposer.createRetrySelector*
-  // 的既有调用方式与文档位置
+  // 的既有调用方式（行为与选项见该文件的 createRetrySelector / createRetrySelectorAsync）
   static createRetrySelector<S extends State, R>(selector: Selector<S, R>, options: RetrySelectorOptions = {}): Selector<S, R> {
     return createRetrySelector(selector, options)
   }

@@ -27,15 +27,6 @@
  * （缓存在外）时，本装饰器返回的每个 Promise 都带 {@link PLACEHOLDER_RESULT} 品牌
  * （窗口内所有调用共享最新参数那一次执行的结果），缓存见标即原样返回——该路径退化为
  * 「不缓存、不去重」，而不会把别种参数的结果写进缓存键。
- *
- */
-
-/**
- * 被装饰的原方法
- *
- * 防抖改的是**执行时刻**，不是返回值语义：原方法返回什么，最终那次执行就产出什么。
- * 但等待期必须有个可结算的替身，所以包装函数的返回值**恒为 Promise**（见 `withDebounce`
- * 的 remarks）——装饰同步方法时这一点无法在类型上表达，旧式方法装饰器改不了声明签名。
  */
 import { isTrackableHost, markPlaceholder } from './common.js'
 import { MAX_TIMER_DELAY } from '../async-core.js'

@@ -53,7 +53,7 @@ export interface StoreTreeNode {
  * **未接线**（#R6-061）：本库没有任何 API 接受该配置对象——命名空间分隔符在
  * `core/compose/helpers.ts`（`key.indexOf('/')`）里是**硬编码**的 `/`，
  * `ComposeOptions.namespace` 只接受「布尔 / 前缀字符串」两档，`autoPrefix` 亦无读取方。
- * 它经 `core/index.ts:80`、`core/compose/index.ts:7`、`core/compose/composeStore.ts:958`
+ * 它经 `core/index.ts:87`、`core/compose/index.ts:7`、`core/compose/composeStore.ts:1199`
  * 三处再导出对外发布，但按本类型书写配置只会得到无声的空操作。
  * 删除导出属破坏性变更（需主版本窗口 + 上述三处再导出同步收口，均不在本分片），故本轮只做标注。
  */
@@ -74,10 +74,16 @@ export interface NamespaceConfig {
  *
  * **别把它当成对外可写的类型**：`package.json` 的 `exports` 既没有 `./types` 子路径、
  * 也没有深路径通配，包外拿不到本文件；而公开出口面上的 `ComposedStore` 指的是
- * `core/compose` 导出的**实现类**（含 private 成员 ⇒ 名义类型），与本别名形状不同——
- * `const s: ComposedStore = composeStore([...])` 过不了类型检查（TS2740）。
+ * `core/compose` 导出的**实现类**（含 private 成员 ⇒ 名义类型），与本别名形状不同。
  * 本别名的消费方只有仓库内部的类型级测试（经 `@/types/compose.js` 深路径导入），
  * 用途是把「类的公开形状」钉成一份可编译校验的交叉类型，免得文档与实现各说一套。
+ *
+ * 历史注记：`composeStore` 的返回类型曾只声明结构面（`Store<S, A, G>`），那时
+ * `const s: ComposedStore<X> = composeStore([...])` 编译不过（TS2740——类含私有成员，
+ * 结构类型不可赋值给名义类型）。现已让类本身泛型化 A/G 并以其为返回类型，该标注成立
+ * 且不损失 dispatch 动作名与 getter 返回类型的推断精度；`Store` 接口的 `destroy`
+ * 也随之带上组合层的 `destroyStores` 可选参数（见 types/store.ts），本别名经
+ * `Store<S>` 自动同步。回归断言在 `tests/types/compose-field-extraction.typecheck.ts`。
  *
  * 默认泛型取 `State`（即 `object`）而非 `Record<string, unknown>`：后者只接受带索引签名的
  * 类型，会把未声明索引签名的业务 interface 拒之门外，与本文件 `StoreLike` 的口径矛盾。

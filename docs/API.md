@@ -223,11 +223,11 @@ usePlugin<S extends State, A extends Actions, G extends Getters<S>>(
 
 > `HookHandler` 的第二个类型参数（旧的 `TResult`）已删除：`emit` 一律忽略处理器返回值，需要否决请抛异常。精确形参在插件侧（`install(store)` 拿到的 `Store` 接口）已生效；`createStore(...).hooks` 直连调用目前仍是实现类 `HookSystem` 的擦除签名（该字段声明为实现类类型），待源码把位点换成 `IHookSystem` 后统一。
 
-> **`emit` 的失败语义**：逐个处理器 `try/catch`，单个抛错既不中断其余处理器也不传播给 `emit` 调用方；错误先 `console.error` 再转投 `onError` 钩子（`emit('onError', error, hookName)`），`onError` 自身抛错只落 `console.error` 不递归。要让异常冒泡到业务方请走 action 的错误边界，不要指望钩子。
+> **`emit` 的失败语义**：逐个处理器 `try/catch`，单个抛错既不中断其余处理器也不传播给 `emit` 调用方；开发期先 `console.error` 再转投 `onError` 钩子（`emit('onError', error, hookName)`）——**生产期控制台静默**，只走 `onError`（钩子挂在 `setState` / `dispatch` 热线上，与 `SubscriptionManager` 的监听器异常同口径）；`onError` 自身抛错只落 `console.error` 不递归。要让异常冒泡到业务方请走 action 的错误边界，不要指望钩子。
 
 - `on()` 返回的退订句柄是**一次性**的：第二次调用是 no-op，不会顺带摘掉后来建立的同函数注册（`off1() → on(同一 handler) → off1()` 之后那份新注册仍在册）。
 
-**钩子名**：`beforeDispatch` / `afterDispatch` / `beforeSetState` / `afterSetState` / `beforePatch` / `afterPatch` / `beforeReplaceState` / `afterReplaceState` / `beforeGet` / `afterGet` / `onError`。
+**钩子名**：`beforeDispatch` / `afterDispatch` / `beforeSetState` / `afterSetState` / `beforePatch` / `afterPatch` / `beforeReplaceState` / `afterReplaceState` / `onError`。
 
 **插件契约**：`{ name: string; install(store: Store): (() => void) | void }`。
 
@@ -268,9 +268,9 @@ withAppStore<S, A, G>(store, options?: ConnectOptions<S, A, G>): <C>(config: C) 
 composeStore<Stores extends readonly StoreLike[]>(
   stores: [...Stores],
   options?: ComposeOptions,
-): Store<ExtractStates<Stores>, ExtractActions<Stores>, ExtractGetters<Stores>>
+): ComposedStore<ExtractStates<Stores>, ExtractActions<Stores>, ExtractGetters<Stores>>
 createStoreTree(stores: Store[], options?: ComposeOptions): StoreTreeNode
-class ComposedStore<S extends State = State> implements Store<S> // 值导出，见下方说明
+class ComposedStore<S extends State = State, A extends Actions = Actions, G extends Getters<S> = Getters<S>> implements Store<S, A, G> // 值导出，见下方说明
 class StoreRegistry { register / get / has / delete / list … }
 export const globalRegistry: StoreRegistry
 ```
@@ -284,9 +284,10 @@ export const globalRegistry: StoreRegistry
 
 `ComposedStore`：`getState` / `dispatch`（支持斜杠路径）/ `subscribe` / `isStateKeyDirty`（形参同为 `string | symbol`）/ `hooks` / `$patch` / `$replaceState` / `destroy` 等，语义与单 Store 一致。
 
-**主入口导出的 `ComposedStore` 是实现类本身**（一个值，加上该类的实例类型），**不是**结构化类型别名。两点后果：
+**主入口导出的 `ComposedStore` 是实现类本身**（一个值，加上该类的实例类型），**不是**结构化类型别名。两点说明：
 
-- `composeStore()` 的返回类型是结构化的 `Store<ExtractStates<…>, ExtractActions<…>, ExtractGetters<…>>`。而类含大量 `private` 成员，其实例类型因而是**名义化**的：`const s: ComposedStore = composeStore([...])` **过不了类型检查**（实测报 TS2740，缺失成员里点名 `_stores` / `_namespace` / `_strict` 等私有字段——TS 对 private 成员要求同源）。要标注类型请用 `Store<…>`，或直接交给推断；`instanceof ComposedStore` 与直接构造实例仍然可用。
+- `composeStore()` 的返回类型**就是** `ComposedStore<S, A, G>`（S/A/G 由子 store 元组精确提取），因此 `const s: ComposedStore<X> = composeStore([...])` **可以直接标注**——类含 `private` 成员、实例类型是名义化的，但返回类型同为该类，赋值同源成立。此前返回类型只声明结构面 `Store<S, A, G>`，名义标注一律报 TS2740（缺失成员里点名 `_stores` / `_namespace` / `_strict` 等私有字段）；现已让类泛型化 A/G 并以其为返回类型，`dispatch` 的动作名与 `getter` 的返回类型推断精度不变。`instanceof ComposedStore` 与直接构造实例仍然可用。
+- `Store` 接口的 `destroy(destroyStores?)` 带**可选**参数：组合层传 `false` 表示只拆组合、不级联销毁子 store（单 Store 忽略该参数）。按 `Store<S>` 标注的组合 store 因此也能调出 `false` 档——此前只有实现类认它。
 - `src/types/compose.ts` 里另有一个**同名**的结构化别名 `ComposedStore<S extends State = State> = Store<S> & { stores }`（直接交叉同一份契约，避免手抄 `name/state/stores` 三件套而漂移）。它**不在任何发布入口上**：`package.json` 的 `exports` 既没有 `./types` 子路径也没有深路径通配，故包外不可达，只供仓库内部的类型级测试经 `@/types/compose.js` 使用。**不要按它书写对外类型**——公开面上的这个名字指的是上面那个类。
 
 - `$patch` / `$replaceState` 在**命名空间 + `strict`** 下是原子操作：先完成全部子 store 查找与严格校验再统一写入，校验失败时一个 store 都不写（不留「前一半已落库」且调用方无法回滚的半更新态）。

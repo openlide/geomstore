@@ -329,8 +329,8 @@ export function subscribeMappers(
  * @param getValue - 读取 Store 侧值的函数
  * @param setter - 批量写入本地值的函数，签名 `(updates: Record<string, unknown>) => void`
  * @param subscribeStore - 订阅 Store 变化的函数，返回取消订阅回调
- * @param changedKeys - 判断某键自上次通知以来是否变更（仅 state 映射可传入；
- *   getters 缺失时对象值按「宁多勿漏」始终发送）
+ * @param changedKeys - 判断某状态键自上次通知以来是否变更（仅 state 映射可传入；
+ *   getters 不提供该判据，缺失时对象值按「宁多勿漏」始终发送）
  * @returns 取消绑定函数数组
  *
  * @example
@@ -352,7 +352,6 @@ export function bindMappings(
   getValue: (storeKey: string) => unknown,
   setter: (updates: Record<string, unknown>) => void,
   subscribeStore: (callback: () => void, options?: { readOnly?: boolean }) => () => void,
-  /** 判断某状态键自上次通知以来是否变更（仅 state 映射可传入；getters 不提供，缺失时对象值保持「宁多勿漏」始终发送） */
   changedKeys?: (storeKey: string) => boolean,
 ): Array<() => void> {
   if (Object.keys(mappings).length === 0) {
@@ -453,7 +452,8 @@ export function bindActions<S extends State = State>(target: Record<string, unkn
  *   pageInstance,
  *   { userInfo: 'user', config: 'appConfig' },
  *   store,
- *   (key, value) => pageInstance.setData({ [key]: value })
+ *   // setter 收到的是「全部注入项」的批量载荷（目标键 → 值），不是 (key, value) 逐键回调
+ *   (updates) => pageInstance.setData(updates)
  * )
  * ```
  */

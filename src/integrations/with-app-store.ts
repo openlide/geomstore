@@ -81,6 +81,14 @@ function warnOnGlobalDataCollision(globalData: Record<string, unknown>, ...keyGr
   }
 }
 
+// 辅助工厂：创建写入 globalData 的函数（按自有属性拷贝，避免原型污染）
+// onLaunch 与 onShow 共享同一逻辑，提取后避免重复定义
+function createGlobalDataWriter(globalData: Record<string, unknown>): (updates: Record<string, unknown>) => void {
+  return (updates: Record<string, unknown>) => {
+    copyOwnEntries(globalData, updates)
+  }
+}
+
 /**
  * App 集成函数
  *
@@ -169,14 +177,6 @@ function warnOnGlobalDataCollision(globalData: Record<string, unknown>, ...keyGr
  * app.subscribe(callback)   // 订阅状态变化
  * ```
  */
-
-// 辅助工厂：创建写入 globalData 的函数（按自有属性拷贝，避免原型污染）
-// onLaunch 与 onShow 共享同一逻辑，提取后避免重复定义
-function createGlobalDataWriter(globalData: Record<string, unknown>): (updates: Record<string, unknown>) => void {
-  return (updates: Record<string, unknown>) => {
-    copyOwnEntries(globalData, updates)
-  }
-}
 
 export function withAppStore<S extends State, A extends Actions, G extends Getters<S>, O extends ConnectOptions<S, A, G>>(
   store: Store<S, A, G>,

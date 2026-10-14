@@ -7,6 +7,11 @@
  * `Optimizations.ts`；后几者无任何生产消费者（已在死代码清理中移除），本类独立成模块。
  */
 
+/** 每次 subscribe() 产出一条注册记录，用对象身份区分同一 listener 的多次订阅 */
+interface ListenerRegistration<S> {
+  listener: (state: S) => void
+}
+
 /**
  * 异步批量通知管理器
  *
@@ -34,11 +39,6 @@
  * // 在下一个微任务中，监听器只会被调用一次
  * ```
  */
-/** 每次 subscribe() 产出一条注册记录，用对象身份区分同一 listener 的多次订阅 */
-interface ListenerRegistration<S> {
-  listener: (state: S) => void
-}
-
 export class AsyncBatchNotifier<S> {
   private listeners: Set<ListenerRegistration<S>> = new Set()
   private pending = false

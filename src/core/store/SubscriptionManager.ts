@@ -294,12 +294,9 @@ export class SubscriptionManager<S extends State = State> implements Subscriptio
     if (this._listeners.size === 0) {
       return
     }
-    // 零拷贝的前提是「没有可写订阅者」：此时载荷被所有回调共享，
-    // 任一可写回调就地修改载荷即直接改到活状态，且其他监听器同时看到半成品。
-    // 本类做不到「既不拷贝又隔离」，故只对调用方发信号。Store 主路径不会命中此行：
-    // 它按在册订阅者的可写性传 `cloneOnNotify`（存在可写订阅者时传 true，见
-    // `Store._notifyListeners` 与台账 R5-122），因此剩下的命中方只有「自行传 false 的
-    // 非 Store 调用方」这一档——它指的正是那条未闭环的边界，改法见 notify 文档
+    // 零拷贝档只告警不拦截：本类做不到「既不拷贝又隔离」，只能给调用方发信号。
+    // 命中方只剩「自行传 false 的非 Store 调用方」——Store 主路径按可写性传参
+    //（见上方 cloneOnNotify=false 一条），不会走到这里
     if (!cloneOnNotify && this._writableCount > 0 && !isProduction()) {
       console.warn(`[GeomStore][${this._storeName}] cloneOnNotify=false 与可写订阅者共存：监听器可修改共享载荷，存在数据污染风险`)
     }

@@ -101,7 +101,7 @@ export interface PerformanceStats {
    * `Object.fromEntries(byOperation)` 那一行）。
    *
    * 键数量不是无界的：分组由 `metrics` 数组派生，而该数组按 `PerformanceOptions.maxSize`
-   * （默认 1000）溢出即 shift，故不同操作名最多累积 maxSize 项。
+   * （默认 1000）组织为环形缓冲，满后原地覆盖最旧条目，故不同操作名最多累积 maxSize 项。
    */
   byOperation: Record<
     string,

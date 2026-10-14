@@ -261,7 +261,7 @@ export async function retryWithBackoff<T>(fn: () => Promise<T>, options: RetryOp
  * @param timeout - 超时时间（毫秒，必须为大于 0 的有限数值）
  * @param timeoutMessage - 超时错误消息（仅用于展示，识别请用 {@link TIMEOUT_ERROR_CODE}）
  * @returns 原 Promise 的结果；超时则以 timeoutMessage 对应的错误拒绝
- * @returns rejected with RangeError timeout 为非有限值或 <= 0 时
+ * @throws {RangeError} timeout 为非有限值或 <= 0 时（在 async 函数里表现为 rejection）
  *
  * @remarks 不可取消：超时只是让本函数提前 reject，`promise` 仍会在后台继续执行到结束；
  * 需要真正中断请在 `promise` 内部实现 AbortController 等取消机制。

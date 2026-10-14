@@ -268,7 +268,7 @@
 
 - **类型精度分两个面**：处理器的形参与 `emit` 的实参在类型层按**钩子名**关联（写错个数 / 顺序即编译错误）——**但这只在契约面 `IHookSystem` 上成立**，即插件 `install(store)` 拿到的那个 `store.hooks`；`createStore(...).hooks` 直连时该字段目前声明为实现类 `HookSystem`，形参退化为擦除版 `unknown`、需自行标注。这个 gap 由 `tests/types/plugin-hook-args.typecheck.ts` 的编译期断言钉住，core 侧把字段收窄回 `IHookSystem` 后该断言即失效并提醒切换断言面。
 - **退订句柄是一次性的**：第二次调用是 no-op，`on → off → on → off(旧句柄)` 不会把新那次注册摘掉。
-- **`emit` 逐个 `try/catch`**：单个处理器抛错不影响其余处理器、也不传播给 `emit` 调用方；先 `console.error` 再转投 `onError`（`onError` 自身抛错只落日志、不递归）。需要让异常冒泡到业务方请走 action 的错误边界。
+- **`emit` 逐个 `try/catch`**：单个处理器抛错不影响其余处理器、也不传播给 `emit` 调用方；开发期先 `console.error` 再转投 `onError`（**生产期控制台静默**，只走 `onError`——钩子挂在写路径热线上，不门控会让持续抛错的处理器把发布包控制台刷满），`onError` 自身抛错只落日志、不递归。需要让异常冒泡到业务方请走 action 的错误边界。
 - `emit('onError', error, source)` 的第三参在**同步 dispatch 中止**那条路径上是 `'dispatch'`（性能插件据此作废本次进行中的计时），其余失败发射不带来源。
 
 ### 调试表与持久化

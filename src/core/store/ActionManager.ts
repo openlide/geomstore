@@ -190,8 +190,9 @@ export class ActionManager<S extends State = State, A extends Actions = Actions>
     // onlyOnChange 模式：基线必须在进入 dispatch 之前采集。dispatch 期间通知被抑制，
     // beforeDispatch 钩子里的写入同样属于本次 dispatch 事务；基线晚采会把钩子写入
     // 当成「无变化」，收尾时跳过通知，该变更对所有监听器永久不可见
-    // 注入的计数提供者（非 Store 消费方实现）抛错就地归口：本行位于 try/finally 之外，
-    // 异常逃出去会跳过 _enterDispatch 的配对退出、dispatching 状态永久卡在 true
+    // 注入的计数提供者（非 Store 消费方实现）抛错就地归口：本行在 _enterDispatch() 之前、
+    // 且不在任何 try 内——不接住就会把一个纯读取失败当成 dispatch 失败外抛（嵌套 dispatch
+    // 下还会顶掉外层已算好的 action 返回值），而此时 action 一次都还没执行
     let mutationsBefore = 0
     try {
       mutationsBefore = this._getMutationCount ? this._getMutationCount() : 0
@@ -212,7 +213,8 @@ export class ActionManager<S extends State = State, A extends Actions = Actions>
       this._exitDispatch()
       // 走带兜底的上报通道：onError 处理器自身抛错时，裸 emit 会用「上报的异常」顶掉
       // 正要抛出的 ACTION_EXECUTION_ERROR，并跳过下面的收尾（补刷缓存 + 补发通知）。
-      // 这条是全库唯一显式点名来源的 onError 发射：异常即将包装上抛、afterDispatch 不会
+      // 这条是本类唯一显式点名来源的 onError 发射（Store 侧的订阅者驱逐用 'subscribe'、
+      // 内置持久化插件用 'persistence'，与本键无关）：异常即将包装上抛、afterDispatch 不会
       // 再发射，只有 `dispatch` 这个键能让性能插件作废本次进行中计时（见 _reportSettledFailure）
       this._reportSettledFailure(error, 'dispatch')
       // 失败路径同样处理已发生的变更：action 抛错前的 setState/直接变异
@@ -409,12 +411,13 @@ export class ActionManager<S extends State = State, A extends Actions = Actions>
    * 这是 dispatch 链上最后一个 catch，再无上游可接，故此处不允许抛错。
    *
    * @param source - 透传给 `onError` 的失败来源，只用于「本操作已中止」的信号
-   *   （`HookArgsMap['onError']` 的第二参）。五个调用点里只有同步 dispatch 的 catch
+   *   （`HookArgsMap['onError']` 的第二参）。十个调用点里只有同步 dispatch 的 catch
    *   传 `'dispatch'`：那是唯一 `afterDispatch` 永不再来的路径，性能插件要靠这个键
-   *   作废已入栈的进行中计时。其余四处（Promise 拒绝分支、派生 promise 的兜底 catch、
-   *   {@link _settleAfterDispatch}、{@link _safeRefreshCache}）都发生在
-   *   `afterDispatch` 已发射之后，或本身是中止路径上的**第二笔**失败——给它们同样的键
-   *   会让插件多弹一层，把嵌套 dispatch 外层的配对项误当作已中止。
+   *   作废已入栈的进行中计时。其余九处（基线读取与 afterDispatch 发射的 catch、同步段
+   *   补发、Promise 拒绝分支、派生 promise 的兜底 catch、{@link _lastNotifiedBaseline}、
+   *   {@link _flushAfterSyncSegment}、{@link _settleAfterDispatch}、{@link _safeRefreshCache}）
+   *   都发生在 `afterDispatch` 已发射之后，或本身是中止路径上的**第二笔**失败——给它们
+   *   同样的键会让插件多弹一层，把嵌套 dispatch 外层的配对项误当作已中止。
    *
    * @private
    */

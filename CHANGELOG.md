@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+> 升级只读目标版本那一节即可；跨多个 minor 的请把中间各档的「需要改代码」都读一遍——
+> 面向人的迁移导航（此前 → 现在 → 怎么改）在 [docs/MIGRATION.md](./docs/MIGRATION.md)，
+> 本文是完整记录，早期版本（0.1.x–0.3.x）的细节对当前用户价值有限。
+
 ## [Unreleased]
 
 ### Removed
@@ -15,6 +19,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`extras/error` 精简**：移除 `ErrorHandler` / `ErrorRecovery` / `ErrorMonitoring` / `ErrorAggregator` 与 `ConsoleReporter` / `HttpReporter`（越界的应用级 APM / 恢复能力）。`extras/error` 现仅导出错误类族（`GeomStoreError` 及派生类 / `ErrorCode` / `createError` / 守卫）与 `ErrorBoundary` / `withErrorBoundary`。全进程收集 / 聚合 / 上报错误请接入 `Store` 的 `onError` 钩子 + 第三方监控（`wx.reportError` / Sentry 等）。
 
 ### Fixed
+
+**全面技术审查发现的缺陷修复（2026-10-14）**
+
+- **回归测试「为错的原因通过」**：`tests/unit/regression/ocr-w4-coverage.test.ts` 用 105 层嵌套想让装箱 `Number` 落进 `diff.ts` 的深护栏分支，但快照克隆默认 `maxDepth=100` 会在克隆阶段就把它替换成 `"[MaxDepth Exceeded]"` 占位符——叶值根本没进 `compare`，「相同内容判 unchanged」因两侧占位符相同而恒真。实证：把两侧换成**不同内容**的 `new Number(1)` / `new Number(2)`，diff 仍报 `changed: false`。现显式传 `maxDepth` 让装箱值活着进入比较，并补「不同内容必须 changed」的反向断言。这也是 `diff.ts` 覆盖率长期补不上去的直接原因。
+- **`RetryOptions` 字段名写错导致测试意图静默丢失**：同一文件里 `retryWithBackoff` 用了 `baseDelay` / `maxDelay`，而 `RetryOptions` 的真实字段是 `delay`。测试本想 1ms 退避、实际按 100ms 默认跑，且 `typecheck:tests` 报 3 个类型错误（另一处是 `cbError.cause` 需 lib ES2022 而基线是 ES2020）。已按真实字段改写并按基线 lib 读取 `cause`。
+- **幽灵钩子**：`docs/API.md` 的钩子清单列了 `beforeGet` / `afterGet` 两个不存在的钩子（源码 `HookName` 只有 9 个），照文档写的 `store.hooks.on('beforeGet', …)` 会编译失败。已删除。
+- **生产环境日志口径不一致**：`HookSystem.emit` 对抛错处理器的 `console.error` 不受 `isProduction` 门控（同类路径 `SubscriptionManager` 是门控的）。生产环境一个持续抛错的钩子会在每次 `setState` / `dispatch` 都打印。已统一为生产静默。
+- **skills 的 API 参考与源码漂移**：`skills/geomstore/references/api/` 下的 `extras-selector.md` 与 `integrations.md` 此前未跟上源码 JSDoc（改了注释没重跑生成器），已重跑 `skill:api` 重新生成；`main.md` 同步了本轮 `ComposedStore` 的类型变更。注意该目录**没有内容新鲜度门禁**——`r6-f1-02` 只钉「来源版本」那一行、不比内容，所以这类漂移不会被任何门禁发现，只能靠发版流程第 3 步手工执行。建议后续补一道「重跑生成器后工作区应无变化」的检查。
 
 **集成层低优先级缺陷修复（OCR 扫描报告）**
 
@@ -28,11 +40,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **`withComponentStore` 参数命名**：返回函数的入参由 `ComponentConfig` 改为 `componentConfig`（camelCase），避免遮蔽同名导入类型 `ComponentConfig`。纯内部重命名，调用方代码不受影响。
+- **`ComposedStore` 类泛型化**：`class ComposedStore<S extends State = State>` 增加 `A extends Actions`、`G extends Getters<S>` 两个泛型参数，`actions` / `getters` / `getter()` 因此是精确类型而非 `Record<string, (...args: unknown[]) => unknown>`。此前 `composeStore()` 返回结构化的 `Store<…>`，而 `ComposedStore` 类含 `private` 成员属名义类型，`const s: ComposedStore = composeStore([...])` 过不了检查（TS2740）。现 `composeStore` 返回「结构面 × 名义面」交叉类型，该标注成立。**对调用方是放宽**：既有的 `Store<…>` 标注、`instanceof` 判断、交给推断三种写法全部照旧，新增的只是「可以用 `ComposedStore` 标注」这一项能力。
+- **`Store` 接口的 `destroy` 带上可选参数**：`destroy(): void` 放宽为 `destroy(destroyStores?: boolean): void`，与组合层 `ComposedStore.destroy(destroyStores = true)` 的实际签名对齐（此前实现类有参数、接口没有，经接口持有组合 Store 时无法传参）。**不影响任何实现方**：无参实现天然满足；零参调用的语义不变（默认 `true`，级联销毁子 Store）。
+- **工作区整理**：仓库根目录未跟踪的 `ocrreview.md`（约 197KB 的 OCR 扫描原始记录）移入已被 `.gitignore` 忽略的 `.ocr-fix/`。此前它被 `format:check` 的 `*.md` glob 扫中，使该门禁本地恒红。本轮技术审查报告亦置于此目录，不进入版本库。
+- **全量 JSDoc 审查与清理（仅注释，无逻辑改动）**：用 TypeScript 编译器 API 对 89 个源文件、1334 条注释块做机器比对（`{@link}` 目标、`@param` 与签名、返回类型、数值常量声明），再逐目录人工核对语义，共订正 30 余处。主要三类：①**与实现不符**——快照克隆「不触发 getter」（实际 `copyOwnKey` 会求值 getter）、异步快照「支持取消」（无取消入口）、`loggerPlugin` 的「耗时/异常」（实际都不统计）、`parametricSelector` 的 `ttl: Infinity` 语义、`ActionManager` 的「五个调用点 / 全库唯一」两处计数、`PerformanceMonitor` 环形缓冲改造后残留的「溢出即 shift」与「唯独排序路径遗漏」、`equality.ts` 的 `isBoxedPrimitive` 仍按 `instanceof` + 能力探测描述（实现早已统一走 [[Class]] tag）；②**失效引用**——`ErrorBoundary.resolveFallback`、`createBatchFunction`、`企业版 runForegroundChecks`、`getCurrentTime`、`lastSetState` 五个已删除或已更名的符号，以及四类行号漂移；③**悬空与重复**——4 块不附着任何声明的 JSDoc（`debounce.ts`、`helpers.ts`、`AsyncBatchNotifier.ts`、`with-app-store.ts` 的大段入口注释）移到正确位置或删除，`@static` 残留、示例里 `const default = …` 的语法错误、`performAutoInject` 示例把批量 setter 写成逐键回调。
+
+  > 一处**代码与注释相反、本次按代码改注释**：`createParametricSelector` 的 `ttl` 文档承诺 `Infinity` 表示「只由版本/快照失效」，但写入守卫要求 `Number.isFinite(ttl)`，`Infinity` 实际一个条目都不写、等价于「不缓存」。按「不改逻辑」的约定本次只订正注释；要恢复注释承诺的语义需动写入守卫，留待单独决策。
 
 ### Testing
 
 - `tests/setup.ts`：环境诊断日志（Node 版本、平台等）改为 `DEBUG=test-setup` 环境变量门控，避免每个测试文件执行时都污染 Jest 输出与 CI 日志。
 - `tests/types/action-context-collision.typecheck.ts`：注释「下面两条 @ts-expect-error」改为「三条」，与实际指令数量一致。
+- **覆盖率补到阈值以上**（`test:ci` 此前 5 项不达标、退出码 1）：补 12 处此前零覆盖的分支——`integrations/utils` 空映射、`composeStore` 合并 actions 注册表真正被派发调用、`WxStorageBackend` 同步 API 返回 Promise、`globalRegistry` 入口、`ErrorBoundary` 异步 `onError` 吸收、`PerformanceMonitor` 的 `wx.getPerformance().now()` 抛错降级与环形缓冲压缩、`async-core` 敏感字段脱敏、`diff` 装箱原始值深护栏内容比、`StateProxy` 锁定函数 / 数组宿主与跨 realm 探针（`RegExp` / `WeakMap` / `WeakSet`）。收敛后：语句 99.55% / 分支 97.76% / 函数 100% / 行 99.62%。
+- `StateProxy` 中 `hasInternalSlot` 的 `default` 分支按仓库约定加带原因的 `istanbul ignore`：`switch` 已穷举 slot-bearing 内建清单，该分支不可达。
+- **文档门禁 G17 补反向判据**：原先只做「源码里的钩子名必须出现在文档里」这一个方向，幽灵钩子因此漏网。新增断言——文档语料里出现的 `` `beforeXxx` `` / `` `afterXxx` `` 形态标识符必须是 `HookName` 的真实成员（文档里当作占位符使用的 `beforeXxx` 显式豁免）。
+- **文档门禁 G19 补 `extras` 零跨依赖守卫**：`ARCHITECTURE §2` 写了「`extras/*` 之间不互相依赖」却无机器守卫。新增判据扫描 `src/extras/<子目录>/**` 指向同级其他子目录的 import（聚合桶 `extras/*.ts` 豁免）。当前实测零跨依赖，守卫直接通过；已做变异验证——注入一条跨依赖即红、还原即绿。
 
 ## [0.8.3] - 2026-10-13
 

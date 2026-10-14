@@ -90,9 +90,13 @@ export declare class MetricsCollector {
     /**
      * 获取所有指标
      *
-     * 返回所有已收集性能指标的副本。
+     * 返回按写入顺序展开的新数组。
      *
-     * @returns {PerformanceMetrics[]} 指标数组副本
+     * 注意**元素仍是内部指标对象的同一引用**：改写 `m.duration` 会污染本采集器与后续
+     * `calculateStats()`（与 `PerformanceMonitor.getMetrics` 的逐元素浅拷贝口径不同）。
+     * 需要隔离请自行 `map((m) => ({ ...m }))`。
+     *
+     * @returns {PerformanceMetrics[]} 按写入顺序展开的指标数组
      */
     getAll(): PerformanceMetrics[];
     /** 清空所有指标 */
@@ -769,7 +773,7 @@ export interface PerformanceStats {
      * `Object.fromEntries(byOperation)` 那一行）。
      *
      * 键数量不是无界的：分组由 `metrics` 数组派生，而该数组按 `PerformanceOptions.maxSize`
-     * （默认 1000）溢出即 shift，故不同操作名最多累积 maxSize 项。
+     * （默认 1000）组织为环形缓冲，满后原地覆盖最旧条目，故不同操作名最多累积 maxSize 项。
      */
     byOperation: Record<string, {
         count: number;

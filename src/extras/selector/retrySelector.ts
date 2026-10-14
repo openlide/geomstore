@@ -306,8 +306,7 @@ export function createRetrySelectorAsync<S extends State, R>(selector: Selector<
 
   return async (state: S): Promise<R> => {
     let lastError: unknown = NO_ERROR
-    // 实际执行的尝试次数：shouldRetry 中途拒绝会提前退出，
-    // error.attempts 必须记录真实次数而非上限 retries + 1
+    // 同上：attemptCount 记真实尝试次数（语义见 throwRetryExhausted）
     let attemptCount = 0
 
     for (let attempt = 0; ; attempt++) {

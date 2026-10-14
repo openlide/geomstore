@@ -355,8 +355,7 @@ export class ActionLoader {
   private incrementLoading(key: string, setState: (key: string, value: unknown) => void): void {
     const count = (this.loadingRefCounts.get(key) ?? 0) + 1
     this.loadingRefCounts.set(key, count)
-    // 登记本键的写入函数：多宿主共享同一 loader 时，每个键记住自己的 setState，
-    // clear() 时按键查表复位，避免单槽 lastSetState 只留得住最后一个宿主的问题
+    // 登记本键的写入函数（按键而非单槽登记的理由见 lastSetStateByKey 的字段注释）
     this.lastSetStateByKey.set(key, setState)
     if (count === 1) {
       setState(key, true)
@@ -535,7 +534,7 @@ export class ActionLoader {
   getAllLoading(): Record<string, boolean> {
     // 空原型容器：loadingKey 可合法为 '__proto__'，普通对象字面量上给它赋值会命中
     // Object.prototype 的访问器 setter——布尔值入参下是静默 no-op，该键从返回对象中
-    // 消失（内部计数与 store 侧写入均正常发生，唯独这里读不到）。getAllStats 同口径
+    // 消失（内部计数与 store 侧写入均正常发生，唯独这里读不到）。其余 getAll*() 同口径
     const states = Object.create(null) as Record<string, boolean>
     for (const [key, count] of this.loadingRefCounts) {
       states[key] = count > 0
@@ -587,7 +586,7 @@ export class ActionLoader {
     this.clearInternalRecords()
     // 记账已空，此刻没有待复位的键，先把这份写入函数丢掉（它通常 bind 了 store，
     // 拖住宿主不被回收）。丢掉不影响后续的复位能力：同一个 wrapper 再被调用时会在
-    // 调用时刻重新登记（见 {@link lastSetState}），不会像此前「只在 wrap 时赋值」那样
+    // 调用时刻重新登记（见 {@link lastSetStateByKey}），不会像此前「只在 wrap 时赋值」那样
     // 一旦 clear 就永久失去复位能力
     this.lastSetStateByKey.clear()
   }
