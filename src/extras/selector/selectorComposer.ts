@@ -152,7 +152,8 @@ export class SelectorComposer {
   /**
    * 创建派生选择器
    *
-   * 通过管道操作创建派生选择器，pipe的别名
+   * 通过管道操作创建派生选择器（与 pipe 共用底层实现；仅提供 2 段/3 段重载，
+   * 不像 pipe 那样支持单段或四段管道，因此是 pipe 的严格子集而非完全别名）
    *
    * @template S - 状态类型
    * @template R1 - 第一个返回类型

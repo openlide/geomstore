@@ -294,6 +294,12 @@ export class StoreCacheManager<S extends State = State> {
 
   /**
    * 获取缓存统计信息
+   *
+   * 注意：hits/misses/evictions 跨 enable/disable/reconfigure 累加（缓存生命周期内的
+   * 累计表现），不随 _clearEntries 归零。LRUCache.clear() 会给每个清出的条目累加
+   * evictions，所以常规重配（disable→enable、或换键集重开）会让 evictions 在无容量
+   * 驱逐时也跳变——这是刻意保留的观测面，如需纯容量驱逐数请自行 diff 两次
+   * getStats 的 evictions 增量。
    */
   getStats(): CacheStats {
     const stats = this._cache.getStats()
