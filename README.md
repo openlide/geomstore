@@ -8,12 +8,26 @@
 - **行为可观测** —— 统一错误账本（`errors` + `onError` 降级策略）、性能指标采集、快照隔离与差异对比
 - **工程可信** —— 覆盖率门禁、源码 / 测试 / 示例三路 typecheck 零错误、纯 ESM，产物与构建脚本可复现
 
-## 安装
+> 当前 **v0.9.0** · 纯 ESM（**无 CJS 入口**） · Node ≥ 22 / TypeScript ≥ 5.4 · MIT
+
+## 目录
+
+- [安装与环境要求](#安装与环境要求)
+- [快速开始](#快速开始)
+- [核心能力](#核心能力)
+- [引入方式与体积分层](#引入方式与体积分层)
+- [小程序环境适配](#小程序环境适配)——[运行环境与兼容性](#运行环境要求与兼容性) / [生产模式判定](#生产模式判定原生小程序必读) / [沙箱 typeof](#小程序沙箱的-typeof写宿主代码前必读) / [放进分包](#把构建结果放进分包)
+- [开发](#开发)
+- [文档](#文档)
+
+## 安装与环境要求
 
 ```bash
 pnpm add @openlide/geomstore
 # 或 npm i @openlide/geomstore / yarn add @openlide/geomstore
 ```
+
+> **从 0.8.x 升级请先读** [docs/MIGRATION.md 的 0.9.0 一节](./docs/MIGRATION.md#升级到-090)：本版有破坏性变更（`extras/enterprise` 整体移除、`extras/error` 精简），且**正式版 / 体验版改按生产模式运行**——此前靠「非法直写直接抛错」暴露问题的项目，升级后该行为变为 warn / silent。
 
 | 要求                 | 说明                                                                              |
 | -------------------- | --------------------------------------------------------------------------------- |
@@ -147,7 +161,7 @@ import { persistencePlugin } from '@openlide/geomstore/extras/plugins'
 
 因此：
 
-- 用 ≥ 0.9.0：装好即用，正式版与体验版自动按生产处理；
+- 用 v0.9.0 及以上：装好即用，正式版与体验版自动按生产处理；
 - 用旧版本、或想在没有第 3 档的分支上自行兜住：在 `app.js` **最顶部**（早于任何 `createStore`）挂一个 `__DEV__`
 
   ```js
@@ -236,6 +250,8 @@ import { persistencePlugin } from '@openlide/geomstore/extras/plugins'
 | [CHANGELOG.md](./CHANGELOG.md)                           | 完整变更记录（**不随包发布**，见 GitHub 仓库）       |
 | [CONTRIBUTING.md](./CONTRIBUTING.md)                     | 脚本、门禁清单、构建与发版流程                       |
 | [skills/geomstore/SKILL.md](./skills/geomstore/SKILL.md) | 供 AI 编码助手读取的库使用规程（仓库内，不随包发布） |
+
+> **装好的包里没有 `docs/`**：它不在 `files` 白名单里（完整文档对包使用者是下载与缓存成本，仓库里随时可读）。上表链接一律指向 GitHub 仓库；包内能读的只有包根 `README.md`、`dist/**/*.d.ts` 与 `package.json` 的 `exports`。`CHANGELOG.md` 同样不随包发布——查版本对照与迁移说明请到仓库。
 
 ## 许可
 
