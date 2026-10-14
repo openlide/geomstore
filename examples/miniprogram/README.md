@@ -111,17 +111,26 @@ examples/miniprogram
 │   └── normalize-eol.mjs      # 换行符归一（开发者工具保存时会写回 CRLF）
 ├── e2e/
 │   ├── run.mjs                # automator 冒烟
-│   └── cli.mjs                # CLI 定位 / .bat 启动适配 / 失败排查
+│   ├── cli.mjs                # CLI 定位 / .bat 启动适配 / 失败排查
+│   └── probe-selector.mjs     # 诊断探针：换机器/换工具版本后先跑它，看哪些 automator 能力还在
 └── vendor/geomstore/          # 由 sync-lib 生成：带 miniprogram 字段的完整 npm 包（不入库）
 ```
+
+> `pages/list/list.wxml` 里 `<counter-item class="counter-item">` 那个 class **不是装饰**：
+> automator 的标签选择器不认自定义组件（实测 `counter-item` 恒 0 个），class 选择器才认。
+> 删掉它，「组件订阅」那条用例会退化成跳过。
 
 > `vendor/` 与 `miniprogram_npm/` 都是构建产物、已在 `.gitignore` 里，
 > 首次克隆后按上面第 2 步跑 `npm run sync:lib` 即可。
 
 ## 已知取舍
 
-- `page.evaluate` / `element.wxml()` 在旧版工具上没有，这类断言会**跳过**而不是误报失败；
+- 宿主能力缺失（旧版工具没有 `miniProgram.evaluate` / `element.wxml()`）的断言会**跳过**
+  而不是误报失败——「宿主查不到」与「产品有缺陷」必须分开，否则换个工具版本就整轮假红。
   `--strict` 可把跳过按失败处理，用于发版前的人工核对。
+  当前工具（1.06.x / 基础库 3.x / automator 0.12.1）实测 **0 跳过**，
+  三条实测结论记在 `e2e/probe-selector.mjs` 顶部：标签选择器不认自定义组件、
+  `element.wxml()` 可用且返回展开后的 `<#shadow-root>`、`page.callMethod` 不可用。
 - 「前后台切换」是用 App 的 `onHide/onShow` 回调模拟的，不是系统级前后台事件——
   真机上的应用级验证请在体验版里手动过一遍。
 - demo 用 `.js` 而非 `.ts`：最小化 `(examples/**)` 与小程序构建的差异，方便直接跑。

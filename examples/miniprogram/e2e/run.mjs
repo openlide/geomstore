@@ -410,26 +410,47 @@ async function main() {
       await list.waitFor(800)
       const beforeData = await list.data()
       assert(beforeData.itemCount === 20, `初始组件数应为 20，实际 ${beforeData.itemCount}`)
-      assert(beforeData.evicted === 0, `未触Cap时不应有驱逐，实际 ${beforeData.evicted}`)
+      assert(beforeData.evicted === 0, `未触顶时不应有驱逐，实际 ${beforeData.evicted}`)
 
       await tapSelector(list, '.btn-inc', '列表页 +1')
       await list.waitFor(400)
-      const after = await (await topPage(miniProgram)).data()
+      const listTop = await topPage(miniProgram)
+      const after = await listTop.data()
       assert(after.count === beforeData.count + 1, '列表页 count 未同步')
 
-      // 自定义组件的节点查询不是每个工具版本都支持：查不到时降级为「按 data 断言」，
-      // 并记为跳过，而不是把「宿主查不到节点」误报成「组件没渲染」
-      const items = await list.$$('counter-item').catch(() => [])
+      // 查自定义组件必须用 **class 选择器**：automator 的标签选择器不认自定义组件标签，
+      // 实测同一页面上 `counter-item` 恒为 0 而 `.counter-item` 查到 20 个
+      //（所以 list.wxml 里那个 class 不是装饰，删了这条用例就会退化成跳过）。
+      //
+      // 另外两条实测结论，决定了这里为什么这样写：
+      // - `element.wxml()` 在本工具上**可用**，且返回的是展开后的 `<#shadow-root>` 内容
+      //   （含组件内部渲染的 `count = N`），所以能真的断言「组件渲染到最新值」；
+      // - 宿主侧的 `page.callMethod` 在 automator 0.12.1 上**不可用**（连页面自带的
+      //   `renderItems` 都报 not a function），故不走「取组件实例读 data」那条路。
+      const items = await listTop.$$('.counter-item').catch(() => [])
       if (items.length === 0) {
-        skip('当前工具查不到自定义组件节点（counter-item），本条改由页面 data 断言')
+        skip('当前工具查不到自定义组件节点（.counter-item），本条改由页面 data 断言')
       }
       assert(items.length === 20, `组件实例数应为 20，实际 ${items.length}`)
-      if (typeof items[0].wxml === 'function') {
-        const wxml = await items[0].wxml()
-        assert(wxml.includes(`count = ${after.count}`), `首个组件未渲染到最新 count：${String(wxml).slice(0, 120)}`)
-      } else {
+      if (typeof items[0].wxml !== 'function') {
         skip('当前工具版本不支持 element.wxml()，跳过组件渲染断言')
       }
+      // 逐个断言而非只看第一个：20 个组件共享一份 Store，任何一个漏订阅都会在这里露出来。
+      // 用 waitFor 容错 setData 的渲染时序，避免偶发的假红
+      let last = []
+      const synced = await waitFor(
+        async () => {
+          last = await Promise.all(items.map((i) => i.wxml().catch(() => '')))
+          return last.every((w) => String(w).includes(`count = ${after.count}`))
+        },
+        3000,
+        300,
+      ).catch(() => false)
+      assert(
+        synced,
+        `20 个组件应全部渲染到 count = ${after.count}，未同步的有 ` +
+          `${last.filter((w) => !String(w).includes(`count = ${after.count}`)).length} 个；首个实际：${String(last[0] ?? '').slice(0, 120)}`,
+      )
     })
 
     await test('组件订阅：加到 60 个后应触发 evict-oldest 且经 onError 可见', async () => {
