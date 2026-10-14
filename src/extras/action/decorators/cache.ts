@@ -326,9 +326,8 @@ function beforeWrite(cache: HostCache, at: number): void {
  * 「本次调用不缓存」的一次性唯一键
  *
  * 键生成失败时的统一退路：与既有任意键都不相撞，因此本次调用必然 miss、直接执行原方法。
- * #145: 结果仍会被写入缓存（见 :489），但该键永不复用，等效于跳过缓存。代价是每次失败
- * 都占一个缓存位直到过期回收，但键生成失败本身应是罕见路径（循环引用/BigInt 参数），
- * 内存开销可接受。若需完全跳过写入，应在 :489 前检测 `key.startsWith('__uncacheable__')`
+ * writeCache 与异步在途占位分支都按 key 前缀就地跳过写入，因此失败调用不留任何缓存条目、
+ * 也不会挤占其他方法共享的 MAX_CACHE_ENTRIES Map。
  *
  * @private
  */
@@ -487,6 +486,12 @@ export function withCache(options: CacheDecoratorOptions = {}): MethodDecorator 
     const isAsyncMethod = isAsyncFunction(originalMethod)
 
     const writeCache = (cache: HostCache, key: string, value: unknown, at: number, fromPromise = false): unknown => {
+      // 键生成失败的退路：`methodKey + '__uncacheable__' + id` 每次唯一，若照常写入
+      // 会挤占其他方法共享的 MAX_CACHE_ENTRIES Map（一个循环引用参数方法能把邻居方法的
+      // 有效条目全部驱逐），因此按 key 前缀就地跳过写入并直接返回原值
+      if (key.startsWith(`${methodKey}__uncacheable__`)) {
+        return value
+      }
       beforeWrite(cache, at)
       cache.entries.set(key, { value, expiry: at + ttl, fromPromise })
       return value
@@ -562,8 +567,12 @@ export function withCache(options: CacheDecoratorOptions = {}): MethodDecorator 
         // 占位条目必须有有限期限：MAX_SAFE_INTEGER 会让永不结算的请求（被丢弃的请求、
         // 宿主挂起）把条目永久留在 Map 里，且此后所有同参调用都一直拿到这个永不结算的
         // Promise——等于该方法永久失效
-        beforeWrite(cache, now)
-        cache.entries.set(key, { value: undefined, expiry: now + inFlightExpiry, pending })
+        // 键生成失败：占位写入会挤占其他方法共享的 MAX_CACHE_ENTRIES Map，
+        // 与 writeCache 同口径就地跳过（每次都真跑原方法，不做去重）
+        if (!key.startsWith(`${methodKey}__uncacheable__`)) {
+          beforeWrite(cache, now)
+          cache.entries.set(key, { value: undefined, expiry: now + inFlightExpiry, pending })
+        }
         return pending
       }
       // 以写入时刻计算过期，与异步路径（Date.now()）口径一致，避免方法自身耗时吃掉 TTL
