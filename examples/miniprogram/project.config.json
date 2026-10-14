@@ -1,6 +1,6 @@
 {
-  "description": "GeomStore demo（本地运行用，appid 填测试号或无 appid）",
-  "appid": "wx6d5e9c785f2d05dd",
+  "description": "GeomStore demo（本地运行用，appid 用 touristappid 测试号）",
+  "appid": "touristappid",
   "projectname": "geomstore-demo",
   "miniprogramRoot": "./",
   "compileType": "miniprogram",
