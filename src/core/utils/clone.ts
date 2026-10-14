@@ -100,6 +100,7 @@ const SLOT_BEARING_TAGS = new Set([
   'String',
   'Boolean',
   'Symbol',
+  'BigInt',
   'Error',
   'Function',
   'Generator',

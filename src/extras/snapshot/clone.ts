@@ -394,7 +394,9 @@ function copyOwnKey(
       error,
       {
         path: `${context.path}.${typeof key === 'symbol' ? key.toString() : key}`,
-        depth: context.depth,
+        // 与 cloneDeep → invokeCustomCloner 的其它两个入口同口径：context 是父帧，
+        // 报错位置是子节点，深度应 +1 才对得上 path 描述的节点
+        depth: context.depth + 1,
         // 描述符可用时直接取 value：访问器描述符没有 value 字段、恒为 undefined，
         // 故无需再区分描述符种类；访问器 getter 已证明会抛错，不经 safeReadProperty
         // 二次触发；仅当描述符不可得（查询本身抛错）时才兜底读取

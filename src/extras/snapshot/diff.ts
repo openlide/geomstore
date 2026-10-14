@@ -17,7 +17,7 @@
  */
 
 import { deepEqual } from '../../core/utils/helpers.js'
-import { isIndexKey, isSlotBearingBuiltin } from '../../core/utils/clone.js'
+import { isIndexKey, isSlotBearingBuiltin, ownEnumerableKeys } from '../../core/utils/clone.js'
 import type { SnapshotResult } from './types.js'
 
 /**
@@ -201,9 +201,12 @@ export interface SnapshotDiff {
  */
 function diffKeyPairs(obj1: object, obj2: object, filter?: (key: string) => boolean): Set<string> {
   const keys = new Set<string>()
-  for (const key of [...Object.keys(obj1), ...Object.keys(obj2)]) {
-    if (!filter || filter(key)) {
-      keys.add(key)
+  // 克隆引擎用 ownEnumerableKeys（含符号键），diff 也要覆盖到符号键，否则
+  // 快照保留了符号键的变化、compareSnapshots 却看不见，假阴性（changed: false）
+  for (const key of [...ownEnumerableKeys(obj1), ...ownEnumerableKeys(obj2)]) {
+    const strKey = typeof key === 'symbol' ? key.toString() : key
+    if (!filter || filter(strKey)) {
+      keys.add(strKey)
     }
   }
   return keys
@@ -266,9 +269,14 @@ export function compareSnapshots<T1, T2>(snapshot1: SnapshotResult<T1>, snapshot
     if (depth > MAX_COMPARE_DEPTH) {
       // 内建槽位对象（ArrayBuffer/TypedArray/Promise/WeakMap 等）的 deepEqual 走通用键集
       // 比较，Object.keys 对两者都返回空 ⇒ 恒判等 ⇒ 漏报。这类对象只能按引用判：
-      // 快照克隆保留原引用（isSlotBearingBuiltin 分支不重建），引用不同即确实被替换过
+      // 快照克隆保留原引用（isSlotBearingBuiltin 分支不重建），引用不同即确实被替换过。
+      // 但装箱原始值（Number/String/Boolean/Symbol）是例外：它们有槽位但内容可比，
+      // 深度护栏内外须同口径（浅层走 deepEqual 按内容比，深层不能退化为引用比较，
+      // 否则同一对值在不同深度给出相反结论）
       if (isSlotBearingBuiltin(obj1) || isSlotBearingBuiltin(obj2)) {
-        if (obj1 !== obj2) {
+        const unchanged =
+          typeof obj1 === 'object' && obj1 !== null && isBoxedPrimitiveValue(obj1) ? deepEqual(obj1, obj2, Number.POSITIVE_INFINITY) : obj1 === obj2
+        if (!unchanged) {
           changes.push({ path, oldValue: obj1, newValue: obj2 })
         }
         return

@@ -518,6 +518,8 @@ export class SnapshotManager {
                   path: task.context.path,
                   originalError: error instanceof Error ? error : undefined,
                 })
+                // 该节点不会被填充，占位同样要摘掉（与上方 processNodeAsync 抛错分支同一口径）
+                discardPropPlaceholder(task.target)
               }
             } else {
               rootResult = result
@@ -528,11 +530,9 @@ export class SnapshotManager {
           reportProgress(batch[batch.length - 1].context.path)
 
           // 让出控制权
-          if (opts.batchInterval > 0) {
-            await new Promise((r) => setTimeout(r, opts.batchInterval))
-          } else {
-            await new Promise((r) => setTimeout(r, 0))
-          }
+          // batchInterval 已由 normalizeDelay 归一化：0 或正有限数，setTimeout(r, 0) 与
+          // setTimeout(r, opts.batchInterval) 在 0 时等价，无需分叉
+          await new Promise((r) => setTimeout(r, opts.batchInterval))
         }
 
         // 超时退出时队列里仍有未处理的任务：它们永远不会有填充那一步，挂在父容器上的
