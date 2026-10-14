@@ -6,7 +6,7 @@
  * - 订阅通知使用防抖机制，避免短时间内多次触发
  */
 
-import type { Store, State, Actions, Getters, StateListener, CacheStats, InferGetterReturn } from '../../types/store.js'
+import type { Store, State, Actions, Getters, StateListener, CacheStats, InferGetterReturn, InferActionArgs, InferActionReturn } from '../../types/store.js'
 import type { Plugin } from '../../types/plugin.js'
 import type { ComposeOptions, StoreTreeNode, StoreLike, ExtractStates, ExtractActions, ExtractGetters } from '../../types/compose.js'
 import { HookSystem } from '../hooks/index.js'
@@ -22,14 +22,22 @@ import { mergeNamespaced, mergeStateMaps } from './merge.js'
  *
  * 组合多个 Store 为一个统一的 Store 实例
  * 使用类替代对象字面量，提供更好的性能和方法查找效率
+ *
+ * 三个泛型与 `Store<S, A, G>` 对齐：S/A/G 均由 `composeStore` 从子 store 元组精确提取。
+ * 带上 A/G 是为了让**名义标注**不损失精度——返回类型直接就是本类时，
+ * `dispatch` 的动作名与 `getter` 的返回类型仍从子 store 推断（若只泛型化 S，
+ * A/G 落回默认约束，组合动作的精确签名整体丢失）。类内按运行动态合并的结果
+ * 在赋值点一次性断言到 A/G，运行期形状本就是合并出来的注册表
  */
-class ComposedStore<S extends State = State> implements Store<S> {
+class ComposedStore<S extends State = State, A extends Actions = Actions, G extends Getters<S> = Getters<S>> implements Store<S, A, G> {
   readonly name: string
   /**
    * 合并后的 action 注册表：键与 dispatch 的命名规则一致（命名空间模式为
    * `storeName/actionName`，非命名空间模式为裸名，同名取第一个 store）。
+   * 声明为 A（构造期由合并结果断言而来）：按 `ComposedStore<…>` 名义标注时
+   * 动作名集合与签名保持子 store 的精度
    */
-  readonly actions: Record<string, (...args: unknown[]) => unknown>
+  readonly actions: A
 
   /** 实例级钩子系统 - 组合 Store 透传到子 Store */
   public readonly hooks: HookSystem
@@ -213,7 +221,7 @@ class ComposedStore<S extends State = State> implements Store<S> {
         }
       }
     }
-    this.actions = mergedActions
+    this.actions = mergedActions as unknown as A
 
     // 钩子桥接：子 store 触发的生命周期事件在组合层同步重发。
     // 此前 hooks 只在 destroy 时被 clear，从不接收任何事件——通过
@@ -487,6 +495,10 @@ class ComposedStore<S extends State = State> implements Store<S> {
 
   // ==================== Action 和 Getter ====================
 
+  // 精确重载在前（满足 Store<S, A, G> 的签名）：动作名与返回类型从 A 推断。
+  // 宽松重载保留：组合层接受任意字符串（含运行期路由失败），未命中时按 strict 抛错
+  dispatch<K extends keyof A>(actionName: K, ...args: InferActionArgs<A, K>): InferActionReturn<A, K>
+  dispatch(actionName: string, ...args: unknown[]): unknown
   dispatch(actionName: string, ...args: unknown[]): unknown {
     this._ensureAlive('dispatch')
     const [storeName, actualAction] = parseActionName(actionName, this._namespace)
@@ -526,7 +538,7 @@ class ComposedStore<S extends State = State> implements Store<S> {
    * 键的合并规则与 getter() 的解析语义一致：命名空间模式下为 `storeName/getterName`，
    * 非命名空间模式为裸名（同名冲突取第一个 store 的定义）
    */
-  get getters(): Getters<S> {
+  get getters(): G {
     const result: Record<string, (state: S) => unknown> = {}
     for (const store of this._stores) {
       // 鸭子类型兜底：接口把 getters 声明为必选，但组合层接受桩 store / 未实现该成员的
@@ -548,11 +560,13 @@ class ComposedStore<S extends State = State> implements Store<S> {
         }
       }
     }
-    return result
+    // 合并结果断言到 G：键集合与签名由 composeStore 的 ExtractGetters 从子 store
+    // 元组提取，运行期形状就是逐个合并出来的注册表
+    return result as unknown as G
   }
 
   /** 类型安全 getter（与 Store 接口重载签名保持一致） */
-  getter<K extends keyof Getters<S>>(getterName: K): InferGetterReturn<Getters<S>, K>
+  getter<K extends keyof G>(getterName: K): InferGetterReturn<G, K>
   getter(getterName: string): unknown {
     this._ensureAlive('getter')
     const [storeName, actualGetter] = parseActionName(getterName, this._namespace)
@@ -585,7 +599,7 @@ class ComposedStore<S extends State = State> implements Store<S> {
       return undefined
     }
 
-    // 同 getCached：只有命名空间分支（:563 按名字 find）会解析到死店；
+    // 同 getCached：只有命名空间分支（storeName 命中后按名字 find）会解析到死店；
     // 非命名空间分支靠 getGetterNames() 在销毁后返回 [] 天然排除，故守卫在这里对它是空操作
     if (this._skipDestroyedChild(targetStore, '跳过对它的 getter 调用')) {
       return undefined
@@ -748,7 +762,7 @@ class ComposedStore<S extends State = State> implements Store<S> {
   /**
    * 判断指定状态键自上次通知以来是否发生变更
    *
-   * 三个分支的口径不同，逐条说明（旧注释写着「始终返回 true」，与实现不符已有几轮）：
+   * 三个分支的口径不同，逐条说明：
    * - 合并缓存订阅未建立（构造期订阅失败的降级态）：没有任何脏追踪可用，保守返回 true；
    * - 命名空间模式：组合状态键即子 store 名，`_dirtyStores` 能精确指出哪个子 store 变过，
    *   据此返回真/假——集成层因此可跳过未变化的映射键，省掉一次冗余 setData（含符号键：
@@ -856,7 +870,9 @@ class ComposedStore<S extends State = State> implements Store<S> {
    *
    * @param destroyStores - 是否级联销毁子 Store（默认 true，保持向后兼容）。
    *  当子 Store 在组合之外被独立持有并继续使用时，应传入 false：
-   *  仅退订组合层订阅并清理钩子，避免牵连外部持有的子 Store
+   *  仅退订组合层订阅并清理钩子，避免牵连外部持有的子 Store。
+   *  该参数已上提到 `Store` 接口（可选参数，单 Store 忽略），按 `Store<S>`
+   *  标注的组合 store 也能调出 `false` 档
    */
   destroy(destroyStores: boolean = true): void {
     if (this.destroyed) return
@@ -1120,10 +1136,14 @@ class ComposedStore<S extends State = State> implements Store<S> {
  */
 
 // 类型推断版本：保留 Store 元组的完整类型信息
+// 返回类型直接是 ComposedStore 类（名义类型）：运行时返回的就是该类实例，此前只声明
+// 结构面 Store<S, A, G>，于是 `const s: ComposedStore<X> = composeStore([...])` 因
+// 「类含私有成员 ⇒ 名义类型」一律编译不过（TS2740）。类已带 A/G 泛型，名义标注
+// 不损失 dispatch 动作名与 getter 返回类型的推断精度
 function composeStore<Stores extends readonly StoreLike[]>(
   stores: [...Stores],
   options?: ComposeOptions,
-): Store<ExtractStates<Stores>, ExtractActions<Stores>, ExtractGetters<Stores>>
+): ComposedStore<ExtractStates<Stores>, ExtractActions<Stores>, ExtractGetters<Stores>>
 
 // 实现
 // 注意：不提供第二个非泛型重载——多重重载下 TS 的推断会吸收 [...Stores] 的元素类型，

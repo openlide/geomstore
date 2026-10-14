@@ -125,11 +125,8 @@ export type ActionContext<S extends State = State, A extends Actions = Actions> 
 export type Actions = Record<string, (...args: any[]) => any>
 
 /**
- * 创建带 ThisType 的 Actions 类型
- * 这是方案3的核心：通过 ThisType 注入 this 类型
- */
-/**
- * Actions + `ThisType` 注入
+ * Actions + `ThisType` 注入（本库 action 上下文方案的核心：靠 ThisType 把 `ActionContext`
+ * 注入 action 的 this，避免 Store ↔ actions 的循环依赖）
  *
  * 导出原因：`StoreOptions.actions` 的类型就是它，消费者要写「带 this 上下文的一组 action」
  * 的公共默认值/包装器时得能命名这个形状（此前只有 `StoreOptions` 可见，成员类型不可命名）。
@@ -439,8 +436,16 @@ export interface Store<S extends State = State, A extends Actions = Actions, G e
    */
   use(plugin: Plugin<NoInfer<S>> | Plugin<State>): () => void
 
-  /** 销毁Store */
-  destroy(): void
+  /**
+   * 销毁Store
+   *
+   * `destroyStores` 是**组合层**的参数（`composeStore` 的返回类型上生效）：传 `false`
+   * 表示只拆组合、不级联销毁子 store。单 Store 忽略该参数（传什么都不改变行为）。
+   * 接口带上这个可选参数是为了让 `Store<S>` 标注的变量也能调用组合层的完整签名——
+   * 此前只有实现类 `ComposedStore` 认它，按接口标注的组合 store 调不出 `false` 档。
+   * 对实现方非破坏：少参数的方法仍满足本签名（`destroy(): void` 可赋值）。
+   */
+  destroy(destroyStores?: boolean): void
 
   /** Store 是否已被销毁 */
   readonly destroyed: boolean
