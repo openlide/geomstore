@@ -34,8 +34,13 @@
  * // 在下一个微任务中，监听器只会被调用一次
  * ```
  */
+/** 每次 subscribe() 产出一条注册记录，用对象身份区分同一 listener 的多次订阅 */
+interface ListenerRegistration<S> {
+  listener: (state: S) => void
+}
+
 export class AsyncBatchNotifier<S> {
-  private listeners: Set<(state: S) => void> = new Set()
+  private listeners: Set<ListenerRegistration<S>> = new Set()
   private pending = false
   /** 是否存在待通知状态：以独立标志取代 latestState 的 null 哨兵，支持状态本身为 null 的场景 */
   private hasPendingState = false
@@ -44,22 +49,21 @@ export class AsyncBatchNotifier<S> {
   /**
    * 订阅状态变化
    *
-   * 同一函数重复订阅只登记一份（Set 按身份去重），任一退订句柄生效即不再收到通知；
-   * 句柄本身幂等，重复调用只释放自己那一次订阅，不会误删之后重新建立的订阅。
+   * 每次调用产出独立的注册记录：同一函数重复订阅会登记多份，各退订句柄只释放自己那一次。
+   * clear() 后旧句柄的 delete 命中已不存在的记录，不会误删重新建立的订阅。
    *
    * @param {(state: S) => void} listener - 监听函数
    * @returns {() => void} 取消订阅的函数
    */
   subscribe(listener: (state: S) => void): () => void {
-    this.listeners.add(listener)
+    const registration: ListenerRegistration<S> = { listener }
+    this.listeners.add(registration)
 
-    // 句柄一次性：按身份 delete 会让旧句柄在「同一函数重新订阅」之后把新订阅一并删掉
-    // （Set 只按身份去重，第二次订阅复用同一个成员，旧句柄的重复调用无从区分）
     let unsubscribed = false
     return () => {
       if (unsubscribed) return
       unsubscribed = true
-      this.listeners.delete(listener)
+      this.listeners.delete(registration)
     }
   }
 
@@ -115,12 +119,12 @@ export class AsyncBatchNotifier<S> {
     // 快照的另一半也必须处理：迭代中已退订（或被 clear() 摘除）的监听器不再投递。
     // 本类的消费者是「状态变化 → 渲染/清理」一类的下游，在组件卸载等场景下
     // 退订即表示处理方已失效，多投一次会拿最后一次状态去跑已销毁的逻辑
-    for (const listener of Array.from(this.listeners)) {
-      if (!this.listeners.has(listener)) {
+    for (const reg of Array.from(this.listeners)) {
+      if (!this.listeners.has(reg)) {
         continue
       }
       try {
-        listener(state as S)
+        reg.listener(state as S)
       } catch (error) {
         console.error('[AsyncBatchNotifier] Error in listener:', error)
       }

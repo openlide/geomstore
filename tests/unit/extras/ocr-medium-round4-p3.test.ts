@@ -1,96 +1,15 @@
 /**
  * OCR medium 第四轮 p3 分片（G2-extras）回归用例
  *
- * 覆盖：#274 Headers 鸭子类型归一化、#277 extras 总入口显式再导出、#286 cloneError
- * 降级逻辑统一后的中止信号口径、#287 函数按引用入快照的既有契约、#290 版本化缓存
- * 降级为无版本时的作废与快照重建、#293 cacheSize 归一化、#299 nodeCount 同步/异步
- * 同口径、#300 进度回调抛错不污染快照结果。
+ * 覆盖：#286 cloneError 降级逻辑统一后的中止信号口径、#287 函数按引用入快照的既有契约、
+ * #290 版本化缓存降级为无版本时的作废与快照重建、#293 cacheSize 归一化、
+ * #299 nodeCount 同步/异步同口径、#300 进度回调抛错不污染快照结果。
  */
-import { HttpReporter } from '@/extras/error/index.js'
-import * as extrasIndex from '@/extras/index.js'
 import { defineStateVersion } from '@/core/store/stateVersion.js'
 import { createParametricSelector } from '@/extras/selector/parametricSelector.js'
 import { SelectorFactory } from '@/extras/selector/createSelector.js'
 import { SnapshotAbortError, cloneDeep } from '@/extras/snapshot/clone.js'
 import { createSnapshot, createSnapshotAsync } from '@/extras/snapshot/SnapshotManager.js'
-
-/** 暂存/还原全局键（用例需自还原，避免污染同文件后续用例） */
-async function withHiddenHeaders(run: () => Promise<void>): Promise<void> {
-  const g = globalThis as Record<string, unknown>
-  const backup = g.Headers
-  g.Headers = undefined
-  try {
-    await run()
-  } finally {
-    g.Headers = backup
-  }
-}
-
-describe('#274 HttpReporter 请求头归一化', () => {
-  it('#274 全局 Headers 缺失时的 Headers 形实例仍被展开为键值对', async () => {
-    const sent: Record<string, string>[] = []
-    const reporter = new HttpReporter(
-      'https://example.com/report',
-      {
-        // 小程序运行时/跨 realm 的 Headers 实现：无全局构造器可 instanceof，只有 forEach 协议
-        headers: {
-          forEach(fn: (value: string, key: string) => void) {
-            fn('Bearer token', 'authorization')
-            fn('application/json', 'content-type')
-          },
-        } as any,
-      },
-      async (_url, _body, _method, headers) => {
-        sent.push(headers)
-      },
-    )
-
-    await reporter.report({ error: new Error('boom'), storeName: 's', operation: 'op', level: 'error', timestamp: 1 } as any)
-
-    expect(sent[0]).toEqual({ authorization: 'Bearer token', 'content-type': 'application/json' })
-  })
-
-  it('#274 全局 Headers 不可见时的真实 Headers 实例不被静默丢空', async () => {
-    const real = new Headers({ 'X-Trace': '1' })
-    const sent: Record<string, string>[] = []
-    const reporter = new HttpReporter('https://example.com/report', { headers: real as any }, async (_url, _body, _method, headers) => {
-      sent.push(headers)
-    })
-
-    await withHiddenHeaders(async () => {
-      await reporter.report({ error: new Error('boom'), storeName: 's', operation: 'op', level: 'error', timestamp: 1 } as any)
-    })
-
-    expect(sent[0]).toEqual({ 'x-trace': '1' })
-  })
-
-  it('#274 数组形式优先于鸭子类型判定（数组同样具备 forEach）', async () => {
-    const sent: Record<string, string>[] = []
-    const reporter = new HttpReporter('https://example.com/report', { headers: [['x-pair', 'v']] as any }, async (_url, _body, _method, headers) => {
-      sent.push(headers)
-    })
-
-    await reporter.report({ error: new Error('boom'), storeName: 's', operation: 'op', level: 'error', timestamp: 1 } as any)
-
-    expect(sent[0]).toEqual({ 'x-pair': 'v' })
-  })
-})
-
-describe('#277 extras 总入口的再导出清单', () => {
-  it.each([
-    'createUserStore',
-    'StoreManager',
-    'storeManager',
-    'initHotUpdate',
-    'restoreFromHotUpdate',
-    'OfflineManager',
-    'initBackgroundSync',
-    'unregisterBackgroundSync',
-    'createEnterpriseApp',
-  ])('#277 显式再导出后企业能力 %s 仍可达', (name) => {
-    expect((extrasIndex as Record<string, unknown>)[name]).toBeDefined()
-  })
-})
 
 describe('#286/#287 克隆引擎的统一降级口径', () => {
   it('#286 customCloner 抛出中止信号时原样上抛，不再被 onError 改答', () => {

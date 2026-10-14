@@ -502,7 +502,7 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
     // 旧键集必须在替换前取：只标新状态的键，被这次替换删掉的键就永远
     // 不被标记为脏，isStateKeyDirty 对它是 false——集成层据此跳过 setData，
     // 视图会一直留着已消失键的值
-    const previousKeys = Object.keys(this._state) as Array<keyof S>
+    const previousKeys = ownEnumerableKeys(this._state) as Array<keyof S>
 
     this._withInternalAccess(() => {
       // 整树替换：旧状态的键（含 action 内已 delete 的键）不再存在于新状态，
@@ -519,7 +519,7 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
 
       // 更新新状态缓存
       if (this._cacheManager.enabled) {
-        Object.keys(this._state).forEach((key) => {
+        ownEnumerableKeys(this._state).forEach((key) => {
           this._cacheManager.set(key as keyof S, this._state[key as keyof S])
         })
       }
@@ -534,7 +534,7 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
     for (const key of previousKeys) {
       this._markDirtyKey(key)
     }
-    Object.keys(this._state).forEach((key) => {
+    ownEnumerableKeys(this._state).forEach((key) => {
       this._markDirtyKey(key as keyof S)
     })
 

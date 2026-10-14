@@ -36,7 +36,7 @@ export function collectWeappEntries(projectRoot, outDir) {
     if (!fs.existsSync(path.join(projectRoot, srcFile))) {
       throw new Error(`子路径 ${sub} 的入口源文件不存在：${srcFile}（exports 指向 ${target}）`)
     }
-    entries.push({ sub, srcFile, outFile: `${outDir}/${rel}.js`, esmFile: target.slice(1) })
+    entries.push({ sub, srcFile, outFile: `${outDir}/${rel}.js`, esmFile: target.slice(2) })
   }
   if (entries.length === 0) throw new Error('package.json 的 exports 里没找到任何子路径')
   return entries
@@ -45,18 +45,38 @@ export function collectWeappEntries(projectRoot, outDir) {
 /**
  * 需要转译的全部源模块：`src` 下所有 `.ts`，排除 `.d.ts`（那是类型声明，不是模块）。
  *
- * 与 tsc 在 `dist` 下产出的运行时模块一一对应：本仓库没有非 .ts 的运行时源文件，
- * 所以「文件数是否镜像完整」可以直接当校验用，不必再维护第二份清单。
+ * 与 tsc 在 `dist` 下产出的运行时模块大致对应，但注意 tsc 还会排除某些模式
+ * （例如 `*.example.ts`，见 build-weapp.mjs），因此文件数不完全镜像——
+ * 此处仅作清单枚举，不做计数校验。
  */
 export function collectSourceModules(projectRoot) {
   const found = []
+  const srcDir = path.join(projectRoot, 'src')
   const walk = (dir) => {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
       const full = path.join(dir, entry.name)
-      if (entry.isDirectory()) walk(full)
-      else if (entry.isFile() && entry.name.endsWith('.ts') && !entry.name.endsWith('.d.ts')) found.push(full)
+      // 符号链接：isDirectory/isFile 都返回 false，需显式处理以避免静默丢弃符号链接源模块
+      if (entry.isSymbolicLink()) {
+        // 解析符号链接后递归判定类型
+        try {
+          const target = fs.statSync(full)
+          if (target.isDirectory()) walk(full)
+          else if (target.isFile() && entry.name.endsWith('.ts') && !entry.name.endsWith('.d.ts')) found.push(full)
+        } catch (error) {
+          // 断链：记录警告但不中断清单收集
+          console.warn(`[weapp-entries] 符号链接已断开，跳过：${full}`)
+        }
+      } else if (entry.isDirectory()) {
+        walk(full)
+      } else if (entry.isFile() && entry.name.endsWith('.ts') && !entry.name.endsWith('.d.ts')) {
+        found.push(full)
+      }
     }
   }
-  walk(path.join(projectRoot, 'src'))
+  try {
+    walk(srcDir)
+  } catch (error) {
+    throw new Error(`无法读取源模块目录 ${srcDir}：${error.message}`)
+  }
   return found.sort().map((full) => path.relative(projectRoot, full).split(path.sep).join('/'))
 }

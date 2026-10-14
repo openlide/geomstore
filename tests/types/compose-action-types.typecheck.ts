@@ -92,3 +92,4 @@ async function probeExecutor(): Promise<[{ id: string }, number, { id: string },
 }
 void probeExecutor
 void [_composedCount, _composedName, composed, composedState, executor, utils]
+void [_composedCountExact, _composedNameExact]

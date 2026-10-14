@@ -65,7 +65,9 @@ hooks.on('beforeDispatch', (actionName, args) => {
   const argsIsTuple: true = null as unknown as typeof args extends readonly unknown[] ? true : false
   void nameIsString
   void argsIsTuple
-  // 形参本体仅出现在 `typeof` 类型位，补一行值读用，避免被当成未用形参
+  // 形参本体只在 `typeof` 类型位出现。`tsconfig.tests.json` 关掉了
+  // noUnusedLocals / noUnusedParameters，因此这里不需要 `void args` 消未用告警——
+  // 保留仅作为「这里刻意读了值」的一致写法，不承担强制作用
   void args
 })
 
@@ -181,5 +183,10 @@ void withResult
 // 若 `HookHandlerFor<'beforePatch'>` 改回带结果泛型（返回值不再是 void 特例），本行立即报错。
 const returnsValue: HookHandlerFor<'beforePatch'> = (partial: Record<string, unknown>) => partial.count
 void returnsValue
+// 「可赋值」断言本身仍属弱锁：若 `HookHandlerFor` 的返回位漂到 `unknown`、`any` 或
+// 带结果泛型的 `TResult`，上面这行仍然过（三者都能吃 `boolean`）。用 Equal 直接钉住
+// 返回类型确为 `void`
+const _returnsSlotIsVoid: Equal<ReturnType<HookHandlerFor<'beforePatch'>>, void> = true
+void _returnsSlotIsVoid
 
 export {}

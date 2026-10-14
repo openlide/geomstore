@@ -10,11 +10,10 @@
  *
  * 真正可选、需从 `../extras` 各子入口按需引入的是：插件**实现**（logger / persistence /
  * devtools / timeTravel，钩子机制本身仍属核心）、快照、选择器、性能监控与性能插件、
- * Action 增强（withCache / withThrottle 等）、错误边界与聚合上报、企业微信（WeCom）集成。
+ * Action 增强（withCache / withThrottle 等）、错误边界。
  *
- * @remarks 术语澄清：**企业微信集成（WeCom，`extras/enterprise`）**与
- * **微信小程序集成（`src/integrations`，本入口导出）**是两回事，前者是可选能力、
- * 后者属核心，历史文档把两者混写过，勿据此判断某个 API 是否需要额外引入。
+ * @remarks 术语澄清：库曾提供**企业微信集成（WeCom，`extras/enterprise`）**，0.9.0 起
+ * 已整体移除；**微信小程序集成（`src/integrations`，本入口导出）**仍在核心。
  */
 
 // ==================== 核心Store ====================

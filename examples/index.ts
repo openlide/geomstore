@@ -16,7 +16,15 @@ export * as weapp from './weapp/index.js'
 export * as advanced from './advanced/index.js'
 export * as extras from './extras/index.js'
 
-/** 示例清单：供文档与其他工具枚举 */
+/**
+ * 示例清单：供文档与其他工具枚举
+ *
+ * ⚠️ 与上面的 `export * as …` 是两份**独立维护**的表：新增/重命名/删除示例
+ * 文件时必须同步这里，否则文档工具按本清单枚举会指到不存在的路径、且**不会**
+ * 有编译期报错（`path` 只是纯字符串）。另外本清单里的路径以 `.ts` 结尾（源码
+ * 视角），`export * as …` 走的是编译后的 `.js`；两处扩展名有意不同，若把
+ * 本清单交给 NodeNext 动态 import 需先做扩展名转换
+ */
 export const exampleCategories = {
   basic: [
     { name: 'simple-store', path: './basic/01-simple-store.ts', description: '创建与使用 Store' },

@@ -100,6 +100,7 @@ const SLOT_BEARING_TAGS = new Set([
   'String',
   'Boolean',
   'Symbol',
+  'BigInt',
   'Error',
   'Function',
   'Generator',
@@ -160,7 +161,7 @@ export function ownEnumerableKeys(target: object): Array<string | symbol> {
  * 注入的属性反而变成继承属性（deepMerge 的 defineProperty 防护也会因此失效）。
  * defineProperty 只定义自有数据属性，可安全承载任意键名。
  */
-function assignOwn(target: object, key: string | symbol, value: unknown): void {
+export function assignOwn(target: object, key: string | symbol, value: unknown): void {
   // 符号键不可能与原型链上的 accessor 同名，`__proto__` 这条防护只对字符串键有意义
   if (key === '__proto__') {
     Object.defineProperty(target, key, { value, writable: true, enumerable: true, configurable: true })
@@ -232,7 +233,7 @@ function fallbackClone<T>(value: T, seen?: WeakMap<object, unknown>): T {
     // 键集取 ownEnumerableKeys 而非 Object.keys：符号键同样是「非下标自有键」，
     // 漏掉它会让写进去的符号值在可写订阅者的载荷里凭空消失
     for (const key of ownEnumerableKeys(value as object)) {
-      if (typeof key === 'string' && !isIndexKey(key)) {
+      if (typeof key === 'symbol' || !isIndexKey(key)) {
         assignOwn(arr, key, fallbackClone((value as Record<PropertyKey, unknown>)[key], visited))
       }
     }

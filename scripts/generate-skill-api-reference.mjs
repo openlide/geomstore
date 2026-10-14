@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 生成 skill 的 API 参考（按入口拆分）：dist/**\/*.d.ts → .codebuddy/skills/geomstore/references/api/
+ * 生成 skill 的 API 参考（按入口拆分）：dist/**\/*.d.ts → skills/geomstore/references/api/
  *
  * 背景：GeomStore 会被独立安装到其他小程序项目使用，那边只有 node_modules/@openlide/geomstore：
  * 仓库的 docs/ 与 src/ 均不存在（docs/ 不在 package.json 的 files 中，不随包发布）。因此跨项目
@@ -37,8 +37,8 @@ import ts from 'typescript'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const pkg = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'))
-const OUT_DIR = path.join(root, '.codebuddy/skills/geomstore/references/api')
-const LEGACY_FILE = path.join(root, '.codebuddy/skills/geomstore/references/api.md')
+const OUT_DIR = path.join(root, 'skills/geomstore/references/api')
+const LEGACY_FILE = path.join(root, 'skills/geomstore/references/api.md')
 
 /**
  * 这些入口的符号已在别处展开，只列符号名，避免产出重复膨胀。
@@ -58,6 +58,25 @@ const RESERVED_FILES = new Set(['index.md'])
 function toFileName(sub) {
   if (sub === '.') return 'main.md'
   return `${sub.replace(/^\.\//, '').replace(/\//g, '-')}.md`
+}
+
+/**
+ * 计算代码围栏需要的最小反引号数：body 里最长连续反引号 + 1，至少 3。
+ * JSDoc 里嵌 ```ts 示例时，dedent 后的 body 会带三反引号；固定三反引号围栏会让
+ * 嵌套围栏破掉 markdown 渲染（prettier 会抬成四反引号救场，但生成器自己得先产合法输出）。
+ */
+function fenceLength(body) {
+  let max = 0
+  let run = 0
+  for (const ch of body) {
+    if (ch === '`') {
+      run++
+      if (run > max) max = run
+    } else {
+      run = 0
+    }
+  }
+  return Math.max(3, max + 1)
 }
 
 /**
@@ -88,7 +107,14 @@ function collectEntries() {
     entries.push({ sub, types: value.types, file: toFileName(sub) })
   }
   // '.' 置顶，其余按子路径（与区域设置无关的比较，保证跨机器产出可复现）
-  entries.sort((a, b) => (a.sub === '.' ? -1 : b.sub === '.' ? 1 : a.sub < b.sub ? -1 : a.sub > b.sub ? 1 : 0))
+  entries.sort((a, b) => {
+    if (a.sub === '.' && b.sub === '.') return 0
+    if (a.sub === '.') return -1
+    if (b.sub === '.') return 1
+    if (a.sub < b.sub) return -1
+    if (a.sub > b.sub) return 1
+    return 0
+  })
   return { entries, problems }
 }
 
@@ -118,9 +144,7 @@ function validateEntries(entries) {
   }
   for (const [file, subsWithSameFile] of byFile) {
     if (subsWithSameFile.length > 1) {
-      problems.push(
-        `入口 ${subsWithSameFile.map((sub) => `\`${sub}\``).join(' 与 ')} 的输出文件名同为 \`${file}\`，会互相覆盖`,
-      )
+      problems.push(`入口 ${subsWithSameFile.map((sub) => `\`${sub}\``).join(' 与 ')} 的输出文件名同为 \`${file}\`，会互相覆盖`)
     }
   }
 
@@ -132,7 +156,10 @@ function dedent(text) {
   const lines = text.replace(/\r\n/g, '\n').split('\n')
   const indents = lines.filter((line) => line.trim()).map((line) => line.match(/^[ \t]*/)[0].length)
   const min = indents.length > 0 ? Math.min(...indents) : 0
-  return lines.map((line) => line.slice(min)).join('\n').trim()
+  return lines
+    .map((line) => line.slice(min))
+    .join('\n')
+    .trim()
 }
 
 function kb(bytes) {
@@ -199,8 +226,8 @@ function main() {
       } catch (error) {
         // 不静默退回别名自身：那会让 `export * from` 链断掉的入口产出一份
         // 「只有再导出语句、没有真实声明」的参考，看起来完全正常却缺内容
-        console.error(`[skill-api] getAliasedSymbol 失败，符号：${symbol.getName()}：`, error)
-        throw error
+        const message = error && error.message ? error.message : String(error)
+        throw new Error(`getAliasedSymbol 失败，符号：${symbol.getName()}：${message}`)
       }
     }
     const declared = target.declarations ?? []
@@ -209,19 +236,29 @@ function main() {
   }
 
   /** 展开每个入口的导出符号 */
-  const resolvedEntries = entries.map((entry) => {
+  const resolvedEntries = []
+  const resolutionErrors = []
+  for (const entry of entries) {
     const sourceFile = program.getSourceFile(path.join(root, entry.types))
     const moduleSymbol = sourceFile ? checker.getSymbolAtLocation(sourceFile) : undefined
     const symbols = moduleSymbol ? checker.getExportsOfModule(moduleSymbol) : []
-    const items = symbols
-      .map((symbol) => ({ name: symbol.getName(), declarations: getDeclarations(symbol) }))
-      .filter((item) => item.declarations.length > 0)
-      .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
-    return { ...entry, items, undeclared: symbols.length - items.length }
-  })
+    let items = []
+    for (const symbol of symbols) {
+      try {
+        const declarations = getDeclarations(symbol)
+        if (declarations.length > 0) {
+          items.push({ name: symbol.getName(), declarations })
+        }
+      } catch (error) {
+        resolutionErrors.push(`入口 \`${entry.sub}\` 符号 \`${symbol.getName()}\` 解析失败：${error.message}`)
+      }
+    }
+    items = items.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+    resolvedEntries.push({ ...entry, items, undeclared: symbols.length - items.length })
+  }
 
   // 校验前置于清空：此时输出目录还是上一版的正确产物
-  const problems = collectProblems()
+  const problems = [...collectProblems(), ...resolutionErrors]
   const warnings = []
   for (const entry of resolvedEntries) {
     if (entry.items.length === 0) {
@@ -253,8 +290,7 @@ function main() {
 
   // 索引
   const indexRows = resolvedEntries.map(
-    (entry) =>
-      `| \`${entry.sub}\` | ${NAME_ONLY.has(entry.sub) ? '仅符号名' : '完整声明'} | ${entry.items.length} | [\`${entry.file}\`](./${entry.file}) |`,
+    (entry) => `| \`${entry.sub}\` | ${NAME_ONLY.has(entry.sub) ? '仅符号名' : '完整声明'} | ${entry.items.length} | [\`${entry.file}\`](./${entry.file}) |`,
   )
   const index = [
     header('GeomStore API 参考（按入口拆分，自动生成）', [
@@ -306,7 +342,8 @@ function main() {
     } else {
       for (const item of entry.items) {
         const body = item.declarations.map((declaration) => dedent(declaration.getFullText())).join('\n\n')
-        lines.push(`### \`${item.name}\``, '', '```ts', body, '```', '')
+        const fence = '`'.repeat(fenceLength(body))
+        lines.push(`### \`${item.name}\``, '', `${fence}ts`, body, fence, '')
       }
     }
 
@@ -331,6 +368,14 @@ function main() {
     rmSync(path.join(OUT_DIR, dirent.name), { force: true })
   }
   if (existsSync(LEGACY_FILE)) rmSync(LEGACY_FILE, { force: true })
+
+  // 输出文件名与已存在目录同名时 writeFileSync 会抛 EISDIR，且清空动作已完成——
+  // 必须在写入前检测冲突，否则错误信息无法解释原因
+  const blocked = documents.filter(({ name }) => strayDirs.includes(name))
+  if (blocked.length > 0) {
+    console.error(`[skill-api] 输出文件名与已存在目录同名，无法写入：${blocked.map((b) => b.name).join(', ')}`)
+    process.exit(1)
+  }
 
   for (const { name, text } of documents) writeFileSync(path.join(OUT_DIR, name), text, 'utf8')
 

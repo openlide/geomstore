@@ -26,7 +26,7 @@
 pnpm add @openlide/geomstore
 ```
 
-运行要求（Node ≥ 22、纯 ESM、TypeScript ≥ 5.4、用装饰器需开 `experimentalDecorators`）见 [README 安装一节的要求表](../README.md#安装)。主入口只含运行必需 API；可选能力（快照 / 选择器 / Action 增强 / 性能 / 错误处理 / 企业集成 / 插件实现）从 `extras/*` 子路径按需引入，引入方式与体积规则见 [README · 引入方式与体积分层](../README.md#引入方式与体积分层)。
+运行要求（Node ≥ 22、纯 ESM、TypeScript ≥ 5.4、用装饰器需开 `experimentalDecorators`）见 [README 安装一节的要求表](../README.md#安装)。主入口只含运行必需 API；可选能力（快照 / 选择器 / Action 增强 / 性能 / 错误处理 / 插件实现）从 `extras/*` 子路径按需引入，引入方式与体积规则见 [README · 引入方式与体积分层](../README.md#引入方式与体积分层)。
 
 可运行示例：
 
@@ -383,22 +383,15 @@ flat.$patch({ 'leaf/count': 2 })
 ## 10. 错误处理（extras/error）
 
 ```ts
-import { ErrorBoundary, ErrorMonitoring, ConsoleReporter, HttpReporter } from '@openlide/geomstore/extras/error'
+import { ErrorBoundary, GeomStoreError, ErrorCode } from '@openlide/geomstore/extras/error'
 
 const boundary = new ErrorBoundary({ fallback: (error) => ({ failed: true }) })
 const state = boundary.execute(() => risky(), store)
-
-const monitoring = new ErrorMonitoring({
-  reporters: [new ConsoleReporter(), new HttpReporter({ endpoint })],
-  batchThreshold: 10,
-  maxQueueSize: 1000, // 队列容量
-  maxFlushRetries: 3, // 全部报告器连续失败的重入队上限
-})
 ```
 
-选型两句话：给单次危险调用兜底用 `ErrorBoundary`（默认 fail-loud，未配 `fallback` 即重抛）；全进程收集、聚合并上报错误用 `ErrorMonitoring` + 报告器（`ConsoleReporter` 打控制台，`HttpReporter` 自动在 `wx.request` / `fetch` 间选择，均可注入自定义实现）。
+给单次危险调用兜底用 `ErrorBoundary`（默认 fail-loud，未配 `fallback` 即重抛）。错误类族（`GeomStoreError` / 派生类 / `ErrorCode` / 守卫）用于结构化抛错与分类。需要全进程收集、聚合并上报错误时，接入 `Store` 的 `onError` 钩子 + 第三方监控（`wx.reportError` / Sentry 等）——库不再自带监控 / 恢复 / 上报器。
 
-机制语义（错误模型、边界、恢复额度按故障周期计量、监控的计数口径）见 [CONCEPTS §10](./CONCEPTS.md#10-错误处理extraserror)；参数级细节（`MonitoringConfig` 各项默认值、`ErrorRecovery` 窗口公式、报告器的请求头归一化与坏 payload 降级）见 [API.md](./API.md)。
+机制语义（错误模型、边界）见 [CONCEPTS §10](./CONCEPTS.md#10-错误处理extraserror)；参数级细节见 [API.md](./API.md)。
 
 ## 11. 性能与体积
 

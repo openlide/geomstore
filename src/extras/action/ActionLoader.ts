@@ -151,11 +151,15 @@ export class ActionLoader {
   private stateGeneration = 0
 
   /**
-   * 最近一次**实际调用**用到的 setState
+   * 每个状态键最近一次**实际写入**用到的 setState
    *
    * `clear()` 与换键的 `setOptions()` 据此给旧键补写复位值：内部记账被清空后已无
    * 在途调用来纠正 store，`loading: true` 会永久卡住。
    * 需要复位的键直接取自下面的几张表（键即状态键），无需另设登记表。
+   *
+   * 多宿主共享同一 ActionLoader 时，每个宿主有自己的 setState（bind 到各自的 store）。
+   * 单槽 `lastSetState` 只留得住最后一个宿主，`clear()` 时其它宿主的键拿不到正确的
+   * 写入函数、复位值写不到对应的 store 上。改成按键登记，每个键记住自己的写入函数。
    *
    * 赋值点在 wrapper 内部（每次调用登记一次），而不是只在 `wrap()` 当时：本类的常见
    * 用法是 wrap 一次、复用同一个 wrapper 反复调用，而 `clear()` 会把本字段清成
@@ -163,7 +167,7 @@ export class ActionLoader {
    * 下一次 clear()/setOptions() 就拿不到写入函数，复位值一个也写不出去。
    * @private
    */
-  private lastSetState: ((key: string, value: unknown) => void) | undefined
+  private lastSetStateByKey: Map<string, (key: string, value: unknown) => void> = new Map()
 
   /**
    * 配置选项（由 {@link normalizeActionLoaderOptions} 补齐，缺省值见 {@link ACTION_LOADER_DEFAULTS}）
@@ -249,10 +253,6 @@ export class ActionLoader {
 
     const wrapped = async function (this: unknown, ...args: Parameters<T>): Promise<unknown> {
       const receiver = this
-      // 复位能力跟着「实际发生过的调用」登记，而不是跟着 wrap 那一次：`clear()` 会把
-      // lastSetState 清成 undefined，此后继续复用同一个 wrapper 时若不重新登记，
-      // 下一次 clear()/换键的 setOptions() 就拿不到写入函数，store 里的 loading 永久卡在 true
-      loader.lastSetState = setState
       // 本次调用的配置快照 + 代际凭证：increment 与配对的 decrement/settle 都按它决定，
       // 中途的 setOptions()/clear() 不会让两端跑到不同配置或不同记账上去
       const scope = loader.captureCallScope(actionName)
@@ -355,6 +355,9 @@ export class ActionLoader {
   private incrementLoading(key: string, setState: (key: string, value: unknown) => void): void {
     const count = (this.loadingRefCounts.get(key) ?? 0) + 1
     this.loadingRefCounts.set(key, count)
+    // 登记本键的写入函数：多宿主共享同一 loader 时，每个键记住自己的 setState，
+    // clear() 时按键查表复位，避免单槽 lastSetState 只留得住最后一个宿主的问题
+    this.lastSetStateByKey.set(key, setState)
     if (count === 1) {
       setState(key, true)
     }
@@ -408,6 +411,8 @@ export class ActionLoader {
    */
   private writeError(scope: CallScope, error: Error | null, setState: (key: string, value: unknown) => void): void {
     this.errors.set(scope.errorKey, error)
+    // 登记本键的写入函数：多宿主共享同一 loader 时，每个键记住自己的 setState
+    this.lastSetStateByKey.set(scope.errorKey, setState)
     setState(scope.errorKey, error)
 
     if (error) {
@@ -419,6 +424,7 @@ export class ActionLoader {
         timestamp: Date.now(),
       }
       this.errorData.set(scope.errorDataKey, errorData)
+      this.lastSetStateByKey.set(scope.errorDataKey, setState)
       setState(scope.errorDataKey, errorData)
     } else {
       this.errorData.delete(scope.errorDataKey)
@@ -583,7 +589,7 @@ export class ActionLoader {
     // 拖住宿主不被回收）。丢掉不影响后续的复位能力：同一个 wrapper 再被调用时会在
     // 调用时刻重新登记（见 {@link lastSetState}），不会像此前「只在 wrap 时赋值」那样
     // 一旦 clear 就永久失去复位能力
-    this.lastSetState = undefined
+    this.lastSetStateByKey.clear()
   }
 
   /**
@@ -592,23 +598,32 @@ export class ActionLoader {
    * @private
    */
   private resetDerivedState(setState?: (key: string, value: unknown) => void): void {
-    const write = setState ?? this.lastSetState
-    if (!write) {
-      // 从未有过一次实际调用：没有 setState 可用，也就没写过宿主状态
+    // 多宿主共享同一 loader 时，每个键记住自己的 setState；缺省 setState 优先（显式传入），
+    // 否则按键查表。表空且无显式传入 = 从未有过一次实际调用，也就没写过宿主状态
+    if (setState === undefined && this.lastSetStateByKey.size === 0) {
       return
     }
     for (const [key, count] of this.loadingRefCounts) {
       if (count > 0) {
-        this.safeRunStateEffect(() => write(key, false))
+        const write = setState ?? this.lastSetStateByKey.get(key)
+        if (write) {
+          this.safeRunStateEffect(() => write(key, false))
+        }
       }
     }
     for (const [key, error] of this.errors) {
       if (error !== null) {
-        this.safeRunStateEffect(() => write(key, null))
+        const write = setState ?? this.lastSetStateByKey.get(key)
+        if (write) {
+          this.safeRunStateEffect(() => write(key, null))
+        }
       }
     }
     for (const key of this.errorData.keys()) {
-      this.safeRunStateEffect(() => write(key, null))
+      const write = setState ?? this.lastSetStateByKey.get(key)
+      if (write) {
+        this.safeRunStateEffect(() => write(key, null))
+      }
     }
   }
 

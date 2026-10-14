@@ -363,7 +363,10 @@ describe('R6-024 getCached 成员存在但不读取时退化为真实状态读',
     ).runAll()
 
     const result = report.results[0]
-    expect(result.warnings ?? []).toEqual([])
+    // 本判据要锁的是「没有**缓存退化**告警」，不是「warnings 数组为空」：--expose-gc 缺席时的
+    // 内存口径告警是另一码事（见 runner.ts 的 gcAvailable），CI 与本机常态下都会出现。
+    // 用与上面正向判据同一个标记串取反，才不会让这条替无关告警背书
+    expect((result.warnings ?? []).join(' ')).not.toContain('hits+misses 未变化')
     expect(result.results.cache.hits + result.results.cache.misses).toBeGreaterThan(0)
   })
 })

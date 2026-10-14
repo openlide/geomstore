@@ -39,8 +39,6 @@ const loadingCountRegistry = new WeakMap<object, Map<string, Map<string, number>
  */
 type LoadingHost = { setState?: (key: string, value: unknown) => void }
 
-/** 宿主能否作为 WeakMap 键（对象/函数且非 null）——判据与 throttle / debounce 共用 common 里那一份 */
-
 /**
  * 计算选项签名（缺省值与 `ActionLoader` 构造器同源：都走
  * {@link normalizeActionLoaderOptions} + `ACTION_LOADER_DEFAULTS`），用于注册表按配置分桶。

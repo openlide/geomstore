@@ -150,7 +150,7 @@ describe('compose 分发的自有键判定与空值容忍（#110 / #114）', () 
     const stores = [fakeStore('a', { x: 1 }), fakeStore('b', { y: 2 })]
     let n = 0
     // 旧实现在此抛 TypeError: Cannot convert undefined or null to object
-    const merged = mergeStateMaps(stores, () => (n++ === 0 ? null : { z: 3 }), new Set<string>())
+    const merged = mergeStateMaps(stores, () => (n++ === 0 ? null : { z: 3 }), new Map<string, Set<string>>())
     expect(merged).toEqual({ z: 3 })
   })
 })
@@ -280,7 +280,10 @@ describe('PerformanceMonitor 计时来源（#136 / #133）', () => {
 
       const logged = logger.mock.calls[0][0] as Record<string, unknown>
       const buffered = (monitor as unknown as { metrics: Record<string, unknown>[] }).metrics[0]
-      expect(logged).toBe(buffered)
+      // #101: logger 收到的是浅拷贝，防止用户 supplied logger 修改对象后污染缓冲区历史。
+      // 内容与 buffered 相同，但引用不同（隔断 mutation）
+      expect(logged).not.toBe(buffered)
+      expect(logged).toEqual(buffered)
       expect(logged).not.toBe(input)
       expect(logged.memoryUsage).toBe(123)
       // 副作用不得泄漏回调用方的入参对象

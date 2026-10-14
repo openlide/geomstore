@@ -280,6 +280,10 @@ export function createDirtyTrackingProxy(root: object, cache: DirtyTrackingCache
     const bindMethods = !collection && !array && prototype !== Object.prototype && prototype !== null
 
     const methods = new Map<string | symbol, unknown>()
+    // 与方法缓存并行：记录每个缓存条目对应的原始函数。方法被整体替换时
+    // （`state.svc.bump = fn`），Reflect.get 返回新函数，必须重建缓存条目，
+    // 否则代理会继续返回闭包引用旧 raw 的 invoke
+    const methodSources = new Map<string | symbol, unknown>()
     const proxy = new Proxy(target, {
       get(obj, key) {
         const descriptor = Object.getOwnPropertyDescriptor(obj, key)
@@ -321,7 +325,10 @@ export function createDirtyTrackingProxy(root: object, cache: DirtyTrackingCache
         // （与下方 bindMethods 同一取舍）。代价是访问器内部对裸对象的写入不被归因，
         // 此类写入由 report 的「归属解析不出即标记全部顶层键」兜底
         if (bindMethods && typeof raw === 'function' && key !== 'constructor') {
-          if (methods.has(key)) return methods.get(key)
+          const cached = methods.get(key)
+          // 只在底层函数没换时复用：内部访问可以把方法整个换掉（`this.state.svc.bump = fn`），
+          // 无条件复用旧条目会让代理返回已被替换掉的实现
+          if (cached !== undefined && methodSources.get(key) === raw) return cached
           const invoke = (...args: unknown[]): unknown => {
             // 方法体直接改原始对象，索引看不到它写了哪些边，故调用前先按当前索引归因
             // 所属顶层键（宁多报）。此处不做全量重建：重建发生在 Reflect.apply 之前，
@@ -330,6 +337,7 @@ export function createDirtyTrackingProxy(root: object, cache: DirtyTrackingCache
             return Reflect.apply(raw as (...a: unknown[]) => unknown, obj, args)
           }
           methods.set(key, invoke)
+          methodSources.set(key, raw)
           return invoke
         }
         return wrap(raw)
@@ -357,8 +365,9 @@ export function createDirtyTrackingProxy(root: object, cache: DirtyTrackingCache
         const previous = Object.getOwnPropertyDescriptor(obj, key)
         const value = 'value' in descriptor ? unwrap(descriptor.value) : undefined
         const normalized = 'value' in descriptor ? { ...descriptor, value } : descriptor
+        const edge = classifyWrite(obj, key, previous, value)
         const success = Reflect.defineProperty(obj, key, normalized)
-        if (success) report(obj, key, classifyWrite(obj, key, previous, value), value)
+        if (success) report(obj, key, edge, value)
         return success
       },
     })

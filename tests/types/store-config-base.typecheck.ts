@@ -75,7 +75,10 @@ const _same1: FromFactory = null as unknown as FromLiteral
 const _same2: FromLiteral = null as unknown as FromFactory
 void [_fromLiteral, _fromFactory, _same1, _same2]
 
-// 归一失败（S = unknown 的裸配置）时退回 State，仍可按键索引的是 getter 侧的兜底形状
+// 归一失败退回 State、仍可按键索引的是 getter 侧的兜底形状。
+// 走这条分支需要**显式**退化输入 `StoreConfig<unknown>`；裸写法 #R5-326 起
+// 已改用 S 的默认值 `Record<string, unknown>`、不会失败（详见文件下方对 `bareForm`
+// 「不经过 ConfigState 的退化兜底分支」的说明）
 type Unresolved = ResolvedState<unknown>
 const _unresolved: Unresolved = {}
 // 负向锁定：`{}` 对 object / Record<string, unknown> / unknown / any 都成立，正向赋值锁不住任何东西；

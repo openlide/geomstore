@@ -32,11 +32,27 @@ const ELIDED_PLACEHOLDER = '[details omitted]'
  * 依据只能是「被抛的值里本来就不放凭证」。
  */
 function describeThrownObject(value: object): string {
+  const SENSITIVE_KEYS = new Set([
+    'token',
+    'password',
+    'secret',
+    'authorization',
+    'cookie',
+    'apikey',
+    'api_key',
+    'access_token',
+    'refresh_token',
+    'session',
+    'credential',
+  ])
   const projection: Record<string, unknown> = Object.create(null) as Record<string, unknown>
   for (const key of Object.keys(value)) {
     const descriptor = Object.getOwnPropertyDescriptor(value, key)
-    // 只取数据描述符：读访问器属性本身就是执行用户代码
     if (descriptor === undefined || !('value' in descriptor)) {
+      continue
+    }
+    if (SENSITIVE_KEYS.has(key.toLowerCase())) {
+      projection[key] = ELIDED_PLACEHOLDER
       continue
     }
     const field: unknown = descriptor.value
@@ -148,8 +164,8 @@ export interface RetryOptions {
 /**
  * 把被回调异常顶掉的真实失败挂到该异常的 `cause` 上
  *
- * target/lib 为 ES2020，`Error` 构造器没有 `cause` 选项签名，按 `ErrorRecovery` 同口径
- * 用属性赋值补齐。已有 cause 的不覆盖（那是更精确的一条链），冻结/只读的对象挂不上也
+ * target/lib 为 ES2020，`Error` 构造器没有 `cause` 选项签名，用属性赋值补齐。
+ * 已有 cause 的不覆盖（那是更精确的一条链），冻结/只读的对象挂不上也
  * 就此作罢——为了附加信息再顶替一次失败是本末倒置。
  */
 function attachCause(error: Error, original: unknown): void {
@@ -201,9 +217,13 @@ export async function retryWithBackoff<T>(fn: () => Promise<T>, options: RetryOp
       } catch (callbackError) {
         // shouldRetry 抛错 = 该判断不可用，不擅自替调用方决定重试，按原样向上抛。
         // 但它会把 fn 的真实失败整个顶掉（调用方只看到一个与故障无关的回调异常），
-        // 故先把原始抛出值挂成 cause 保留根因，再抛回调异常本身
+        // 故先把原始抛出值挂成 cause 保留根因，再抛回调异常本身。
+        // 非 Error 抛出值（如 `throw 'boom'`）无 cause 字段可写：向外抛出的仍是原始值
+        // （兑现「e === thrown」身份判断），此时原始 error 只能落到 console.error 兜底
         if (callbackError instanceof Error) {
           attachCause(callbackError, error)
+        } else {
+          console.error('[retryWithBackoff] shouldRetry threw a non-Error, original failure attached:', error)
         }
         throw callbackError
       }
@@ -211,8 +231,7 @@ export async function retryWithBackoff<T>(fn: () => Promise<T>, options: RetryOp
         throw error
       }
 
-      // 通知回调的异常不得改变重试结果：与 ErrorRecovery.executeRetryStrategy 的
-      // onRetry 处理同口径（否则一个只用于打日志的回调能让重试提前中断、
+      // 通知回调的异常不得改变重试结果（否则一个只用于打日志的回调能让重试提前中断、
       // 并让调用方看到与真实失败无关的报错）
       if (onRetry) {
         try {
@@ -241,8 +260,8 @@ export async function retryWithBackoff<T>(fn: () => Promise<T>, options: RetryOp
  * @param promise - 被竞速的 Promise
  * @param timeout - 超时时间（毫秒，必须为大于 0 的有限数值）
  * @param timeoutMessage - 超时错误消息（仅用于展示，识别请用 {@link TIMEOUT_ERROR_CODE}）
- * @returns 原 Promise 的结果；超时则抛出错错误
- * @throws {RangeError} timeout 为非有限值或 <= 0
+ * @returns 原 Promise 的结果；超时则以 timeoutMessage 对应的错误拒绝
+ * @returns rejected with RangeError timeout 为非有限值或 <= 0 时
  *
  * @remarks 不可取消：超时只是让本函数提前 reject，`promise` 仍会在后台继续执行到结束；
  * 需要真正中断请在 `promise` 内部实现 AbortController 等取消机制。

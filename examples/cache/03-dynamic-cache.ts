@@ -69,8 +69,8 @@ listStore.setState('rows', [
 ])
 
 // 读缓存走 getCached（`getState` 是直接读状态源，不计命中/未命中）
-listStore.getCached('cursor')
-listStore.getCached('rows')
+console.log('缓存读取游标:', listStore.getCached('cursor'))
+console.log('缓存读取行:', listStore.getCached('rows'))
 
 console.log('行数:', listStore.getState().rows.length)
 console.log('游标:', listStore.getState().cursor)

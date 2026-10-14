@@ -219,9 +219,9 @@ describe('R6-051 队列压缩按摊还口径执行，而不是每批搬移整个
     const watch = watchQueueSplices()
     try {
       const result = await manager.createSnapshotAsync(source, { batchSize: 20, timeout: 0 })
-      // root + 2000 个内层对象（原语不入队、不计数）
+      // root + 2000 个内层对象 + 2000 个原始值（异步路径与同步路径同口径，原始值也计入 nodeCount）
       expect(result.success).toBe(true)
-      expect(result.metadata.nodeCount).toBe(2001)
+      expect(result.metadata.nodeCount).toBe(4001)
       // 压缩确实发生了（否则「从不裁剪」也能过这条），但次数远低于批次数（~101 批）
       expect(watch.calls()).toBeGreaterThan(0)
       expect(watch.calls()).toBeLessThan(40)

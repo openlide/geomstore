@@ -2,7 +2,6 @@
  * 第五轮 extras-action-p1 分片回归（async-core / cache / common / debounce / log）
  *
  * 每条用例断言的是**修复后**的语义，修复前这些断言全部会失败。
- * 编号对应 `.ocr-fix/groups5/extras-action-p1.md`。
  */
 
 import { retryWithBackoff, toError, type RetryOptions } from '@/extras/action/async-core.js'

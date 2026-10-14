@@ -15,6 +15,7 @@
 export type { CacheOptions, LRUCacheStats } from './types.js'
 
 import type { CacheOptions, LRUCacheStats, LRUNode } from './types.js'
+import { isProduction } from '../store/utils.js'
 
 /** 高精度时间戳（毫秒）：performance.now 具亚毫秒精度，访问耗时统计依赖它 */
 function highResNow(): number {
@@ -604,12 +605,20 @@ export class LRUCache<K, V> {
    */
   toObject(): Record<string, V> {
     const obj: Record<string, V> = {}
+    const seen = new Set<string>()
     this.forEach((value, key) => {
+      const strKey = String(key)
+      // #93: 不同键（如 1 与 '1'）String() 后相同，后者会静默覆盖前者。
+      // 检测并告警，避免数据丢失不被发现
+      if (seen.has(strKey) && !isProduction()) {
+        console.warn(`[LRUCache] toObject() key collision: distinct keys stringify to "${strKey}", later value overwrites earlier`)
+      }
+      seen.add(strKey)
       // 以 DefineOwnProperty 语义写入：缓存键可来自 state 的自有键，而 state 可合法
       // 含自有 __proto__ 键（helpers.ts 的 deepMerge/set 有意用 defineOwnProperty 写入）。
       // obj[key] = value 走 [[Set]]，会触发 Object.prototype 的 __proto__ setter——
       // 该键被静默丢弃且 obj 原型被换掉。defineProperty 只定义自有数据属性，不触发 setter
-      Object.defineProperty(obj, String(key), {
+      Object.defineProperty(obj, strKey, {
         value,
         writable: true,
         enumerable: true,

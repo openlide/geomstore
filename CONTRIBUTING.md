@@ -42,7 +42,7 @@ npx tsc -p packages/benchmark/tsconfig.json && node packages/benchmark/dist/smok
 
 `packages/benchmark` 不在 pnpm 工作区内，所以 `pnpm --filter` / 子包目录下的 `pnpm install` 都不适用：它借根装的 `typescript` 编译，产物落 `packages/benchmark/dist/`（被 `dist/` 规则忽略）。要把它接进工作区，前提是先补齐它自己的 devDependencies 安装路径并重生成锁文件——否则保持「声明了却没接入」的自相矛盾状态就是缺陷。
 
-**格式门禁**：CI 的 `Format check` 步就是 `pnpm format:check`（glob 只在 `package.json` 里定义一次，这里不重抄），覆盖 `src` / `tests` 的 TS 与**全部手写文档 md**。生成物 `.codebuddy/skills/geomstore/references/api/**` 由 `.prettierignore` 排除：对它跑格式化器会**改动内容**（转义块引用内粗体跨度里的星号、把三反引号围栏抬成四反引号、并按 `semi:false` 删掉 `.d.ts` 声明行末的分号——实测某文件 20 行剩 1 行），而这份文件的契约恰恰是「逐字取自类型声明原文」，它的正确性由「与 `.d.ts` 一致」保证、不由排版门禁保证。手写文档实测幂等且不改动内容。`.ocr-fix/**` 是复审工作记录、不是文档产品，门禁的 glob 从不点名它。
+**格式门禁**：CI 的 `Format check` 步就是 `pnpm format:check`（glob 只在 `package.json` 里定义一次，这里不重抄），覆盖 `src` / `tests` 的 TS 与**全部手写文档 md**。生成物 `.codebuddy/skills/geomstore/references/api/**` 由 `.prettierignore` 排除：对它跑格式化器会**改动内容**（转义块引用内粗体跨度里的星号、把三反引号围栏抬成四反引号、并按 `semi:false` 删掉 `.d.ts` 声明行末的分号——实测某文件 20 行剩 1 行），而这份文件的契约恰恰是「逐字取自类型声明原文」，它的正确性由「与 `.d.ts` 一致」保证、不由排版门禁保证。手写文档实测幂等且不改动内容。
 
 **换行符口径（已归一，不要再改回 `auto`）**：仓库根 `.gitattributes` 用 `* text=auto eol=lf` 把仓库内与检出侧统一钉成 LF，`.prettierrc.json` 因此直接判 `endOfLine: lf`——`Format check` 现在**既判格式也判换行**，本地与 Linux runner 判据一致。归一是在检出侧做的（把工作树文件写成 LF），仓库侧一个字节都没变：index 侧 461 个文件本来就全是 LF，所以 `git add --renormalize .` 是**空操作**，那次提交不含 400 文件的churn。`core.autocrlf=true` 会被 `.gitattributes` 覆盖，本机不必再调 `git config`。
 
@@ -80,14 +80,13 @@ node --input-type=module -e 'const s = await import("./dist/index.js"); console.
 
 - 子路径转发目录（`store/`、`hooks/`、`plugins/`、`integrations/` 等）由 `prepack` 生成、`postpack` 清理；手动入口为 `pnpm stubs` / `pnpm stubs:clean`
 - 发布走 `prepublishOnly`：`pnpm test && pnpm run build:release && pnpm run build:weapp && pnpm run verify:weapp`。`build:release` 使用**严格压缩**——无可用压缩器时以退出码 1 中止，杜绝静默发出未压缩包
-- **两份产物、两条链路**：`dist/` 是给 Node 与打包器的 ESM（`exports` 指向它）；`dist-weapp/` 是给微信「构建 npm」的 **按模块一比一转译的 CJS**（105 个模块与 `dist` 一一对应、模块间保留相对 `require`），由包根 `miniprogram` 字段指向、工具整目录拷贝。**不要改成「bundle 成单文件」**：esbuild 的 `--splitting` 只支持 esm，CJS 多入口 bundle 会把 core 重复内联（实测 457.1 KB vs 228.3 KB），更要命的是每个入口各持一份模块实例，`.` 与 `./core` 的 `globalRegistry` 会变成两个对象——`verify:weapp` 里的「跨入口单例同一性」断言就是钉这一条的。改 `exports` 时两条链路都要顾：`build-weapp.mjs` 的入口清单是从 `exports` 派生的（`scripts/weapp-entries.mjs` 单一实现），子路径的 `default` 不是 `./dist/**.js` 形状时构建直接失败，而不是悄悄少发一个入口。0.6.0 的坏产物能发出去，就是因为 `test` / `build` / `pack` 没有一个会加载要被微信拷走的那份文件；缺陷特征与判据见 CHANGELOG 的 `[0.6.1]` 一节
+- **两份产物、两条链路**：`dist/` 是给 Node 与打包器的 ESM（`exports` 指向它）；`dist-weapp/` 是给微信「构建 npm」的 **按模块一比一转译的 CJS**（89 个模块与 `dist` 一一对应、模块间保留相对 `require`），由包根 `miniprogram` 字段指向、工具整目录拷贝。**不要改成「bundle 成单文件」**：esbuild 的 `--splitting` 只支持 esm，CJS 多入口 bundle 会把 core 重复内联（实测 457.1 KB vs 228.3 KB），更要命的是每个入口各持一份模块实例，`.` 与 `./core` 的 `globalRegistry` 会变成两个对象——`verify:weapp` 里的「跨入口单例同一性」断言就是钉这一条的。改 `exports` 时两条链路都要顾：`build-weapp.mjs` 的入口清单是从 `exports` 派生的（`scripts/weapp-entries.mjs` 单一实现），子路径的 `default` 不是 `./dist/**.js` 形状时构建直接失败，而不是悄悄少发一个入口。0.6.0 的坏产物能发出去，就是因为 `test` / `build` / `pack` 没有一个会加载要被微信拷走的那份文件；缺陷特征与判据见 CHANGELOG 的 `[0.6.1]` 一节
 - **发版清单**（版本号散在四处，漏一处就有一条陈述变假话）：
   1. `package.json` 的 `version`
-  2. `src/integrations/enterprise/hot-update.ts` 的 `LIBRARY_VERSION` —— 与 1 是**手工镜像**关系（#327 未收口：没有构建期注入）。漏改不会静默过去：`tests/integration/enterprise.test.ts` 会用 `package.json` 的 `version` 断言写入备份的该常量，漏 bump 直接红灯（比对结果本身只用于 `logger.warn`，不拦截恢复）
-  3. `CHANGELOG.md` —— `## [Unreleased]` 改成 `## [x.y.z] - 日期` 并在其上补一个空的 `[Unreleased]`；文末链接区同步：`[Unreleased]` 的 compare 基准换成新 tag、新增 `[x.y.z]` 的 release 链接
-  4. skill —— `pnpm run build && pnpm run skill:api` 重跑生成物（`references/api/*.md` 的「来源版本」行），另需手改 `SKILL.md` 三处版本号（frontmatter 的 `description`、正文「当前版本」、指向 `references/api/index.md` 那条的「当前对应 vX.Y.Z」）。这四处分量**必须一次改齐**：`tests` 里有用例把 `SKILL.md` 的手写版本行与生成物的「来源版本」行钉到 `package.json`，漏改 `SKILL.md` 三处或漏跑 `pnpm skill:api` 现在会让 `pnpm test` 直接变红（不再只是文档措辞过期）
-  5. 门禁 —— `lint:ci` / `Format check` / 四条 `typecheck` / `test:ci` / `build:release` / `build:weapp` + `verify:weapp` / `npm pack --dry-run`（核对文件数，且必须看到 `dist-weapp/**` 与 `miniprogram` 字段随包出去），并在本地复现 CI 那条**走 Node `exports` 解析器的子路径冒烟**
-  6. `git tag` 与 `npm publish` 是**对外不可逆动作**（npm 不允许覆盖已发版本），须单独确认后再做
+  2. `CHANGELOG.md` —— `## [Unreleased]` 改成 `## [x.y.z] - 日期` 并在其上补一个空的 `[Unreleased]`；文末链接区同步：`[Unreleased]` 的 compare 基准换成新 tag、新增 `[x.y.z]` 的 release 链接
+  3. skill —— `pnpm run build && pnpm run skill:api` 重跑生成物（`references/api/*.md` 的「来源版本」行），另需手改 `SKILL.md` 三处版本号（frontmatter 的 `description`、正文「当前版本」、指向 `references/api/index.md` 那条的「当前对应 vX.Y.Z」）。这四处分量**必须一次改齐**：`tests` 里有用例把 `SKILL.md` 的手写版本行与生成物的「来源版本」行钉到 `package.json`，漏改 `SKILL.md` 三处或漏跑 `pnpm skill:api` 现在会让 `pnpm test` 直接变红（不再只是文档措辞过期）
+  4. 门禁 —— `lint:ci` / `Format check` / 四条 `typecheck` / `test:ci` / `build:release` / `build:weapp` + `verify:weapp` / `npm pack --dry-run`（核对文件数，且必须看到 `dist-weapp/**` 与 `miniprogram` 字段随包出去），并在本地复现 CI 那条**走 Node `exports` 解析器的子路径冒烟**
+  5. `git tag` 与 `npm publish` 是**对外不可逆动作**（npm 不允许覆盖已发版本），须单独确认后再做
 - **0.x 的版本号语义**：`^0.5.1` 展开为 `>=0.5.1 <0.6.0`，即 caret **不跨 minor**——所以含破坏性变更的发版必须升 minor（0.6.0 就是这么定的）。发成 patch 会把破坏性变更自动装进按 caret 锁定的宿主并让它们的编译失败
 - 改动 `package.json` 的 `exports` / `files` 后，请用 `pnpm stubs` + `pnpm build` 验证一次真实解析
 
@@ -108,7 +107,7 @@ node --input-type=module -e 'const s = await import("./dist/index.js"); console.
 | 门禁、构建、发版、目录树               | 本文件（目录树正本在 ARCHITECTURE §3）                               |
 | agent 速查（一句结论 + §N）            | `.codebuddy/skills/geomstore/SKILL.md` → `references/*-semantics.md` |
 
-- **文档以源码为唯一依据**：写完一段结论就回 `src/` 核一遍。复审报告 / 判定台账里的措辞不是真相，代码才是。
+- **文档以源码为唯一依据**：写完一段结论就回 `src/` 核一遍。代码才是真相。
 - **正文只写当前行为**：不写「此前 X、现在 Y」「旧实现」「0.x.0 变更」这类时间对比，也不留版本标签。要交代升级影响就写进 `MIGRATION.md` 并在正文放一个链接。
 - `examples/` 是**唯一被编译的示例**（CI 的 `typecheck:examples`）。文档里的代码片段没有任何机制会编译它，所以照抄 `examples/` 里已验证的写法，比现编一段更稳。
 - **文档不写实测数字**：覆盖率阈值的唯一事实来源是 `jest.config.js` 的 `coverageThreshold`（当前 global 语句 / 函数 / 行 98、分支 95；`core` 与 snapshot / selector / action 另设单文件分支 85 下限）——本文件是它面向人的正本，其余文档一律链接过来、**不抄数值**，本文件那串数值由文档门禁反查 `jest.config.js` 钉住，改了配置忘了改文档会变红。套件数 / 用例数 / 实测百分比**不写进任何文档**：它们随轮次变动，写下来就是等着漂移的假话，要数字当场跑 `pnpm test`。**严禁留「等收口时填」这类空占位**——占位进仓库就是对读者宣称「这里有数字但我没算」，宁可不写。同理不写「100% 覆盖」「全绿」这类不实措辞：**没跑过门禁就不要替它说话**

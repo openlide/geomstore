@@ -272,8 +272,8 @@ export function withThrottle(interval: number = DEFAULT_INTERVAL, options: Throt
           // （本文件分支门槛 85%，实测 98.4%，无需为一条防御分支做豁免）
           if (hostState.timer === timer) {
             hostState.timer = null
+            firePendingTrailing(hostState)
           }
-          firePendingTrailing(hostState)
         },
         // 钳到 setTimeout 上限：interval > 2^31-1（≈24.8 天）时窗口内被抑制的调用
         // 算出的 trailing delay ≈ interval，原样交给宿主会被静默夹成 ~1ms 并打

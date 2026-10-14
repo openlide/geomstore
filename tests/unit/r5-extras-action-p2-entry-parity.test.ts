@@ -13,7 +13,6 @@ import * as actionEntry from '@/extras/action.js'
 import * as pluginsEntry from '@/extras/plugins.js'
 import * as performanceEntry from '@/extras/performance.js'
 import * as snapshotEntry from '@/extras/snapshot.js'
-import * as enterpriseEntry from '@/extras/enterprise.js'
 // LogSink / LogPhase 只经 `extras/action` barrel 给出：一旦漏项，本文件的 tsc 检查即报错
 import { withLog, type LogPhase, type LogSink } from '@/extras/action/index.js'
 // 此前只在总入口可得、子入口缺失的两个类型：两侧同时导入并要求可互相赋值
@@ -37,7 +36,6 @@ describe('r5-extras-action-p2: extras 总入口与子入口的导出面一致（
     ['./performance.js', performanceEntry],
     ['./snapshot.js', snapshotEntry],
     ['./action.js', actionEntry],
-    ['./enterprise.js', enterpriseEntry],
   ]
 
   it.each(cases)('%s 的值导出全部可达总入口', (_name, entry) => {
@@ -49,7 +47,7 @@ describe('r5-extras-action-p2: extras 总入口与子入口的导出面一致（
     expect(fromEntry.filter((key) => !fromExtras.includes(key))).toEqual([])
   })
 
-  it('总入口的值导出不超出五个子入口之和（不夹带第四处来源）', () => {
+  it('总入口的值导出不超出四个子入口之和（不夹带第四处来源）', () => {
     const fromEntries = new Set(cases.flatMap(([name, entry]) => valueKeys(entry).filter((key) => !(EXCLUDED_FROM_EXTRAS.get(name) ?? []).includes(key))))
 
     expect(valueKeys(extrasEntry).filter((key) => !fromEntries.has(key))).toEqual([])

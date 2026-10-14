@@ -98,7 +98,9 @@ export class ActionUtils<A extends Actions = AsyncActions> {
     if (first === undefined || first === null) {
       throw new TypeError('ActionUtils.execute: 缺少 actionName（或 actions + actionName）参数')
     }
-    const withExplicitActions = typeof first === 'object'
+    // typeof first === 'object' 会漏掉 callable Actions 对象（函数也是对象），
+    // 导致合法的 execute(actions, actionName, ...) 调用被误判为隐式 actions 形式
+    const withExplicitActions = typeof first === 'object' || typeof first === 'function'
     const actions = (withExplicitActions ? first : this.actions) as A
     const actionName = (withExplicitActions ? params[1] : first) as keyof A
     const args = params.slice(withExplicitActions ? 2 : 1)
@@ -107,7 +109,12 @@ export class ActionUtils<A extends Actions = AsyncActions> {
     // ActionExecutor.run 抛的是 `actions[actionName] is not a function`，
     // 且这次失败还会被写进 executor 历史（getStats/getHistory 多出一条并非 action 执行的记录）
     const target: unknown = actions
-    if (target === null || target === undefined || typeof (target as A)[actionName] !== 'function') {
+    if (
+      target === null ||
+      target === undefined ||
+      !Object.prototype.hasOwnProperty.call(target, actionName) ||
+      typeof (target as A)[actionName] !== 'function'
+    ) {
       throw new TypeError(`ActionUtils.execute: action "${String(actionName)}" 不存在或不是函数`)
     }
 

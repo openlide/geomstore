@@ -46,11 +46,20 @@ store.use(loggerPlugin)
  *
  * - 小程序：`WxStorageBackend`（或自行封装 `wx.getStorageSync`/`wx.setStorageSync`）
  * - 浏览器：可直接传 `localStorage`
+ *
+ * 本例给一个真会读写的内存后端：Map 兜住落盘数据，让 filter/debounce/restore
+ * 行为可观察（此前 `getItem: () => null` + `setItem: () => {}` 的静默 no-op
+ * 会让读者以为持久化「跑通了」，实际什么都没存下）
  */
+const backendStore = new Map<string, string>()
 const memoryBackend = {
-  getItem: (_key: string): string | null => null,
-  setItem: (_key: string, _value: string): void => {},
-  removeItem: (_key: string): void => {},
+  getItem: (key: string): string | null => backendStore.get(key) ?? null,
+  setItem: (key: string, value: string): void => {
+    backendStore.set(key, value)
+  },
+  removeItem: (key: string): void => {
+    backendStore.delete(key)
+  },
 }
 
 // 持久化插件：filter 指定落盘的状态子集，debounce 控制写入频率
@@ -67,9 +76,13 @@ store.dispatch('increment')
 store.dispatch('setMessage', 'Hello from plugin!')
 console.log('状态:', store.getState())
 
-// 批量安装：logger → persistence → devtools 顺序注册
+// 批量安装：logger → persistence → devtools 顺序注册。
+// 逐个捕获 uninstaller，示例收工前统一调用作废；否则 devtoolsPlugin 注册的
+// globalThis.__GEOMSTORE_STORES__ / __GEOMSTORE_DEVTOOLS__、logger/persistence 的订阅
+// 与钩子都会留驻进程；persistence 缺省 storage 无 wx 会静默降级为 in-memory，
+// 这里显式传后端保证行为可观察
 const another = createStore({ name: 'plugin-batch', state: () => ({ n: 0 }) })
-builtinPlugins.forEach((plugin) => another.use(plugin))
+const batchUninstallers = builtinPlugins.map((plugin) => another.use(plugin))
 
 // ==================== 自定义插件 ====================
 
@@ -77,9 +90,11 @@ builtinPlugins.forEach((plugin) => another.use(plugin))
 // 泛型化后可标注精确的状态类型（`Plugin<DemoState>`），install 的 store 参数随之精确
 const myLoggerPlugin = {
   name: 'my-logger',
-  install(target: { subscribe: (fn: (state: DemoState) => void) => () => void }) {
+  install(target: { subscribe: (fn: (state: DemoState) => void, options?: { readOnly?: boolean }) => () => void }) {
     console.log('\n[MyLogger] 插件已安装')
-    const unsubscribe = target.subscribe((state) => console.log('[MyLogger] 状态变化:', state))
+    // 只读订阅：只要日志、不写回 state。传 readOnly 让 Store 跳过对整棵状态树的
+    // 深克隆（否则每条变更多付一次克隆，与内置 loggerPlugin 同口径）
+    const unsubscribe = target.subscribe((state) => console.log('[MyLogger] 状态变化:', state), { readOnly: true })
     return () => {
       unsubscribe()
       console.log('[MyLogger] 插件已卸载')
@@ -92,7 +107,11 @@ const uninstall = store.use(myLoggerPlugin)
 store.dispatch('increment')
 uninstall() // 手动卸载：触发订阅清理
 
-// 安装方式二：独立函数 `usePlugin(plugin, store)` 等价；泛型从 store 反推，无需断言
-// （插件需与 store 的状态类型匹配；状态无关的插件写作 `Plugin<State>`）
+// 安装方式二：`store.use(plugin)` 与 `usePlugin(plugin, store)` 等价。
+// 后者作为独立函数入口存在于 src/plugins 内部（`usePlugin` 未从 `extras/plugins`
+// barrel 再导出），消费者按方式一写即可；如需函数式，从主入口 `@openlide/geomstore`
+// 引入 `usePlugin` 后写作 `usePlugin(plugin, store)`
+batchUninstallers.forEach((dispose) => dispose())
+another.destroy()
 
 console.log('\n✅ 插件示例完成')

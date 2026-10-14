@@ -15,9 +15,8 @@
  *    真实 `require` 加载，等价于把微信运行时要走一遍的解析路径先走一遍；
  * 5. 无 `outsideDeps` 残留、无顶层 ESM 语法残留；
  * 6. 导出面与 `dist` 的 ESM 逐项一致（少一个导出＝少一个 API）；
- *    跨入口单例同一性：`.` 与 `./core` 的 `globalRegistry`、`./extras` 与
- *    `./extras/enterprise` 的 `storeManager` 必须是**同一个对象**。这条就是
- *    「bundle 成单文件」方案会当场失败的地方（实测两个 false）；
+ *    跨入口单例同一性：`.` 与 `./core` 的 `globalRegistry` 必须是**同一个对象**。
+ *    这条就是「bundle 成单文件」方案会当场失败的地方（实测两个 false）；
  * 7. 主入口跑一次真实用例（createStore / dispatch / subscribe / getter / `$snapshot`）。
  *
  * 任一项不过 → 退出码 1，发布链（prepublishOnly）当场断。
@@ -134,7 +133,8 @@ try {
   )
 
   /** 缺陷 B 的正面防线：相对 require 的目标必须存在 */
-  const relRequire = /require\("(\.{1,2}\/[^"]+)"\)/g
+  // 同时匹配单/双引号与可选空白，避免格式化/压缩差异导致漏检
+  const relRequire = /require\(\s*['"](\.{1,2}\/[^'"]+)['"]\s*\)/g
   const unresolved = []
   let requireCount = 0
   for (const rel of weappFiles) {
@@ -169,7 +169,6 @@ try {
   /** 跨入口必须共享同一实例的单例（bundle 形态会在这一条当场失败） */
   const SHARED_SINGLETON_PAIRS = [
     { a: '.', b: './core', key: 'globalRegistry', why: 'Store 名字注册表' },
-    { a: './extras', b: './extras/enterprise', key: 'storeManager', why: '企业端账号/StoreManager 单例' },
   ]
 
   const loaded = new Map()
@@ -219,7 +218,7 @@ try {
     }
     check(
       `跨入口单例 ${pair.key} 同一对象（${pair.a} vs ${pair.b}）`,
-      a[pair.key] != null && a[pair.key] === b[pair.key],
+      a[pair.key] !== null && a[pair.key] !== undefined && a[pair.key] === b[pair.key],
       `${pair.why}；bundle 化的产物这里是 false`,
     )
   }
@@ -254,7 +253,11 @@ try {
     } catch (error) {
       check('主入口真实用例通过', false, error instanceof Error ? error.message : String(error))
     }
+  } else {
+    check('主入口已加载', false, 'loaded 中未找到 \'.\' 键，主入口验证被跳过')
   }
+} catch (error) {
+  failures.push(`未预期异常：${error instanceof Error ? (error.stack ?? error.message) : String(error)}`)
 } finally {
   // 唯一能同时兜住「断言途中抛错」与「cpSync / readFileSync 因文件被占用或并发删除失败」
   // 的收尾位置；下面的汇总不依赖加载区仍然存在

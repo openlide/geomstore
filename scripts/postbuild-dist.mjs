@@ -123,25 +123,18 @@ const markerPath = path.join(distDir, 'package.json')
 // 合并而非整体覆写：dist/package.json 可能已由 tsc 之外的步骤（copy / bundle）写入
 // name / exports / main / sideEffects 等字段，覆写会把它们静默销毁
 let marker = {}
-let markerStat = null
+let markerKind = 'absent'
 try {
-  markerStat = lstatOrNull(markerPath)
+  markerKind = classifyEntry(markerPath)
 } catch (error) {
-  console.error(`[postbuild] 中止：dist/package.json 的状态无法确认（${reasonOf(error)}）`)
+  console.error(`[postbuild] 中止：dist/package.json 无法分类（${reasonOf(error)}）`)
   process.exit(1)
 }
-if (markerStat) {
+if (markerKind !== 'absent') {
   // existsSync / readFileSync / writeFileSync 全部跟随重解析点：dist/package.json 若是
   // 指向仓库根 package.json（或 dist 外任意文件）的链接，下面那次「合并 type 标记」
   // 就把 {"type":"module"} 写进了链接目标——合并而非覆写在这里恰好变成销毁别人的文件。
   // 判据与扫描侧同源（classifyEntry）：非普通文件一律以退出码 1 中止。
-  let markerKind = 'unreadable'
-  try {
-    markerKind = classifyEntry(markerPath)
-  } catch (error) {
-    console.error(`[postbuild] 中止：dist/package.json 无法分类（${reasonOf(error)}）`)
-    process.exit(1)
-  }
   if (markerKind !== 'file') {
     console.error(
       `[postbuild] 已中止：dist/package.json 不是普通文件（判定为 ${markerKind}），` +
@@ -161,7 +154,12 @@ if (markerStat) {
     process.exit(1)
   }
 }
-fs.writeFileSync(markerPath, JSON.stringify({ ...marker, type: 'module' }, null, 2) + '\n')
+try {
+  fs.writeFileSync(markerPath, JSON.stringify({ ...marker, type: 'module' }, null, 2) + '\n')
+} catch (error) {
+  console.error(`[postbuild] 中止：无法写入 dist/package.json 的 type 标记（${reasonOf(error)}）`)
+  process.exit(1)
+}
 
 // ==================== 剔除 sourcemap ====================
 
@@ -171,10 +169,17 @@ fs.writeFileSync(markerPath, JSON.stringify({ ...marker, type: 'module' }, null,
  */
 const MAP_PATTERN = /\.(?:js|d\.ts)\.map$/
 
-/** 条目的三个类别，语义与 clean-dist.mjs 的 classifyEntry 一致（含「参照系两侧同源」那条：
- * 仓库根经由符号链接到达时，用 path.resolve 当参照系会把每个真实目录都判成 link） */
+/** 条目的四个类别，语义与 clean-dist.mjs 的 classifyEntry 一致（含「参照系两侧同源」那条：
+ * 仓库根经由符号链接到达时，用 path.resolve 当参照系会把每个真实目录都判成 link）。
+ * 返回 'absent' 表示文件不存在，避免调用方单独做一次存在性检查 */
 function classifyEntry(full) {
-  const stat = fs.lstatSync(full)
+  let stat
+  try {
+    stat = fs.lstatSync(full)
+  } catch (error) {
+    if (error && error.code === 'ENOENT') return 'absent'
+    throw error
+  }
   if (stat.isSymbolicLink()) return 'link'
   if (!stat.isDirectory()) return 'file'
   // realpathSync 一定解析重解析点；解析失败时按 link 处理：本脚本的删除不可回滚，

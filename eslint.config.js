@@ -101,10 +101,6 @@ export default [
       // 未安装自己的 devDependencies，且有自己的 tsconfig；CI 单独用
       // `npx tsc -p packages/benchmark/tsconfig.json` 编译它，不走根 eslint 配置
       'packages/**',
-      // 外部审查工具的中间产物与本地缓存（.gitignore 同样忽略它们）：
-      // 一次性脚本不是仓库源码，`.ocr-fix/*.mjs` 在裸命令下会贡献 60 条
-      // `'process'/'console' is not defined` 级别的 no-undef error
-      '.ocr-fix/**',
       '.cache/**',
     ],
   },

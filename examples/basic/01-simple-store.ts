@@ -45,9 +45,11 @@ const unsubscribe = counterStore.subscribe((state) => {
 })
 
 // 第二个参数可声明只读订阅。零拷贝的门槛是「一个可写订阅者都没有」——
-// 判据是 needsClone = (显式配了 notify.clone) || hasWritableListeners()，
-// 不是「存在只读订阅者」：上面注册的第一个订阅是可写的，所以紧接着 40 这次写入
-// 仍然整树深拷贝。等 unsubscribe() 之后（50 这次）只剩只读订阅者，才走零拷贝路径
+// 判据是 needsClone = (显式配了 notify.clone 且其值为 true) || hasWritableListeners()。
+// `_notifyCloneExplicit = options.notify?.clone !== undefined` 与
+// `_notifyClone = options.notify?.clone ?? true` 是两段判定，显式 `clone: false`
+// 时前者为真但后者为假、不会强制克隆。上面注册的第一个订阅是可写的，
+// 所以紧接着 40 这次写入仍然整树深拷贝。等 unsubscribe() 之后（50 这次）只剩只读订阅者，才走零拷贝路径
 const unsubscribeReadOnly = counterStore.subscribe((state) => console.log('只读订阅:', state.message), {
   readOnly: true,
 })

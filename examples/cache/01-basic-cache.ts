@@ -18,11 +18,15 @@ const userStore = createStore({
   }),
 })
 
-// 不传 keys 表示缓存全部顶层状态键
+// 不传 keys 表示缓存全部顶层状态键。
+// enableCache 会按当前状态整表预填进缓存（StoreCacheManager.enable → _writeEntry
+// 遍历顶层键），所以下面首次 getCached 就是命中，与示例 02 的说明一致。
+// 真实统计：hits=3 / misses=1（读 profile×2 + 写穿后读 + 失效后读），
+// 而非「读一次 miss 一次 hit」直觉给出的 2/2
 userStore.enableCache()
 
 // 只有 getCached() 查缓存：getState() 直接返回状态本身，既不算命中也不算未命中
-console.log('第一次读取(未命中):', userStore.getCached('profile'))
+console.log('第一次读取(命中，enableCache 已预填):', userStore.getCached('profile'))
 console.log('第二次读取(命中):', userStore.getCached('profile'))
 
 // 写入是写穿：setState 把新值同步更新进缓存，下一次读取仍是命中、拿到的是新值

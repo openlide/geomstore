@@ -6,7 +6,29 @@
  */
 
 import type { ErrorBoundaryOptions, ErrorFallback } from '../../types/error.js'
-import { DEFAULT_MAX_LOG_SIZE, isThenable } from './ErrorHandler.js'
+
+/**
+ * 错误条目上限（`ErrorBoundary.errorHistory` 的裁剪上限）。ErrorHandler 已随 extras/error
+ * 精简移除，此常量内联于此；本类的上限暂不对外开放（需要可调请另加公开配置）。
+ */
+const DEFAULT_MAX_LOG_SIZE = 100
+
+/**
+ * thenable 判定：只看语法（自带 callable `then`），不比 `instanceof Promise`。
+ * 跨 realm（iframe / worker / node:vm）的 Promise 与手写 thenable 的 instanceof 均为 false。
+ * 读 `.then` 是用户可执行入口，取值即抛的 getter / Proxy get 陷阱都能让它炸掉，
+ * 故与 `extras/action/decorators/common.ts` 的 isThenable 同口径：抛错按「非 thenable」降级。
+ */
+function isThenable(value: unknown): value is PromiseLike<unknown> {
+  if (value === null || (typeof value !== 'object' && typeof value !== 'function')) {
+    return false
+  }
+  try {
+    return typeof (value as { then?: unknown }).then === 'function'
+  } catch {
+    return false
+  }
+}
 
 /**
  * 错误边界类
@@ -177,11 +199,9 @@ export class ErrorBoundary<S = unknown, F = undefined> {
     const error: Error = rawError instanceof Error ? rawError : new Error(String(rawError))
     // 记录错误
     this.errorHistory.push(error)
-    // 上限保护：与 ErrorHandler 的 errorLog 共用同一个 DEFAULT_MAX_LOG_SIZE（单一来源，
-    // 调那一处常量即同时改掉两侧上限），高频失败场景下 Error 对象不再无界累积（此前只增
-    // 不减，需手动 clearErrorHistory）。每个入口只 push 一条，故此处判后 shift 恰好丢掉最旧
-    // 一条，等价于「保留最新 N 条」；本类的上限暂不对外开放（需要可调请走 ErrorHandler.setMaxLogSize
-    // 的同类接口设计，属新增公开配置，不在本轮范围）
+    // 上限保护：高频失败场景下 Error 对象不再无界累积（此前只增不减，需手动
+    // clearErrorHistory）。每个入口只 push 一条，故此处判后 shift 恰好丢掉最旧一条，
+    // 等价于「保留最新 N 条」；本类的上限暂不对外开放。
     if (this.errorHistory.length > DEFAULT_MAX_LOG_SIZE) {
       this.errorHistory.shift()
     }
@@ -189,7 +209,14 @@ export class ErrorBoundary<S = unknown, F = undefined> {
     // 调用错误回调
     if (this.onErrorCallback) {
       try {
-        this.onErrorCallback(error)
+        const result = this.onErrorCallback(error) as unknown
+        // #149: onError 回调可能是 async 函数，返回 Promise。同步 try/catch 只能兜住同步抛出，
+        // async 回调的 rejection 会逃逸成 unhandled rejection。检测 thenable 并用 Promise.resolve 包装后挂 .catch
+        if (isThenable(result)) {
+          Promise.resolve(result).catch((callbackError: unknown) => {
+            console.error('[ErrorBoundary] Error in async onError callback:', callbackError)
+          })
+        }
       } catch (callbackError) {
         console.error('[ErrorBoundary] Error in onError callback:', callbackError)
       }
@@ -357,8 +384,7 @@ export function withErrorBoundary(options?: ErrorBoundaryOptions) {
   const boundaryByHost = new WeakMap<object, ErrorBoundary<unknown, unknown>>()
 
   const getBoundary = (host: unknown): ErrorBoundary<unknown, unknown> => {
-    if (typeof host !== 'object' || host === null) {
-      // 宿主非对象（罕见）：每次调用一次性实例，不跨调用串扰
+    if (host === null || (typeof host !== 'object' && typeof host !== 'function')) {
       return new ErrorBoundary(options)
     }
     let boundary = boundaryByHost.get(host)

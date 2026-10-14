@@ -36,7 +36,7 @@ function collectMarkdown(): string[] {
       else if (e.name.endsWith('.md')) files.push(p)
     }
   }
-  walk('.codebuddy/skills/geomstore')
+  walk('skills/geomstore')
   return [...new Set(files)]
 }
 
@@ -46,7 +46,7 @@ const linesOf = (rel: string): string[] =>
   read(rel)
     .split('\n')
     .map((l) => l.replace(/\r$/, ''))
-const GENERATED_API = /^\.codebuddy\/skills\/geomstore\/references\/api\//
+const GENERATED_API = /^skills\/geomstore\/references\/api\//
 
 /** GitHub 风格的锚点：小写、去反引号、删除非「字母/数字/空格/-/_」的字符、空格转 `-` */
 function slug(heading: string): string {
@@ -514,9 +514,9 @@ describe('文档门禁 G7 / G8 / G9 / G11：数字反查事实来源', () => {
     })
   })
 
-  it('skill 的生成 API 参考不少于 12 篇（与 r6-f1-02 同口径）', () => {
-    const dir = path.join(repoRoot, '.codebuddy/skills/geomstore/references/api')
-    expect(readdirSync(dir).filter((f) => f.endsWith('.md')).length).toBeGreaterThanOrEqual(12)
+  it('skill 的生成 API 参考不少于 11 篇（与 r6-f1-02 同口径）', () => {
+    const dir = path.join(repoRoot, 'skills/geomstore/references/api')
+    expect(readdirSync(dir).filter((f) => f.endsWith('.md')).length).toBeGreaterThanOrEqual(11)
   })
 
   it('文档里写「N 个子路径」的数量词都等于 exports 实际键数', () => {
@@ -1011,7 +1011,7 @@ describe('文档门禁 G19：core 不得依赖可选能力实现（extras 与 pl
 describe('文档门禁 G20：SKILL.md 的 npm-only 一节与真实发布面一致', () => {
   const PACKAGE_NAME = '@openlide/geomstore'
   const SECTION = '### 3）在其他小程序项目内'
-  const SKILL_REL = '.codebuddy/skills/geomstore/SKILL.md'
+  const SKILL_REL = 'skills/geomstore/SKILL.md'
 
   const packFiles = (): string[] => {
     const out = execFileSync('npm', ['pack', '--dry-run', '--json', '--ignore-scripts'], {

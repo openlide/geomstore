@@ -98,7 +98,10 @@ export function deepFreezeState<T>(value: T, seen?: WeakSet<object>): T {
   }
   visited.add(value as object)
 
-  if (Array.isArray(value)) {
+  // Array 子类实例在 deepCloneState 中走「保留原引用」降级路径（与活状态共享），
+  // 而 Array.isArray 对子类同样返回 true——必须与 clone 侧同口径排除，
+  // 否则会递归冻结活状态的数组及其元素，违反「冻结范围 ⊆ 隔离范围」不变量。
+  if (Array.isArray(value) && Object.getPrototypeOf(value) === Array.prototype) {
     for (let i = 0; i < value.length; i++) {
       deepFreezeState(value[i], visited)
     }

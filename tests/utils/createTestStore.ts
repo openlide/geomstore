@@ -54,6 +54,14 @@ const createStoreFromOptions = _createStore as unknown as <S extends State, A ex
   options: StoreOptions<S, A, G>,
 ) => StoreInstance<S, A, G>
 
+// 编译期守门：把上面的断言拉回一次「真实 createStore 的返回是否仍是 StoreInstance」。
+// 走 ReturnType：TypeScript 对重载函数取最后一个签名的返回值，`createStore` 三个
+// 重载都收 `Store<S, A, G>`，返回类型不随 S/A/G 变化，因此这条锁能捕捉到
+// 「返回类型整体漂移」这类破坏性改动（比如改成了 `Store` 的兄弟接口、或加了包装）
+type _AssertReturnStillCompatible = ReturnType<typeof _createStore> extends StoreInstance<State, Actions, Getters<State>> ? true : false
+const _assertCreateStoreReturn: _AssertReturnStillCompatible = true
+void _assertCreateStoreReturn
+
 /**
  * 测试专用 Store 工厂。
  *
@@ -78,6 +86,12 @@ export function createTestStore<S extends State = Record<string, unknown>, A ext
   // `Store` 构造函数写的正是 `options.name || 'store-N'`（src/core/store/Store.ts，
   // 由 tests/unit/store/store.test.ts 的 STORE-088 锁定）。`''` 若被原样透传，
   // 最终仍会被 Store 换成非确定性的 `store-N`，恰恰丢掉本工厂要保证的唯一名可复现性
+  //
+  // ⚠️ `_seq` 依赖模块内的调用顺序：`.only` 单跑与全量跑会得到不同的 `test-store-N`；
+  // 若在 `test.concurrent` / Vitest concurrent 下并发进入，`++_seq` 交错也非确定。
+  // 目前测试不直接断言 store name（只关心唯一性），故接受此设计；如需把 name 纳入
+  // snapshot / 断言，改从 `crypto.randomUUID().slice(0,8)` 派生稳定后缀，
+  // 不再依赖全局计数
   const resolved: TestStoreConfig<S, A, G> = options.name ? options : { ...options, name: `test-store-${++_seq}` }
   return createStoreFromOptions(resolved)
 }

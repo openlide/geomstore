@@ -17,7 +17,7 @@
  */
 
 import { deepEqual } from '../../core/utils/helpers.js'
-import { isIndexKey, isSlotBearingBuiltin } from '../../core/utils/clone.js'
+import { isIndexKey, isSlotBearingBuiltin, ownEnumerableKeys } from '../../core/utils/clone.js'
 import type { SnapshotResult } from './types.js'
 
 /**
@@ -189,6 +189,30 @@ export interface SnapshotDiff {
 }
 
 /**
+ * 合并两侧键集（对象 / 数组附加键共用）
+ *
+ * 从 compareSnapshots 的键迭代拆出：对象分支与数组附加键分支都要把两侧 Object.keys 合并
+ * 成去重键集，此前各写一份（约 5 行）。数组分支额外要过滤掉索引键（isIndexKey），对象分支
+ * 不需要——故接受可选 filter 参数，两条路径共用同一份合并逻辑。
+ *
+ * @param obj1 第一个容器
+ * @param obj2 第二个容器
+ * @param filter 可选键过滤器（数组分支传 isIndexKey 的否定，对象分支不传）
+ */
+function diffKeyPairs(obj1: object, obj2: object, filter?: (key: string) => boolean): Set<string> {
+  const keys = new Set<string>()
+  // 克隆引擎用 ownEnumerableKeys（含符号键），diff 也要覆盖到符号键，否则
+  // 快照保留了符号键的变化、compareSnapshots 却看不见，假阴性（changed: false）
+  for (const key of [...ownEnumerableKeys(obj1), ...ownEnumerableKeys(obj2)]) {
+    const strKey = typeof key === 'symbol' ? key.toString() : key
+    if (!filter || filter(strKey)) {
+      keys.add(strKey)
+    }
+  }
+  return keys
+}
+
+/**
  * 对比两个快照
  *
  * 输入契约：`SnapshotResult` 的 `data` 只在 `success: true` 时是完整克隆
@@ -243,6 +267,20 @@ export function compareSnapshots<T1, T2>(snapshot1: SnapshotResult<T1>, snapshot
     // 默认 1000 层预算从子树根重新起算，超深结构会二次触发它的告警并按「不相等」返回，
     // 等于把要消除的误报换个位置重新引入
     if (depth > MAX_COMPARE_DEPTH) {
+      // 内建槽位对象（ArrayBuffer/TypedArray/Promise/WeakMap 等）的 deepEqual 走通用键集
+      // 比较，Object.keys 对两者都返回空 ⇒ 恒判等 ⇒ 漏报。这类对象只能按引用判：
+      // 快照克隆保留原引用（isSlotBearingBuiltin 分支不重建），引用不同即确实被替换过。
+      // 但装箱原始值（Number/String/Boolean/Symbol）是例外：它们有槽位但内容可比，
+      // 深度护栏内外须同口径（浅层走 deepEqual 按内容比，深层不能退化为引用比较，
+      // 否则同一对值在不同深度给出相反结论）
+      if (isSlotBearingBuiltin(obj1) || isSlotBearingBuiltin(obj2)) {
+        const unchanged =
+          typeof obj1 === 'object' && obj1 !== null && isBoxedPrimitiveValue(obj1) ? deepEqual(obj1, obj2, Number.POSITIVE_INFINITY) : obj1 === obj2
+        if (!unchanged) {
+          changes.push({ path, oldValue: obj1, newValue: obj2 })
+        }
+        return
+      }
       if (!deepEqual(obj1, obj2, Number.POSITIVE_INFINITY)) {
         changes.push({ path, oldValue: obj1, newValue: obj2 })
       }
@@ -429,12 +467,7 @@ export function compareSnapshots<T1, T2>(snapshot1: SnapshotResult<T1>, snapshot
       // 只比下标等于把「克隆费心保留的那部分」排除在比较之外——`list.version`
       // 从 1 改成 2 会得到 changed:false。键名与通用对象分支同形（`parent.key`），
       // 故沿用 `.` 连接而不是 `["key"]`，与 Map/Set 的下标形态保持可区分
-      const extraKeys = new Set<string>()
-      for (const key of [...Object.keys(arr1), ...Object.keys(arr2)]) {
-        if (!isIndexKey(key)) {
-          extraKeys.add(key)
-        }
-      }
+      const extraKeys = diffKeyPairs(arr1, arr2, (key) => !isIndexKey(key))
       for (const key of extraKeys) {
         const newPath = path ? `${path}.${key}` : key
         const has1 = Object.prototype.hasOwnProperty.call(arr1, key)
@@ -450,9 +483,7 @@ export function compareSnapshots<T1, T2>(snapshot1: SnapshotResult<T1>, snapshot
       return
     }
 
-    const keys1 = Object.keys(obj1 as object)
-    const keys2 = Object.keys(obj2 as object)
-    const allKeys = new Set([...keys1, ...keys2])
+    const allKeys = diffKeyPairs(obj1 as object, obj2 as object)
 
     for (const key of allKeys) {
       /* istanbul ignore next -- path 自 compare(data, data, 'root') 起算，永不为空 */

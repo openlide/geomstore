@@ -31,7 +31,6 @@ function syncOptions(onError: OnError = () => true): Required<SnapshotOptions> {
     detectCircular: true,
     includeNonEnumerable: false,
     customCloner: () => undefined,
-    async: false,
     batchSize: 100,
     onProgress: () => {},
     onError,

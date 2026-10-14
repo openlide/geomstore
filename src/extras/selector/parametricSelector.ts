@@ -185,9 +185,11 @@ export function createParametricSelector<S extends State, P, R>(
           // 状态已就地变异（WeakMap 键引用不变）：两份参数缓存全部作废，
           // 否则 TTL 内会命中变异前的陈旧结果。
           // 不写 snapshot：版本化条目下它没有任何读取方（见缓存条目形状处的说明）
+          // 升级至版本化时清除旧 snapshot，避免无读取方却持续强引用整棵状态树
           cache.objectParamsCache = new WeakMap()
           cache.primitiveParamsCache = new Map()
           cache.version = version
+          cache.snapshot = undefined
         }
       } else if (cache.version !== undefined || !deepEqual(cache.snapshot, state)) {
         // 回退：无版本标记（普通对象），沿用快照 + deepEqual 校验；
@@ -215,8 +217,10 @@ export function createParametricSelector<S extends State, P, R>(
         // 执行选择器
         const value = selectorFn(state, params)
 
-        // 存入缓存
-        cache.objectParamsCache.set(params, { value, timestamp: now })
+        // #155: ttl<=0 或 NaN 时文档语义是「不缓存」，跳过写入避免占内存却永不命中
+        if (ttl > 0 && Number.isFinite(ttl)) {
+          cache.objectParamsCache.set(params, { value, timestamp: now })
+        }
 
         return value
       } else {
@@ -231,9 +235,12 @@ export function createParametricSelector<S extends State, P, R>(
         // 执行选择器
         const value = selectorFn(state, params)
 
-        // 存入缓存（写入前维护容量与过期条目）
-        maintainPrimitiveCache(cache.primitiveParamsCache, now)
-        cache.primitiveParamsCache.set(cacheKey, { value, timestamp: now })
+        // #155: ttl<=0 或 NaN 时文档语义是「不缓存」，跳过写入避免占内存却永不命中
+        if (ttl > 0 && Number.isFinite(ttl)) {
+          // 存入缓存（写入前维护容量与过期条目）
+          maintainPrimitiveCache(cache.primitiveParamsCache, now)
+          cache.primitiveParamsCache.set(cacheKey, { value, timestamp: now })
+        }
 
         return value
       }

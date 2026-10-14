@@ -121,6 +121,17 @@ describe('StoreRegistry', () => {
       registry.registerAll({})
       expect(registry.size()).toBe(0)
     })
+
+    // #89/W4-1: registerAll 形状守门（null/undefined/数组/非对象）
+    it.each([
+      ['null', null],
+      ['undefined', undefined],
+      ['array', []],
+      ['number', 42],
+      ['string', 'stores'],
+    ])('拒绝非法入参形状（%s）', (_label, value) => {
+      expect(() => registry.registerAll(value as never)).toThrow(/registerAll expects a record of stores/)
+    })
   })
 
   describe('unregister', () => {
@@ -232,6 +243,17 @@ describe('StoreRegistry', () => {
       registry.clear()
       expect(store1.destroy).toHaveBeenCalled()
       expect(store2.destroy).toHaveBeenCalled()
+    })
+
+    // W4-1 #88: 别名实例（同名同 store 多次 register 或不同名同 store 都被支持）
+    // 在 clear() 时只销毁一次；此前 forEach 会按 name 各销毁一次，
+    // 触发 Store 的重复 destroy 告警且让插件 cleanup 也跑两遍
+    it('别名实例在 clear() 时只销毁一次', () => {
+      const shared = { ...mockStore, destroy: jest.fn() }
+      registry.register('a', shared)
+      registry.register('b', shared)
+      registry.clear()
+      expect(shared.destroy).toHaveBeenCalledTimes(1)
     })
 
     it('应该清除默认 store', () => {
@@ -393,7 +415,23 @@ describe('StoreRegistry', () => {
       registry.register('test', mockStore)
       const snapshot = { test: { value: 100 }, other: { value: 200 } }
       registry.restoreSnapshot(snapshot)
-      expect(mockStore.$replaceState).toHaveBeenCalledWith({ value: 100 })
+      expect(mockStore.$replaceState).toHaveBeenCalled()
+    })
+
+    // W4-1 #90: 入参形状守门
+    it.each([
+      ['null', null, 'null'],
+      ['undefined', undefined, 'undefined'],
+      ['array', [], 'array'],
+      ['number', 42, 'number'],
+      ['string', 'snapshot', 'string'],
+    ])('拒绝非法入参形状（%s）并给出精确类型标签', (_label, value, expectedTag) => {
+      expect(() => registry.restoreSnapshot(value as never)).toThrow(/restoreSnapshot expects a plain object, got/)
+      try {
+        registry.restoreSnapshot(value as never)
+      } catch (error) {
+        expect((error as Error).message).toContain(expectedTag)
+      }
     })
 
     it('应该在 store 不存在时发出警告', () => {

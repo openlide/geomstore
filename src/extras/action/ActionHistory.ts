@@ -102,6 +102,7 @@ export class ActionHistoryTracker {
     const oldest = this.actionResults.keys().next()
     if (oldest.done === true) {
       // 表空即「桶数未越限」，调用方不会走到这里；保留为对未来改动的防御
+      // （测试通过注入伪造 Map 覆盖此分支，确保退化状态下不崩溃）
       return
     }
     if (!isProduction()) {
@@ -151,9 +152,12 @@ export class ActionHistoryTracker {
     }
 
     // 返回所有action的历史
+    // 避免使用 spread 操作符（...results），当 results 数组很大时会导致调用栈溢出
     const allResults: ActionResult[] = []
     for (const results of this.actionResults.values()) {
-      allResults.push(...results)
+      for (const result of results) {
+        allResults.push(result)
+      }
     }
 
     return allResults.sort((a, b) => b.startTime - a.startTime)

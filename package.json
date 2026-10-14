@@ -40,10 +40,6 @@
       "types": "./dist/extras/action.d.ts",
       "default": "./dist/extras/action.js"
     },
-    "./extras/enterprise": {
-      "types": "./dist/extras/enterprise.d.ts",
-      "default": "./dist/extras/enterprise.js"
-    },
     "./extras/plugins": {
       "types": "./dist/extras/plugins.d.ts",
       "default": "./dist/extras/plugins.js"
@@ -95,8 +91,8 @@
     "lint": "eslint src tests --ext .ts",
     "lint:ci": "eslint src tests --ext .ts --max-warnings 0",
     "lint:fix": "eslint src tests --ext .ts --fix",
-    "format": "prettier --write \"src/**/*.ts\" \"tests/**/*.ts\" \"*.md\" \"docs/**/*.md\" \"packages/**/*.md\" \".codebuddy/**/*.md\"",
-    "format:check": "prettier --check \"src/**/*.ts\" \"tests/**/*.ts\" \"*.md\" \"docs/**/*.md\" \"packages/**/*.md\" \".codebuddy/**/*.md\"",
+    "format": "prettier --write \"src/**/*.ts\" \"tests/**/*.ts\" \"*.md\" \"docs/**/*.md\" \"packages/**/*.md\" \"skills/**/*.md\"",
+    "format:check": "prettier --check \"src/**/*.ts\" \"tests/**/*.ts\" \"*.md\" \"docs/**/*.md\" \"packages/**/*.md\" \"skills/**/*.md\"",
     "typecheck": "tsc --noEmit -p tsconfig.typecheck.json",
     "typecheck:tests": "tsc --noEmit -p tsconfig.tests.json",
     "typecheck:examples": "tsc --noEmit -p tools/tsconfig.examples.json",

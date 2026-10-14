@@ -266,6 +266,8 @@ function installPersistence<S extends State>(store: Store<S>, rawOptions?: Persi
   // 否则安装后立即覆写同一 tick 内其他实例写入的新数据，且每次启动都重写磁盘
   // （lastSaved 去重被绕过）。仅在首次通知且内容与恢复结果一致时吸收一次
   let absorbedSerialized: string | null = null
+  // lastSaved 提前到恢复块之前：恢复成功后需要用它种子化，让卸载 flush 的去重覆盖恢复载荷
+  let lastSaved: string | null = null
 
   /**
    * 「恢复被主动跳过」的出口：控制台留痕 + 转投 `onError`。
@@ -301,6 +303,9 @@ function installPersistence<S extends State>(store: Store<S>, rawOptions?: Persi
           // 用序列化比较而非状态版本：克隆/只读代理等载荷形态下版本号不可见
           try {
             absorbedSerialized = JSON.stringify(filter ? filter(store.getState()) : store.getState())
+            // 种子化 lastSaved：卸载 flush 的去重据此跳过恢复载荷的冗余写回，
+            // 避免共享键场景下 stale payload 覆写另一实例的更新数据
+            lastSaved = absorbedSerialized
           } catch {
             // 序列化失败（循环引用等）：放弃吸收，维持「通知即落盘」的原有行为
             absorbedSerialized = null
@@ -323,10 +328,7 @@ function installPersistence<S extends State>(store: Store<S>, rawOptions?: Persi
   // 防抖窗口内最近一次待写入的状态：卸载时用于同步补写，避免最后一次变更丢失
   let pendingState: Partial<S> | null = null
   // 最近一次成功落盘的序列化结果：卸载补写时据此跳过无变化的重复写入。
-  // 必须声明在下面的 subscribe 之前（#374）：saveState 是提升的函数声明并闭包引用它，
-  // 一旦订阅改为同步回调（或在注册与声明之间插入任何会 notify 的逻辑），
-  // 回调里的 saveState 就会读到 TDZ 中未初始化的 lastSaved 而直接抛 ReferenceError
-  let lastSaved: string | null = null
+  // lastSaved 已在恢复块之前声明（提前到 absorbedSerialized 旁），此处不再重复
 
   // 只读订阅：仅序列化后落盘，不修改载荷，避免为持久化引入整树深拷贝
   const unsubscribe = store.subscribe(
@@ -410,7 +412,13 @@ function installPersistence<S extends State>(store: Store<S>, rawOptions?: Persi
       try {
         saveState(filter ? filter(store.getState()) : store.getState())
       } catch (error) {
+        // 只 console 不够：监控口径只认 onError（见本文件 :276-278 与 docs/ARCHITECTURE.md），
+        // 而这里正是「销毁前最后一次落盘」——`filter` / `getState` 抛错时 saveState 根本没进入，
+        // 它内部那条 emit onError 的 catch 不会触发；外层 Store.destroy 的 uninstall catch
+        // 同样只 console。缺了这一条，末次状态变更在生产里静默丢失且无从归因。
+        // 卸载发生在 _hooks.clear() 之前，故此刻 emit 仍可用（与下面 clearOnUninstall 同口径）
         console.error('[GeomStore] Failed to persist state on uninstall:', error)
+        store.hooks.emit('onError', error as Error, 'persistence')
       }
     }
     pendingState = null
@@ -490,8 +498,10 @@ export const devtoolsPlugin: Plugin = {
 
       subscribe: (callback: (state: unknown) => void, options?: { readOnly?: boolean }) => {
         // 默认只读：调试入口的订阅只观察状态，以可写订阅登记会翻转 Store 的
-        // needsClone 判定，让 persistence/logger 等只读订阅者一并承担整树深拷贝
-        return store.subscribe(callback, options ?? { readOnly: true })
+        // needsClone 判定，让 persistence/logger 等只读订阅者一并承担整树深拷贝。
+        // 用 `options?.readOnly ?? true` 而非 `options ?? { readOnly: true }`：后者在传 `{}`
+        // 时不会默认只读、退化成可写订阅（与 integrations/utils.ts 的 exposeStoreAPI 同口径）
+        return store.subscribe(callback, { readOnly: options?.readOnly ?? true })
       },
 
       // 与上面几处不同，这里不需要断言：`Plugin`（默认泛型即 Plugin<State>）

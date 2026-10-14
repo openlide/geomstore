@@ -90,16 +90,30 @@ describe('HookSystem - 钩子系统', () => {
       expect(handler3).toHaveBeenCalled()
     })
 
-    it('HOOK-006: 同一个处理器多次注册会被去重', () => {
+    it('HOOK-006: 同一个处理器多次注册各自独立，退订只释放自己那一次', () => {
       const handler = jest.fn()
 
-      hooks.on('beforeSetState', handler)
-      hooks.on('beforeSetState', handler)
+      const off1 = hooks.on('beforeSetState', handler)
+      const off2 = hooks.on('beforeSetState', handler)
       hooks.on('beforeSetState', handler)
 
       hooks.emit('beforeSetState', 'test')
-      // HookSystem使用Set存储，不会存储重复值
-      expect(handler).toHaveBeenCalledTimes(1)
+      // 每次 on() 产出独立注册，同一 handler 登记 3 次即触发 3 次
+      expect(handler).toHaveBeenCalledTimes(3)
+
+      // 退订其中一次，只剩 2 份
+      off1()
+      hooks.emit('beforeSetState', 'test')
+      expect(handler).toHaveBeenCalledTimes(5)
+
+      // clear() 后旧句柄不再影响重新建立的新注册
+      hooks.clear()
+      const off3 = hooks.on('beforeSetState', handler)
+      // off2 是 clear() 之前的注册，调用它不应影响 off3
+      off2()
+      hooks.emit('beforeSetState', 'test')
+      expect(handler).toHaveBeenCalledTimes(6)
+      off3()
     })
   })
 

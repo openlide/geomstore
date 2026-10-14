@@ -50,9 +50,12 @@ interface DebounceState {
   /**
    * 与上面两个队列一一对应的挂起 Promise
    *
-   * 只服务取消路径：`cancelDebouncedCalls` 要以「已取消」结算它们，而结算前必须先给
-   * 每个 promise 补一个 catch 处理器，否则卸载点上 fire-and-forget 的调用会变成
-   * unhandledRejection（见 `cancelPendingCalls` 的注释）。
+   * 服务两条路径：
+   * 1. 取消路径：`cancelDebouncedCalls` 要以「已取消」结算它们，结算前必须先给每个
+   *    promise 补一个 catch 处理器，否则卸载点上 fire-and-forget 的调用会变成
+   *    unhandledRejection（见 `cancelPendingCalls` 的注释）
+   * 2. 失败路径：`runPendingCalls` 的 catch 块同样遍历该队列补 catch 处理器，
+   *    防止到期/flush 时原方法失败导致的 unhandledRejection
    */
   pendingPromises: Array<Promise<unknown>>
   pendingArgs: unknown[]
@@ -182,9 +185,15 @@ function takePendingCalls(slot: DebounceState): Pick<DebounceState, 'pendingReso
  */
 async function runPendingCalls(slot: DebounceState): Promise<void> {
   clearDebounceTimer(slot)
-  // 只有存活到现在的这一个定时器会触发，摘走的 pendingArgs 正是最后一次调用的参数
-  // （每次调用都会先清掉上一个定时器再写入），不存在「pendingArgs 为空 → 回退旧 args」的分支
   const taken = takePendingCalls(slot)
+  // `clearTimeout` 取消不了「已从本批定时器快照出队」的旧回调——真实 Node 定时器相位下，
+  // flush/cancel 与防抖定时器同批到期且顺序在前时，队列已被摘空而残留回调仍进到这里
+  // （withThrottle 把同一竞态明文定性为真实并配了双守卫）。合法防抖调用每次必压入一个
+  // resolver，故空队列即「无挂起调用」：此时以空参 apply 原方法会多发一次 `search(undefined)`，
+  // 且结果因 pendingResolves 为空而被丢弃
+  if (taken.pendingResolves.length === 0) {
+    return
+  }
   try {
     const result = await slot.originalMethod.apply(slot.host, taken.pendingArgs)
     taken.pendingResolves.forEach((r) => r(result))

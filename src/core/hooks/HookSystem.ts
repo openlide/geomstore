@@ -15,9 +15,20 @@ import type { Actions, Getters, State, Store } from '../../types/store.js'
 import type { HookName, HookHandler, IHookSystem, Plugin } from '../../types/plugin.js'
 import { isProduction } from '../store/utils.js'
 
+/** 每次 on() 产出一条注册记录。用对象身份而非 handler 本身作为 Set 成员，
+ *  使同一 handler 的多次注册互相独立——clear() 后旧句柄 delete 的是已不存在的记录，
+ *  不会误删重新建立的新注册 */
+interface HookRegistration {
+  handler: HookHandler
+}
+
 /** 钩子系统实现类，每个 Store 实例独立拥有一个 HookSystem 实例 */
 export class HookSystem implements IHookSystem {
-  private hooks: Map<HookName, Set<HookHandler>> = new Map()
+  private hooks: Map<HookName, Set<HookRegistration>> = new Map()
+  // onError 重入守卫：防止 onError 处理器间接触发新的 onError 导致无限递归栈溢出
+  // （直接递归由 hookName !== 'onError' 拦截，间接递归——如 onError 处理器 emit 另一个钩子、
+  // 那个钩子的处理器又抛错——需要这面额外的旗帜）
+  private isEmittingOnError = false
 
   on(hookName: HookName, handler: HookHandler): () => void {
     let handlers = this.hooks.get(hookName)
@@ -25,20 +36,19 @@ export class HookSystem implements IHookSystem {
       handlers = new Set()
       this.hooks.set(hookName, handlers)
     }
-    handlers.add(handler)
+    const registration: HookRegistration = { handler }
+    handlers.add(registration)
 
-    // 句柄一次性：退订后按当前 Map 取值再删除，会让旧句柄在「同一 handler 重新注册」
-    // 之后把新那份注册删掉（on → off → on → off 即令第二次 on 静默失效）。
-    // 加一位标志让失效句柄的重复调用成为 no-op，退订只作用于它自己那次注册
+    // 句柄持有注册记录的对象引用。delete 按身份匹配，只移除自己那次注册：
+    // clear() 后记录已从 Set 中消失，旧句柄的 delete 是 no-op，
+    // 同一 handler 重新注册产出的新记录不受影响
     let unsubscribed = false
     return () => {
       if (unsubscribed) return
       unsubscribed = true
       const current = this.hooks.get(hookName)
       if (!current) return
-      current.delete(handler)
-      // 最后一个监听者退订即摘键：留下空 Set 会让无参 size()（「已注册钩子种类数」）
-      // 在全部退订后仍把该钩子计为在册，观测值与真实状态永久背离
+      current.delete(registration)
       if (current.size === 0) {
         this.hooks.delete(hookName)
       }
@@ -49,19 +59,21 @@ export class HookSystem implements IHookSystem {
     const handlers = this.hooks.get(hookName)
     if (!handlers || handlers.size === 0) return
 
-    // 迭代前快照，防止 handler 内部调用 on()/unsubscribe() 修改 Set 导致意外行为
     const snapshot = [...handlers]
-    for (const handler of snapshot) {
+    for (const reg of snapshot) {
       try {
-        handler(...args)
+        reg.handler(...args)
       } catch (error) {
-        // 有意不加 isProduction() 门控（与 usePlugin 的 console.debug 不同）：
-        // 这里抛出的是使用者 handler 的真实故障，且已同时转投 onError 钩子；
-        // 钩子没有内建的失败上报通道，生产静默会让故障完全不可见。
-        // 需要收敛输出请在 onError 里自行接监控（错误已被再次 emit 出来）
         console.error(`[GeomStore] Error in hook ${hookName}:`, error)
-        if (hookName !== 'onError') {
-          this.emit('onError', error, hookName)
+        // 直接递归（onError 处理器自身抛错）与间接递归（onError 处理器触发的其他钩子抛错）
+        // 都要拦截：isEmittingOnError 旗帜覆盖整个 onError 分发链
+        if (hookName !== 'onError' && !this.isEmittingOnError) {
+          this.isEmittingOnError = true
+          try {
+            this.emit('onError', error, hookName)
+          } finally {
+            this.isEmittingOnError = false
+          }
         }
       }
     }

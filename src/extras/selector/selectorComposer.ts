@@ -152,7 +152,8 @@ export class SelectorComposer {
   /**
    * 创建派生选择器
    *
-   * 通过管道操作创建派生选择器，pipe的别名
+   * 通过管道操作创建派生选择器（与 pipe 共用底层实现；仅提供 2 段/3 段重载，
+   * 不像 pipe 那样支持单段或四段管道，因此是 pipe 的严格子集而非完全别名）
    *
    * @template S - 状态类型
    * @template R1 - 第一个返回类型
@@ -425,7 +426,7 @@ export class SelectorComposer {
       // 设置定时器。延迟钳到 setTimeout 上限：越界的 delay（含 Infinity）会被宿主静默
       // 夹成 ~1ms，防抖窗口退化成「下一次宏任务立即执行」，调用方看到的却是自己配了超长窗口；
       // NaN / 负数按 0（既有语义：setTimeout 对两者同样按 ~0ms 处理）
-      const waitMs = Number.isFinite(delay) && delay > 0 ? Math.min(delay, MAX_TIMER_DELAY) : 0
+      const waitMs = delay > 0 ? Math.min(delay, MAX_TIMER_DELAY) : 0
       timeoutId = setTimeout(() => {
         // 记下触发本次回调的定时器 id：回调里的 selector(state) 可能经宿主副作用（store
         // 订阅等）同步重入本选择器，那次调用会另起一个定时器并覆盖 timeoutId。

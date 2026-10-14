@@ -83,7 +83,9 @@ const legacyInput: SelectorComposerInput<OrderState, [typeof base, typeof tax]> 
   combiner: (b: number, t: number) => b + t,
 }
 void legacyInput
-// 未声明 R 时任意返回值仍被接受（这正是 combine 内部 `as R` 依赖的现有形状）
+// 未声明 R 时任意返回值仍被接受（此前 combine 内部用 `as R` 断言静默吞掉这类返回值，
+// 该断言已在 src/extras/selector/selectorComposer.ts 与 src/types/selector.ts 的清理中删除，
+// 见 :119 附近的说明）
 const legacyAnyReturn: SelectorComposerInput<OrderState, [typeof base, typeof tax]> = {
   selectors: [base, tax],
   combiner: () => 'anything',

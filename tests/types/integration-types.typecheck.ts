@@ -356,7 +356,7 @@ void [_setDataExact, _setDataSameAcrossInstances]
 // 而不是 `const x: PgCfg['setData'] = undefined` 那种取值写法——后者在旧实现（配置视角带必选
 // setData），而 `undefined` 不可赋给函数）上同样报错，两态皆红 = 什么都没锁
 // （同 `tests/types/store-config-base.typecheck.ts` 里「正向赋值锁不住任何东西」那条判据）。
-// 下面四条 + 端到端那条在旧实现上实测全部失败，故它们抓得住（证据见 .ocr-fix/verdicts6/f1-10.md）。
+// 下面四条 + 端到端那条在旧实现上实测全部失败，故它们抓得住。
 type PgCfgHasSetData = 'setData' extends keyof PgCfg ? true : false
 type CpCfgHasSetData = 'setData' extends keyof CpCfg ? true : false
 const _cfgNoSetDataKey: Equal<PgCfgHasSetData, false> = true

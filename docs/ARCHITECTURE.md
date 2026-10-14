@@ -71,16 +71,14 @@ src/
     errors/                     核心层错误基础设施
   extras/
     index.ts                    可选能力聚合入口（体积最大，仅调试用）
-    snapshot.ts / selector.ts / action.ts / performance.ts / plugins.ts / enterprise.ts
+    snapshot.ts / selector.ts / action.ts / performance.ts / plugins.ts
                                 ← 逐能力的公开子路径入口
     snapshot/                   同步 + 异步克隆引擎、diff、管理器
     selector/                   SelectorFactory / 组合器 / 重试
     action/                     ActionLoader / withLoading / ActionUtils / ActionExecutor
       decorators/               withLog|Debounce|Throttle|Cache|Retry|Timeout + common
-    error/                      ErrorBoundary / ErrorRecovery / ErrorMonitoring / 类族
-      reporters/                ConsoleReporter / HttpReporter
+    error/                      ErrorBoundary / 错误类族（错误类在 core/errors）
   integrations/                 withPageStore / withComponentStore / withAppStore / utils
-    enterprise/                 账号态、离线队列、后台同步、热更新
   plugins/                      builtin（logger/persistence/devtools）/ WxStorageBackend / globalRegistry
     devtools/                   timeTravelPlugin
     performance/                analyzerPlugin
@@ -161,8 +159,7 @@ extras/selector           需要选择器缓存时引入
 extras/action             需要 ActionLoader / 装饰器时引入
 extras/performance        需要指标采集时引入
 extras/plugins            需要内置插件实现时引入
-extras/error              需要错误边界 / 恢复 / 上报时引入
-extras/enterprise         需要账号态 / 离线 / 热更新时引入
+extras/error              需要错误边界 / 错误类型时引入
 extras（聚合）            仅调试或全都要用；会把以上全部拉入产物
 ```
 
@@ -201,8 +198,6 @@ extras（聚合）            仅调试或全都要用；会把以上全部拉�
 Page 的 `onUnload` / Component 的 `lifetimes.detached` 先调用用户钩子，再在 `finally` 中清理绑定，即使钩子同步抛错也会清理；用户钩子的同步段仍可使用映射 actions。包装器不等待异步钩子的 Promise，`await` 后不能依赖绑定仍存在。
 
 **只识别 `lifetimes` 写法**（基础库 3.15.0+）；组件 methods 上的运行时注入改为实例级拷贝，多实例挂载不互相覆盖。
-
-`enterprise/` 提供账号态 Store、离线队列、后台同步与热更新；`initBackgroundSync` 包装 `App` 构造器注入 `onShow` / `onHide`（改 `App.prototype` 在微信中不生效）。
 
 ## 7. 插件层（plugins）
 

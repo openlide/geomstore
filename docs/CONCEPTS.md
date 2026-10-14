@@ -256,32 +256,6 @@
 - 非 `Error` 的抛出值在入口归一化后再记账与传给回调，**重抛时仍是原始值**。
 - 显式 `recoverable: true` 而无 `fallback` 时返回 `undefined`。
 - `@withErrorBoundary` 只对**被包裹方法的原始返回值**做 thenable 判定：回退值即使自带可调用的 `then` 也不会被 await，返回形状不会从 `X` 悄悄变成 `Promise<X>`。
-- `ErrorHandler` 的异步 handler 返回的 Promise 有一条兜底出口（rejection 折成一条 `[ErrorHandler] Error in error handler:` 日志，不是无人接的拒绝）；交给用户 handler 的上下文是**副本**。
-
-### 恢复（ErrorRecovery）
-
-- 策略含 `RETRY` / `FALLBACK` / `IGNORE` / `RECOVER` / `RESTART`。
-- **`RETRY` 不在库内重跑原操作**：按退避延迟后**重抛原错误**，由调用方自己重试。
-- **额度按故障周期计量**（时间窗 = `max(60s, 本周期退避总时长 × 2)`），并有键容量守卫防动态 operation id 导致的无界增长。
-- **额度用尽后不会重置**：抛 `Max retries exceeded` 时保留计数与周期窗，同一故障周期内的后续 `recover()` 持续被拦截，只有时间窗过期才开新周期。
-- 策略内部失败（含额度耗尽、无回退可返回、无 `recoverFn`、未知策略）统一抛 `GeomStoreError`：`code: INTERNAL_ERROR`、带 `cause` 与 `context`，`context.retryKey` 指明是哪一份额度；`storeName` 与 `operation` 都缺时键名为 `<code>:unattributed`，只缺一个维度时按已报出的维度隔离。
-- `recover()` 只接受 `GeomStoreError`，按 `error.code` 分支。它的受控字段（`error` / `config` / `attempt`）由库内写入，调用方上下文无法覆盖实际执行的策略与重试记账键。
-
-### 监控（ErrorMonitoring）
-
-- **批量 flush 三态判定**：对每个 reporter 做 `ok / fail / timeout`，仅真正 resolve 才算成功（`reportTimeout <= 0` 表示不超时）。全部失败则按序重入队重试，连续失败超过 `maxFlushRetries` 丢弃该批并告警（避免永久失败批次空转）。
-- **容量类入参走下限裁剪**：`maxQueueSize` 最小 1、`maxFlushRetries` 最小 0，非有限值回默认。
-- **`clear()` 的代际标记**：除复位连续失败计数外，还给在途 flush 打代际标记——旧批次不再回流队列、也不会把失败计数从无拨成 1。
-- **三个互不重叠的计数口径，不能相加核对**：`getDroppedErrors()` / `generateReport().summary.droppedErrors`（溢出被丢弃、可消费）、`summary.totalErrors`（观测到的错误数）、`summary.queuedErrors`（当前在队）。
-- **聚合组对外一律给副本**（`getGroups()` / `addError()` / `getErrorGroups()` / `generateReport()`），改它们不污染内部账目。
-- **聚合统计与错误组是两套口径**：
-  - `totalErrors` / `byCode` / `byStore` 按条独立累计、自上次 `clear()` 起单调不减，恒有 `sum(byCode) === sum(byStore) === totalErrors`；`maxGroups` 驱逐**不让它们倒退**。
-  - `totalGroups` / `getGroups()` / `summary.topErrors` 只是**当前存活组**的视图，会随驱逐变小。
-  - 两者的差额看得见：`getAggregationStats()` 提供 `evictedGroups` / `evictedErrors`，`clear()` 把两套账与留痕一起归零。
-- **`MonitoringConfig.maxGroups`**（缺省 100）是同时存活组数的上限，达上限按「最近最少出现」驱逐旧组（首次出声一次）；非有限值回退缺省、有限值 `Math.max(1, floor(v))`。
-- 组内样例是不含 `payload` 的浅拷贝并随命中刷新，避免进程级缓存钉住 store / 页面节点。
-- 指纹 → 组 ID 由反向索引维持：哈希碰撞的邻居组被驱逐后，同一指纹仍并入原组、计数不重置。
-- **基数上限与溢出桶**：`affectedStores`（单组 50）与 `byStore`（全局 200 键）都有上限，超出并入保留字 `__others__`——截断的是「列得全不全」，条数一条不丢。
 
 ## 11. 插件（Plugin）
 

@@ -6,10 +6,10 @@
  *
  * - 值：`createSelector` / `createMemoizedSelector` / `createStructuredSelector`
  *   / `createParametricSelector` / `createRetrySelector` / `createRetrySelectorAsync`
- *   / `SelectorFactory` / `SelectorComposer`
- * - 类型：`RetrySelectorOptions` / `AsyncRetrySelectorOptions`（来自 `selectorComposer`），
+ *   / `SelectorFactory` / `SelectorComposer` / `ParametricSelectorFactory`
+ * - 类型：`RetrySelectorOptions` / `AsyncRetrySelectorOptions`（来自 `retrySelector`），
  *   以及 `Selector` / `SelectorOptions` / `SelectorCacheItem` / `SelectorResult`
- *   / `SelectorComposerInput` / `ParametricSelector`（定义在 `src/types/selector.ts`）
+ *   / `SelectorComposerInput` / `ParametricSelector` / `ParametricSelectorFactory`（定义在 `src/types/selector.ts`）
  *
  * 本文件的增删以 `./selector/index.ts` 为准，不要在此另立一份口径。
  *
@@ -17,12 +17,14 @@
  * ```ts
  * import { createSelector } from '@openlide/geomstore/extras/selector'
  *
+ * interface MyState { count: number; user: { name: string } }
+ *
  * // 签名是 createSelector(selectorFn, options?)：派生逻辑就写在 selectorFn 里，
  * // 这里**没有** reselect 那样的「输入选择器 + 组合函数」两参形态
- * const selectDouble = createSelector((s: State) => s.count * 2)
+ * const selectDouble = createSelector((s: MyState) => s.count * 2)
  *
  * // 需要控制缓存时走第二个参数（口径见 types/selector.ts 的 SelectorOptions）
- * const selectName = createSelector((s: State) => s.user.name, {
+ * const selectName = createSelector((s: MyState) => s.user.name, {
  *   cache: true,
  *   cacheTTL: 10000,
  * })

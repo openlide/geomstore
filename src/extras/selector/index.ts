@@ -18,7 +18,7 @@
 export { createSelector, createMemoizedSelector, createParametricSelector, createStructuredSelector, SelectorFactory } from './createSelector.js'
 export { SelectorComposer } from './selectorComposer.js'
 export { createRetrySelector, createRetrySelectorAsync } from './retrySelector.js'
-export type { RetrySelectorOptions, AsyncRetrySelectorOptions } from './selectorComposer.js'
+export type { RetrySelectorOptions, AsyncRetrySelectorOptions } from './retrySelector.js'
 export type {
   Selector,
   SelectorOptions,

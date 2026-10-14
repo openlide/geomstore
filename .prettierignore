@@ -17,4 +17,4 @@ pnpm-lock.yaml
 # 由 `pnpm skill:api` 独占生成。它的正确性由「与 .d.ts 一致」保证，不由排版门禁保证。
 # 手写文档（README / CONTRIBUTING / docs/** / SKILL.md / references/*-semantics.md）都在门禁内，
 # 且实测 prettier 对它们是幂等且不改动内容的（ts 代码块在 auto 模式下报 unchanged）。
-.codebuddy/skills/geomstore/references/api/
+skills/geomstore/references/api/

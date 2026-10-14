@@ -32,8 +32,10 @@ interface OrderState {
   amount: number
 }
 
-// 具体状态标注的引用相等比较器：这是业务侧最常见的写法。**深比较**配默认的
-// `snapshotState: true`（缓存内容快照）才是正确形态，故这里刻意不写第二项
+// 具体状态标注的**按字段（值）比较**比较器（区别于下面 `(a, b) => a === b` 的引用相等写法）：
+// 这是业务侧最常见的形态。这类比较器配默认的 `snapshotState: true`（缓存内容快照）
+// 才拿得到可比对象，故这里刻意不写第二项。头注释第 4 条的耦合规则针对的是
+// **引用相等**比较器（须 `snapshotState: false`），本 byId 不属于该分支
 const byId: SelectorOptions = {
   equalityFn: (a: OrderState, b: OrderState) => a.id === b.id,
 }

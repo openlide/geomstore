@@ -9,7 +9,7 @@
  */
 
 import { isProduction } from '../../../core/store/utils.js'
-import { isAsyncFunction, isThenable, isPlaceholder } from './common.js'
+import { isAsyncFunction, isThenable, isPlaceholder, isTrackableHost } from './common.js'
 
 /**
  * 缓存装饰器选项
@@ -49,6 +49,10 @@ let nextSymbolId = 0
  *  WeakMap 可随参数回收，无需像 symbolIds 那样设上限 */
 const identityIds = new WeakMap<object, number>()
 let nextIdentityId = 0
+
+/** uncacheableKey 用的单调递增计数器：避免依赖 Date.now() + Math.random()，
+ *  在 fake timers 或 Math.random 被 stub 的测试环境下仍保证唯一性 */
+let nextUncacheableId = 0
 
 /** 取得（或分配）某个按身份标记对象的唯一序号 */
 function identityId(value: object): number {
@@ -321,13 +325,14 @@ function beforeWrite(cache: HostCache, at: number): void {
 /**
  * 「本次调用不缓存」的一次性唯一键
  *
- * 键生成失败时的统一退路：与既有任意键都不相撞，因此本次调用必然 miss、直接执行原方法，
- * 结果也不会被写进一个每次都不同的键里（等于跳过缓存），而不是让被装饰方法整体不可用。
+ * 键生成失败时的统一退路：与既有任意键都不相撞，因此本次调用必然 miss、直接执行原方法。
+ * writeCache 与异步在途占位分支都按 key 前缀就地跳过写入，因此失败调用不留任何缓存条目、
+ * 也不会挤占其他方法共享的 MAX_CACHE_ENTRIES Map。
  *
  * @private
  */
 function uncacheableKey(): string {
-  return `__uncacheable__${Date.now()}_${Math.random()}`
+  return `__uncacheable__${++nextUncacheableId}`
 }
 
 /**
@@ -454,14 +459,14 @@ export function withCache(options: CacheDecoratorOptions = {}): MethodDecorator 
   let nextMethodId = 0
 
   const getCache = (host: unknown): HostCache => {
-    if ((typeof host !== 'object' && typeof host !== 'function') || host === null) {
+    if (!isTrackableHost(host)) {
       // 宿主不是对象或函数时返回一次性容器（不跨调用串扰）
       return { entries: new Map(), writes: 0 }
     }
-    let cache = store.get(host)
+    let cache = store.get(host as object)
     if (!cache) {
       cache = { entries: new Map(), writes: 0 }
-      store.set(host, cache)
+      store.set(host as object, cache)
     }
     return cache
   }
@@ -481,6 +486,12 @@ export function withCache(options: CacheDecoratorOptions = {}): MethodDecorator 
     const isAsyncMethod = isAsyncFunction(originalMethod)
 
     const writeCache = (cache: HostCache, key: string, value: unknown, at: number, fromPromise = false): unknown => {
+      // 键生成失败的退路：`methodKey + '__uncacheable__' + id` 每次唯一，若照常写入
+      // 会挤占其他方法共享的 MAX_CACHE_ENTRIES Map（一个循环引用参数方法能把邻居方法的
+      // 有效条目全部驱逐），因此按 key 前缀就地跳过写入并直接返回原值
+      if (key.startsWith(`${methodKey}__uncacheable__`)) {
+        return value
+      }
       beforeWrite(cache, at)
       cache.entries.set(key, { value, expiry: at + ttl, fromPromise })
       return value
@@ -556,11 +567,16 @@ export function withCache(options: CacheDecoratorOptions = {}): MethodDecorator 
         // 占位条目必须有有限期限：MAX_SAFE_INTEGER 会让永不结算的请求（被丢弃的请求、
         // 宿主挂起）把条目永久留在 Map 里，且此后所有同参调用都一直拿到这个永不结算的
         // Promise——等于该方法永久失效
-        beforeWrite(cache, now)
-        cache.entries.set(key, { value: undefined, expiry: now + inFlightExpiry, pending })
+        // 键生成失败：占位写入会挤占其他方法共享的 MAX_CACHE_ENTRIES Map，
+        // 与 writeCache 同口径就地跳过（每次都真跑原方法，不做去重）
+        if (!key.startsWith(`${methodKey}__uncacheable__`)) {
+          beforeWrite(cache, now)
+          cache.entries.set(key, { value: undefined, expiry: now + inFlightExpiry, pending })
+        }
         return pending
       }
-      return writeCache(cache, key, result, now)
+      // 以写入时刻计算过期，与异步路径（Date.now()）口径一致，避免方法自身耗时吃掉 TTL
+      return writeCache(cache, key, result, Date.now())
     }
 
     return descriptor

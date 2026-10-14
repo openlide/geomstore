@@ -64,13 +64,12 @@ jobs:
       # 会重新出现（这正是本条注释原先要防的事，靠复制粘贴防不住）。
       # 覆盖面：src/tests 的 TS + 全部手写文档 md（README / CONTRIBUTING / CHANGELOG / docs/** /
       # packages/** 的 README / SKILL.md 与 references/*-semantics.md）。
-      # **不含** `.codebuddy/skills/geomstore/references/api/**`——那是 `pnpm skill:api` 从
+      # **不含** `skills/geomstore/references/api/**`——那是 `pnpm skill:api` 从
       # `dist/**/*.d.ts` 生成的构建产物。对它跑格式化器会**改动内容**：实测会转义块引用里
       # 粗体跨度内的星号、把 ```ts 围栏抬成 ````ts，并因 .prettierrc 的 semi:false 删掉
       # `.d.ts` 声明行末尾的分号（某文件实测 20 行 → 1 行）。而这份文件的契约恰恰是
       # 「逐字取自类型声明原文」——它的正确性由「与 .d.ts 一致」保证，不由排版门禁保证。
-      # 排除规则与同一份理由写在 .prettierignore。`.ocr-fix/**` 是复审工作记录、不属于文档
-      # 产品，本步的 glob 从不点名它。
+      # 排除规则与同一份理由写在 .prettierignore。
       # 换行符侧的口径：仓库内与检出侧一律 LF，由仓库根的 .gitattributes（`* text=auto eol=lf`）
       # 钉住，`.prettierrc.json` 因此可以直接判 `endOfLine: lf`——本步**既判格式也判换行**，
       # 本地与 Linux runner 的判据完全一致，不会再出现「CI 绿、Windows 本地整批假红」。
@@ -189,7 +188,7 @@ jobs:
       # 覆盖 11 个 stub 目录、同名目录冲突、miniprogram 目录非空且在白名单内）此前只由
       # prepack 触发，也就是只有真正 publish 那一刻才第一次执行——CI 既不 pack 也不跑 stubs。
       # 刻意不加 --ignore-scripts：那样 prepack 钩子根本不执行，等于只校验 tarball 清单、
-      # 四条判据一条都跑不到（同 .npmignore 头注与第五轮 R5-374 的结论）。
+      # 四条判据一条都跑不到。
       # --dry-run 只做「除写 tarball 之外」的全部动作：prepack 会跑，postpack 不会，
       # 所以末尾显式 stubs:clean，不把 14 个 stub 目录留在工作树里（本地实测踩过一次）。
       - name: Pack dry-run (exercise prepack checks)

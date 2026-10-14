@@ -3,8 +3,6 @@
  *
  * 覆盖：withAppStore 包装 App 配置——启动时初始化状态、映射状态挂到 globalData、
  * 映射 action 绑到 App 实例、前后台生命周期与错误回调。
- *
- * 更完整的账号隔离/离线队列/热更新场景见 `@openlide/geomstore/extras/enterprise`。
  */
 
 import { createStore } from '../../src/index.js'
@@ -77,4 +75,3 @@ if (typeof App === 'function') {
 }
 
 console.log('✅ App 集成示例已定义（需在微信小程序环境中运行）')
-

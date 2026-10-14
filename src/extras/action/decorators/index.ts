@@ -11,6 +11,10 @@
  * 防抖/节流另有按宿主收尾的公开入口（`cancel*` 丢弃挂起调用、`flush*` 立即执行一次、
  * `dispose*` 取消并释放全部状态），供 Page `onUnload` / Component `detached` 调用。
  *
+ * **限制**：当装饰器作用于 **Store action** 时，运行时 `this` 是内部 action-context 代理，
+ * 调用方无法直接访问，因此 `cancel*`/`flush*`/`dispose*` 会静默失效，挂起的调用仍会执行。
+ * 若需在 action 场景下实现取消，请在业务侧维护存活标志（liveness flag）并在原方法内检查。
+ *
  * @remarks 装饰器依赖 `experimentalDecorators`；部分装饰器在生产构建下走轻量分支
  * （见各实现内的 `isProduction` 判断）。
  */

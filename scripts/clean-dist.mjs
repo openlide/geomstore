@@ -139,8 +139,12 @@ function removeDirTree(dir, checkRoot = false) {
     if (kind === 'link') {
       removeLink(full)
     } else if (kind === 'dir') {
-      removeDirTree(full)
-      fs.rmdirSync(full)
+      if (classifyEntry(full) === 'dir') {
+        removeDirTree(full)
+        fs.rmdirSync(full)
+      } else {
+        removeLink(full)
+      }
     } else {
       fs.unlinkSync(full)
     }

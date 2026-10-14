@@ -16,30 +16,15 @@ import * as integrations from '@/integrations/index.js'
 import { withAppStore } from '@/integrations/with-app-store.js'
 import { withComponentStore, withPageStore } from '@/integrations/with-store.js'
 import { bindActions, bindMappings, cleanupBindings, exposeStoreAPI, parseMapping, performAutoInject } from '@/integrations/utils.js'
-import { OfflineManager } from '@/integrations/enterprise/offline.js'
-import { StoreManager, storeManager } from '@/integrations/enterprise/store-manager.js'
-import { createUserStore } from '@/integrations/enterprise/user-store.js'
-import { initBackgroundSync, unregisterBackgroundSync } from '@/integrations/enterprise/background-sync.js'
-import { initHotUpdate, restoreFromHotUpdate } from '@/integrations/enterprise/hot-update.js'
-import { createEnterpriseApp } from '@/integrations/enterprise/wechat-enterprise.js'
 
 /** 文档承诺的运行时导出清单（类型导出不计入键集） */
 const PROMISED_EXPORTS = [
   'bindActions',
   'bindMappings',
   'cleanupBindings',
-  'createEnterpriseApp',
-  'createUserStore',
   'exposeStoreAPI',
-  'initBackgroundSync',
-  'initHotUpdate',
-  'OfflineManager',
   'parseMapping',
   'performAutoInject',
-  'restoreFromHotUpdate',
-  'storeManager',
-  'StoreManager',
-  'unregisterBackgroundSync',
   'withAppStore',
   'withComponentStore',
   'withPageStore',
@@ -57,16 +42,6 @@ describe('integrations 子入口：转发正确、清单一致', () => {
     expect(integrations.performAutoInject).toBe(performAutoInject)
     expect(integrations.exposeStoreAPI).toBe(exposeStoreAPI)
     expect(integrations.cleanupBindings).toBe(cleanupBindings)
-
-    expect(integrations.createUserStore).toBe(createUserStore)
-    expect(integrations.StoreManager).toBe(StoreManager)
-    expect(integrations.storeManager).toBe(storeManager)
-    expect(integrations.OfflineManager).toBe(OfflineManager)
-    expect(integrations.initHotUpdate).toBe(initHotUpdate)
-    expect(integrations.restoreFromHotUpdate).toBe(restoreFromHotUpdate)
-    expect(integrations.initBackgroundSync).toBe(initBackgroundSync)
-    expect(integrations.unregisterBackgroundSync).toBe(unregisterBackgroundSync)
-    expect(integrations.createEnterpriseApp).toBe(createEnterpriseApp)
   })
 
   it('导出键集与文档清单逐字相同（不多不少）', () => {

@@ -84,7 +84,6 @@ const subpathEntries = {
   'plugins/devtools': 'plugins/devtools',
   'plugins/performance': 'plugins/performance',
   integrations: 'integrations',
-  'integrations/enterprise': 'integrations/enterprise',
   error: 'extras/error',
   compose: 'core/compose',
   selectors: 'extras/selector',
@@ -143,7 +142,13 @@ function isGeneratedStubTree(dir, depth = 0) {
   const manifest = readManifest(dir)
   if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) return false
   if (Object.keys(manifest).sort().join(',') !== 'main,types') return false
-  const forwards = [manifest.main, manifest.types].every((value) => typeof value === 'string' && value !== '' && isInsideDir(distDir, path.resolve(dir, value)))
+  const forwards =
+    typeof manifest.main === 'string' &&
+    manifest.main.endsWith('/index.js') &&
+    typeof manifest.types === 'string' &&
+    manifest.types.endsWith('/index.d.ts') &&
+    isInsideDir(distDir, path.resolve(dir, manifest.main)) &&
+    isInsideDir(distDir, path.resolve(dir, manifest.types))
   if (!forwards) return false
   let entries
   try {
@@ -170,7 +175,14 @@ function coveredByFiles(sub, filesList) {
 
 /** 目录内是否递归存在至少一个 .js（空目录与被 npm 跳过的空目录在微信侧是同一件事） */
 function hasJsFileRecursive(dir) {
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+  let entries
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true })
+  } catch {
+    // 目录不存在或不可读：按「无 .js」处理，避免在 checkPreconditions 阶段抛出裸 ENOENT
+    return false
+  }
+  for (const entry of entries) {
     const full = path.join(dir, entry.name)
     if (entry.isDirectory()) {
       if (hasJsFileRecursive(full)) return true
@@ -215,7 +227,7 @@ function checkPreconditions() {
     pkg = JSON.parse(fs.readFileSync(path.join(pkgRoot, 'package.json'), 'utf8'))
     filesList = Array.isArray(pkg.files) ? new Set(pkg.files.map((f) => f.replace(/\/+$/, ''))) : null
   } catch (error) {
-    problems.push(`无法读取 package.json 校验 files 白名单：${error instanceof Error ? error.message : String(error)}`)
+    problems.push(`无法读取 package.json 校验 files 白名单：${reasonOf(error)}`)
   }
   if (filesList) {
     const unshipped = Object.keys(subpathEntries).filter((sub) => !coveredByFiles(sub, filesList))
@@ -328,6 +340,8 @@ function rollbackStubs(touched) {
       } else if (previous !== null) {
         fs.writeFileSync(path.join(dir, 'package.json'), previous)
         restored++
+      } else {
+        failed++
       }
     } catch {
       failed++

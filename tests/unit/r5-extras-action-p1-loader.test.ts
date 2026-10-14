@@ -2,7 +2,6 @@
  * 第五轮 extras-action-p1 分片回归（loader / utils / executor）
  *
  * 每条用例断言的是**修复后**的语义，修复前这些断言全部会失败。
- * 编号对应 `.ocr-fix/groups5/extras-action-p1.md`。
  */
 
 import { ActionLoader, type ActionErrorData } from '@/extras/action/ActionLoader.js'

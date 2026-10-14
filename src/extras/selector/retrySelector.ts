@@ -76,13 +76,26 @@ function toRetryError(value: unknown): Error {
   if (typeof value === 'string') {
     return new Error(value)
   }
-  // 对象走 JSON 而非 String()，否则得到无信息量的 [object Object]；
-  // 循环引用等序列化失败场景回退 String()
+  // #158: JSON.stringify 会触发 getter/toJSON，对 BigInt 抛错，循环引用也抛错。
+  // 改用更保守的序列化：先试 JSON.stringify（捕获异常），失败则用 Object.prototype.toString
+  // 而非 String(value)，后者对 null-prototype 对象或自定义 toString 抛错的对象会失败（#159）
   let text: string
   try {
-    text = value === null || typeof value !== 'object' ? String(value) : (JSON.stringify(value) ?? String(value))
+    if (value === null || typeof value !== 'object') {
+      text = String(value)
+    } else {
+      // 对象走 JSON 而非 String()，否则得到无信息量的 [object Object]
+      const json = JSON.stringify(value)
+      text = json ?? Object.prototype.toString.call(value)
+    }
   } catch {
-    text = String(value)
+    // #159: String(value) 对 null-prototype 对象或 toString 抛错的对象会失败，
+    // 改用 Object.prototype.toString.call 兜底，它对所有对象都安全
+    try {
+      text = String(value)
+    } catch {
+      text = Object.prototype.toString.call(value)
+    }
   }
 
   return new Error(text)
@@ -152,25 +165,22 @@ const NO_ERROR = Symbol('noError')
  * 不再出现「falsy 被覆盖、truthy 被保留」的分裂判定（非数值无从比较，按未标注处理）。
  */
 function annotateAttempts(error: unknown, attempts: number): unknown {
-  // 选择器可以合法地 `throw 'boom'` / `throw 42`，或重抛冻结的 Error：
-  // 此时 defineProperty 抛 TypeError，会用标注失败顶替真正的原始错误
-  const annotatable = typeof error === 'object' && error !== null && Object.isExtensible(error)
-  if (annotatable) {
-    const existing = (error as { attempts?: unknown }).attempts
-    const previous = typeof existing === 'number' && Number.isFinite(existing) ? existing : 0
-    if (previous < attempts) {
-      try {
+  try {
+    const annotatable = typeof error === 'object' && error !== null && Object.isExtensible(error)
+    if (annotatable) {
+      const existing = (error as { attempts?: unknown }).attempts
+      const previous = typeof existing === 'number' && Number.isFinite(existing) ? existing : 0
+      if (previous < attempts) {
         Object.defineProperty(error, 'attempts', {
           value: attempts,
           enumerable: false,
           configurable: true,
           writable: true,
         })
-      } catch {
-        // attempts 可能是宿主/调用方留下的不可配置属性：标注只是排障附加信息，
-        // 失败不得掩盖原始错误
       }
     }
+  } catch {
+    // 读取（Proxy 陷阱 / 抛错的 getter）与写入任一环节失败，都不得掩盖原始错误
   }
   return error
 }

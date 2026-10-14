@@ -169,6 +169,15 @@ function warnOnGlobalDataCollision(globalData: Record<string, unknown>, ...keyGr
  * app.subscribe(callback)   // 订阅状态变化
  * ```
  */
+
+// 辅助工厂：创建写入 globalData 的函数（按自有属性拷贝，避免原型污染）
+// onLaunch 与 onShow 共享同一逻辑，提取后避免重复定义
+function createGlobalDataWriter(globalData: Record<string, unknown>): (updates: Record<string, unknown>) => void {
+  return (updates: Record<string, unknown>) => {
+    copyOwnEntries(globalData, updates)
+  }
+}
+
 export function withAppStore<S extends State, A extends Actions, G extends Getters<S>, O extends ConnectOptions<S, A, G>>(
   store: Store<S, A, G>,
   options: O = {} as O,
@@ -221,9 +230,7 @@ export function withAppStore<S extends State, A extends Actions, G extends Gette
       const subscribeStore = createStoreSubscriber(store)
       // 载荷按自有属性写入：`Object.assign(globalData, updates)` 用 [[Set]] 落键，
       // updates 里的 `'__proto__'` 键会命中 globalData 原型链上的 setter 改坏其原型
-      const writeGlobalData = (updates: Record<string, unknown>) => {
-        copyOwnEntries(this.globalData as Record<string, unknown>, updates)
-      }
+      const writeGlobalData = createGlobalDataWriter(this.globalData as Record<string, unknown>)
 
       try {
         // state 与 getters 两类映射共享**同一条**订阅（App 实例全程仅一条）：
@@ -231,8 +238,8 @@ export function withAppStore<S extends State, A extends Actions, G extends Gette
         // App 订阅贯穿运行期不随 onHide 清理，多 store 共存的宿主里同样会挤占额度
         const mappers: Array<{ update: () => void }> = []
 
-        // 绑定 state 到 globalData
-        if (options.mapState) {
+        // 绑定 state 到 globalData（按解析后的映射大小判定，空数组/空对象不算有映射）
+        if (Object.keys(stateMapping).length > 0) {
           mappers.push(
             createMapper(
               this.globalData,
@@ -245,7 +252,7 @@ export function withAppStore<S extends State, A extends Actions, G extends Gette
         }
 
         // 绑定 getters 到 globalData
-        if (options.mapGetters) {
+        if (Object.keys(gettersMapping).length > 0) {
           mappers.push(createMapper(this.globalData, gettersMapping, (storeKey) => store.getter(storeKey), writeGlobalData))
         }
 
@@ -263,8 +270,8 @@ export function withAppStore<S extends State, A extends Actions, G extends Gette
           performAutoInject(this, injectMapping, store, writeGlobalData)
         }
 
-        // 暴露 Store API 到 App 实例
-        exposeStoreAPI(this, store)
+        // 暴露 Store API 到 App 实例（退订凭证同样登记，保证回滚/重复 onLaunch 时能还原宿主原成员）
+        unbindFunctions.push(exposeStoreAPI(this, store))
       } catch (error) {
         // 绑定中途抛错：已登记的订阅必须回滚，否则半初始化的 App 会带着仍在推送的订阅
         // 活到进程结束。错误原样抛回框架（由其 onError 归因），且不转发用户 onLaunch——
@@ -287,7 +294,7 @@ export function withAppStore<S extends State, A extends Actions, G extends Gette
           // globalData 由 onLaunch 建立；直接调用 onShow（未经启动）时不注入，
           // 但也不能替用户把它吞掉
           if (this.globalData) {
-            performAutoInject(this, injectMapping, store, (updates) => copyOwnEntries(this.globalData as Record<string, unknown>, updates))
+            performAutoInject(this, injectMapping, store, createGlobalDataWriter(this.globalData as Record<string, unknown>))
           }
         } finally {
           // 注入抛错不得吞掉用户的 onShow（与 onUnload / detached 的 try/finally 同口径）

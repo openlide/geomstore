@@ -187,8 +187,7 @@ function installAnalyzer(store: Store, options: PerformanceOptions): (() => void
    * 栈里正常情况下只有「进行中」的那几层；但 `discardPendingEnd` 不再据 onError 弹栈之后，
    * 一次被中止的 dispatch 会留下一条永不 pop 的栈项（它的 end 闭包连同 monitor 侧的在途条目
    * 都要等到卸载才释放）。数量正比于「本次安装周期内操作中止的次数」——重试风暴下这是实打实
-   * 的持续增长，故设上限。取栈底（最旧）淘汰：中止的帧总是当时最内层的开帧，因此栈底就是那批
-   * 永不复用的残留项，pop 仍从栈顶取，配对关系不受影响；被淘汰的那条计时不产出指标，
+   * 的持续增长，故设上限。上限已满时拒绝新的入栈请求（见 pushEnd）：该次计时不产出指标，
    * monitor 侧条目由其 TTL 清扫兜底。上限与 `PerformanceMonitor.DEFAULT_MAX_SIZE` 同量级
    */
   const MAX_PENDING_DEPTH = 1000
@@ -199,13 +198,14 @@ function installAnalyzer(store: Store, options: PerformanceOptions): (() => void
       stack = []
       pendingEnds.set(key, stack)
     }
-    stack.push(end)
-    if (stack.length > MAX_PENDING_DEPTH) {
-      // 出声解释这批操作为何在指标里查无此处（与 PerformanceMonitor 计时条目缺失时的
-      // console.debug 同口径）：静默淘汰会让监控数据的缺口无从解释
-      console.debug(`[GeomStore][analyzer] ${key} 的未完成配对计时已达上限 ${MAX_PENDING_DEPTH}，淘汰最早一条（该次操作不产出指标）`)
-      stack.shift()
+    if (stack.length >= MAX_PENDING_DEPTH) {
+      // 上限已满：拒绝入栈而非淘汰栈底。栈底可能是仍在等待 after 钩子的活跃帧，
+      // shift 会让它的 end 被丢弃，后续 pop 弹出错误条目导致 span 错配。
+      // 拒绝最新的入栈请求更安全：它是「重试风暴」中最新被中止的操作，丢弃它不影响已有配对
+      console.debug(`[GeomStore][analyzer] ${key} 的未完成配对计时已达上限 ${MAX_PENDING_DEPTH}，拒绝新入栈（该次操作不产出指标）`)
+      return
     }
+    stack.push(end)
   }
 
   const popEnd = (key: string): void => {

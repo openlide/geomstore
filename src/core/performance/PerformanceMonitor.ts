@@ -260,7 +260,12 @@ export class PerformanceMonitor implements PerformanceMonitorInterface {
 
     const perf = this.cachedWxPerformance
     if (perf) {
-      const value = perf.now()
+      let value: unknown
+      try {
+        value = perf.now()
+      } catch {
+        value = undefined
+      }
       if (typeof value === 'number' && Number.isFinite(value)) {
         return value
       }
@@ -417,10 +422,11 @@ export class PerformanceMonitor implements PerformanceMonitorInterface {
     // 日志记录：threshold 的契约是「超过此值会触发警告」，若与采样同生灭，
     // sampleRate<1 时超阈值操作只有被抽到的才预警、sampleRate=0 时预警整体失效——
     // 而预警正是低采样场景下唯一还该保留的信号。
-    // 传副本 metricRecord 而非入参 metrics：logger 看到的与缓冲区留存的是同一份内容，
-    // 否则启用内存监控时 logger 永远看不到 memoryUsage
+    // #101: 传副本而非入参 metricRecord 本身：logger 是用户 supplied 函数，
+    // 若其修改传入对象（如 delete 某字段、改写值），会污染缓冲区留存的历史记录。
+    // 浅拷贝足以阻断引用共享（metricRecord 是一层扁平对象）
     if (metricRecord.exceedThreshold) {
-      this.options.logger(metricRecord)
+      this.options.logger({ ...metricRecord })
     }
   }
 
@@ -559,7 +565,7 @@ export class PerformanceMonitor implements PerformanceMonitorInterface {
    * monitor.setOptions({ trackMemory: true })
    * ```
    */
-  setOptions(options: PerformanceOptions): void {
+  setOptions(options: PerformanceOptions = {}): void {
     Object.assign(this.options, {
       sampleRate: PerformanceMonitor.normalizeSampleRate(options.sampleRate, this.options.sampleRate),
       threshold: PerformanceMonitor.normalizeThreshold(options.threshold, this.options.threshold),
