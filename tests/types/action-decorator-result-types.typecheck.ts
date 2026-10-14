@@ -26,6 +26,11 @@ import { withLoading } from '@/extras/action/withLoading.js'
 type MD = MethodDecorator
 
 // 双向等价（修复前只有 ActionDecorator → MethodDecorator 单向成立）
+// 补 `any` 守卫：`[any] extends [MD] ? true : false` 求值为 `boolean`（而非 `true`），
+// `= true` 静默放行，「等价性锁」在 ActionDecorator 退化 any 时无感破功。
+// 先钉住「非 any」，再让双向断言独立生效
+type _NotAny = 0 extends 1 & ActionDecorator ? never : true
+const _actionDecoratorNotAny: _NotAny = true
 const _decoratorIsMethodDecorator: [ActionDecorator] extends [MD] ? true : false = true
 const _methodDecoratorIsActionDecorator: [MD] extends [ActionDecorator] ? true : false = true
 
@@ -66,8 +71,11 @@ function describe(r: ActionResult<UserDto>): string {
 // 成功分支不再允许携带 error（修复前 `success: true` + `error` 可表示）
 // @ts-expect-error 非法状态：success: true 与 error 互斥
 const _illegal: ActionResult<UserDto> = { success: true, data: { id: '1' }, error: new Error('x'), startTime: 0, endTime: 1, duration: 1 }
+// 补 error 字面量后本行唯一报错来源只剩非法的 data 字段：
+// 若缺 error 那侧同报，未来放宽互斥（仍保留 error 必填）时 @ts-expect-error 会因
+// 「仍然报错」而「生效」，真正的 data 互斥回归就被掩盖
 // @ts-expect-error 非法状态：success: false 与 data 互斥
-const _illegal2: ActionResult<UserDto> = { success: false, data: { id: '1' }, startTime: 0, endTime: 1, duration: 1 }
+const _illegal2: ActionResult<UserDto> = { success: false, data: { id: '1' }, error: new Error('x'), startTime: 0, endTime: 1, duration: 1 }
 // @ts-expect-error 失败分支必须给出已归一化的 error
 const _missingError: ActionResult<UserDto> = { success: false, startTime: 0, endTime: 1, duration: 1 }
 // 只断言「error 必填」不足以锁定归一化契约：把类型退化成 `error: unknown`（或隐式 any）时
