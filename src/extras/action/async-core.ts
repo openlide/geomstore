@@ -217,9 +217,13 @@ export async function retryWithBackoff<T>(fn: () => Promise<T>, options: RetryOp
       } catch (callbackError) {
         // shouldRetry 抛错 = 该判断不可用，不擅自替调用方决定重试，按原样向上抛。
         // 但它会把 fn 的真实失败整个顶掉（调用方只看到一个与故障无关的回调异常），
-        // 故先把原始抛出值挂成 cause 保留根因，再抛回调异常本身
+        // 故先把原始抛出值挂成 cause 保留根因，再抛回调异常本身。
+        // 非 Error 抛出值（如 `throw 'boom'`）无 cause 字段可写：向外抛出的仍是原始值
+        // （兑现「e === thrown」身份判断），此时原始 error 只能落到 console.error 兜底
         if (callbackError instanceof Error) {
           attachCause(callbackError, error)
+        } else {
+          console.error('[retryWithBackoff] shouldRetry threw a non-Error, original failure attached:', error)
         }
         throw callbackError
       }

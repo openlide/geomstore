@@ -190,7 +190,14 @@ export class ActionManager<S extends State = State, A extends Actions = Actions>
     // onlyOnChange 模式：基线必须在进入 dispatch 之前采集。dispatch 期间通知被抑制，
     // beforeDispatch 钩子里的写入同样属于本次 dispatch 事务；基线晚采会把钩子写入
     // 当成「无变化」，收尾时跳过通知，该变更对所有监听器永久不可见
-    const mutationsBefore = this._getMutationCount ? this._getMutationCount() : 0
+    // 注入的计数提供者（非 Store 消费方实现）抛错就地归口：本行位于 try/finally 之外，
+    // 异常逃出去会跳过 _enterDispatch 的配对退出、dispatching 状态永久卡在 true
+    let mutationsBefore = 0
+    try {
+      mutationsBefore = this._getMutationCount ? this._getMutationCount() : 0
+    } catch (error) {
+      this._reportSettledFailure(error)
+    }
     // 先设置 dispatching 状态，再触发钩子，确保监听器能获取正确的状态
     this._enterDispatch()
     let result: unknown
@@ -283,8 +290,14 @@ export class ActionManager<S extends State = State, A extends Actions = Actions>
     // 同步 action：仅最外层 dispatch 且不在 batch 中时通知——
     // 内层 dispatch 结束时深度仍大于 0，提前通知会让监听器收到
     // 外层 action 尚未完成的中间状态；batch 中则由收尾统一通知
-    if (this._shouldNotifyNow(mutationsBefore)) {
-      this._notifyListeners()
+    // 与 _flushAfterSyncSegment / _settleAfterDispatch 同一口径：通知链路与注入的计数
+    // 提供者抛错就地归口，不外溢——单个抛错订阅者若裸逃，会顶替掉已算好的 action 返回值
+    try {
+      if (this._shouldNotifyNow(mutationsBefore)) {
+        this._notifyListeners()
+      }
+    } catch (error) {
+      this._reportSettledFailure(error)
     }
     return result
   }
