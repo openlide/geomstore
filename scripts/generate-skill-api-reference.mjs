@@ -17,9 +17,9 @@
  * 用法（先构建，确保 dist 与当前源码一致）：
  *   pnpm build && pnpm skill:api
  *
- * 产出目录由脚本独占：每次生成会先清空其中的 .md 文件（同名**目录**只报不删），
- * 并删除历史单文件版本 references/api.md。`index.md` 是脚本保留名，入口映射到它会被
- * validateEntries 直接拒绝。
+ * 产出目录由脚本独占：**先写这一版，再删本轮不再产出的孤儿 .md**（顺序不能反，理由见文末
+ * 清空那段的注释），并删除历史单文件版本 references/api.md；同名**目录**只报不删。
+ * `index.md` 是脚本保留名，入口映射到它会被 validateEntries 直接拒绝。
  *
  * 失败即中止、不动输出：入口 .d.ts 解析不通或诊断报错（程序按 skipLibCheck:false 建，
  * 否则 .d.ts 的语义诊断恒为空）、某个入口一个符号都没解析出来、或清单与 exports 不一致
@@ -352,25 +352,20 @@ function main() {
     summary.push(`  ${entry.file.padEnd(24)} ${String(entry.items.length).padStart(3)} 符号  ${kb(Buffer.byteLength(text))}`)
   }
 
-  // 目录由脚本独占：清掉历史 .md 与单文件版本，避免改名/删除入口后留下孤儿文件。
-  // withFileTypes + force:true 都是必要的：默认的 rmSync 会在「条目刚被外部删掉」时抛错，
-  // 也会把名字撞 .md 的目录当文件 unlink 而抛错，两种都会把清空动作打断在半路，
-  // 留下一个既不是上一版也不是这一版的输出目录。目录只报不删（本脚本只写文件，
-  // 撞名目录里装的一定是别人的东西）。
+  // 目录由脚本独占，但**删除一律排在写入之后**：先写这一版，再删本轮不再产出的历史 .md
+  // （入口改名 / 删除后的孤儿）。顺序反过来（先清空再写）时，中途任何一次抛错都会留下一个
+  // 既不是上一版也不是这一版的输出目录——而它是跨项目唯一的 API 依据，宁可留着上一版完整
+  // 内容，也不要留一个空目录让人以为「生成成功了」。（历次事故：清空后写盘失败，
+  // `references/api/` 只剩空气，`pnpm test` 才把它揭出来。）
+  //
+  // 目录只报不删：本脚本只写文件，撞名目录里装的一定是别人的东西。
   mkdirSync(OUT_DIR, { recursive: true })
-  const strayDirs = []
-  for (const dirent of readdirSync(OUT_DIR, { withFileTypes: true })) {
-    if (!dirent.name.endsWith('.md')) continue
-    if (!dirent.isFile()) {
-      strayDirs.push(dirent.name)
-      continue
-    }
-    rmSync(path.join(OUT_DIR, dirent.name), { force: true })
-  }
-  if (existsSync(LEGACY_FILE)) rmSync(LEGACY_FILE, { force: true })
+  const strayDirs = readdirSync(OUT_DIR, { withFileTypes: true })
+    .filter((dirent) => dirent.name.endsWith('.md') && !dirent.isFile())
+    .map((dirent) => dirent.name)
 
-  // 输出文件名与已存在目录同名时 writeFileSync 会抛 EISDIR，且清空动作已完成——
-  // 必须在写入前检测冲突，否则错误信息无法解释原因
+  // 输出文件名与已存在目录同名时 writeFileSync 会抛 EISDIR——必须在写入前检测冲突，
+  // 否则错误信息解释不了原因
   const blocked = documents.filter(({ name }) => strayDirs.includes(name))
   if (blocked.length > 0) {
     console.error(`[skill-api] 输出文件名与已存在目录同名，无法写入：${blocked.map((b) => b.name).join(', ')}`)
@@ -378,6 +373,16 @@ function main() {
   }
 
   for (const { name, text } of documents) writeFileSync(path.join(OUT_DIR, name), text, 'utf8')
+
+  // 写入全部成功后才清理孤儿，force:true 是必要的：默认的 rmSync 会在「条目刚被外部删掉」时抛错
+  const wanted = new Set(documents.map(({ name }) => name))
+  for (const dirent of readdirSync(OUT_DIR, { withFileTypes: true })) {
+    if (!dirent.name.endsWith('.md') || !dirent.isFile()) continue
+    if (wanted.has(dirent.name)) continue
+    rmSync(path.join(OUT_DIR, dirent.name), { force: true })
+    console.log(`[skill-api] 移除孤儿：${dirent.name}（本轮出口清单里已无对应入口）`)
+  }
+  if (existsSync(LEGACY_FILE)) rmSync(LEGACY_FILE, { force: true })
 
   for (const name of strayDirs) {
     console.warn(`[skill-api] WARN: 输出目录下有个叫 \`${name}\` 的**目录**，本脚本只写文件、不会递归删它，请人工确认`)

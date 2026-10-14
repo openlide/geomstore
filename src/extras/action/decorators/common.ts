@@ -152,7 +152,6 @@ export function isThenable(value: unknown): value is PromiseLike<unknown> {
  *
  * 创建一个通用装饰器，可以在Action执行前后执行自定义逻辑
  *
- * @static
  * @param {DecoratorOptions} [options={}] - 装饰器选项
  * @returns {MethodDecorator} 方法装饰器
  *

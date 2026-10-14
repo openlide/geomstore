@@ -76,7 +76,7 @@ export class ActionUtils<A extends Actions = AsyncActions> {
    * @returns {Promise<Awaited<ReturnType<A[K]>>>} Action执行结果
    * @throws {TypeError} 入参形态不对（缺 actionName、actionName 在该 actions 上不存在或不是
    *   函数）时**就地**抛出：不经过执行器，因此不会在 `getStats`/`getHistory` 里留下记录
-   * @throws 被装饰 action 自身抛出的错误会**原样**向上抛出（同 `ActionExecutor.execute`）：
+   * @throws 目标 action 自身抛出的错误会**原样**向上抛出（同 `ActionExecutor.execute`）：
    *   本方法只是门面，不做包装、也不转成「失败结果」。executor 已把该次执行按失败记入历史
    *   （`getStats`/`getHistory` 可见），随后 rethrow 原始值——调用方 `catch (e) => e === thrown`
    *   的身份判断成立

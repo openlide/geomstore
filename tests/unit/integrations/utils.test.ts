@@ -5,7 +5,7 @@
  * @description 测试 integrations/utils.ts 中的所有工具函数
  */
 
-import { parseMapping, bindMappings, bindActions, performAutoInject, exposeStoreAPI, cleanupBindings } from '@/integrations/utils.js'
+import { parseMapping, bindMappings, bindActions, performAutoInject, exposeStoreAPI, cleanupBindings, createMapper } from '@/integrations/utils.js'
 import { createStore } from '@/index.js'
 
 describe('integrations/utils', () => {
@@ -770,5 +770,15 @@ describe('bindMappings 就地变异与 undefined（BUG 回归）', () => {
     store.setState('token', 'abc')
     expect(setData.token).toBe('abc')
     unbinds.forEach((u) => u())
+  })
+
+  it('createMapper 空映射返回 no-op update 且初始不触发 setter', () => {
+    // 集成层按「解析后的映射大小」判定是否建立 mapper：空映射的 update 是
+    // no-op，且构造期不得产生一次空 setData（那会白走一次视图更新往返）
+    const setter = jest.fn()
+    const { update } = createMapper({}, {}, () => undefined, setter)
+
+    expect(() => update()).not.toThrow()
+    expect(setter).not.toHaveBeenCalled()
   })
 })

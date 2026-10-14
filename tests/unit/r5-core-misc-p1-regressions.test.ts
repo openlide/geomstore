@@ -781,7 +781,11 @@ describe('R5 core-misc-p1 · AsyncBatchNotifier', () => {
 describe('R5 core-misc-p1 · 生产模式静默', () => {
   let mod: {
     isProduction: () => boolean
-    composeStore: (stores: Store[], options?: { namespace?: string | boolean }) => ReturnType<typeof composeStore>
+    // 动态 import 的 mod 是手工声明的形状：composed 在本文件只当鸭子类型 Store 用
+    // （dispatch / getter / destroy），不消费组合层的精确 A/G 推断。刻意不用
+    // `ReturnType<typeof composeStore>`——它对泛型重载的解析随重载形态变化
+    // （返回类型名义化后 getter 的形参曾解析成 never），按消费面钉成 Store 更稳
+    composeStore: (stores: Store[], options?: { namespace?: string | boolean }) => Store
     findTargetStoreWithKey: typeof findTargetStoreWithKey
   }
   let warnSpy: jest.SpyInstance

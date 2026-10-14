@@ -2462,6 +2462,32 @@ describe('compareSnapshots 数组新增元素（#23 补充）', () => {
   })
 })
 
+describe('compareSnapshots 数组附加自有键的增删（非下标键参与比较）', () => {
+  const manager = new SnapshotManager()
+
+  it('一侧有多余的附加键时报 added，路径与对象键同形', () => {
+    const withVersion = [1, 2] as unknown as Record<string, unknown>
+    withVersion.version = 2
+    const s1 = manager.createSnapshot({ list: [1, 2] })
+    const s2 = manager.createSnapshot({ list: withVersion })
+
+    const diff = manager.compareSnapshots(s1, s2)
+    expect(diff.changed).toBe(true)
+    expect(diff.changes).toEqual([{ path: 'root.list.version', oldValue: undefined, newValue: 2, kind: 'added' }])
+  })
+
+  it('反向：一侧缺少附加键时报 removed', () => {
+    const withVersion = [1, 2] as unknown as Record<string, unknown>
+    withVersion.version = 2
+    const s1 = manager.createSnapshot({ list: withVersion })
+    const s2 = manager.createSnapshot({ list: [1, 2] })
+
+    const diff = manager.compareSnapshots(s1, s2)
+    expect(diff.changed).toBe(true)
+    expect(diff.changes).toEqual([{ path: 'root.list.version', oldValue: 2, newValue: undefined, kind: 'removed' }])
+  })
+})
+
 // ==================== 覆盖率补全：降级与中止路径 ====================
 describe('覆盖率补全：克隆降级与中止路径', () => {
   test('COV-R5-001: 同步 ownKeys 抛错且 onError 返回 false 时应中止整个快照', () => {

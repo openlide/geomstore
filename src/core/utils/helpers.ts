@@ -338,12 +338,9 @@ export function uniqueId(prefix?: string): string {
 /** 克隆模式 */
 export type CloneMode = 'deep' | 'shallow' | 'safe' | 'json'
 
-/**
- * 内建容器的准入门槛：只重建「恰好是该内建类型本身」的实例。
- *
- * 复用 `clone.ts` 导出的 `isExactly`（已在本文件顶部导入），保持判据单一来源。
- * 子类实例走「返回原引用」的降级路径，理由见 {@link clone} 与 deepCloneState 的文档。
- */
+// 内建容器的准入门槛（只重建「恰好是该内建类型本身」的实例）：复用 `clone.ts` 导出的
+// `isExactly`（已在本文件顶部导入），保持判据单一来源；子类实例走「返回原引用」的
+// 降级路径，理由见 clone.ts 里 deepCloneState 的文档
 
 /**
  * 统一的克隆函数

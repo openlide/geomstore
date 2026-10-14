@@ -2687,4 +2687,63 @@ describe('R5 回归：dispatchByNamespace 跳过已销毁子 store', () => {
 
     warnSpy.mockRestore()
   })
+
+  it('合并 actions 注册表按 命名空间/动作 直接调用（命名空间模式）', () => {
+    // 合并注册表是 composeStore 对外暴露的动作入口：此前只被登记、没有任何用例
+    // 真正调用过表里的派发函数
+    const userStore = createStore({
+      name: 'acts-user',
+      state: { name: 'Alice' },
+      actions: {
+        setName(name: string) {
+          this.state.name = name
+        },
+      },
+    })
+    const appStore = createStore({
+      name: 'acts-app',
+      state: { theme: 'light' },
+      actions: {
+        setTheme(theme: string) {
+          this.state.theme = theme
+        },
+      },
+    })
+    const composed = composeStore([userStore, appStore], { namespace: true }) as any
+
+    composed.actions['acts-user/setName']('Bob')
+    composed.actions['acts-app/setTheme']('dark')
+
+    expect(composed.getState()['acts-user'].name).toBe('Bob')
+    expect(composed.getState()['acts-app'].theme).toBe('dark')
+  })
+
+  it('合并 actions 注册表按裸名调用（平铺模式，同名取第一个 store）', () => {
+    const first = createStore({
+      name: 'flat-a',
+      state: { name: 'A' },
+      actions: {
+        setName(name: string) {
+          this.state.name = name
+        },
+      },
+    })
+    const second = createStore({
+      name: 'flat-b',
+      state: { theme: 'light' },
+      actions: {
+        setTheme(theme: string) {
+          this.state.theme = theme
+        },
+      },
+    })
+    const composed = composeStore([first, second]) as any
+
+    // 平铺模式状态直接合并（无命名空间层），动作按裸名寻址
+    composed.actions.setName('Carol')
+    expect(composed.getState().name).toBe('Carol')
+
+    composed.actions.setTheme('light')
+    expect(composed.getState().theme).toBe('light')
+  })
 })

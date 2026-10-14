@@ -388,7 +388,9 @@ export function processNodeAsync(
 
     // 处理普通对象
     // 保留源对象原型：类实例快照后仍是该类实例（方法/继承链可用），
-    // 仅复制自有可枚举属性，不触发任何构造器或 getter
+    // 仅复制自有可枚举属性，不触发构造器——但 getter **会**被求值：访问器属性由 copyOwnKeyAsync
+    // 用描述符里捕获的 getter 求值后落为数据属性（理由见该函数注释），故这里是
+    //「不触发构造器」而不是「不触发 getter」
     objectShell = Object.create(Object.getPrototypeOf(value) as object | null) as Record<string, unknown>
     context.visited.set(value as object, objectShell)
   } catch (error) {

@@ -10,7 +10,8 @@
  * 回退状态：支持固定值或根据错误/当前状态动态计算
  *
  * **`F` 本身可调用时这个联合是二义的**：消费侧一律以 `typeof fallback === 'function'` 判别形态
- * （见 `ErrorBoundary.resolveFallback` 与 `getFallbackState`），因此「恰好是函数的**静态**回退值」
+ * （见 `ErrorBoundary.handleError` 与 `getFallbackState`：二者都以 `typeof fallback === 'function'`
+ * 判别形态），因此「恰好是函数的**静态**回退值」
  * 会被当成计算函数、以 `(error, currentState)` 调用，而不是原样返回。需要把函数本身当回退值时
  * 请包一层对象（如 `{ fn }`），别直接传裸函数。
  *

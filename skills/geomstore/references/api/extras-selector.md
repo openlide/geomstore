@@ -2,7 +2,7 @@
 
 > **本文件由 `scripts/generate-skill-api-reference.mjs` 从 `dist/**/*.d.ts` 生成，请勿手工编辑。**
 >
-> - 来源版本：`@openlide/geomstore@0.8.3`
+> - 来源版本：`@openlide/geomstore@0.9.0`
 > - 内容来源：构建产物类型声明（随 npm 包发布，与安装版本必然一致）
 > - 重新生成：`pnpm build && pnpm skill:api`
 > - 引入路径：`./extras/selector`
@@ -215,7 +215,8 @@ export declare class SelectorComposer {
     /**
      * 创建派生选择器
      *
-     * 通过管道操作创建派生选择器，pipe的别名
+     * 通过管道操作创建派生选择器（与 pipe 共用底层实现；仅提供 2 段/3 段重载，
+     * 不像 pipe 那样支持单段或四段管道，因此是 pipe 的严格子集而非完全别名）
      *
      * @template S - 状态类型
      * @template R1 - 第一个返回类型
@@ -773,9 +774,11 @@ export declare function createMemoizedSelector<S extends State, R>(selectorFn: S
  * @param {number} [options.ttl=5000] - 缓存生存时间（毫秒）。除 TTL 外，每次调用还会用
  *   deepEqual 校验 state 内容快照：Store 状态就地变异（引用不变）时立即作废该 state 下的
  *   全部参数缓存，不会在 TTL 内返回陈旧值。
- *   `<= 0` / `NaN` 表示「条目立即过期」，即不缓存（与 `SelectorOptions.cacheTTL` 的归一化口径
- *   刻意不同：那里 `NaN` 会变成永不过期、属静默陈旧，故被拒绝；此处两种写法都退化为不缓存，
- *   不存在返回陈旧值的风险，也就没有归一化的必要）。`Infinity` 表示只由版本/快照失效
+ *   `<= 0` / `NaN` / `Infinity` 一律是「不缓存」——写入守卫要求 `ttl > 0` 且为有限值，
+ *   三者一个条目都不写（与 `SelectorOptions.cacheTTL` 的归一化口径刻意不同：那里 `NaN`
+ *   会变成永不过期、属静默陈旧，故被拒绝；此处几种写法都退化为不缓存，不存在返回陈旧值的
+ *   风险，也就没有归一化的必要）。注意 `Infinity` 因此**不是**「永不过期」：要长期缓存请
+ *   给一个足够大的有限值
  * @param {number} [options.maxEntries=1000] - 单个 state 下原始类型参数的缓存条目上限。
  *   归一化口径同 `SelectorOptions.cacheSize`：`Number.isFinite(v) ? Math.max(1, Math.floor(v)) : 1000`，
  *   即 0 / 负数夹到 1、`NaN` / `Infinity` / 未提供回到 1000（不夹会让上限形同虚设或表无界增长）
@@ -934,7 +937,8 @@ export declare function createRetrySelectorAsync<S extends State, R>(selector: S
  * @template R - 返回值类型
  * @param {Selector<S, R>} selectorFn - 选择器函数
  * @param {SelectorOptions} [options] - 缓存选项
- * @returns {Selector<S, R>} 选择器函数
+ * @returns {Selector<S, R> & { factory: SelectorFactory<S, R> }} 选择器函数，并挂上它内部的
+ *   `SelectorFactory`（`Object.assign` 附加，供测试与需要读缓存状态的高级用法使用）
  *
  * @example
  * ```typescript

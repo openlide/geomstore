@@ -25,6 +25,35 @@
 
 迁移：全进程收集 / 聚合 / 上报错误请接入 `Store` 的 `onError` 钩子（`store.hooks.on('onError', …)`）再转交第三方监控（`wx.reportError` / Sentry 等）；重试与恢复请在 action 侧自管（`extras/action` 的 `withRetry` 装饰器可覆盖部分场景）。
 
+### 正式版 / 体验版现在按生产模式运行（行为变更）
+
+0.9.0 给 `isProduction()` 加了第三档判据 `wx.getAccountInfoSync().miniProgram.envVersion`（`release` / `trial` → 生产，`develop` → 开发）。此前原生小程序里前两档信号都不存在——没有 `process` 全局、官方构建也不替换 `__DEV__`——于是**正式版一直按开发模式跑**。升级后现象会变：
+
+| 行为                                     | 0.8.x（正式版实际） | 0.9.0（正式版 / 体验版）                                               |
+| ---------------------------------------- | ------------------- | ---------------------------------------------------------------------- |
+| 非法直写 `store.state.x = v`             | **抛错**            | 由 `stateProtection.productionHandler` 决定：默认 `warn`（告警后放行） |
+| 严格校验                                 | 开                  | 关                                                                     |
+| 库内日志（插件安装 / 卸载 / 降级告警等） | 打印                | 静默；降级与失败改走 `onError` 钩子                                    |
+| 调试表 `globalThis.__GEOMSTORE_*__`      | 挂载                | 不挂载                                                                 |
+
+**需要改代码 / 改配置的两种情况**：
+
+- 靠「非法直写抛错」暴露问题的项目：正式版不再抛错，线索只剩 `console.warn` 与 `onError`。要继续保持严格，把 `stateProtection.productionHandler` 设为 `'error'`（或 `'silent'` 明确放行）。
+- 依赖调试表或控制台日志排障的：正式版里它们不存在了，改接 `store.hooks.on('onError', …)` 转交监控。
+
+要在**体验版**复现开发期的严格行为（体验版现在也判生产），在 `app.js` 最顶部（早于任何 `createStore`）挂 `globalThis.__DEV__ = true`——它的优先级高于宿主信号。宿主侧的探测写法必须包 `try/catch`：小程序沙箱里 `typeof __DEV__` 本身就会抛 `ReferenceError`，口径见 [README · 小程序沙箱的 typeof](../README.md#小程序沙箱的-typeof写宿主代码前必读)。
+
+`trial` 判生产的理由：体验版跑的就是待发布的那一份产物，「仅限内部可见」不等于「可以崩」。
+
+### 类型面放宽（无需改代码，但可以先按新写法收一遍类型）
+
+同一版还放宽了组合 Store 的类型面。**既有代码照常编译，不用改任何一行**；下面两条是「以前写不了、现在能写」：
+
+- **`composeStore(...)` 的结果现在可以用 `ComposedStore` 标注**。此前 `composeStore` 返回结构化的 `Store<…>`，而公开出口上的 `ComposedStore` 是含 `private` 成员的实现类（名义类型），`const s: ComposedStore = composeStore([a, b])` 会报 TS2740。现在返回「结构面 × 名义面」交叉类型，该标注成立。`ComposedStore` 也补上了 `A` / `G` 两个泛型参数，`actions` 与 `getters` 因此是精确类型，不再是 `Record<string, (...args: unknown[]) => unknown>`。
+- **`Store` 接口的 `destroy` 带上可选参数** `destroy(destroyStores?: boolean)`，与组合层 `ComposedStore.destroy(destroyStores = true)` 对齐。经 `Store` 接口持有组合 Store 时，现在可以传 `false` 让销毁只退订组合层订阅、不级联销毁子 Store（子 Store 在组合之外仍被持有时要这么写）。零参调用语义不变。
+
+> 附注：`src/types/compose.ts` 里另有一个**同名**的结构化别名 `ComposedStore<S>`，它不在任何发布入口上（包外不可达），只供仓库内部的类型级测试使用。对外请按上面的类来写，不要按它。
+
 ## 升级到 0.8.1
 
 0.8.0 → 0.8.1 只有一个出口面修复，**没有任何需要改代码的地方**——既有代码照常编译运行。

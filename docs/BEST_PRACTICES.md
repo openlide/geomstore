@@ -106,7 +106,10 @@
 
   载荷份数按本轮注册的可写性分配，如实标注是大状态下最主要的通知开销开关。会写载荷的回调误标 `readOnly`：保护开启时是写入抛错，保护关闭时是静默改活状态。页面 / 组件绑定本身就是只读注册。见 [CONCEPTS §2](./CONCEPTS.md#监听器与只读订阅)。
 
+- **可写订阅的成本要按「份数 × 状态规模」估**：每个可写注册每轮通知各得一份**整树深拷贝**。经验自查线——可写注册数 × 状态节点数 > 10⁴（如 5 个可写订阅 × 2000 节点）时，评估把订阅改只读、按 `isStateKeyDirty` 在回调内自查，或拆分 store 缩小单棵树。页面 / 组件映射订阅默认就是只读，**默认场景不触发这条线**；踩线的是业务侧自己 `subscribe(fn)` 又不标 `readOnly` 的写法。见 [CONCEPTS §2](./CONCEPTS.md#监听器与只读订阅)。
+
 - **把 `maxSubscribers` 当真上界用**：额度对每一次注册生效（含同一函数重复订阅），达上限按 `onLimit` 驱逐一份最早注册或直接抛错，驱逐会发一条 `onError`（第二参 `'subscribe'`）。见 [CONCEPTS §2](./CONCEPTS.md#订阅额度)。
+- ⚠️ **额度吃满时被牺牲的往往不是组件，而是插件**：驱逐按 evict-oldest，而 `persistencePlugin` / `loggerPlugin` 通常在 `app.js` 里最早安装 → 它们是**最早那一笔注册**。默认上限 50 遇上「列表页每项组件各一条订阅」就会触顶，症状是写盘静默停止且不报错（小程序 demo 的 e2e 实测：订阅从 20 加到 60 后磁盘不再更新）。对策：长列表改「一个页面级订阅 + `setData` 下发」、必要时调大 `subscription.maxSubscribers`、**并把 `onError` 的 `'subscribe'` 源接进监控**（生产唯一的可见性出口）。
 - **退订要落实**：`subscribe` 返回退订函数；页面 / 组件场景交给集成层（`onUnload` / `detached` 自动清理），自行订阅的场景务必在销毁前退订。见 [CONCEPTS §2](./CONCEPTS.md#迭代中退订)。
 - **`onlyOnChange` 用于跳过无写入的通知**：它按变更计数判定，不做内容深比较（同值赋值也可能计数）。见 [CONCEPTS §2](./CONCEPTS.md#脏跟踪的覆盖面)。
 - **不要用 `subscribe` 做数据转换**：转换放 getter / 选择器；订阅回调里转换会让同一份数据被反复计算。
@@ -172,6 +175,8 @@
   - 需要内存兜底请交给 `persistencePlugin` 的探测分支。
   - 恢复阶段被跳过（后端抛错 / JSON 语法错 / 载荷不是可信纯对象 / `validate` 拒收）除 `console.error` 外也发一条 `onError`。见 [CONCEPTS §11](./CONCEPTS.md#调试表与持久化)。
 - **生产模式静默 ≠ 无信号**：持久化降级、恢复被跳过、监听器抛错、订阅者被驱逐、落盘与卸载清理失败在生产只走 `onError`，上线前挂一个上报处理器比排查时临时切开发模式可靠。见 [FAQ](./FAQ.md#生产环境为什么看不到插件日志)。
+- **集成层是 `(store, options)` 两参数**：`withPageStore(app.globalData.store, { mapState: [...] })`。写成单对象 `withPageStore({ store, ... })` 不报错，但映射为空、零订阅，页面永远不刷新且无任何信号——排查成本极高。
+- **别用裸 `typeof` 探测全局**：小程序 AppService 的全局是沙箱代理，未声明标识符**连 `typeof` 都抛 `ReferenceError`**（`typeof __DEV__` / `typeof process` 实测皆抛，`typeof wx` / `performance` 正常）。宿主代码里要判某个全局是否存在，一律写成 `globalThis.xxx` 取值 + `try/catch`。典型踩坑：按网上常见写法在 `app.js` 顶部写 `if (typeof __DEV__ === 'undefined') …`，结果是 `app.js` 第一行崩、整页白屏，automator 侧只报 `page node not found`。见 [README · 小程序沙箱的 typeof](../README.md#小程序沙箱的-typeof写宿主代码前必读)。
 - **生命周期**：组件端只认 `lifetimes` 写法；需要映射 actions 的收尾放在钩子同步段——包装器不等待异步 Promise。见 [CONCEPTS §13](./CONCEPTS.md#订阅生命周期)。
 - **`withDebounce` / `withThrottle` 的挂起调用要在卸载钩子里收尾**：集成层不清这些定时器，到点它照常调用被装饰方法（并在此期间拖住宿主）。
   - `cancel*`（丢弃）/ `flush*`（立即执行且只执行一次）/ `dispose*`（取消 + 释放该宿主整张状态表）三选一，写在页面 `onUnload` 或组件 `lifetimes.detached` 里。
@@ -236,6 +241,12 @@
 - [ ] 验证缓存是否生效用的是 `getCached()` / `getCacheStats()`，不是 `getState()`（§6）
 - [ ] 组合层销毁子 store 后有显式存活判定（`store.destroyed`），没把「整棵组合还读得动」当成「所有子店都活着」（[CONCEPTS §12](./CONCEPTS.md#子-store-生命周期)）
 - [ ] 页面 / 组件卸载后不再触发写入；订阅由集成层自动清理（清理绑定不等于销毁 Store）（§9）
+- [ ] **确认生产模式判定真的生效**：真机正式版 / 体验版上 `isProduction()` 必须为 `true`（0.9.0 起由 `wx.getAccountInfoSync().miniProgram.envVersion` 自动判定；旧版本需在 `app.js` 顶部自己桥接 `__DEV__`）。判错时最典型的症状是「一次非法直写就崩」且 `productionHandler` 怎么配都不管用（§5 / [CONCEPTS §11](./CONCEPTS.md#生产模式怎么判定小程序)）
+- [ ] **`debounce` 已显式配置**（默认 0 = 每次变更同步写全量 JSON + 阻塞 I/O）：通用 `100`，高频 `300~500`；要求写即落盘的场景才留 `0`（[CONCEPTS §11](./CONCEPTS.md#调试表与持久化)）
+- [ ] **业务里的 `subscribe` 都显式传了 `{ readOnly: true }`**：漏写不会报错，只会把整 Store 的通知路径从零拷贝切成深拷贝（§5）
+- [ ] `maxSubscribers` 按「最大同屏 Page/Component 数 + 常驻订阅数」重估过，不是吃默认 50（§5）
+- [ ] `mapGetters` 的 getter 返回稳定引用（不在 getter 里内联构造对象 / `map()`），否则该键每次通知都整包下发（§9）
+- [ ] 支持的最低基础库上跑过一次 [`examples/miniprogram`](../examples/miniprogram/README.md) 的 automator 冒烟（宿主行为 Node 侧验证不到：Proxy / setData / 生命周期 / 同步存储）（§9）
 - [ ] 被 `withDebounce` / `withThrottle` 装饰的方法已在 `onUnload` / `detached` 里收尾（§9）
 - [ ] `stateProtection` 保持开启（§2）
 - [ ] 大对象的快照走异步并调过 `batchSize`；`success` 与 `errors` 已接入监控（§7）

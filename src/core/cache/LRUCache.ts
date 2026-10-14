@@ -17,9 +17,16 @@ export type { CacheOptions, LRUCacheStats } from './types.js'
 import type { CacheOptions, LRUCacheStats, LRUNode } from './types.js'
 import { isProduction } from '../store/utils.js'
 
-/** 高精度时间戳（毫秒）：performance.now 具亚毫秒精度，访问耗时统计依赖它 */
+/**
+ * 高精度时间戳（毫秒）：performance.now 具亚毫秒精度，访问耗时统计依赖它
+ *
+ * 经 `globalThis` 取值而非裸 `typeof performance`：小程序 AppService 的全局是沙箱代理，
+ * 未声明的标识符连 `typeof` 都抛 ReferenceError（见 `store/utils.isProduction` 注释）。
+ * 基础库版本不同，`performance` 是否被注入并不一致，裸 typeof 会把它变成崩溃点。
+ */
 function highResNow(): number {
-  return typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : Date.now()
+  const perf = (globalThis as { performance?: { now?: () => number } }).performance
+  return perf && typeof perf.now === 'function' ? perf.now() : Date.now()
 }
 
 // ==================== 增强型LRU缓存类 ====================

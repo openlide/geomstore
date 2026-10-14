@@ -1,6 +1,6 @@
 ---
 name: geomstore
-description: 微信小程序状态管理库 GeomStore（@openlide/geomstore，v0.8.3，纯 ESM 瘦核心）的使用指南。当需要编写、修改或审查使用 GeomStore 的代码——创建 Store、定义 actions/getters、接入小程序 Page/Component/App、从 extras/* 子入口引入可选能力——时使用。触发条件：代码里已出现 createStore/withPageStore/composeStore/createSelector 等调用，或用户点名要用 GeomStore。
+description: 微信小程序状态管理库 GeomStore（@openlide/geomstore，v0.9.0，纯 ESM 瘦核心）的使用指南。当需要编写、修改或审查使用 GeomStore 的代码——创建 Store、定义 actions/getters、接入小程序 Page/Component/App、从 extras/* 子入口引入可选能力——时使用。触发条件：代码里已出现 createStore/withPageStore/composeStore/createSelector 等调用，或用户点名要用 GeomStore。
 ---
 
 # GeomStore 使用指南
@@ -9,7 +9,7 @@ description: 微信小程序状态管理库 GeomStore（@openlide/geomstore，v0
 
 GeomStore 是轻量级微信小程序状态管理库，提供类 Pinia 的 API、完整的 TypeScript 类型推断、可选能力（Store 组合、插件、错误处理、性能监控、快照、Action 增强）与原生小程序集成（Skyline / Webview）。
 
-当前版本 **v0.8.3**。两条硬性特征决定了绝大多数误用：
+当前版本 **v0.9.0**。两条硬性特征决定了绝大多数误用：
 
 - **纯 ESM**：只有 ESM 产物，**无 CJS 入口**（`exports` 里也没有 `require` 条件）。一律写 `import`。
 - **瘦核心 + 按需子入口**：主入口只含运行必需 API；快照 / 选择器 / 性能 / Action 增强 / 插件实现等**不在主入口**，必须从 `extras/*` 引入。
@@ -19,7 +19,7 @@ GeomStore 是轻量级微信小程序状态管理库，提供类 Pinia 的 API�
 ## 目录
 
 - [Overview](#overview)
-- [使用规则](#使用规则)——10 条，写代码前先看
+- [使用规则](#使用规则)——12 条，写代码前先看
 - [快速上手](#快速上手)——创建 Store、接入 Page / Component / App
 - [常见任务](#常见任务)——订阅与批量、插件、选择器、装饰器、错误、快照
 - [常见错误排查](#常见错误排查)——按报错与症状定位
@@ -45,10 +45,17 @@ GeomStore 是轻量级微信小程序状态管理库，提供类 Pinia 的 API�
 5. **一次异步 dispatch 默认通知 2 次**：同步段结束当场补发一次，settle 再补发一次覆盖 `await` 之后的变更。别在订阅里假设「恰好一次」，按通知次数写的断言要按 2 次；要一次就开 `notify.onlyOnChange` → [`§2`](./references/core-semantics.md#2-订阅与通知)
 6. **getter 没有任何结果缓存**：每次 `store.getter(name)`、每次读 `store.getters.x` 都按当前状态重算一遍。要「依赖未变则复用」请用 `extras/selector` 的 `createSelector` → [`§3`](./references/core-semantics.md#3-getter)
 7. **`getCached(key)` 是缓存的唯一读取入口**：`getState()` / `store.state` 完全不查缓存，拿它验证缓存会让 `hits` / `misses` 恒为 0；`setState` / `$patch` 是**写穿**（更新条目）而不是失效 → [`§4`](./references/core-semantics.md#4-内置缓存)
-8. **订阅是引用计数，`maxSubscribers` 是硬上界**：同一函数注册 N 次就通知 N 次、每个退订句柄只抵消自己那次；额度对每一次注册都过（重复注册同样占额度）。监听器签名只有 `(state) => void`，没有 `prevState` → [`§2`](./references/core-semantics.md#2-订阅与通知)
+8. **订阅是引用计数，`maxSubscribers` 是硬上界**：同一函数注册 N 次就通知 N 次、每个退订句柄只抵消自己那次；额度对每一次注册都过（重复注册同样占额度）。监听器签名只有 `(state) => void`，没有 `prevState`。
+   - ⚠️ **额度吃满时被牺牲的往往不是组件而是插件**：默认 `evict-oldest` 驱逐「最早注册」那一笔，而 `persistencePlugin` 通常在 `app.js` 里最先安装——触顶后**写盘静默停止且无任何报错**（状态改得动、就是不落盘）。长列表改单一页面级订阅 / 调大额度 / 把 `onError` 的 `'subscribe'` 源接进监控。实测见仓库 `examples/miniprogram` 的 e2e → [`§2`](./references/core-semantics.md#2-订阅与通知)
 9. **可选能力按需引入，但包体积收益看宿主**：有打包器（webpack / vite / esbuild）才摇得掉未 import 的子入口；只用 npm + 开发者工具「构建 npm」时，体积按包内 `miniprogram` 目录（**全部子入口都在**）整目录计，子路径分层只换来运行时按需加载——那种宿主下改子路径**不省任何上传体积**。
    - **主包额度紧张时唯一能做的**：把 `miniprogram_npm` 的**输出位置**从主包改到分包（`project.config.json` 的 `setting.packNpmManually` + `setting.packNpmRelationList`，每项只有 `packageJsonPath` 与 `miniprogramNpmDistDir` 两个必填字段，**没有 `path` 字段**——写错不报错，官方未记载未知字段的处理，实测与社区反馈均指向被静默忽略）。这挪的是**额度不是字节**，且不按能力细分：`extras/*` 用没用全都一起挪；想真正压到"实际用到的量"只有让宿主带打包器。配置与四个易踩点见仓库 `README.md` 的「把构建结果放进分包」。
 10. **组合 Store**：`ComposeOptions` 只有 `namespace` / `strict` 真在生效，`lazy` / `tree` / `NamespaceConfig` 是「已声明、未实现」（写了编译通过、静默无效）；命名空间模式下 `store.name` 同时是路由键，空串或含 `/` 在构造期抛错 → [`§5`](./references/core-semantics.md#5-store-组合)
+11. **三端集成是 `(store, options)` 两参数**：`withPageStore(store, { mapState: [...] })`。写成单对象 `withPageStore({ store, mapState: [...] })` **不报错**，但映射为空、零订阅——症状是页面 `data` 恒为初始值、`this.increment` 为 `undefined`，且不产生任何告警。App / Component 同理 → [`§7`](./references/core-semantics.md#7-小程序集成细节)
+12. **小程序宿主上的三条环境事实**（写宿主代码前必读，v0.9.0 起全部适用）：
+    - **沙箱 `typeof` 会抛错**：AppService 的全局是沙箱代理，读**未声明**的标识符连 `typeof` 都抛 `ReferenceError`（`typeof __DEV__` / `typeof process` 实测皆抛，`typeof wx` / `performance` / `queueMicrotask` 正常）。探测全局一律写 `globalThis.xxx` 取值 + `try/catch`，**别写 `typeof someGlobal === 'undefined'`**。照抄网上的 `if (typeof __DEV__ === 'undefined') globalThis.__DEV__ = …` 会让 `app.js` 第一行就崩、整页白屏，而 automator 侧只报 `page node not found`
+    - **生产模式三档判定**：`process.env.NODE_ENV` → `__DEV__` → `wx.getAccountInfoSync().miniProgram.envVersion`（`release` / `trial` 判生产，`develop` 判开发）→ 兜底开发。**0.9.0 起正式版与体验版自动按生产模式运行**：非法直写由「抛错」变为 `stateProtection.productionHandler` 的 `warn`（默认）/`silent`/`error`，严格校验关闭、日志静默。要在体验版复现严格行为请显式挂 `__DEV__ = true`（优先级高于宿主信号）
+    - **硬要求**：组件生命周期必须写在 `lifetimes` 内（基础库 ≥ 3.15.0），写在配置顶层的 `attached` / `detached` 不会执行 → 自动退订不发生、订阅泄漏
+      → [`§8`](./references/core-semantics.md#8-运行环境生产模式与宿主代码口径)
 
 > 各条背后的完整边界语义（状态保护豁免清单、通知载荷分配、脏键追踪、持久化后端契约、全局调试表、集成细节、extras 逐项语义）见 [`references/core-semantics.md`](./references/core-semantics.md) 与 [`references/extras-semantics.md`](./references/extras-semantics.md)。
 
@@ -181,6 +188,7 @@ store.use(timeTravelPlugin({ maxSize: 100 })) // globalThis.__GEOMSTORE_TIME_TRA
 ```
 
 - `storage` 必须**同步且三方法齐备**（`{ getItem, setItem, removeItem }`）：残缺或返回 Promise 的后端在安装期 / 读写时**明确抛错**，绝不静默换后端。接微信请传 `new WxStorageBackend()`——**`wx` 全局对象本身没有 `getItem`**，不能直接当后端用。
+- **`debounce` 默认 `0`（变更即落盘）**：每次 `setState` 都是一次全量 `JSON.stringify` + 一次同步 `wx.setStorageSync`。生产建议显式配 100（通用）/ 300~500（高频写入）；默认值不改成非零是因为「最后 N 毫秒的变更在进程被强杀且未走卸载时会丢」，而持久化的用途就是别把用户数据弄丢——这个取舍要自己拍。
 - 调试入口一律是 `globalThis` 上的表，**表键是 `store.name`**，且**只在非生产环境挂载**。
   详见 [`core-semantics.md` §6](./references/core-semantics.md#6-插件调试表与持久化)。
 
@@ -269,31 +277,35 @@ const diff = new SnapshotManager().compareSnapshots(result, createSnapshot(next)
 
 ## 常见错误排查
 
-| 现象                                                                                    | 原因与修复                                                                                                                                                        |
-| --------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `Cannot find module '@openlide/geomstore'`                                              | 未安装依赖、未执行「构建 npm」，或用了不存在的子路径；合法子路径只有 `.`（根路径本身）、`/core`、`/integrations`、`/extras`、`/extras/*`                          |
-| `require is not defined` / `ERR_REQUIRE_ESM`                                            | 产物是纯 ESM，改用 `import`；配置侧确保按 ESM 解析                                                                                                                |
-| `Cannot find name 'NoInfer'`                                                            | TypeScript < 5.4，升级 TS 或开启 `skipLibCheck`                                                                                                                   |
-| 从主入口引 `createSelector` / `SnapshotManager` / `withRetry` 报错                      | 这些是可选能力，改从 `extras/selector` / `extras/snapshot` / `extras/action` 引入                                                                                 |
-| 直接改 state 不生效或被警告                                                             | 必须经 action：`dispatch` / `this.$patch` / `store.$patch`                                                                                                        |
-| 订阅回调不触发                                                                          | 检查是否只读未写；`notify.onlyOnChange` 为 `true` 时未检测到写入不通知                                                                                            |
-| 订阅触发次数不符 / 退订后仍触发                                                         | 同一函数重复订阅按引用计数通知 N 次、退订只减一份，确认没有重复注册                                                                                               |
-| 一次异步 dispatch 收到 **2 次**通知                                                     | 属 0.7.0 预期：同步段结束当场补发一次、settle 再补发一次。要恰好一次开 `notify.onlyOnChange`                                                                      |
-| `getCacheStats()` 的 `hits` / `misses` 恒为 0                                           | 读取走的是 `getState()`（不查缓存）。缓存唯一读取入口是 `getCached(key)`；`setState` / `$patch` 是**写穿**不是失效                                                |
-| 快照后的 `Map` / `Set` 子类、TypedArray、`Error` 一改就串回活状态                       | 这批值与内建槽位值（`Promise` / 装箱原始值 / WeakMap·WeakSet / 函数）**保留原引用**而不是重建；需要真副本请用 `customCloner` 接管，或自己 `slice(0)` / 结构化克隆 |
-| `compareSnapshots` 报 `changed: true` 但看不出改了啥                                    | 先看 `inputTrusted`：任一侧快照 `success: false` 时它是 `false`，那条 `path: 'root'` 差异只代表**输入不可信**，不代表内容真变了                                   |
-| 组合 store 读起来少了某个子店的键、且日志里一条 `子 store "x" 已销毁，读取按空视图处理` | 该子店在组合之外被 `destroy()` 了。三条读路径都按**空视图**并入并只告警一次；显式判 `store.destroyed`、把该店从组合里摘掉，别把告警当噪音                         |
-| `store.state.frozenNode.child = 1` 在生产里悄悄改成功了                                 | 冻结 / 不可写属性拿到的是**裸引用**，不受写保护、不标脏、不通知；把需要保护的状态放可配置可写的属性上，或整体 `setState` / `$patch` 替换                          |
-| 组件生命周期不执行                                                                      | 微信要求写在 `lifetimes` / `pageLifetimes` 内，配置顶层的 `attached` 等不会被执行                                                                                 |
-| `withRetry(fn, opts)` 报错                                                              | 装饰器只能用于类方法且需 `experimentalDecorators`；函数式场景用 `ActionExecutor`                                                                                  |
-| 持久化恢复失败                                                                          | 恢复值须为纯对象；`validate` 不通过会跳过恢复；自定义 `storage` 必须同步且三方法齐备（否则 `store.use()` 安装期就抛 `TypeError`）                                 |
-| 生产环境完全没有日志                                                                    | 属预期（库口径静默），但降级 / 监听器抛错 / 落盘失败等会 `emit('onError', …, source)`；给 `onError` 挂上报处理器，而不是指望控制台                                |
+| 现象                                                                                    | 原因与修复                                                                                                                                                                 |
+| --------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Cannot find module '@openlide/geomstore'`                                              | 未安装依赖、未执行「构建 npm」，或用了不存在的子路径；合法子路径只有 `.`（根路径本身）、`/core`、`/integrations`、`/extras`、`/extras/*`                                   |
+| `require is not defined` / `ERR_REQUIRE_ESM`                                            | 产物是纯 ESM，改用 `import`；配置侧确保按 ESM 解析                                                                                                                         |
+| `Cannot find name 'NoInfer'`                                                            | TypeScript < 5.4，升级 TS 或开启 `skipLibCheck`                                                                                                                            |
+| 从主入口引 `createSelector` / `SnapshotManager` / `withRetry` 报错                      | 这些是可选能力，改从 `extras/selector` / `extras/snapshot` / `extras/action` 引入                                                                                          |
+| 直接改 state 不生效或被警告                                                             | 必须经 action：`dispatch` / `this.$patch` / `store.$patch`                                                                                                                 |
+| 订阅回调不触发                                                                          | 检查是否只读未写；`notify.onlyOnChange` 为 `true` 时未检测到写入不通知                                                                                                     |
+| 订阅触发次数不符 / 退订后仍触发                                                         | 同一函数重复订阅按引用计数通知 N 次、退订只减一份，确认没有重复注册                                                                                                        |
+| 一次异步 dispatch 收到 **2 次**通知                                                     | 属 0.7.0 预期：同步段结束当场补发一次、settle 再补发一次。要恰好一次开 `notify.onlyOnChange`                                                                               |
+| `getCacheStats()` 的 `hits` / `misses` 恒为 0                                           | 读取走的是 `getState()`（不查缓存）。缓存唯一读取入口是 `getCached(key)`；`setState` / `$patch` 是**写穿**不是失效                                                         |
+| 快照后的 `Map` / `Set` 子类、TypedArray、`Error` 一改就串回活状态                       | 这批值与内建槽位值（`Promise` / 装箱原始值 / WeakMap·WeakSet / 函数）**保留原引用**而不是重建；需要真副本请用 `customCloner` 接管，或自己 `slice(0)` / 结构化克隆          |
+| `compareSnapshots` 报 `changed: true` 但看不出改了啥                                    | 先看 `inputTrusted`：任一侧快照 `success: false` 时它是 `false`，那条 `path: 'root'` 差异只代表**输入不可信**，不代表内容真变了                                            |
+| 组合 store 读起来少了某个子店的键、且日志里一条 `子 store "x" 已销毁，读取按空视图处理` | 该子店在组合之外被 `destroy()` 了。三条读路径都按**空视图**并入并只告警一次；显式判 `store.destroyed`、把该店从组合里摘掉，别把告警当噪音                                  |
+| `store.state.frozenNode.child = 1` 在生产里悄悄改成功了                                 | 冻结 / 不可写属性拿到的是**裸引用**，不受写保护、不标脏、不通知；把需要保护的状态放可配置可写的属性上，或整体 `setState` / `$patch` 替换                                   |
+| 组件生命周期不执行                                                                      | 微信要求写在 `lifetimes` / `pageLifetimes` 内，配置顶层的 `attached` 等不会被执行                                                                                          |
+| `withRetry(fn, opts)` 报错                                                              | 装饰器只能用于类方法且需 `experimentalDecorators`；函数式场景用 `ActionExecutor`                                                                                           |
+| 持久化恢复失败                                                                          | 恢复值须为纯对象；`validate` 不通过会跳过恢复；自定义 `storage` 必须同步且三方法齐备（否则 `store.use()` 安装期就抛 `TypeError`）                                          |
+| 生产环境完全没有日志                                                                    | 属预期（库口径静默），但降级 / 监听器抛错 / 落盘失败等会 `emit('onError', …, source)`；给 `onError` 挂上报处理器，而不是指望控制台                                         |
+| 小程序整页白屏、控制台首行 `__DEV__ is not defined` / `process is not defined`          | 宿主代码用了裸 `typeof`（沙箱代理下**读未声明标识符连 typeof 都抛**）。改成 `globalThis.xxx` 取值 + `try/catch`，见规则 12                                                 |
+| 页面 `this.data` 恒为初始值、映射的 `this.xxxAction` 是 `undefined`，且**没有任何告警** | `withPageStore` 写成了单对象 `{ store, ... }`。签名是 `(store, options)` **两参数**，见规则 11                                                                             |
+| 状态改得动、订阅也触发，但**不再落盘**且无任何报错                                      | 订阅额度（`maxSubscribers` 默认 50）触顶，`evict-oldest` 驱逐了最早注册的 `persistencePlugin` 那一笔。查 `onError` 的 `'subscribe'` 源，见规则 8                           |
+| 正式版 / 体验版里非法直写**没有抛错**（0.9.0 起）                                       | 属预期：0.9.0 起 `envVersion` 为 `release` / `trial` 判生产，行为由 `stateProtection.productionHandler` 决定（默认 `warn`）。要在体验版复现严格行为请显式 `__DEV__ = true` |
 
 ## Resources
 
 ### 1）本 skill 自带，任何环境可用
 
-- [`references/api/index.md`](./references/api/index.md) —— **自动生成的 API 参考**（从 `dist/**/*.d.ts`，含精确签名、JSDoc 与完整重载，当前对应 v0.8.3）。按入口拆分，先看索引的入口一览再只打开所需那一个；重新生成 `pnpm build && pnpm skill:api`。**不要手工编辑**，检索方式见该文件自身。
+- [`references/api/index.md`](./references/api/index.md) —— **自动生成的 API 参考**（从 `dist/**/*.d.ts`，含精确签名、JSDoc 与完整重载，当前对应 v0.9.0）。按入口拆分，先看索引的入口一览再只打开所需那一个；重新生成 `pnpm build && pnpm skill:api`。**不要手工编辑**，检索方式见该文件自身。
 - [`references/core-semantics.md`](./references/core-semantics.md) —— 核心的逐条边界语义：写入路径与状态保护、订阅与通知、getter、内置缓存、组合、插件与调试表、小程序集成。
 - [`references/extras-semantics.md`](./references/extras-semantics.md) —— 可选能力的逐条边界语义：快照、选择器、Action 装饰器、错误处理、性能监控。
 

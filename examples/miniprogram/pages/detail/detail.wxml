@@ -1,0 +1,12 @@
+<view class="container">
+  <view class="hint">二级页 · 当前页面栈深度={{depth}}</view>
+  <view class="row">
+    <text>count = {{count}}</text>
+    <text class="muted">本页本地 ticks = {{localTicks}}</text>
+  </view>
+  <view class="row">
+    <button class="btn-inc" size="mini" type="primary" bindtap="onTapIncrement">+1（验证本页仍在订阅）</button>
+    <button class="btn-open" size="mini" bindtap="onTapOpenAnother">再开一层</button>
+  </view>
+  <view class="hint">theme={{theme}}：与首页共享同一份 Store，返回首页应看到同一份状态。</view>
+</view>

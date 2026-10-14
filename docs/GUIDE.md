@@ -26,7 +26,7 @@
 pnpm add @openlide/geomstore
 ```
 
-运行要求（Node ≥ 22、纯 ESM、TypeScript ≥ 5.4、用装饰器需开 `experimentalDecorators`）见 [README 安装一节的要求表](../README.md#安装)。主入口只含运行必需 API；可选能力（快照 / 选择器 / Action 增强 / 性能 / 错误处理 / 插件实现）从 `extras/*` 子路径按需引入，引入方式与体积规则见 [README · 引入方式与体积分层](../README.md#引入方式与体积分层)。
+运行要求（Node ≥ 22、纯 ESM、TypeScript ≥ 5.4、用装饰器需开 `experimentalDecorators`）见 [README 安装与环境要求一节的要求表](../README.md#安装与环境要求)。主入口只含运行必需 API；可选能力（快照 / 选择器 / Action 增强 / 性能 / 错误处理 / 插件实现）从 `extras/*` 子路径按需引入，引入方式与体积规则见 [README · 引入方式与体积分层](../README.md#引入方式与体积分层)。
 
 可运行示例：
 

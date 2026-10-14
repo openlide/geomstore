@@ -52,7 +52,7 @@
 **强制规则**：
 
 - `core` **不得**反向依赖 `extras` / `plugins`（钩子与插件运行时的契约放在 `core/hooks` + `types/plugin.ts`，plugin 实现只依赖契约）
-- `extras` 可以依赖 `core`；`extras/*` 之间尽量不互相依赖
+- `extras` 可以依赖 `core`；`extras/*` 之间**零互相依赖**（各能力目录本来就互不 import，这条不变量由 docs-gates 的引用图门禁逐文件把守，唯一豁免是聚合入口 `extras/index.ts`——它的存在意义就是汇总各能力）
 - 契约统一放 `src/types`，实现层不重复定义公共类型；`src/types/**` **只放类型与接口**，不得有运行时导出（类 / 函数 / 常量）。带 `wx.*` I/O 的 `WxStorageBackend` 曾是唯一违反者，现已迁到 `src/plugins/WxStorageBackend.ts`（公开子入口不变）：运行时实现住在那里会让「`types/*` 可被 `import type` 整体擦除」的假设失效，`verbatimModuleSyntax` 的消费者无法把 `types/*` 当纯类型看
 
 ## 3. 目录结构与职责

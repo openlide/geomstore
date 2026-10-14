@@ -1,0 +1,23 @@
+{
+  "name": "@openlide/geomstore-example-miniprogram",
+  "version": "0.0.0",
+  "private": true,
+  "description": "GeomStore 的微信小程序 demo：把上线前必做的配置固化成可跑的实例，并配好 automator 冒烟",
+  "scripts": {
+    "sync:lib": "node scripts/sync-lib.mjs",
+    "build:npm": "node scripts/build-npm.mjs",
+    "e2e": "npm run sync:lib && npm run build:npm && node e2e/run.mjs",
+    "e2e:ci": "npm run sync:lib && npm run build:npm && node e2e/run.mjs --strict",
+    "eol:check": "node scripts/normalize-eol.mjs",
+    "eol:fix": "node scripts/normalize-eol.mjs --write"
+  },
+  "dependencies": {
+    "@openlide/geomstore": "file:./vendor/geomstore"
+  },
+  "devDependencies": {
+    "miniprogram-automator": "^0.12.1"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  }
+}

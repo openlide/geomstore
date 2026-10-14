@@ -64,7 +64,13 @@ export class HookSystem implements IHookSystem {
       try {
         reg.handler(...args)
       } catch (error) {
-        console.error(`[GeomStore] Error in hook ${hookName}:`, error)
+        // 与 SubscriptionManager.notify 的监听器异常同口径：开发期打印定位来源，
+        // 生产期控制台静默、只走下方 onError 转投。不门控的代价是实打实的——
+        // 钩子挂在 setState / dispatch 的写路径热线上，一个持续抛错的处理器
+        // （典型：接监控的 onError 处理器自身有 bug）会在生产每次写入都打印一遍
+        if (!isProduction()) {
+          console.error(`[GeomStore] Error in hook ${hookName}:`, error)
+        }
         // 直接递归（onError 处理器自身抛错）与间接递归（onError 处理器触发的其他钩子抛错）
         // 都要拦截：isEmittingOnError 旗帜覆盖整个 onError 分发链
         if (hookName !== 'onError' && !this.isEmittingOnError) {

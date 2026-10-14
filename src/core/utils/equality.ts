@@ -25,24 +25,21 @@ interface Comparison {
   warnedAtMaxDepth: boolean
 }
 
-/** 仅用于「对应全局缺席」时兜底识别装箱值的 [[Class]] 标签，命中即返回该标签 */
+/**
+ * [[Class]] 标签读取器：装箱值、ArrayBuffer / SharedArrayBuffer、Promise / WeakMap / WeakSet
+ * 的判定都走它——跨 realm 安全，且不依赖任何全局构造器是否存在
+ */
 const optionalBoxedTagOf = (value: object): string => Object.prototype.toString.call(value)
 
 /**
  * 是否为装箱原始值（`new Number(1)` / `Object(Symbol('x'))` / `Object(10n)` 等）
  *
- * 用 `instanceof` 而非「原型 ∈ 五个包装原型」：后者会漏掉 `class MyNum extends Number`，
- * 而它的 [[NumberData]] 同样是它身份的一部分。
- *
- * `BigInt` / `Symbol` 这两个全局**必须经能力探测后再参与 instanceof**：未声明的全局标识符
- * 取值是 ReferenceError（不是 false），而本判断位于「所有同原型对象对」的必经路径上——
- * 前三个 instanceof 对普通对象全为 false，短路停不下来，必定求值到后面两个。缺 BigInt 全局的
- * 运行时（BigInt 是 ES2020 内容，旧基础库普遍缺失，本库 target 也只做降级到 ES2020）里，
- * `deepEqual({a:1},{a:1})` 会直接抛 ReferenceError，并从比较器外溢到 createSelector /
- * notify 去重 / 快照 diff 等全部调用方。`typeof` 对未声明标识符是安全的，故先行探测。
- * 探测失败时用 [[Class]] 标签兜底：该运行时里装箱 BigInt/Symbol 只能来自跨 realm 或被删全局，
- * 此时按标签比 `valueOf()` 仍优于把它们当普通对象（自有键恒空 ⇒ 判等）。
- * 注：`Number`/`String`/`Boolean` 三个全局自 ES1 起必在，无需探测。
+ * 一律按 `Object.prototype.toString` 的 [[Class]] tag 判定，不用 `instanceof`、也不做
+ *「原型 ∈ 五个包装原型」的白名单：前者对跨 realm 的装箱值会落空（分包 / 多运行时下的构造器
+ * 不是同一份），后者会漏掉 `class MyNum extends Number`——它的 [[NumberData]] 同样是身份的
+ * 一部分。tag 判定天然跨 realm，也无需探测 `BigInt` / `Symbol` 这两个全局是否存在
+ *（裸读未声明的全局标识符抛的是 ReferenceError 而非 false，会从这个比较器外溢到
+ * createSelector / notify 去重 / 快照 diff 等全部调用方）。
  */
 const isBoxedPrimitive = (value: object): boolean => {
   // #126: instanceof 对跨 realm 的装箱值会落空（分包/多运行时下的构造器不是同一份）。

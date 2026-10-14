@@ -5,7 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+> 升级只读目标版本那一节即可；跨多个 minor 的请把中间各档的「需要改代码」都读一遍——
+> 面向人的迁移导航（此前 → 现在 → 怎么改）在 [docs/MIGRATION.md](./docs/MIGRATION.md)，
+> 本文是完整记录，早期版本（0.1.x–0.3.x）的细节对当前用户价值有限。
+
 ## [Unreleased]
+
+## [0.9.0] - 2026-10-14
+
+> 本版含**破坏性变更**（`extras/enterprise` 整体移除、`extras/error` 精简），按 0.x 的 caret 语义升 minor。面向人的迁移导航（此前 → 现在 → 怎么改）在 [docs/MIGRATION.md](./docs/MIGRATION.md#升级到-090)。另有一条**行为变更**：正式版 / 体验版现在按生产模式运行（此前恒开发模式），见下方 Fixed 的 P0 条目与迁移文档。
 
 ### Removed
 
@@ -16,6 +24,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+**全面技术审查发现的缺陷修复（2026-10-14）**
+
+- **回归测试「为错的原因通过」**：`tests/unit/regression/ocr-w4-coverage.test.ts` 用 105 层嵌套想让装箱 `Number` 落进 `diff.ts` 的深护栏分支，但快照克隆默认 `maxDepth=100` 会在克隆阶段就把它替换成 `"[MaxDepth Exceeded]"` 占位符——叶值根本没进 `compare`，「相同内容判 unchanged」因两侧占位符相同而恒真。实证：把两侧换成**不同内容**的 `new Number(1)` / `new Number(2)`，diff 仍报 `changed: false`。现显式传 `maxDepth` 让装箱值活着进入比较，并补「不同内容必须 changed」的反向断言。这也是 `diff.ts` 覆盖率长期补不上去的直接原因。
+- **`RetryOptions` 字段名写错导致测试意图静默丢失**：同一文件里 `retryWithBackoff` 用了 `baseDelay` / `maxDelay`，而 `RetryOptions` 的真实字段是 `delay`。测试本想 1ms 退避、实际按 100ms 默认跑，且 `typecheck:tests` 报 3 个类型错误（另一处是 `cbError.cause` 需 lib ES2022 而基线是 ES2020）。已按真实字段改写并按基线 lib 读取 `cause`。
+- **幽灵钩子**：`docs/API.md` 的钩子清单列了 `beforeGet` / `afterGet` 两个不存在的钩子（源码 `HookName` 只有 9 个），照文档写的 `store.hooks.on('beforeGet', …)` 会编译失败。已删除。
+- **生产环境日志口径不一致**：`HookSystem.emit` 对抛错处理器的 `console.error` 不受 `isProduction` 门控（同类路径 `SubscriptionManager` 是门控的）。生产环境一个持续抛错的钩子会在每次 `setState` / `dispatch` 都打印。已统一为生产静默。
+- **skills 的 API 参考与源码漂移**：`skills/geomstore/references/api/` 下的 `extras-selector.md` 与 `integrations.md` 此前未跟上源码 JSDoc（改了注释没重跑生成器），已重跑 `skill:api` 重新生成；`main.md` 同步了本轮 `ComposedStore` 的类型变更。注意该目录**没有内容新鲜度门禁**——`r6-f1-02` 只钉「来源版本」那一行、不比内容，所以这类漂移不会被任何门禁发现，只能靠发版流程第 3 步手工执行。建议后续补一道「重跑生成器后工作区应无变化」的检查。
+
 **集成层低优先级缺陷修复（OCR 扫描报告）**
 
 - `withAppStore` / `withComponentStore`：`writeGlobalData` 闭包与 `onShow` 包装器的内联回调重复定义自有属性拷贝逻辑，提取为 `createGlobalDataWriter` 工厂函数，消除漂移风险。
@@ -25,14 +41,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `wechat-enterprise`：`syncInFlight` 标记在 `logout()` 与 `login()` 中未重置，旧实例的在途同步若未结束，新会话的 `onShow` 会误判为「仍有同步在跑」并跳过队列同步。两处 teardown 路径均显式重置。
 - `initBackgroundSync`：全局 App 首次就位（`installedAppWrapper === null`）与外部替换的告警文案相同，前者并非「被替换」。区分两种场景，首次就位用「已就位」、外部替换用「已被替换」。
 
+**生产可行性评估出的缺陷修复（2026-10-14，第二轮）**
+
+- **`isProduction()` 接进小程序的运行环境信号（P0）**：原生小程序此前**恒按开发模式运行**。判定顺序在既有 `process.env.NODE_ENV` → `__DEV__` 之后新增第三档 `wx.getAccountInfoSync().miniProgram.envVersion`——`release` / `trial` 判为生产，`develop`（含 IDE 预览与真机调试）判为开发；API 抛错或取值未知时按「无信号」继续走下一档，最后才兜底为开发模式。前两档信号在原生小程序里都不存在（没有 `process` 全局、官方构建不替换 `__DEV__`、产物不做 `--define`），于是正式版一直走在开发分支上：非法状态直写**直接抛错**（而非生产承诺的 `warn` / `silent`）、`stateProtection.productionHandler` 三个取值全部不生效、`ARCHITECTURE.md` 承诺的「生产模式日志静默」全线落空。`trial` 按生产处理的理由是它跑的就是待发布的那一份产物，「仅限内部可见」不等于「可以崩」；要在体验版复现严格行为请显式 `__DEV__ = true`（优先级高于宿主信号）。新增的读取抽成独立函数，`isProduction` 函数体仍满足既有的反内联锁定（不含 `typeof process`、保留 `process.env.NODE_ENV` 字面量）。
+- **`WxStorageBackend` 的故障日志并入生产静默口径**：三个方法失败时的 `console.error` 此前不受 `isProduction()` 门控，与 `SubscriptionManager.notify`、`HookSystem.emit` 两处不一致（且这是写路径，配额超限会让后续每次落盘都重演）。错误仍原样抛出，`persistencePlugin.saveState` 照常转投 `emit('onError', …, 'persistence')`，可见性没有削弱。
+- **裸 `typeof` 探测全局在三处会在小程序里抛错（P0，与上一条同源）**：AppService 的全局对象是**沙箱代理**，读取**未声明**的标识符连 `typeof` 都抛 `ReferenceError`，而不是标准语义里的 `'undefined'`——实测 `typeof __DEV__` 与 `typeof process` 皆抛，`typeof wx` / `performance` / `queueMicrotask` 正常（宿主注入过）。三处改为「`globalThis.xxx` 取值 + `try/catch`」或整体包进 `try/catch`：
+  - `isProduction()` 的 `__DEV__` 分支：此前**在小程序里第一句就崩**，而 `StateProxy` 每次非法写入都要读它——「写保护」当场变成「写即抛」。现整段包 `try/catch`，吞掉后继续走第 3 档宿主信号。（裸标识符必须保留：打包器做的是文本替换，写成 `globalThis.__DEV__` 会让替换失效。）
+  - `LRUCache.highResNow()`：`typeof performance` → 改按 `globalThis.performance` 取值。
+  - `composeStore` 的合并通知：`typeof queueMicrotask` → 改按 `globalThis.queueMicrotask` 取值。
+
+  > 影响面不止库内：`README` 此前推荐的 `if (typeof __DEV__ === 'undefined') globalThis.__DEV__ = …` 这行兜底代码在原生小程序里同样会抛，表现为「`app.js` 第一行崩 → 整页白屏」，automator 侧只报 `page node not found`。已改为 `try/catch` 版本并新增说明。
+
 ### Changed
 
+- **`persistencePlugin` 的 `debounce` 保持默认 `0`，本次只把取舍固化下来**：原计划把默认值改成 100ms，改完 20 个既有用例全部反转——说明它不只是默认值，而是「变更即落盘」这条对外契约的一部分。非零默认意味着最后 N 毫秒的变更在进程被强杀且未走卸载时会丢，而「别把用户数据弄丢」正是持久化的用途；同类实现（zustand persist、redux-persist 默认配置）同样取同步写。故默认值不动，改为把理由写进常量注释与 `PersistenceOptions.debounce`，并在 CONCEPTS / API / BEST_PRACTICES 给出建议取值（通用 100、高频 300~500、要求写即落盘留 0）。**默认 0 的代价**（每次 setState 一次全量 `JSON.stringify` + 一次同步 `wx.setStorageSync` 阻塞 I/O）现在是文档里的显式条款，生产没有理由不去配它。
+
+**本轮其余 Changed 项**
+
 - **`withComponentStore` 参数命名**：返回函数的入参由 `ComponentConfig` 改为 `componentConfig`（camelCase），避免遮蔽同名导入类型 `ComponentConfig`。纯内部重命名，调用方代码不受影响。
+- **`ComposedStore` 类泛型化**：`class ComposedStore<S extends State = State>` 增加 `A extends Actions`、`G extends Getters<S>` 两个泛型参数，`actions` / `getters` / `getter()` 因此是精确类型而非 `Record<string, (...args: unknown[]) => unknown>`。此前 `composeStore()` 返回结构化的 `Store<…>`，而 `ComposedStore` 类含 `private` 成员属名义类型，`const s: ComposedStore = composeStore([...])` 过不了检查（TS2740）。现 `composeStore` 返回「结构面 × 名义面」交叉类型，该标注成立。**对调用方是放宽**：既有的 `Store<…>` 标注、`instanceof` 判断、交给推断三种写法全部照旧，新增的只是「可以用 `ComposedStore` 标注」这一项能力。
+- **`Store` 接口的 `destroy` 带上可选参数**：`destroy(): void` 放宽为 `destroy(destroyStores?: boolean): void`，与组合层 `ComposedStore.destroy(destroyStores = true)` 的实际签名对齐（此前实现类有参数、接口没有，经接口持有组合 Store 时无法传参）。**不影响任何实现方**：无参实现天然满足；零参调用的语义不变（默认 `true`，级联销毁子 Store）。
+- **工作区整理**：仓库根目录未跟踪的 `ocrreview.md`（约 197KB 的 OCR 扫描原始记录）移入已被 `.gitignore` 忽略的 `.ocr-fix/`。此前它被 `format:check` 的 `*.md` glob 扫中，使该门禁本地恒红。本轮技术审查报告亦置于此目录，不进入版本库。
+- **全量 JSDoc 审查与清理（仅注释，无逻辑改动）**：用 TypeScript 编译器 API 对 89 个源文件、1334 条注释块做机器比对（`{@link}` 目标、`@param` 与签名、返回类型、数值常量声明），再逐目录人工核对语义，共订正 30 余处。主要三类：①**与实现不符**——快照克隆「不触发 getter」（实际 `copyOwnKey` 会求值 getter）、异步快照「支持取消」（无取消入口）、`loggerPlugin` 的「耗时/异常」（实际都不统计）、`parametricSelector` 的 `ttl: Infinity` 语义、`ActionManager` 的「五个调用点 / 全库唯一」两处计数、`PerformanceMonitor` 环形缓冲改造后残留的「溢出即 shift」与「唯独排序路径遗漏」、`equality.ts` 的 `isBoxedPrimitive` 仍按 `instanceof` + 能力探测描述（实现早已统一走 [[Class]] tag）；②**失效引用**——`ErrorBoundary.resolveFallback`、`createBatchFunction`、`企业版 runForegroundChecks`、`getCurrentTime`、`lastSetState` 五个已删除或已更名的符号，以及四类行号漂移；③**悬空与重复**——4 块不附着任何声明的 JSDoc（`debounce.ts`、`helpers.ts`、`AsyncBatchNotifier.ts`、`with-app-store.ts` 的大段入口注释）移到正确位置或删除，`@static` 残留、示例里 `const default = …` 的语法错误、`performAutoInject` 示例把批量 setter 写成逐键回调。
+
+  > 一处**代码与注释相反、本次按代码改注释**：`createParametricSelector` 的 `ttl` 文档承诺 `Infinity` 表示「只由版本/快照失效」，但写入守卫要求 `Number.isFinite(ttl)`，`Infinity` 实际一个条目都不写、等价于「不缓存」。按「不改逻辑」的约定本次只订正注释；要恢复注释承诺的语义需动写入守卫，留待单独决策。
+
+### Docs
+
+- **README 新增「小程序沙箱的 `typeof`（写宿主代码前必读）」**：给出「浏览器/Node 返回 `'undefined'` vs 小程序抛 `ReferenceError`」的对照表，并说明库内的统一口径（`globalThis.xxx` + `try/catch`）。同时**订正上一轮给出的环境兜底代码**：`if (typeof __DEV__ === 'undefined') …` 在原生小程序里会抛（见 Fixed 的 P0 条目），改为 `try/catch` 版本。
+- **`docs/API.md` 两处醒目提示**：①小程序集成的三端高阶函数是 `(store, options)` **两参数**，写成单对象 `{ store, ... }` 不报错但映射为空、零订阅、页面静默不刷新；②`maxSubscribers` 触顶按 evict-oldest 驱逐时，**被牺牲的往往是 `persistencePlugin` 那一笔注册**（它通常在 `app.js` 里最早安装），症状是写盘静默停止且无任何报错，生产只能靠 `onError` 的 `'subscribe'` 源发现。附对策（长列表改单一页面级订阅 / 调大额度 / 接进监控）。
+- **`docs/BEST_PRACTICES.md`**：§5 补「额度吃满时被牺牲的往往不是组件而是插件」；§9 补「集成层是两参数」与「别用裸 `typeof` 探测全局」两条，并给出 `app.js` 首行崩 → 白屏的排查线索。
 
 ### Testing
 
 - `tests/setup.ts`：环境诊断日志（Node 版本、平台等）改为 `DEBUG=test-setup` 环境变量门控，避免每个测试文件执行时都污染 Jest 输出与 CI 日志。
 - `tests/types/action-context-collision.typecheck.ts`：注释「下面两条 @ts-expect-error」改为「三条」，与实际指令数量一致。
+- **覆盖率补到阈值以上**（`test:ci` 此前 5 项不达标、退出码 1）：补 12 处此前零覆盖的分支——`integrations/utils` 空映射、`composeStore` 合并 actions 注册表真正被派发调用、`WxStorageBackend` 同步 API 返回 Promise、`globalRegistry` 入口、`ErrorBoundary` 异步 `onError` 吸收、`PerformanceMonitor` 的 `wx.getPerformance().now()` 抛错降级与环形缓冲压缩、`async-core` 敏感字段脱敏、`diff` 装箱原始值深护栏内容比、`StateProxy` 锁定函数 / 数组宿主与跨 realm 探针（`RegExp` / `WeakMap` / `WeakSet`）。收敛后：语句 99.55% / 分支 97.76% / 函数 100% / 行 99.62%。
+- `StateProxy` 中 `hasInternalSlot` 的 `default` 分支按仓库约定加带原因的 `istanbul ignore`：`switch` 已穷举 slot-bearing 内建清单，该分支不可达。
+- **文档门禁 G17 补反向判据**：原先只做「源码里的钩子名必须出现在文档里」这一个方向，幽灵钩子因此漏网。新增断言——文档语料里出现的 `` `beforeXxx` `` / `` `afterXxx` `` 形态标识符必须是 `HookName` 的真实成员（文档里当作占位符使用的 `beforeXxx` 显式豁免）。
+- **文档门禁 G19 补 `extras` 零跨依赖守卫**：`ARCHITECTURE §2` 写了「`extras/*` 之间不互相依赖」却无机器守卫。新增判据扫描 `src/extras/<子目录>/**` 指向同级其他子目录的 import（聚合桶 `extras/*.ts` 豁免）。当前实测零跨依赖，守卫直接通过；已做变异验证——注入一条跨依赖即红、还原即绿。
+- **源码约定门禁 G20（新增文件 `tests/unit/regression/readonly-subscription-gate.test.ts`）**：`store.subscribe(cb)` 不传第二参即按**可写**注册，代价不是多拷一份，而是把整个 Store 的通知路径从零拷贝切成深拷贝（每次通知「1 份只读共享深拷贝 + 每个可写注册各 1 份」），且 TS 类型完全看不出差别。默认值改成 `true` 属破坏性变更（依赖「可在回调里就地改载荷」的代码会从「能改」变成「静默改不动」），故保持默认、改用门禁兜住 `src/**` 的每一处内部订阅：必须有第二实参；第二实参是对象字面量时必须含 `readOnly`（写 `{}` 等价于没写）；`AsyncBatchNotifier` 的自有 `subscribe` 按接收者排除。已用 AST（`ts.createSourceFile`）而非正则实现，并通过「临时注入一份违规源码 → 红、删除后 → 绿」的变异验证。
+- **`isProduction()` 新增第 3 档判据的配套用例**：`tests/unit/store/modules/utils.test.ts` 补 9 例——`release` / `trial` → true，`develop` → false，无 `getAccountInfoSync` / API 抛错 / `envVersion` 取值未知 / 返回空对象 → 回退兜底，以及显式信号（`NODE_ENV`、`__DEV__`）优先于宿主信号。
+- **生产静默集合补一例**：`tests/unit/store/production-mode-silence.test.ts` 增加 `WxStorageBackend` 读写失败「控制台静默但仍抛出」的断言。
+- **`isProduction()` 补一条编译期结构锁定**：`tests/unit/store/modules/utils.test.ts` 新增用例，断言 `typeof __DEV__` 必须出现在 `try` 块内（Node 下 `typeof` 恒安全，运行期复现不出沙箱差异，只能锁源码结构）。同时把既有的「不得用 `typeof process` 门控」用例改为**去注释后**匹配：ts-jest 默认保留注释，函数内新写的说明文字里含 `typeof process` 字样，原判据会把注释判成门控代码（新增 `codeOf()` 辅助函数剥离注释后再断言，并用正则容忍转译产物里 `try` 与 `{` 之间的空白差异）。
+- **小程序 demo 的 e2e 适配层（新增 `examples/miniprogram/e2e/cli.mjs`）**：解决「在开发者工具里跑 `npm run e2e` 直接失败」的三层问题。①`miniprogram-automator@0.12.1` 直接 `spawn(cli.bat)` 被 Node 18.20+/20/22 的 libuv 拒绝（`EINVAL`，`errno -4071`），却与「路径不对」报成同一句话；改为 `cmd.exe /d /s /c "<命令串>"` 启动并逐段做 Windows 转义（`Program Files (x86)` 的空格此前会被切碎成 `'C:\Program' 不是内部或外部命令`）。注意 ESM 具名导入会绑定原始 `spawn`，补丁后必须走**属性访问**取当前函数。②CLI 位置改为自动探测（Windows 扫 `ProgramFiles` 与 C/D/E 盘，macOS 扫 `/Applications`），另支持 `--cli` / `MP_CLI_PATH` / `MP_DEVTOOLS_DIR`。③会话判活：`launch` 可能返回「ws 已关闭」或「ws OPEN 但页面元数据缺失（Cannot destructure property 'rawPath'）」的实例，改为 `reLaunch` 判活 + 重试 + `cli close --project` 重置。
+- **小程序 demo 的 npm 包形态修正**：此前手工把文件放进 `miniprogram_npm` 不被工具承认（`module '@openlide/geomstore.js' is not defined`）。现 `scripts/sync-lib.mjs` 产出**完整的 npm 包**（含 `main` 与 `miniprogram: 'dist-weapp'` 字段——缺后者会被重编译成单个 `index.js`，89 个文件变成 1 个、子路径入口全部丢失），配 `file:` 依赖 + `.npmrc` 的 `install-links=true`，并新增 `scripts/build-npm.mjs` 把「工具 → 构建 npm」的菜单步骤变成无人值守（含 `__NO_NODE_MODULES__` 与超时的专项提示）。
+- **小程序 demo 的换行符归一脚本（新增 `scripts/normalize-eol.mjs`）**：开发者工具每次保存都会写回 CRLF，而仓库是 LF 口径、文档门禁 G14 断言 tracked 文件零 CR。新增 `npm run eol:check` / `eol:fix`（只处理白名单文本扩展名，跳过 `node_modules` / `miniprogram_npm`），并把这一条写进 demo README 的「提交前」小节。
+- **小程序 demo 工程（`examples/miniprogram/`，新增）**：把上线前必做的配置做成可运行实例——P0 的 `__DEV__` 环境桥接、P1 的 `persistencePlugin({ debounce: 100, filter })`、P1 的 `onError` 上报挂载；三张页面分别验证页面集成与持久化、多级页面栈下的订阅存活与退订、组件订阅容量（20 个共享 store，可加到 60 触发 `evict-oldest` 并确认 `onError('subscribe')` 可见）；配 `.mjs` 版 automator 冒烟（冷启动 / 防抖落盘 / 热启动恢复 / 多级页面栈 / 组件容量 / 前后台 / 环境信号 / onerror 可见性），宿主能力缺失的断言按 skip 处理、`--strict` 下按失败计。**不进 CI**：automator 依赖有 GUI 的开发者工具实例；定位为发版前的人工最后一道。`examples/miniprogram` 已加入 `tools/tsconfig.examples.json` 的 exclude（它是 `.js` 小程序工程，不该由 TS 示例门禁挑错），其 `miniprogram_npm/` 已加入 `.gitignore`。
+- **小程序 demo 的组件订阅用例不再跳过（9 通过 / 0 失败 / 0 跳过）**：原用例用 `list.$$('counter-item')` 查自定义组件节点、查不到就记跳过；新增探针 `e2e/probe-selector.mjs` 实测后确认——automator 只是**不认自定义组件的标签名**，换 class 选择器 `.counter-item` 立刻查到 20 个，且 `element.wxml()` 返回展开后的 `<#shadow-root>`（能看到组件内部渲染的 `count = N`）；另一条候选路线 `page.callMethod` 在 0.12.1 上**不可用**（连页面自带的 `renderItems` 都报 not a function），已回退。用例同时加强为断言**全部 20 个**组件都渲染到最新值，并用 `waitFor` 容忍 `setData` 的渲染时序；做了变异验证（把 `counter-item` 的 `mapState: ['count']` 掏空 → 3 条转红，还原 → 回绿）。
 
 ## [0.8.3] - 2026-10-13
 
@@ -893,7 +949,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [0.1.3]: https://github.com/openlide/GeomStore/releases/tag/v0.1.3
 [0.2.0]: https://github.com/openlide/GeomStore/releases/tag/v0.2.0
 [0.2.1]: https://github.com/openlide/GeomStore/releases/tag/v0.2.1
-[Unreleased]: https://github.com/openlide/geomstore/compare/v0.8.3...HEAD
+[Unreleased]: https://github.com/openlide/geomstore/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/openlide/geomstore/releases/tag/v0.9.0
 [0.8.3]: https://github.com/openlide/GeomStore/releases/tag/v0.8.3
 [0.8.2]: https://github.com/openlide/geomstore/releases/tag/v0.8.2
 [0.8.1]: https://github.com/openlide/geomstore/releases/tag/v0.8.1

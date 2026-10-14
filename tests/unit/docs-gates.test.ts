@@ -800,6 +800,9 @@ describe('文档门禁 G16：CHANGELOG 与 package.json 同源', () => {
  * - **反向**（源码 → 文档）：每个钩子名都必须出现在文档里。小集合、全字面量匹配，
  *   「加了钩子忘了写文档」当场变红；反向不做错误码是因为 21 个错误码里有一部分是
  *   内部实现细节、文档不必逐个列，强行要求会把门禁逼成清单复制。
+ * - **钩子名的正向**（文档 → 源码）：反引号包裹的 `before*` / `after*` 形状 token
+ *   必须是真钩子名。防的是「文档发明钩子」——那种名字源码里不存在，反向判据
+ *   （源码 → 文档）结构上就查不到它，只有正向能拦。
  * 两个方向都直接从 AST 取（enum 成员 / 字面量联合的类型成员），不靠正则猜源码。
  */
 describe('文档门禁 G17：错误码与钩子名对源码', () => {
@@ -863,6 +866,28 @@ describe('文档门禁 G17：错误码与钩子名对源码', () => {
   it('每个钩子名都在文档里出现过（加了钩子忘了写文档会变红）', () => {
     const missing = hookNames.filter((h) => !corpus.includes(h))
     expect(missing).toEqual([])
+  })
+
+  it('文档里提到的钩子名都是真成员（幽灵钩子会变红）', () => {
+    // 反向（源码 → 文档）只管「漏写」；正向（文档 → 源码）管「写错」——API.md 曾把
+    // 两个不存在的 beforeGet/afterGet 列进钩子名清单，照文档写 `hooks.on('beforeGet')`
+    // 编译即错，而既有两条判据都看不见这类幻觉（不存在于源码的名字没有「反向」可查）。
+    // 形态判据：钩子名的家族形状是 before/after + PascalCase（beforeDispatch /
+    // afterSetState…），反引号包裹。只查手写文档：skills/geomstore/references/api/**
+    // 是 .d.ts 的生成物，其 JSDoc 里合法存在 `beforeXxx` 这类占位写法
+    // （src/types/plugin.ts 的 HookHandler 注释），按形状匹配会误报
+    const known = new Set(hookNames)
+    const bad = new Set<string>()
+    for (const file of mdFiles) {
+      if (GENERATED_API.test(file)) continue
+      for (const line of linesOf(file)) {
+        if (/^\s*-/.test(line)) continue // diff 删除侧是历史写法
+        for (const m of line.matchAll(/`((?:before|after)[A-Z][a-zA-Z]*)`/g)) {
+          if (!known.has(m[1])) bad.add(`${file}：${m[1]}`)
+        }
+      }
+    }
+    expect([...bad]).toEqual([])
   })
 })
 
@@ -947,9 +972,16 @@ describe('文档门禁 G18：源码 JSDoc 里的 import 路径', () => {
  * `src/plugins/**` 也是——`plugins/performance` 与 `plugins/devtools` 正是
  * `extras/performance`、`extras/plugins` 的实现（`src/plugins/index.ts` 自述其对外
  * 发布路径就是后者），core 依赖它们同样会让主入口闭包含进可选能力。
- * `core → types` 是设计意图（公共契约集中一处）故放行；`extras/*` 之间「尽量不互相
- * 依赖」是取舍建议而非规则；`index.ts → integrations` 也是（主入口本就导出小程序集成）。
+ * `core → types` 是设计意图（公共契约集中一处）故放行；
+ * `index.ts → integrations` 也是（主入口本就导出小程序集成）。
  * 把这些也判死只会逼出例外名单，而例外名单是漂移的温床。
+ *
+ * **extras 子目录之间零跨依赖**（2026-10-14 追加，用户拍板）：ARCHITECTURE §2 写了
+ * 「`extras/*` 之间尽量不互相依赖」却长期无守卫，而实测各能力目录本来就**零**跨目录
+ * import——不变量已经成立，补守卫是零例外成本的锁定。一旦真有跨能力依赖出现，门禁
+ * 变红逼使显式决策（放行 + 写明理由，或改架构），而不是静默滑入。
+ * 豁免只有一处：聚合入口 `src/extras/index.ts`——它的存在意义就是把各能力汇总到
+ * 一个引入路径，判它等于判掉这个入口本身。
  */
 describe('文档门禁 G19：core 不得依赖可选能力实现（extras 与 plugins）', () => {
   /** core 不得依赖的实现目录；`src/plugins/**` 与 `src/extras/**` 同属可选能力实现面 */
@@ -977,6 +1009,40 @@ describe('文档门禁 G19：core 不得依赖可选能力实现（extras 与 pl
     expect(core.length).toBeGreaterThan(20)
     expect(extras.length).toBeGreaterThan(20)
     expect([...graph.values()].filter((d) => d.size > 0).length).toBeGreaterThan(20)
+  })
+
+  it('extras 子目录之间零跨依赖（ARCHITECTURE §2 的「尽量不互相依赖」落到实处）', () => {
+    const graph = srcImportGraph()
+    // 顶层能力名：`src/extras/snapshot.ts`（barrel）与 `src/extras/snapshot/index.ts`
+    // 归同一个 'snapshot'；`src/extras/action/decorators/cache.ts` 归 'action'——
+    // 同一能力目录内任意深度互相 import 合法，跨能力才判违规
+    const capabilityOf = (rel: string): string => {
+      const [head] = rel.slice('src/extras/'.length).split('/')
+      return head.endsWith('.ts') ? head.slice(0, -3) : head
+    }
+    const violations: string[] = []
+    for (const [from, deps] of graph) {
+      if (!from.startsWith('src/extras/')) continue
+      // 聚合入口豁免：它的存在意义就是汇总各能力（见本 describe 的注释）
+      if (from === 'src/extras/index.ts') continue
+      const fromCapability = capabilityOf(from)
+      for (const to of deps) {
+        if (!to.startsWith('src/extras/')) continue
+        if (capabilityOf(to) !== fromCapability) violations.push(`${from} → ${to}`)
+      }
+    }
+    expect(violations).toEqual([])
+  })
+
+  it('extras 跨依赖判据不是恒真（子目录确实互相独立、且各有出边可判）', () => {
+    // 与上一道同动机的自检：若 capabilityOf 判错（如所有文件都归成一类），
+    // 上一道会恒真通过。这里钉住「各能力目录都存在且互不相同」
+    const graph = srcImportGraph()
+    const capabilities = new Set([...graph.keys()].filter((f) => f.startsWith('src/extras/')).map((f) => f.slice('src/extras/'.length).split('/')[0]))
+    expect(capabilities.has('snapshot')).toBe(true)
+    expect(capabilities.has('selector')).toBe(true)
+    expect(capabilities.has('action')).toBe(true)
+    expect(capabilities.size).toBeGreaterThanOrEqual(4)
   })
 })
 

@@ -2,7 +2,7 @@
 
 > **本文件由 `scripts/generate-skill-api-reference.mjs` 从 `dist/**/*.d.ts` 生成，请勿手工编辑。**
 >
-> - 来源版本：`@openlide/geomstore@0.8.3`
+> - 来源版本：`@openlide/geomstore@0.9.0`
 > - 内容来源：构建产物类型声明（随 npm 包发布，与安装版本必然一致）
 > - 重新生成：`pnpm build && pnpm skill:api`
 > - 引入路径：`.`
@@ -73,8 +73,8 @@ export interface AppOptions {
  * 映射的 action（bindActions）与 exposeStoreAPI 的调试方法直接挂在 App 实例上。
  * 交叉 `Extra`（调用处传入用户配置类型 C）以保留 `globalData` 的自定义字段。
  *
- * 名字撞车时谁赢：`onLaunch` 先 `bindActions`（with-app-store.ts:242）后 `exposeStoreAPI`
- * （同文件 :251，二者在同一个 try 块内按此顺序）。exposeStoreAPI 的七个键逐个经 `canOwnKey`
+ * 名字撞车时谁赢：`onLaunch` 先 `bindActions`（with-app-store.ts:265）后 `exposeStoreAPI`
+ * （同文件 :274，二者在同一个 try 块内按此顺序）。exposeStoreAPI 的七个键逐个经 `canOwnKey`
  * 判定、再用 `defineOwnValue` 以 `Object.defineProperty` 写入（utils.ts；键集合与值同源于那张
  * `members` 表，已无 `exposedKeys` 常量、也不再是 `Object.assign`），卸载时按**原描述符整体回放**
  * （访问器成员不会被降级成数据属性），而不是「还原原值」。因此：
@@ -249,14 +249,22 @@ export interface ComposeOptions {
  *
  * 组合多个 Store 为一个统一的 Store 实例
  * 使用类替代对象字面量，提供更好的性能和方法查找效率
+ *
+ * 三个泛型与 `Store<S, A, G>` 对齐：S/A/G 均由 `composeStore` 从子 store 元组精确提取。
+ * 带上 A/G 是为了让**名义标注**不损失精度——返回类型直接就是本类时，
+ * `dispatch` 的动作名与 `getter` 的返回类型仍从子 store 推断（若只泛型化 S，
+ * A/G 落回默认约束，组合动作的精确签名整体丢失）。类内按运行动态合并的结果
+ * 在赋值点一次性断言到 A/G，运行期形状本就是合并出来的注册表
  */
-declare class ComposedStore<S extends State = State> implements Store<S> {
+declare class ComposedStore<S extends State = State, A extends Actions = Actions, G extends Getters<S> = Getters<S>> implements Store<S, A, G> {
     readonly name: string;
     /**
      * 合并后的 action 注册表：键与 dispatch 的命名规则一致（命名空间模式为
      * `storeName/actionName`，非命名空间模式为裸名，同名取第一个 store）。
+     * 声明为 A（构造期由合并结果断言而来）：按 `ComposedStore<…>` 名义标注时
+     * 动作名集合与签名保持子 store 的精度
      */
-    readonly actions: Record<string, (...args: unknown[]) => unknown>;
+    readonly actions: A;
     /** 实例级钩子系统 - 组合 Store 透传到子 Store */
     readonly hooks: HookSystem;
     /** 销毁标记 */
@@ -379,6 +387,7 @@ declare class ComposedStore<S extends State = State> implements Store<S> {
     setState<K extends keyof S>(key: K, value: S[K]): void;
     $patch(partialState: Partial<S>): void;
     $replaceState(newState: S): void;
+    dispatch<K extends keyof A>(actionName: K, ...args: InferActionArgs<A, K>): InferActionReturn<A, K>;
     dispatch(actionName: string, ...args: unknown[]): unknown;
     /**
      * 合并后的 Getters 定义（只读）
@@ -386,9 +395,9 @@ declare class ComposedStore<S extends State = State> implements Store<S> {
      * 键的合并规则与 getter() 的解析语义一致：命名空间模式下为 `storeName/getterName`，
      * 非命名空间模式为裸名（同名冲突取第一个 store 的定义）
      */
-    get getters(): Getters<S>;
+    get getters(): G;
     /** 类型安全 getter（与 Store 接口重载签名保持一致） */
-    getter<K extends keyof Getters<S>>(getterName: K): InferGetterReturn<Getters<S>, K>;
+    getter<K extends keyof G>(getterName: K): InferGetterReturn<G, K>;
     /**
      * 获取所有子 Store 的 getter 名称列表。
      *
@@ -413,7 +422,7 @@ declare class ComposedStore<S extends State = State> implements Store<S> {
     /**
      * 判断指定状态键自上次通知以来是否发生变更
      *
-     * 三个分支的口径不同，逐条说明（旧注释写着「始终返回 true」，与实现不符已有几轮）：
+     * 三个分支的口径不同，逐条说明：
      * - 合并缓存订阅未建立（构造期订阅失败的降级态）：没有任何脏追踪可用，保守返回 true；
      * - 命名空间模式：组合状态键即子 store 名，`_dirtyStores` 能精确指出哪个子 store 变过，
      *   据此返回真/假——集成层因此可跳过未变化的映射键，省掉一次冗余 setData（含符号键：
@@ -448,7 +457,9 @@ declare class ComposedStore<S extends State = State> implements Store<S> {
      *
      * @param destroyStores - 是否级联销毁子 Store（默认 true，保持向后兼容）。
      *  当子 Store 在组合之外被独立持有并继续使用时，应传入 false：
-     *  仅退订组合层订阅并清理钩子，避免牵连外部持有的子 Store
+     *  仅退订组合层订阅并清理钩子，避免牵连外部持有的子 Store。
+     *  该参数已上提到 `Store` 接口（可选参数，单 Store 忽略），按 `Store<S>`
+     *  标注的组合 store 也能调出 `false` 档
      */
     destroy(destroyStores?: boolean): void;
     getCached<K extends keyof S>(key: K): S[K];
@@ -543,7 +554,7 @@ export interface ConnectOptions<S extends State = State, A extends Actions = Act
      *
      * 生效条件（三者同时，缺一即整项无效且**不会告警**，#R6-062）：
      * `autoUpdateOnShow && autoInject && Object.keys(injectMapping).length > 0`
-     * —— 见 `with-store.ts` 的 page/component 两处判定与 `with-app-store.ts:267`，
+     * —— 见 `with-store.ts` 的 page/component 两处判定与 `with-app-store.ts:290`，
      * 只写本项（或把 `injectMapping` 给成 `{}`）时连包装器都不安装。
      *
      * 挂载点口径（旧文案在此处有三处偏差，已按实现改写）：
@@ -686,7 +697,9 @@ export interface IHookSystem {
      * 按当前实现：
      * - 单个处理器抛错既不中断本次触发的其余处理器，也**不会传播给 `emit` 的调用方**
      *   （实现按快照逐个 try/catch）。
-     * - 错误先 `console.error` 记录，再转投 `onError` 钩子（`emit('onError', error, hookName)`），
+     * - 错误先 `console.error` 记录（**生产期静默**，与 SubscriptionManager 的监听器异常
+     *   同口径：钩子挂在写路径热线上，不门控会让持续抛错的处理器刷满发布包控制台），
+     *   再转投 `onError` 钩子（`emit('onError', error, hookName)`），
      *   故 `onError` 是该实现唯一的上报通道；要接监控系统，注册 `onError` 处理器即可。
      * - `onError` 自身抛错只落 `console.error`，不再递归转投自己。
      * - 需要「让抛错冒泡到业务调用方」的语义不能靠钩子实现，请走 action 的错误边界。
@@ -1165,7 +1178,7 @@ export interface LRUCacheStats {
  * **未接线**（#R6-061）：本库没有任何 API 接受该配置对象——命名空间分隔符在
  * `core/compose/helpers.ts`（`key.indexOf('/')`）里是**硬编码**的 `/`，
  * `ComposeOptions.namespace` 只接受「布尔 / 前缀字符串」两档，`autoPrefix` 亦无读取方。
- * 它经 `core/index.ts:80`、`core/compose/index.ts:7`、`core/compose/composeStore.ts:958`
+ * 它经 `core/index.ts:87`、`core/compose/index.ts:7`、`core/compose/composeStore.ts:1199`
  * 三处再导出对外发布，但按本类型书写配置只会得到无声的空操作。
  * 删除导出属破坏性变更（需主版本窗口 + 上述三处再导出同步收口，均不在本分片），故本轮只做标注。
  */
@@ -1361,7 +1374,12 @@ export declare class Store<S extends State = State, A extends Actions = Actions,
     private _stateProtection;
     /** 状态保护启用标志（内联缓存） */
     private _stateProtectionEnabled;
-    /** 通知前是否深拷贝（显式配置；undefined 表示自动：仅当存在可写订阅者时拷贝） */
+    /**
+     * 通知前是否深拷贝（构造期归一，永不为 undefined）
+     *
+     * 真正的「要不要拷贝」还要结合 `_notifyCloneExplicit`：未显式配置时走自动档
+     *（仅当存在可写订阅者时深拷贝），见 `_notifyListeners` 里的 needsClone
+     */
     private _notifyClone;
     /** 是否显式配置了 notify.clone（用于区分「默认自动」与「用户显式关闭」） */
     private _notifyCloneExplicit;
@@ -1820,7 +1838,7 @@ export interface StoreOptions<S extends State = State, A extends Actions = Actio
  *
  * // 设置默认Store
  * registry.setDefault('user')
- * const default = registry.getDefault()
+ * const defaultStore = registry.getDefault()
  * ```
  */
 export declare class StoreRegistry {
@@ -2156,12 +2174,6 @@ export type WithPageThis<C, T> = {
 
 ```ts
 /**
- * 内建容器的准入门槛：只重建「恰好是该内建类型本身」的实例。
- *
- * 复用 `clone.ts` 导出的 `isExactly`（已在本文件顶部导入），保持判据单一来源。
- * 子类实例走「返回原引用」的降级路径，理由见 {@link clone} 与 deepCloneState 的文档。
- */
-/**
  * 统一的克隆函数
  *
  * @param obj 要克隆的对象
@@ -2198,7 +2210,7 @@ export declare function clone<T>(obj: T, options?: {
  * Store组合函数 - 类型安全重载
  * 支持完整的类型推断，保留原始 Store 的类型信息
  */
-declare function composeStore<Stores extends readonly StoreLike[]>(stores: [...Stores], options?: ComposeOptions): Store<ExtractStates<Stores>, ExtractActions<Stores>, ExtractGetters<Stores>>;
+declare function composeStore<Stores extends readonly StoreLike[]>(stores: [...Stores], options?: ComposeOptions): ComposedStore<ExtractStates<Stores>, ExtractActions<Stores>, ExtractGetters<Stores>>;
 ```
 
 ### `createStore`
@@ -2478,9 +2490,97 @@ export declare function usePlugin<S extends State, A extends Actions, G extends 
 
 ### `withAppStore`
 
-```ts
+````ts
+/**
+ * App 集成函数
+ *
+ * 将 Store 连接到微信小程序 App，自动管理状态同步和订阅清理
+ *
+ * 类型推断：`S` / `A` / `G` 均从 store 参数自动推断，
+ * mapState / mapGetters / mapActions 的键与值拼错时会在编译期报错；
+ * 返回的装饰器保持传入 App 配置的原始类型（不擦除自定义方法/生命周期类型）。
+ *
+ * 生命周期内的 `this` 自动获得注入后的实例类型（`AppThis`）：映射的 state/getters
+ * 出现在 `globalData` 上、映射的 action 与调试 API 直接挂在实例上，**无需手写 this 标注**。
+ *
+ * 运行期行为（与 withPageStore / withComponentStore 同口径）：
+ * - `autoInject` + `injectMapping` 在 onLaunch 注入一次；再开 `autoUpdateOnShow` 时
+ *   每次 App `onShow` 重新注入，异步 action 之后才进缓存的键因此有补偿路径
+ * - 映射键、`injectMapping` 的目标键与宿主 `globalData` 已有成员同名时告警后覆盖
+ *   （store 是唯一事实来源）
+ * - 绑定阶段抛错：回滚本次已登记的订阅、告警并把错误原样抛给框架，
+ *   不在映射未就绪的实例上转发用户 `onLaunch`
+ *
+ * @template S - 状态类型
+ * @template A - Actions 类型
+ * @template G - Getters 类型
+ * @param {Store<S, A, G>} store - Store 实例
+ * @param {ConnectOptions<S, A, G>} [options={}] - 连接选项
+ * @returns App 装饰器（保持配置类型，并注入方法 this）
+ *
+ * @example
+ * ```typescript
+ * import { createStore } from '@openlide/geomstore'
+ * import { withAppStore } from '@openlide/geomstore/integrations'
+ *
+ * const store = createStore({
+ *   name: 'app',
+ *   state: { userInfo: null, config: {}, theme: 'light' },
+ *   actions: {
+ *     async initApp() {
+ *       const config = await fetchConfig()
+ *       this.setState('config', config)
+ *     },
+ *     setTheme(theme) {
+ *       this.setState('theme', theme)
+ *     }
+ *   }
+ * })
+ *
+ * // 简写：数组形式（this.globalData / 注入的 action 均有类型，无需手写 this）
+ * App(withAppStore(store, {
+ *   mapState: ['userInfo', 'config', 'theme'],
+ *   mapActions: ['initApp', 'setTheme']
+ * })({
+ *   globalData: { otherData: '...' },
+ *   onLaunch() {
+ *     console.log(this.globalData.userInfo)
+ *     this.initApp()
+ *     this.setTheme('dark')
+ *   }
+ * }))
+ *
+ * // 高级用法：对象形式
+ * App(withAppStore(store, {
+ *   mapState: {
+ *     user: 'userInfo',
+ *     appConfig: 'config',
+ *     currentTheme: 'theme'
+ *   },
+ *   mapActions: {
+ *     doInit: 'initApp',
+ *     changeTheme: 'setTheme'
+ *   }
+ * })({
+ *   globalData: { otherData: '...' },
+ *   onLaunch() {
+ *     console.log(this.globalData.user)
+ *     this.doInit()
+ *     this.changeTheme('dark')
+ *   }
+ * }))
+ *
+ * // 调试 API
+ * // 在其他 Page 或 Component 中访问：
+ * const app = getApp()
+ * app.getStore()           // 获取 store 实例
+ * app.getState()           // 获取状态
+ * app.dispatch('xxx')      // dispatch action
+ * app.subscribe(callback)   // 订阅状态变化
+ * ```
+ */
 export declare function withAppStore<S extends State, A extends Actions, G extends Getters<S>, O extends ConnectOptions<S, A, G>>(store: Store<S, A, G>, options?: O): <C extends AppOptions>(AppConfig: WithPageThis<C, AppThis<S, A, G, O, C>> & ThisType<AppThis<S, A, G, O, C>>) => C;
-```
+````
 
 ### `withComponentStore`
 

@@ -149,6 +149,8 @@ const boundary = new ErrorBoundary({ fallback: [], onError: (e) => console.error
 boundary.execute(() => riskyOperation()) // 未给 fallback 时默认 fail-loud（重抛）
 ```
 
+**v0.9.0 起本入口只有两类东西**：错误类族（`GeomStoreError` 及派生类 / `ErrorCode` / `createError` / `is*Error` 守卫）与错误边界（`ErrorBoundary` / `withErrorBoundary`）。`ErrorHandler` / `ErrorRecovery` / `ErrorMonitoring` / `ErrorAggregator` 与 `ConsoleReporter` / `HttpReporter`（越界的应用级 APM / 恢复能力）**已移除**：全进程收集 / 聚合 / 上报请接 `store.hooks.on('onError', …)` 再转交第三方监控（`wx.reportError` / Sentry 等）。
+
 ### ErrorBoundary
 
 **默认 fail-loud**：未配置 `fallback` 时错误重抛；提供 `fallback` 即声明恢复意图。`fallback` 自身抛错时**重抛原始错误**。非 `Error` 的抛出值先归一化为 `Error` 再记账；重抛时仍是原始值。显式 `recoverable: true` 而未配 `fallback` 时返回 `undefined`。

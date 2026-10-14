@@ -253,6 +253,49 @@ describe('R5-119 内建对象判定与 realm 无关', () => {
     expect(foreignMap.get('k')).toEqual({ v: 1 })
   })
 
+  it('跨 realm 的 RegExp/WeakMap/WeakMap 探针分支同样判为内建对象', () => {
+    // hasInternalSlot 的六个 case 分支各要一次真实跨 realm 实例：Date/Map/Set 已由
+    // 上一条覆盖，本条补 RegExp（读 .source）与 WeakMap/WeakSet（has 调用）——
+    // 这三类的探针在此前没有任何用例触达，属「实现写了、契约没锁」的分支
+    const foreignRegExp = runInNewContext('/abc/g') as RegExp
+    const foreignWeakMap = runInNewContext('new WeakMap()') as WeakMap<object, unknown>
+    const foreignWeakSet = runInNewContext('new WeakSet()') as WeakSet<object>
+    expect(foreignRegExp instanceof RegExp).toBe(false)
+    expect(foreignWeakMap instanceof WeakMap).toBe(false)
+    expect(foreignWeakSet instanceof WeakSet).toBe(false)
+    expect(isBuiltinObject(foreignRegExp)).toBe(true)
+    expect(isBuiltinObject(foreignWeakMap)).toBe(true)
+    expect(isBuiltinObject(foreignWeakSet)).toBe(true)
+
+    const state = { r: foreignRegExp, wm: foreignWeakMap, ws: foreignWeakSet } as unknown as Record<string, unknown>
+    const { manager } = makeManager()
+    const proxy = manager.createStateProxy(state as State, '') as Record<string, any>
+
+    // 判为内建 ⇒ 不包装、原引用返回：包装会让内部槽位语义被破坏
+    expect(proxy.r).toBe(foreignRegExp)
+    expect(proxy.wm).toBe(foreignWeakMap)
+    expect(proxy.ws).toBe(foreignWeakSet)
+    expect(foreignRegExp.source).toBe('abc')
+  })
+
+  it('伪造 Symbol.toStringTag 的对象逃不过内部槽位探针（负结果分支）', () => {
+    // 标签可被任意对象伪造（{ [Symbol.toStringTag]: 'WeakMap' }）：只信标签会让这类
+    // 对象 escape 写保护。探针对伪造对象抛 incompatible receiver ⇒ 判非内建 ⇒ 照常包装
+    const fake = { [Symbol.toStringTag]: 'WeakMap' } as unknown as Record<string, unknown>
+    expect(isBuiltinObject(fake as object)).toBe(false)
+
+    const state = { fake } as unknown as Record<string, unknown>
+    const { manager } = makeManager()
+    const proxy = manager.createStateProxy(state as State, '') as Record<string, any>
+
+    // 负结果的落地行为：被当普通对象包装，外部写入仍被拦截
+    expect(proxy.fake).not.toBe(fake)
+    expect(() => {
+      proxy.fake.injected = 1
+    }).toThrow()
+    expect('injected' in fake).toBe(false)
+  })
+
   it('脏追踪把跨 realm 集合的键值/成员当成普通边收录并继续追踪', () => {
     const foreignMap = runInNewContext('new Map()') as Map<string, unknown>
     const foreignSet = runInNewContext('new Set()') as Set<unknown>

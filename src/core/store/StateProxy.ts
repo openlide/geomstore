@@ -61,6 +61,9 @@ function hasInternalSlot(value: object, tag: string): boolean {
       case 'WeakSet':
         WeakSet.prototype.has.call(value, {} as object)
         break
+      /* istanbul ignore next -- 两个调用点（isBuiltinObject / collectionKindOf）都先按
+         BUILTIN_TAGS 或 'Map' | 'Set' 过滤 tag 才进来，default 分支不可达；
+         保留它是为了 tag 集合将来扩容时不漏判，不是为了执行 */
       default:
         return false
     }

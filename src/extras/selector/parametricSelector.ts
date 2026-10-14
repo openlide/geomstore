@@ -41,9 +41,11 @@ function isWeakMapKey(value: unknown): value is object {
  * @param {number} [options.ttl=5000] - 缓存生存时间（毫秒）。除 TTL 外，每次调用还会用
  *   deepEqual 校验 state 内容快照：Store 状态就地变异（引用不变）时立即作废该 state 下的
  *   全部参数缓存，不会在 TTL 内返回陈旧值。
- *   `<= 0` / `NaN` 表示「条目立即过期」，即不缓存（与 `SelectorOptions.cacheTTL` 的归一化口径
- *   刻意不同：那里 `NaN` 会变成永不过期、属静默陈旧，故被拒绝；此处两种写法都退化为不缓存，
- *   不存在返回陈旧值的风险，也就没有归一化的必要）。`Infinity` 表示只由版本/快照失效
+ *   `<= 0` / `NaN` / `Infinity` 一律是「不缓存」——写入守卫要求 `ttl > 0` 且为有限值，
+ *   三者一个条目都不写（与 `SelectorOptions.cacheTTL` 的归一化口径刻意不同：那里 `NaN`
+ *   会变成永不过期、属静默陈旧，故被拒绝；此处几种写法都退化为不缓存，不存在返回陈旧值的
+ *   风险，也就没有归一化的必要）。注意 `Infinity` 因此**不是**「永不过期」：要长期缓存请
+ *   给一个足够大的有限值
  * @param {number} [options.maxEntries=1000] - 单个 state 下原始类型参数的缓存条目上限。
  *   归一化口径同 `SelectorOptions.cacheSize`：`Number.isFinite(v) ? Math.max(1, Math.floor(v)) : 1000`，
  *   即 0 / 负数夹到 1、`NaN` / `Infinity` / 未提供回到 1000（不夹会让上限形同虚设或表无界增长）

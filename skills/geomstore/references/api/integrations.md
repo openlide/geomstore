@@ -2,7 +2,7 @@
 
 > **本文件由 `scripts/generate-skill-api-reference.mjs` 从 `dist/**/*.d.ts` 生成，请勿手工编辑。**
 >
-> - 来源版本：`@openlide/geomstore@0.8.3`
+> - 来源版本：`@openlide/geomstore@0.9.0`
 > - 内容来源：构建产物类型声明（随 npm 包发布，与安装版本必然一致）
 > - 重新生成：`pnpm build && pnpm skill:api`
 > - 引入路径：`./integrations`
@@ -36,7 +36,7 @@ export interface ConnectOptions<S extends State = State, A extends Actions = Act
      *
      * 生效条件（三者同时，缺一即整项无效且**不会告警**，#R6-062）：
      * `autoUpdateOnShow && autoInject && Object.keys(injectMapping).length > 0`
-     * —— 见 `with-store.ts` 的 page/component 两处判定与 `with-app-store.ts:267`，
+     * —— 见 `with-store.ts` 的 page/component 两处判定与 `with-app-store.ts:290`，
      * 只写本项（或把 `injectMapping` 给成 `{}`）时连包装器都不安装。
      *
      * 挂载点口径（旧文案在此处有三处偏差，已按实现改写）：
@@ -68,13 +68,40 @@ export declare function bindActions<S extends State = State>(target: Record<stri
 
 ### `bindMappings`
 
-```ts
+````ts
+/**
+ * 绑定 Store 状态到目标对象（Page/Component/App 实例），返回取消绑定函数数组
+ *
+ * 内部先用 createMapper 建立映射，再按需订阅 Store 变化，把 state 与 getter 的
+ * 更新合并写入宿主（小程序 setData 一次调用）。返回值是取消订阅函数数组，
+ * 调用方应在宿主生命周期（onUnload / detached 等）里逐个调用它们，避免订阅泄漏。
+ *
+ * @param _target - 目标对象
+ * @param mappings - 本地键 → Store 键映射（源键 → 目标键方向）
+ * @param getValue - 读取 Store 侧值的函数
+ * @param setter - 批量写入本地值的函数，签名 `(updates: Record<string, unknown>) => void`
+ * @param subscribeStore - 订阅 Store 变化的函数，返回取消订阅回调
+ * @param changedKeys - 判断某状态键自上次通知以来是否变更（仅 state 映射可传入；
+ *   getters 不提供该判据，缺失时对象值按「宁多勿漏」始终发送）
+ * @returns 取消绑定函数数组
+ *
+ * @example
+ * ```typescript
+ * const unbinds = bindMappings(
+ *   pageInstance,
+ *   { count: 'counter', name: 'userName' }, // 本地键 count 对应 Store 键 counter
+ *   (storeKey) => store.state[storeKey],
+ *   (updates) => pageInstance.setData(updates),
+ *   (callback) => store.subscribe(callback),
+ * )
+ * // onUnload 里
+ * unbinds.forEach((unbind) => unbind())
+ * ```
+ */
 export declare function bindMappings(_target: unknown, mappings: Record<string, string>, getValue: (storeKey: string) => unknown, setter: (updates: Record<string, unknown>) => void, subscribeStore: (callback: () => void, options?: {
     readOnly?: boolean;
-}) => () => void, 
-/** 判断某状态键自上次通知以来是否变更（仅 state 映射可传入；getters 不提供，缺失时对象值保持「宁多勿漏」始终发送） */
-changedKeys?: (storeKey: string) => boolean): Array<() => void>;
-```
+}) => () => void, changedKeys?: (storeKey: string) => boolean): Array<() => void>;
+````
 
 ### `cleanupBindings`
 
@@ -167,7 +194,8 @@ export declare function parseMapping(mapping: ReadonlyArray<PropertyKey> | Recor
  *   pageInstance,
  *   { userInfo: 'user', config: 'appConfig' },
  *   store,
- *   (key, value) => pageInstance.setData({ [key]: value })
+ *   // setter 收到的是「全部注入项」的批量载荷（目标键 → 值），不是 (key, value) 逐键回调
+ *   (updates) => pageInstance.setData(updates)
  * )
  * ```
  */
@@ -176,9 +204,97 @@ export declare function performAutoInject<S extends State = State>(_target: unkn
 
 ### `withAppStore`
 
-```ts
+````ts
+/**
+ * App 集成函数
+ *
+ * 将 Store 连接到微信小程序 App，自动管理状态同步和订阅清理
+ *
+ * 类型推断：`S` / `A` / `G` 均从 store 参数自动推断，
+ * mapState / mapGetters / mapActions 的键与值拼错时会在编译期报错；
+ * 返回的装饰器保持传入 App 配置的原始类型（不擦除自定义方法/生命周期类型）。
+ *
+ * 生命周期内的 `this` 自动获得注入后的实例类型（`AppThis`）：映射的 state/getters
+ * 出现在 `globalData` 上、映射的 action 与调试 API 直接挂在实例上，**无需手写 this 标注**。
+ *
+ * 运行期行为（与 withPageStore / withComponentStore 同口径）：
+ * - `autoInject` + `injectMapping` 在 onLaunch 注入一次；再开 `autoUpdateOnShow` 时
+ *   每次 App `onShow` 重新注入，异步 action 之后才进缓存的键因此有补偿路径
+ * - 映射键、`injectMapping` 的目标键与宿主 `globalData` 已有成员同名时告警后覆盖
+ *   （store 是唯一事实来源）
+ * - 绑定阶段抛错：回滚本次已登记的订阅、告警并把错误原样抛给框架，
+ *   不在映射未就绪的实例上转发用户 `onLaunch`
+ *
+ * @template S - 状态类型
+ * @template A - Actions 类型
+ * @template G - Getters 类型
+ * @param {Store<S, A, G>} store - Store 实例
+ * @param {ConnectOptions<S, A, G>} [options={}] - 连接选项
+ * @returns App 装饰器（保持配置类型，并注入方法 this）
+ *
+ * @example
+ * ```typescript
+ * import { createStore } from '@openlide/geomstore'
+ * import { withAppStore } from '@openlide/geomstore/integrations'
+ *
+ * const store = createStore({
+ *   name: 'app',
+ *   state: { userInfo: null, config: {}, theme: 'light' },
+ *   actions: {
+ *     async initApp() {
+ *       const config = await fetchConfig()
+ *       this.setState('config', config)
+ *     },
+ *     setTheme(theme) {
+ *       this.setState('theme', theme)
+ *     }
+ *   }
+ * })
+ *
+ * // 简写：数组形式（this.globalData / 注入的 action 均有类型，无需手写 this）
+ * App(withAppStore(store, {
+ *   mapState: ['userInfo', 'config', 'theme'],
+ *   mapActions: ['initApp', 'setTheme']
+ * })({
+ *   globalData: { otherData: '...' },
+ *   onLaunch() {
+ *     console.log(this.globalData.userInfo)
+ *     this.initApp()
+ *     this.setTheme('dark')
+ *   }
+ * }))
+ *
+ * // 高级用法：对象形式
+ * App(withAppStore(store, {
+ *   mapState: {
+ *     user: 'userInfo',
+ *     appConfig: 'config',
+ *     currentTheme: 'theme'
+ *   },
+ *   mapActions: {
+ *     doInit: 'initApp',
+ *     changeTheme: 'setTheme'
+ *   }
+ * })({
+ *   globalData: { otherData: '...' },
+ *   onLaunch() {
+ *     console.log(this.globalData.user)
+ *     this.doInit()
+ *     this.changeTheme('dark')
+ *   }
+ * }))
+ *
+ * // 调试 API
+ * // 在其他 Page 或 Component 中访问：
+ * const app = getApp()
+ * app.getStore()           // 获取 store 实例
+ * app.getState()           // 获取状态
+ * app.dispatch('xxx')      // dispatch action
+ * app.subscribe(callback)   // 订阅状态变化
+ * ```
+ */
 export declare function withAppStore<S extends State, A extends Actions, G extends Getters<S>, O extends ConnectOptions<S, A, G>>(store: Store<S, A, G>, options?: O): <C extends AppOptions>(AppConfig: WithPageThis<C, AppThis<S, A, G, O, C>> & ThisType<AppThis<S, A, G, O, C>>) => C;
-```
+````
 
 ### `withComponentStore`
 

@@ -7,17 +7,62 @@ import { deepCloneState } from '../utils/clone.js'
 /** 缓存的生产环境检测结果 */
 let cachedProductionState: boolean | undefined
 
+/** 微信小程序宿主上报运行环境的那部分形状（只声明用到的字段，其余宿主能力不在此建模） */
+interface WxAccountInfoHost {
+  getAccountInfoSync?: () => { miniProgram?: { envVersion?: unknown } }
+}
+
+/** `wx.getAccountInfoSync().miniProgram.envVersion` 的三种取值（微信官方枚举） */
+type MiniProgramEnvVersion = 'develop' | 'trial' | 'release'
+
+/**
+ * 读取小程序宿主宣告的运行环境版本，读不到返回 undefined（不是「非生产」）。
+ *
+ * 返回 undefined 与返回 'develop' 的语义不同：前者是「拿不到信号」（H5 / SSR / Node 测试 /
+ * 基础库低于 2.14.4 无该 API / API 抛错），调用方应继续走下一档判据；后者是「宿主明确说了
+ * 我在开发环境」，应当就此收敛。
+ *
+ * 未知取值（宿主新增枚举、字符串被改写）同样按 undefined 处理——宁可退到下一档，
+ * 也不把不认识的值解释成生产或开发。
+ *
+ * 异常一律吞掉：宿主 API 不可用时判定失败必须降级为「无信号」，
+ * 而不是让 `isProduction()` 变成一个能被宿主环境影响的抛错点（`StateProxy` 的每次
+ * 非法写入都要读它）。
+ */
+function readMiniProgramEnvVersion(): MiniProgramEnvVersion | undefined {
+  try {
+    // wx 经 globalThis 读取：裸 `wx` 标识符在未声明全局的环境（H5 / SSR / Node）会抛
+    // ReferenceError，且 tsconfig 里也没有它的声明；与 PerformanceMonitor._getTimestamp
+    // 读 wx.getPerformance 同一口径
+    const wxGlobal = (globalThis as { wx?: WxAccountInfoHost }).wx
+    if (!wxGlobal || typeof wxGlobal.getAccountInfoSync !== 'function') {
+      return undefined
+    }
+    const info = wxGlobal.getAccountInfoSync()
+    const version = info?.miniProgram?.envVersion
+    if (version === 'develop' || version === 'trial' || version === 'release') {
+      return version
+    }
+    return undefined
+  } catch {
+    return undefined
+  }
+}
+
 /**
  * 检测当前运行环境是否为生产模式
  *
  * 判定优先级（自高到低）：
  * 1. Node.js / 小程序构建期注入的 `process.env.NODE_ENV`（最可靠）
  * 2. 构建期 `__DEV__` 全局标志（需打包器 DefinePlugin 等做字符串替换才有效）
- * 3. 兜底为开发模式（非生产），保证保护机制默认开启
+ * 3. 小程序宿主宣告的运行环境 `wx.getAccountInfoSync().miniProgram.envVersion`
+ * 4. 兜底为开发模式（非生产），保证保护机制默认开启
  *
  * 注意：`__DEV__` 是构建期常量，tsc 不会替换它，运行时若未定义，
  * 不能直接 `!__DEV__`（在未声明全局时会 ReferenceError，且语义会被误判为生产）。
- * 因此使用 `typeof __DEV__ !== 'undefined'` 做存在性检查。
+ * 因此使用 `typeof __DEV__ !== 'undefined'` 做存在性检查，并**整体包在 try/catch 里**——
+ * 小程序 AppService 的全局是沙箱代理，未声明标识符连 `typeof` 都抛 ReferenceError
+ * （实测 `typeof process` / `typeof __DEV__` 皆抛），不吞掉就是每次判定都崩。
  *
  * 反向要求：读 `process.env.NODE_ENV` 时**不得**再加 `typeof process !== 'undefined'`
  * 门控（tests/unit/store/modules/utils.test.ts 锁定了函数体不含该门控）。
@@ -26,7 +71,14 @@ let cachedProductionState: boolean | undefined
  * false，已内联好的 "production" 被短路丢弃，判定退回 __DEV__ → 开发兜底，生产构建被识别
  * 成开发模式——StateProxy._handleIllegalMutation 在 isProduction() === false 时无条件 throw，
  * 直写状态由 warn/silent 变成崩溃点。真没有 process 时属性访问抛 ReferenceError，
- * 由下方 try/catch 吞掉并回退 __DEV__ 分支，不会外溢。
+ * 由下方 try/catch 吞掉后继续走 __DEV__ 与小程序运行环境分支，不会外溢。
+ *
+ * 第 3 档存在的理由（原生小程序缺上述两种信号）：微信宿主既没有 `process` 全局、
+ * 官方构建又不替换 `__DEV__`，且 `dist-weapp` / npm 产物不做 `--define` 注入，
+ * 于是此前在**真机正式版**上判定恒为开发模式——生产配置项失效、非法直写改抛错、
+ * 生产静默承诺（`docs/ARCHITECTURE.md` §生产模式日志静默）全部落空。
+ * 取值直接取宿主自报的那三个枚举：`getAccountInfoSync().miniProgram.envVersion` 区分
+ * 正式（release）/ 体验（trial）/ 开发（develop，含 IDE 预览与真机调试）。
  *
  * @returns {boolean} 如果当前处于生产环境则返回 true，否则返回 false
  */
@@ -53,12 +105,38 @@ export function isProduction(): boolean {
   }
 
   // 2. 回退到构建期 __DEV__ 全局标志（需打包器替换；此处做存在性检查）
-  if (typeof __DEV__ !== 'undefined') {
-    cachedProductionState = !__DEV__
+  try {
+    // 存在性检查必须是**裸标识符**，不能写成 globalThis.__DEV__：
+    // 打包器（DefinePlugin / esbuild --define）做的是文本替换，写成属性访问会被替成
+    // `globalThis.false` 这种废语法，替换直接失效。
+    if (typeof __DEV__ !== 'undefined') {
+      cachedProductionState = !__DEV__
+      return cachedProductionState
+    }
+  } catch {
+    // 这一档在小程序里**必然走到 catch**，不是防御性冗余。
+    // 小程序 AppService 的全局是沙箱代理：未声明的标识符连 `typeof` 都会抛 ReferenceError，
+    // 而不是标准语义里的 'undefined'。实测（开发者工具 1.06.x / 基础库 3.x）：
+    //   typeof __DEV__            → 抛 "__DEV__ is not defined"
+    //   typeof process            → 抛 "process is not defined"
+    //   typeof __任意未声明名__    → 同样抛
+    //   typeof performance / queueMicrotask / wx → 正常返回（这些是宿主已注入的）
+    // 所以这一档不包 try/catch 的话，isProduction() 在小程序里第一句就崩，
+    // 而 StateProxy 每次非法写入都要读它——等于把「写保护」变成「写即抛」。
+    // 此处吞掉后继续走下一档（宿主 envVersion），与第 1 档的 process 同理。
+  }
+
+  // 3. 小程序宿主宣告的运行环境：原生小程序里唯一无需接入方做任何注入就能拿到的自动判据。
+  //    正式版与体验版都按生产处理——体验版跑的就是待发布的那一份构建产物，
+  //    「仅限内部可见」不等于「可以崩」：非法直写在体验版同样必须 warn/silent 放行。
+  //    开发版（含 IDE 预览与真机调试）保持开发模式，严格保护留住本地可复现的报错栈
+  const envVersion = readMiniProgramEnvVersion()
+  if (envVersion !== undefined) {
+    cachedProductionState = envVersion !== 'develop'
     return cachedProductionState
   }
 
-  // 3. 兜底：无法判定时按开发模式处理，确保状态保护默认开启
+  // 4. 兜底：无法判定时按开发模式处理，确保状态保护默认开启
   cachedProductionState = false
   return cachedProductionState
 }

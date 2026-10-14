@@ -399,7 +399,8 @@ export class SelectorFactory<S extends State = Record<string, unknown>, R = unkn
  * @template R - 返回值类型
  * @param {Selector<S, R>} selectorFn - 选择器函数
  * @param {SelectorOptions} [options] - 缓存选项
- * @returns {Selector<S, R>} 选择器函数
+ * @returns {Selector<S, R> & { factory: SelectorFactory<S, R> }} 选择器函数，并挂上它内部的
+ *   `SelectorFactory`（`Object.assign` 附加，供测试与需要读缓存状态的高级用法使用）
  *
  * @example
  * ```typescript

@@ -475,7 +475,8 @@ export class PerformanceMonitor implements PerformanceMonitorInterface {
   getMetrics(): PerformanceMetrics[] {
     // 经 `metrics` 兼容访问面读取（它与 getMetrics 的有序语义同源），顺带把它保留在活跃
     // 调用路径上：该访问面只为历史代码与既有测试存在，完全无人调用时会被当成死代码删除
-    // 调用方改 m.duration 会污染内部数据与后续 getStats()/exportJSON()
+    // 逐元素浅拷贝：不复制就会把内部指标对象直接交出去，调用方改 m.duration
+    // 会污染内部数据与后续 getStats()/exportJSON()
     return this.metrics.map((m) => ({ ...m }))
   }
 
@@ -724,6 +725,7 @@ export class PerformanceMonitor implements PerformanceMonitorInterface {
 }
 
 /**
- * 默认导出
+ * 类型再导出：消费方从本文件拿实现类 `PerformanceMonitor`，从下列名字拿指标 / 选项 /
+ * 统计类型（本文件没有默认导出）
  */
 export type { PerformanceMetrics, PerformanceOptions, PerformanceStats, MetricType } from '../../types/performance.js'

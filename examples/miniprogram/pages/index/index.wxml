@@ -1,0 +1,22 @@
+<view class="container">
+  <view class="hint">env={{env}} · 页面栈={{stackDepth}} · visits={{visits}}</view>
+
+  <view class="row">
+    <text>count = {{count}}</text>
+    <text class="muted">doubled = {{doubled}}</text>
+  </view>
+
+  <view class="row">
+    <button class="btn-inc" size="mini" type="primary" bindtap="onTapIncrement">+1</button>
+    <button class="btn-inc10" size="mini" bindtap="onTapIncrementTen">+10</button>
+    <button class="btn-theme" size="mini" bindtap="onTapToggleTheme">切换主题（{{theme}}）</button>
+    <button class="btn-reset" size="mini" bindtap="onTapReset">清零</button>
+  </view>
+
+  <view class="row">
+    <button class="btn-detail" size="mini" bindtap="onTapGoDetail">进入二级页</button>
+    <button class="btn-list" size="mini" bindtap="onTapGoList">进入列表页（订阅容量）</button>
+  </view>
+
+  <view class="hint">磁盘内容（debounce 100ms）：{{persisted}}</view>
+</view>

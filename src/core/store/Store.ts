@@ -106,7 +106,12 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
   /** 状态保护启用标志（内联缓存） */
   private _stateProtectionEnabled: boolean
 
-  /** 通知前是否深拷贝（显式配置；undefined 表示自动：仅当存在可写订阅者时拷贝） */
+  /**
+   * 通知前是否深拷贝（构造期归一，永不为 undefined）
+   *
+   * 真正的「要不要拷贝」还要结合 `_notifyCloneExplicit`：未显式配置时走自动档
+   *（仅当存在可写订阅者时深拷贝），见 `_notifyListeners` 里的 needsClone
+   */
   private _notifyClone: boolean
 
   /** 是否显式配置了 notify.clone（用于区分「默认自动」与「用户显式关闭」） */
@@ -966,7 +971,7 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
     if (this._destroyed) {
       throw new Error('[GeomStore] Cannot call batch on a destroyed Store')
     }
-    // 走 startBatch/endBatch 而非 createBatchFunction：
+    // 走 startBatch/endBatch 而非直接操作 BatchManager 的 start/end：
     // 只有 startBatch 会记录变更计数基线，绕过它会让 onlyOnChange 的
     // 「无变更 batch 不通知」判定用上陈旧基线而失效
     this.startBatch()
@@ -1101,8 +1106,8 @@ export class Store<S extends State = State, A extends Actions = Actions, G exten
   /** 调度一次状态通知（同步或异步合并，取决于 notify.async 配置） */
   private _scheduleNotify(): void {
     if (this._notifyAsyncEnabled && this._asyncNotifier) {
-      // 微任务合并：同一 tick 内的多次 setState/$patch/$replaceState 合并为一次通知。
-      // 脏键跨批次累积，最终通知时仍能精确反映全部变更（与集成层对象值跳过天然兼容）
+      // 微任务合并：同一 tick 内的多次写入只触发一次通知
+      //（脏键跨批次累积的完整口径见构造期 _asyncNotifier 处注释）
       this._asyncNotifier.notify(this._state)
     } else {
       this._notifyListeners()

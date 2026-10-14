@@ -9,7 +9,7 @@
  * 覆盖面：HookSystem(usePlugin 安装/卸载)、Store.use 重复安装、SubscriptionManager
  * 订阅上限与监听器抛错、订阅者驱逐上报通道、composeStore 子 store 重名、compose/helpers 已销毁子 store
  * 与写入竞态、withCache 命中/in-flight 去重、persistencePlugin 安装/无后端降级/恢复、
- * analyzerPlugin 卸载时 getter 已被重新包装。
+ * analyzerPlugin 卸载时 getter 已被重新包装、WxStorageBackend 读写失败。
  */
 
 describe('生产模式下的日志静默', () => {
@@ -40,6 +40,7 @@ describe('生产模式下的日志静默', () => {
       dispatchByNamespace: (await import('@/core/compose/helpers.js')).dispatchByNamespace,
       withCache: (await import('@/extras/action/decorators/cache.js')).withCache,
       persistencePlugin: (await import('@/plugins/builtin.js')).persistencePlugin,
+      WxStorageBackend: (await import('@/plugins/WxStorageBackend.js')).WxStorageBackend,
       createAnalyzerPlugin: (await import('@/plugins/performance/index.js')).createAnalyzerPlugin,
     }
   })
@@ -146,6 +147,29 @@ describe('生产模式下的日志静默', () => {
     expect(errorSpy).not.toHaveBeenCalled()
   })
 
+  it('钩子处理器抛错时生产模式同样静默（console 无输出），且 onError 仍收到事件', () => {
+    // 与上一条同口径：钩子挂在 setState / dispatch 热线上，持续抛错的处理器
+    // 若在生产每次写入都打印，会把发布包控制台刷满
+    const hooks = new mod.HookSystem()
+    const seen: unknown[] = []
+    const healthy = jest.fn()
+    hooks.on('onError', (error: unknown) => {
+      seen.push(error)
+    })
+    hooks.on('beforeSetState', () => {
+      throw new Error('hook boom')
+    })
+    hooks.on('beforeSetState', healthy)
+
+    expect(() => hooks.emit('beforeSetState', 'x', 1)).not.toThrow()
+
+    expect(healthy).toHaveBeenCalled()
+    expect(errorSpy).not.toHaveBeenCalled()
+    // 静默不等于丢失：异常经 onError 转投，监控侧仍可观测
+    expect(seen).toHaveLength(1)
+    expect((seen[0] as Error).message).toBe('hook boom')
+  })
+
   it('非命名空间模式下子 store 重名时静默（仅开发模式告警）', () => {
     const a = mod.createStore({ name: 'dup', state: { x: 1 } })
     const b = mod.createStore({ name: 'dup', state: { y: 2 } })
@@ -223,6 +247,27 @@ describe('生产模式下的日志静默', () => {
 
     expect(() => store.use(mod.persistencePlugin())).not.toThrow()
     expect(warnSpy).not.toHaveBeenCalled()
+  })
+
+  it('WxStorageBackend 读写失败在生产模式控制台静默，但错误照常抛出', () => {
+    // 门口与 HookSystem / SubscriptionManager 同口径：这里的 console.error 在写路径上，
+    // 配额超限（`exceed storage max size`）时后续每次落盘都会重演；
+    // 「看得见」由调用方承接——异常原样抛出，persistencePlugin.saveState 已转 onError('persistence')
+    const g = globalThis as any
+    g.wx = {
+      getStorageSync: () => {
+        throw new Error('getStorageSync:fail')
+      },
+      setStorageSync: () => {
+        throw new Error('setStorageSync:fail exceed storage max size')
+      },
+      removeStorageSync: () => {},
+    }
+    const backend = new mod.WxStorageBackend()
+
+    expect(() => backend.setItem('k', '{"x":1}')).toThrow(/exceed storage max size/)
+    expect(() => backend.getItem('k')).toThrow(/getStorageSync:fail/)
+    expect(errorSpy).not.toHaveBeenCalled()
   })
 
   it('analyzerPlugin 卸载时 getter 已被重新包装也保持静默', () => {

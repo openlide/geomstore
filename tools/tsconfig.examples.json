@@ -5,5 +5,8 @@
     "rootDir": ".."
   },
   "include": ["../examples/**/*", "../src/**/*"],
-  "exclude": ["../node_modules", "../dist", "../packages", "../src/**/*.example.ts"]
+  // examples/miniprogram 是**可运行的小程序工程**（app.js / pages/*.js / e2e 脚本），
+  // 不是 TS 示例代码：它依赖 wx.* 与 `@openlide/geomstore` 的运行时包，既拿不到宿主类型、
+  // 也不该让 yarn-less 的 typecheck 去给它挑错。其正确性由 automator 冒烟用例负责
+  "exclude": ["../node_modules", "../dist", "../packages", "../src/**/*.example.ts", "../examples/miniprogram"]
 }

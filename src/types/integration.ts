@@ -31,7 +31,7 @@ export interface ConnectOptions<S extends State = State, A extends Actions = Act
    *
    * 生效条件（三者同时，缺一即整项无效且**不会告警**，#R6-062）：
    * `autoUpdateOnShow && autoInject && Object.keys(injectMapping).length > 0`
-   * —— 见 `with-store.ts` 的 page/component 两处判定与 `with-app-store.ts:267`，
+   * —— 见 `with-store.ts` 的 page/component 两处判定与 `with-app-store.ts:290`，
    * 只写本项（或把 `injectMapping` 给成 `{}`）时连包装器都不安装。
    *
    * 挂载点口径（旧文案在此处有三处偏差，已按实现改写）：
@@ -438,8 +438,8 @@ export interface HostStoreApi<S extends State = State> extends HostStoreDebugApi
  * 映射的 action（bindActions）与 exposeStoreAPI 的调试方法直接挂在 App 实例上。
  * 交叉 `Extra`（调用处传入用户配置类型 C）以保留 `globalData` 的自定义字段。
  *
- * 名字撞车时谁赢：`onLaunch` 先 `bindActions`（with-app-store.ts:242）后 `exposeStoreAPI`
- * （同文件 :251，二者在同一个 try 块内按此顺序）。exposeStoreAPI 的七个键逐个经 `canOwnKey`
+ * 名字撞车时谁赢：`onLaunch` 先 `bindActions`（with-app-store.ts:265）后 `exposeStoreAPI`
+ * （同文件 :274，二者在同一个 try 块内按此顺序）。exposeStoreAPI 的七个键逐个经 `canOwnKey`
  * 判定、再用 `defineOwnValue` 以 `Object.defineProperty` 写入（utils.ts；键集合与值同源于那张
  * `members` 表，已无 `exposedKeys` 常量、也不再是 `Object.assign`），卸载时按**原描述符整体回放**
  * （访问器成员不会被降级成数据属性），而不是「还原原值」。因此：

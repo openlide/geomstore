@@ -28,7 +28,8 @@ interface OperationSummary {
  * `NaN > max` / `NaN < min` 恒假又把这些样本从 max/min 里静默剔除——同一份数据 avg 是
  * NaN、max 却是个正常毫秒数，自相矛盾。故统一把它们排除在耗时聚合之外（仍计入 count，
  * 因为「这次操作确实发生过」），与本文件 getPercentile 的 Number.isFinite 早失败、
- * PerformanceMonitor.normalizeThreshold / getCurrentTime 的非有限读数降级同口径。
+ * PerformanceMonitor.normalizeThreshold / `_getTimestamp`（读数非有限即撤下 wx 时钟、降级
+ * Date.now）的非有限值处理同口径。
  */
 const isMeasurableDuration = (duration: number): boolean => Number.isFinite(duration)
 
@@ -244,9 +245,13 @@ export class MetricsCollector {
   /**
    * 获取所有指标
    *
-   * 返回所有已收集性能指标的副本。
+   * 返回按写入顺序展开的新数组。
    *
-   * @returns {PerformanceMetrics[]} 指标数组副本
+   * 注意**元素仍是内部指标对象的同一引用**：改写 `m.duration` 会污染本采集器与后续
+   * `calculateStats()`（与 `PerformanceMonitor.getMetrics` 的逐元素浅拷贝口径不同）。
+   * 需要隔离请自行 `map((m) => ({ ...m }))`。
+   *
+   * @returns {PerformanceMetrics[]} 按写入顺序展开的指标数组
    */
   getAll(): PerformanceMetrics[] {
     return this._ordered()
@@ -331,7 +336,7 @@ export class MetricsCollector {
     // 非有限耗时先滤掉再排序：`a.duration - b.duration` 比较器拿到 NaN 返回 NaN
     // （等价于「不移动」），NaN 样本可停在任意位置，「最慢 N 个」不可复现。
     // 与 getPercentile / calculateStats 的 isMeasurableDuration 过滤同口径
-    // （那两处早已过滤，唯独排序路径遗漏）。过滤后为空集时收集器为空，
+    // （此前唯独排序路径遗漏，现已补齐）。过滤后为空集时收集器为空，
     // 与「采集器本来为空」同形态
     const sorted = this._ordered()
       .filter((m) => isMeasurableDuration(m.duration))
@@ -358,10 +363,10 @@ export class MetricsCollector {
 
     if (this._count === 0) return 0
 
-    // 非有限耗时先滤掉再排序：同文件的 computePerformanceStats / summarizeByOperation
-    // 都经 isMeasurableDuration 过滤，唯独这里不滤——`a - b` 比较器拿到 NaN 返回 NaN
-    // （等价于「不移动」），NaN 元素可能停在任何位置，index 落上去就返回 NaN，
-    // 而同一份数据在 calculateStats() 里是确定性地被排除的
+    // 非有限耗时先滤掉再排序：`a - b` 比较器拿到 NaN 返回 NaN（等价于「不移动」），
+    // NaN 元素可能停在任何位置，index 落上去就返回 NaN，而同一份数据在 calculateStats()
+    // 里是确定性地被排除的——故此处与 getPercentile / computePerformanceStats /
+    // summarizeByOperation 一律同口径过滤
     const sorted = this._ordered()
       .map((m) => m.duration)
       .filter(isMeasurableDuration)

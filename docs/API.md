@@ -90,6 +90,8 @@ createStore<S extends State, A extends Actions = Actions, G extends Getters<S> =
 | `subscription.maxSubscribers`       | `number`                        | `50`             | 在册**注册**数上限（同一监听器注册两次计两笔）；达限时重复注册会让位该监听器自己最早的一笔。取值在构造期归一（与 `LRUCache` capacity / `cacheConfig.ttl` 同一条守卫）：**非有限值（`NaN` / `Infinity` / `-Infinity`）回落默认 50 并在开发模式告警**、小数向下取整（`2.5` → 2）、`0` 与负数按「add 文档既有语义」保留                                                                                            |
 | `subscription.onLimit`              | `'evict-oldest' \| 'throw'`     | `'evict-oldest'` | 订阅数达上限时的策略。`evict-oldest` 驱逐一份注册时，Store 会向 `onError` 钩子发一条带 Store 名 / 上限 / 被驱逐监听器标识的 `Error`（第二参 `'subscribe'`），生产不再完全静默；`throw` 分支不产生该事件                                                                                                                                                                                                         |
 
+> **怎么估 `maxSubscribers`**：这条额度按「每个宿主实例一条共享订阅」计——`withPageStore` / `withComponentStore` 的实例（含列表里的每个组件）各占 1 笔，加上业务代码里自己的 `store.subscribe`。默认 50 对「一个共享 store 挂 >50 个 Page/Component」的长列表是不够的，触顶后的症状是**最早那批实例不再刷新**，且生产只在 `onError('subscribe')` 有信号。上线前请按「最大同屏实例数 + 常驻订阅数」估一次并显式配置（建议留 50% 余量），别依赖默认值自动兜住。
+
 ### Store 实例
 
 #### 状态
@@ -125,6 +127,9 @@ createStore<S extends State, A extends Actions = Actions, G extends Getters<S> =
 | `startBatch` / `endBatch` | `(): void`                                                                   | 手动批量（支持嵌套，仅最外层收尾时通知）                                                                                                                                                                                                            |
 
 - 同一监听器注册 N 次会收到 N 次通知。每个返回的退订句柄只抵消一份注册，**重复调用同一句柄无效**，不会移除其他注册。`maxSubscribers` 是**每一次注册**都生效的硬上界（含同一监听器的重复注册）：达限时重复注册挤掉自己最早的一笔，`onLimit: 'throw'` 下抛错，在册注册数不会超过上限。
+- ⚠️ **`maxSubscribers` 触顶会按 evict-oldest 挤掉最早那一笔注册，而内置插件的订阅也是「注册」**：`persistencePlugin` / `loggerPlugin` 各占 1 份额度，且通常在 `app.js` 里最早安装——于是「组件/页面订阅把额度吃满」时**被牺牲的往往是持久化的那一笔**，症状是**写盘静默停止**（不报错、不告警，只有 `onError('subscribe')` 能观测到驱逐事件）。默认上限 50 在「列表页 N 个组件各一条订阅」的场景很容易触顶（小程序 demo 的 e2e 实测：订阅数从 20 加到 60 后磁盘不再更新）。对策按优先级：①给确实只读的消费方显式 `{ readOnly: true }`（不减额度，但避免整树深拷贝）；②长列表改用**一个页面级订阅 + `setData` 下发**而不是每项组件各订一份；③确实需要大量订阅时调大 `subscription.maxSubscribers`；④把 `onError` 的 `source === 'subscribe'` 接进监控——这是生产里唯一能发现驱逐的出口。
+- **`readOnly` 默认是 `false`**：`store.subscribe(cb)` 不传第二参即按可写注册。代价不是「这次多拷一份」，而是把整个 Store 的通知路径从零拷贝切成深拷贝——无任可写注册时载荷是保护 Proxy（几乎零成本），一旦出现一笔可写注册，每次通知就要产出「1 份只读共享深拷贝 + 每个可写注册各 1 份」。只读消费（绝大多数场景）请一律显式写 `store.subscribe(cb, { readOnly: true })`；默认值保留 `false` 是为了不破坏「在回调里就地改载荷」的既有用法——**漏写不会报任何错，只会静默变慢**，这也是 `src/**` 内部订阅受源码门禁检查的原因。
+- getter 映射（`mapGetters`）拿不到脏标记，对象值一律按「有变化」发送：getter 若每次返回新建对象（内联 `{ ... }` / `map()` 构造），该键每次通知都会整包下发，脏检查对它实际失效。需要避免抖动，getter 应返回稳定引用（缓存派生结果）或改用 `mapState`。
 - 直连 `SubscriptionManager` 的宿主可以配 `onSubscriberEvicted`（载荷类型 `SubscriberEvictionInfo`：`listener` / `maxSubscribers` / `size`，`size` 是「驱逐完成后、新注册写入前」的在册数），`'throw'` 策略不产生该事件。这两个名字只随内部 barrel `src/core/store/index.ts` 出口，该子路径不在 `package.json` 的 `exports` 映射里；**用 `createStore` 的调用方不需要它**——Store 已把驱逐事件接到 `onError` 钩子上（见 1.1 的 `subscription.onLimit`）。
 - 回调抛错被逐个隔离（不影响其余监听器）：开发模式打印，生产模式改由 `onError` 钩子承接（控制台仍静默），因此「某个订阅者一直在抛错」有可上报的入口。本轮派发对象是进入通知时在册的注册，回调内退订自己仍会收到本次这最后一次更新。
 - action 内通过 `this.state` 修改对象、数组及 Map/Set 时，会累积受影响的**顶层键**；共享别名可能同时使多个键变脏。这在默认模式与 `onlyOnChange` 模式下均生效。
@@ -223,11 +228,11 @@ usePlugin<S extends State, A extends Actions, G extends Getters<S>>(
 
 > `HookHandler` 的第二个类型参数（旧的 `TResult`）已删除：`emit` 一律忽略处理器返回值，需要否决请抛异常。精确形参在插件侧（`install(store)` 拿到的 `Store` 接口）已生效；`createStore(...).hooks` 直连调用目前仍是实现类 `HookSystem` 的擦除签名（该字段声明为实现类类型），待源码把位点换成 `IHookSystem` 后统一。
 
-> **`emit` 的失败语义**：逐个处理器 `try/catch`，单个抛错既不中断其余处理器也不传播给 `emit` 调用方；错误先 `console.error` 再转投 `onError` 钩子（`emit('onError', error, hookName)`），`onError` 自身抛错只落 `console.error` 不递归。要让异常冒泡到业务方请走 action 的错误边界，不要指望钩子。
+> **`emit` 的失败语义**：逐个处理器 `try/catch`，单个抛错既不中断其余处理器也不传播给 `emit` 调用方；开发期先 `console.error` 再转投 `onError` 钩子（`emit('onError', error, hookName)`）——**生产期控制台静默**，只走 `onError`（钩子挂在 `setState` / `dispatch` 热线上，与 `SubscriptionManager` 的监听器异常同口径）；`onError` 自身抛错只落 `console.error` 不递归。要让异常冒泡到业务方请走 action 的错误边界，不要指望钩子。
 
 - `on()` 返回的退订句柄是**一次性**的：第二次调用是 no-op，不会顺带摘掉后来建立的同函数注册（`off1() → on(同一 handler) → off1()` 之后那份新注册仍在册）。
 
-**钩子名**：`beforeDispatch` / `afterDispatch` / `beforeSetState` / `afterSetState` / `beforePatch` / `afterPatch` / `beforeReplaceState` / `afterReplaceState` / `beforeGet` / `afterGet` / `onError`。
+**钩子名**：`beforeDispatch` / `afterDispatch` / `beforeSetState` / `afterSetState` / `beforePatch` / `afterPatch` / `beforeReplaceState` / `afterReplaceState` / `onError`。
 
 **插件契约**：`{ name: string; install(store: Store): (() => void) | void }`。
 
@@ -240,6 +245,8 @@ withPageStore<S, A, G, O>(store, options?: ConnectOptions<S, A, G>): <C>(config:
 withComponentStore<S, A, G, O>(store, options?: ConnectOptions<S, A, G>): <C>(config: C) => ComponentThis<...>
 withAppStore<S, A, G>(store, options?: ConnectOptions<S, A, G>): <C>(config: C) => C
 ```
+
+> ⚠️ **签名是 `(store, options)` 两个参数，不是单个 `{ store, ... }` 对象**。写成 `withPageStore({ store, mapState: [...] })` 不会报错：第一个实参被当成 store、`options` 走默认空配置，结果是**映射为空 → 一条订阅都不建**，页面永远不刷新，且控制台与 `onError` 都没有任何信号（这是小程序 demo 首轮 e2e 全红的根因）。三端同口径：`withPageStore(app.globalData.store, { mapState: [...] })`。
 
 **`ConnectOptions` 映射形式**（三端一致）：
 
@@ -268,9 +275,9 @@ withAppStore<S, A, G>(store, options?: ConnectOptions<S, A, G>): <C>(config: C) 
 composeStore<Stores extends readonly StoreLike[]>(
   stores: [...Stores],
   options?: ComposeOptions,
-): Store<ExtractStates<Stores>, ExtractActions<Stores>, ExtractGetters<Stores>>
+): ComposedStore<ExtractStates<Stores>, ExtractActions<Stores>, ExtractGetters<Stores>>
 createStoreTree(stores: Store[], options?: ComposeOptions): StoreTreeNode
-class ComposedStore<S extends State = State> implements Store<S> // 值导出，见下方说明
+class ComposedStore<S extends State = State, A extends Actions = Actions, G extends Getters<S> = Getters<S>> implements Store<S, A, G> // 值导出，见下方说明
 class StoreRegistry { register / get / has / delete / list … }
 export const globalRegistry: StoreRegistry
 ```
@@ -284,9 +291,10 @@ export const globalRegistry: StoreRegistry
 
 `ComposedStore`：`getState` / `dispatch`（支持斜杠路径）/ `subscribe` / `isStateKeyDirty`（形参同为 `string | symbol`）/ `hooks` / `$patch` / `$replaceState` / `destroy` 等，语义与单 Store 一致。
 
-**主入口导出的 `ComposedStore` 是实现类本身**（一个值，加上该类的实例类型），**不是**结构化类型别名。两点后果：
+**主入口导出的 `ComposedStore` 是实现类本身**（一个值，加上该类的实例类型），**不是**结构化类型别名。两点说明：
 
-- `composeStore()` 的返回类型是结构化的 `Store<ExtractStates<…>, ExtractActions<…>, ExtractGetters<…>>`。而类含大量 `private` 成员，其实例类型因而是**名义化**的：`const s: ComposedStore = composeStore([...])` **过不了类型检查**（实测报 TS2740，缺失成员里点名 `_stores` / `_namespace` / `_strict` 等私有字段——TS 对 private 成员要求同源）。要标注类型请用 `Store<…>`，或直接交给推断；`instanceof ComposedStore` 与直接构造实例仍然可用。
+- `composeStore()` 的返回类型**就是** `ComposedStore<S, A, G>`（S/A/G 由子 store 元组精确提取），因此 `const s: ComposedStore<X> = composeStore([...])` **可以直接标注**——类含 `private` 成员、实例类型是名义化的，但返回类型同为该类，赋值同源成立。此前返回类型只声明结构面 `Store<S, A, G>`，名义标注一律报 TS2740（缺失成员里点名 `_stores` / `_namespace` / `_strict` 等私有字段）；现已让类泛型化 A/G 并以其为返回类型，`dispatch` 的动作名与 `getter` 的返回类型推断精度不变。`instanceof ComposedStore` 与直接构造实例仍然可用。
+- `Store` 接口的 `destroy(destroyStores?)` 带**可选**参数：组合层传 `false` 表示只拆组合、不级联销毁子 store（单 Store 忽略该参数）。按 `Store<S>` 标注的组合 store 因此也能调出 `false` 档——此前只有实现类认它。
 - `src/types/compose.ts` 里另有一个**同名**的结构化别名 `ComposedStore<S extends State = State> = Store<S> & { stores }`（直接交叉同一份契约，避免手抄 `name/state/stores` 三件套而漂移）。它**不在任何发布入口上**：`package.json` 的 `exports` 既没有 `./types` 子路径也没有深路径通配，故包外不可达，只供仓库内部的类型级测试经 `@/types/compose.js` 使用。**不要按它书写对外类型**——公开面上的这个名字指的是上面那个类。
 
 - `$patch` / `$replaceState` 在**命名空间 + `strict`** 下是原子操作：先完成全部子 store 查找与严格校验再统一写入，校验失败时一个 store 都不写（不留「前一半已落库」且调用方无法回滚的半更新态）。
@@ -611,15 +619,15 @@ class WxStorageBackend implements StorageBackend
 
 `timeTravelPlugin(options?)` 安装后通过 `store.__timeTravel__` 提供 `getSnapshots()`、`goTo(index)`、`undo()`、`redo()` 等调试接口。**插件的 `install` 无条件执行**（建快照数组、订阅 store），生产构建下缺席的只是**全局调试入口**：`store.__timeTravel__` 仍然存在，只是不参与类型检查、无对外契约，读取请用 `store.__timeTravel__?.getSnapshots()` 这类判空写法。`getSnapshots()` 对每条历史状态重新使用核心 `deepCloneState` 克隆：修改返回值中的普通对象、数组或 Date/RegExp/Map/Set，不会污染内部历史与后续 `goTo` 恢复值，循环引用也受支持。**这不是 extras/snapshot 的丢弃契约**：类实例、函数、Promise、WeakMap/WeakSet 等不可克隆节点仍保留原引用；不要修改这些共享节点。
 
-| `PersistenceOptions` | 默认                                                 | 说明                                                                                                                                                                                                                                                                                                                                                                                                  |
-| -------------------- | ---------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `key`                | Store 名                                             | 存储键                                                                                                                                                                                                                                                                                                                                                                                                |
-| `storage`            | 内置 `WxStorageBackend`（wx 三方法齐备时），否则内存 | **必须同步且三方法齐备**：`{ getItem, setItem, removeItem }`。缺任一方法在 `store.use()` 安装期即抛 `TypeError`（不再静默回落到别的后端）；返回 Promise 的实现在恢复 / 落盘 / 清理三条路径上各自明确报错（内置 wx 后端同样受检，Taro / uni-app 类 Promise 版 polyfill 下不再变成未处理 rejection）。**不传时的默认后端就是 `new WxStorageBackend()`**——两条路径共用一份实现，不再各写一套归一化与守卫 |
-| `filter`             | 全量                                                 | `(state) => Partial<state>`，指定落盘子集（未被持久化的键保留初始值）。**两条路径都会套上**：落盘前 `filter(state)`、恢复时 `filter(parsedState)` 再 `$patch`——单向理解的写法会让「只持久化子集」的配置在恢复时静默吃掉未过滤键                                                                                                                                                                       |
-| `validate`           | —                                                    | 恢复前的数据校验                                                                                                                                                                                                                                                                                                                                                                                      |
-| `restore`            | `true`                                               | 安装时是否从存储恢复                                                                                                                                                                                                                                                                                                                                                                                  |
-| `debounce`           | `0`                                                  | 写入防抖（毫秒）；卸载时会**同步补写**窗口内最后一次变更。**卸载一律摘掉待触发的定时器**（`clearOnUninstall: true` 也不例外），只有「补写」本身受 `clearOnUninstall` 约束                                                                                                                                                                                                                             |
-| `clearOnUninstall`   | `false`                                              | 为 `true` 时卸载改为清理存储（丢弃待写数据）；删除失败不再被吞掉，会记 `console.error` 并 `emit('onError', …, 'persistence')`                                                                                                                                                                                                                                                                         |
+| `PersistenceOptions` | 默认                                                 | 说明                                                                                                                                                                                                                                                                                                                                                                                                        |
+| -------------------- | ---------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `key`                | Store 名                                             | 存储键                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `storage`            | 内置 `WxStorageBackend`（wx 三方法齐备时），否则内存 | **必须同步且三方法齐备**：`{ getItem, setItem, removeItem }`。缺任一方法在 `store.use()` 安装期即抛 `TypeError`（不再静默回落到别的后端）；返回 Promise 的实现在恢复 / 落盘 / 清理三条路径上各自明确报错（内置 wx 后端同样受检，Taro / uni-app 类 Promise 版 polyfill 下不再变成未处理 rejection）。**不传时的默认后端就是 `new WxStorageBackend()`**——两条路径共用一份实现，不再各写一套归一化与守卫       |
+| `filter`             | 全量                                                 | `(state) => Partial<state>`，指定落盘子集（未被持久化的键保留初始值）。**两条路径都会套上**：落盘前 `filter(state)`、恢复时 `filter(parsedState)` 再 `$patch`——单向理解的写法会让「只持久化子集」的配置在恢复时静默吃掉未过滤键                                                                                                                                                                             |
+| `validate`           | —                                                    | 恢复前的数据校验                                                                                                                                                                                                                                                                                                                                                                                            |
+| `restore`            | `true`                                               | 安装时是否从存储恢复                                                                                                                                                                                                                                                                                                                                                                                        |
+| `debounce`           | `0`（**生产建议显式配**）                            | 写入防抖（毫秒）；卸载时会**同步补写**窗口内最后一次变更。**卸载一律摘掉待触发的定时器**（`clearOnUninstall: true` 也不例外），只有「补写」本身受 `clearOnUninstall` 约束。默认 0 是持久性优先：一次 setState = 一次全量 `JSON.stringify` + 一次同步 `wx.setStorageSync`（阻塞 I/O），写频上来就是每帧一次。建议值：通用 `100`，高频更新（输入联想 / 拖拽 / 轮询）`300~500`；要求「写即落盘」的场景保持 `0` |
+| `clearOnUninstall`   | `false`                                              | 为 `true` 时卸载改为清理存储（丢弃待写数据）；删除失败不再被吞掉，会记 `console.error` 并 `emit('onError', …, 'persistence')`                                                                                                                                                                                                                                                                               |
 
 > **恢复失败也上报**：载荷不是普通对象、`validate` 拒绝、后端抛错 / JSON 语法错 / `$patch` 被拒这几条出口，除 `console.error` 外都补发 `emit('onError', err, 'persistence')`——只订阅 `onError` 做监控的调用方会看到这一类事件。恢复入口还有一条准入判定：自带 `__proto__` 自有键的载荷直接拒收（深层同名键由 clone / merge 的 `defineProperty` 兜底）。
 

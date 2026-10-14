@@ -9,6 +9,7 @@ import * as extrasIndex from '@/extras/index.js'
 import * as extrasPlugins from '@/extras/plugins.js'
 import * as extrasPerformance from '@/extras/performance.js'
 import * as extrasError from '@/extras/error/index.js'
+import * as extrasSnapshot from '@/extras/snapshot.js'
 
 describe('extras 子入口导出可达性', () => {
   it('extras/plugins：内置插件与存储后端', () => {
@@ -47,5 +48,16 @@ describe('extras 子入口导出可达性', () => {
     expect(extrasIndex.SnapshotManager).toBeDefined()
     expect(extrasIndex.ActionLoader).toBeDefined()
     expect(extrasIndex.withLog).toBeDefined()
+  })
+
+  it('extras/snapshot：具名导出与 default 转发均可达', () => {
+    // default 不走 `export *`：barrel 显式再导出，访问一次让 getter 真的执行
+    expect(typeof extrasSnapshot.default).toBe('function')
+    expect(extrasSnapshot.SnapshotManager).toBeDefined()
+    expect(extrasSnapshot.createSnapshot).toBeDefined()
+    expect(extrasSnapshot.createSnapshotAsync).toBeDefined()
+    expect(extrasSnapshot.compareSnapshots).toBeDefined()
+    // 实际调用一次，确认可达的不只是「有值」而是「能跑」
+    expect(extrasSnapshot.createSnapshot({ a: 1 }).data).toEqual({ a: 1 })
   })
 })

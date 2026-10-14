@@ -129,4 +129,29 @@ describe('全局调试入口的 no-op 兜底', () => {
 
     expect((store as unknown as Record<string, unknown>).__timeTravel__).toBeUndefined()
   })
+
+  it('全局表键被占用为不可写数据属性时跳过注册并告警（建表失败的 fail-safe）', () => {
+    // 兜底建表 `globalThis[key] = {}` 在键是非可写数据属性（或只读访问器）时抛错：
+    // 本 helper 的承诺是 fail-safe——告警后返回 no-op，不中断插件安装。
+    // 这条 catch 分支需要真实占用 globalThis 键位才能触达
+    const globalObj = globalThis as unknown as Record<string, unknown>
+    const KEY = '__GEOMSTORE_LOCKED_TABLE__'
+    Object.defineProperty(globalObj, KEY, { value: 1, writable: false, configurable: false, enumerable: true })
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {})
+
+    let unregister: (() => void) | undefined
+    try {
+      unregister = registerGlobalEntry(KEY, 'store-locked', { ping: () => 'pong' })
+
+      expect(typeof unregister).toBe('function')
+      expect(() => unregister?.()).not.toThrow()
+      // 原值未被改写，也没有建出新表
+      expect(globalObj[KEY]).toBe(1)
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining(KEY), expect.anything())
+    } finally {
+      warnSpy.mockRestore()
+      // 不可配置属性删不掉：用唯一键名把影响限制在本文件内
+      Reflect.deleteProperty(globalObj, KEY)
+    }
+  })
 })

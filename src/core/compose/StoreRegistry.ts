@@ -44,7 +44,7 @@ function isDestroyable(store: Store): boolean {
  *
  * // 设置默认Store
  * registry.setDefault('user')
- * const default = registry.getDefault()
+ * const defaultStore = registry.getDefault()
  * ```
  */
 export class StoreRegistry {
