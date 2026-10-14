@@ -1,7 +1,8 @@
 /**
  * GeomStore - Action 增强模块实现（v0.4.0 起由 `src/core/action` 物理下沉）
  *
- * 目录构成（`ActionHistory.ts` 是 `ActionExecutor` 的内部记账层，不对外导出）：
+ * 目录构成（`ActionHistory.ts` 是 `ActionExecutor` 的内部记账层，除统计类型
+ * `ActionStats` 外不对外导出）：
  * - `ActionLoader.ts` / `withLoading.ts`：异步 Action 的 loading 状态托管
  * - `AsyncActionSupport.ts`：`ActionExecutor` 并发与批量执行
  * - `ActionUtils.ts`：Action 元信息与依赖注入工具
