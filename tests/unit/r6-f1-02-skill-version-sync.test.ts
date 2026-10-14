@@ -41,6 +41,26 @@ describe('R6-018: 库版本号四处一致的门禁', () => {
     expect(firstMatch(source, /当前对应 v(\d+\.\d+\.\d+)/, 'SKILL.md 资源清单「当前对应」')).toBe(pkgVersion)
   })
 
+  /**
+   * README 是 npm 包页面（包使用者唯一读得到的那份说明），版本号写在那里就是对外承诺。
+   * 判据只取 `v` 前缀的写法：README 里另有「基础库 ≥ 3.15.0」这类**宿主**版本门槛，
+   * 它们与包版本无关，混进来会让本用例恒红而失去判据。
+   */
+  it('README 里出现的包版本号不超前于 package.json', () => {
+    const readme = readFileSync(path.join(repoRoot, 'README.md'), 'utf8')
+    const refs = [...readme.matchAll(/v(\d+\.\d+\.\d+)/g)].map((m) => m[1] as string)
+    expect(refs.length).toBeGreaterThan(0)
+
+    const cmp = (a: string, b: string): number => {
+      const [x, y, z] = a.split('.').map(Number)
+      const [p, q, r] = b.split('.').map(Number)
+      return x - p || y - q || z - r
+    }
+    // 「不超前」而非「必须相等」：README 里「用 v0.9.0 及以上」这类历史分界的表述
+    // 在后续 patch 里依然为真，卡成相等会逼着每次发版都改一遍措辞
+    expect(refs.filter((v) => cmp(v, pkgVersion) > 0)).toEqual([])
+  })
+
   it('references/api/*.md 的「来源版本」行与 package.json 同步', () => {
     const apiDir = path.join(skillDir, 'references/api')
     const files = readdirSync(apiDir).filter((file) => file.endsWith('.md'))

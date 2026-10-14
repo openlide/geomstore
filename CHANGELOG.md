@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-10-14
+
+> 本版含**破坏性变更**（`extras/enterprise` 整体移除、`extras/error` 精简），按 0.x 的 caret 语义升 minor。面向人的迁移导航（此前 → 现在 → 怎么改）在 [docs/MIGRATION.md](./docs/MIGRATION.md#升级到-090)。另有一条**行为变更**：正式版 / 体验版现在按生产模式运行（此前恒开发模式），见下方 Fixed 的 P0 条目与迁移文档。
+
 ### Removed
 
 **破坏性变更（0.9.0）**
@@ -84,6 +88,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **小程序 demo 的 npm 包形态修正**：此前手工把文件放进 `miniprogram_npm` 不被工具承认（`module '@openlide/geomstore.js' is not defined`）。现 `scripts/sync-lib.mjs` 产出**完整的 npm 包**（含 `main` 与 `miniprogram: 'dist-weapp'` 字段——缺后者会被重编译成单个 `index.js`，89 个文件变成 1 个、子路径入口全部丢失），配 `file:` 依赖 + `.npmrc` 的 `install-links=true`，并新增 `scripts/build-npm.mjs` 把「工具 → 构建 npm」的菜单步骤变成无人值守（含 `__NO_NODE_MODULES__` 与超时的专项提示）。
 - **小程序 demo 的换行符归一脚本（新增 `scripts/normalize-eol.mjs`）**：开发者工具每次保存都会写回 CRLF，而仓库是 LF 口径、文档门禁 G14 断言 tracked 文件零 CR。新增 `npm run eol:check` / `eol:fix`（只处理白名单文本扩展名，跳过 `node_modules` / `miniprogram_npm`），并把这一条写进 demo README 的「提交前」小节。
 - **小程序 demo 工程（`examples/miniprogram/`，新增）**：把上线前必做的配置做成可运行实例——P0 的 `__DEV__` 环境桥接、P1 的 `persistencePlugin({ debounce: 100, filter })`、P1 的 `onError` 上报挂载；三张页面分别验证页面集成与持久化、多级页面栈下的订阅存活与退订、组件订阅容量（20 个共享 store，可加到 60 触发 `evict-oldest` 并确认 `onError('subscribe')` 可见）；配 `.mjs` 版 automator 冒烟（冷启动 / 防抖落盘 / 热启动恢复 / 多级页面栈 / 组件容量 / 前后台 / 环境信号 / onerror 可见性），宿主能力缺失的断言按 skip 处理、`--strict` 下按失败计。**不进 CI**：automator 依赖有 GUI 的开发者工具实例；定位为发版前的人工最后一道。`examples/miniprogram` 已加入 `tools/tsconfig.examples.json` 的 exclude（它是 `.js` 小程序工程，不该由 TS 示例门禁挑错），其 `miniprogram_npm/` 已加入 `.gitignore`。
+- **小程序 demo 的组件订阅用例不再跳过（9 通过 / 0 失败 / 0 跳过）**：原用例用 `list.$$('counter-item')` 查自定义组件节点、查不到就记跳过；新增探针 `e2e/probe-selector.mjs` 实测后确认——automator 只是**不认自定义组件的标签名**，换 class 选择器 `.counter-item` 立刻查到 20 个，且 `element.wxml()` 返回展开后的 `<#shadow-root>`（能看到组件内部渲染的 `count = N`）；另一条候选路线 `page.callMethod` 在 0.12.1 上**不可用**（连页面自带的 `renderItems` 都报 not a function），已回退。用例同时加强为断言**全部 20 个**组件都渲染到最新值，并用 `waitFor` 容忍 `setData` 的渲染时序；做了变异验证（把 `counter-item` 的 `mapState: ['count']` 掏空 → 3 条转红，还原 → 回绿）。
 
 ## [0.8.3] - 2026-10-13
 
@@ -944,7 +949,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [0.1.3]: https://github.com/openlide/GeomStore/releases/tag/v0.1.3
 [0.2.0]: https://github.com/openlide/GeomStore/releases/tag/v0.2.0
 [0.2.1]: https://github.com/openlide/GeomStore/releases/tag/v0.2.1
-[Unreleased]: https://github.com/openlide/geomstore/compare/v0.8.3...HEAD
+[Unreleased]: https://github.com/openlide/geomstore/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/openlide/geomstore/releases/tag/v0.9.0
 [0.8.3]: https://github.com/openlide/GeomStore/releases/tag/v0.8.3
 [0.8.2]: https://github.com/openlide/geomstore/releases/tag/v0.8.2
 [0.8.1]: https://github.com/openlide/geomstore/releases/tag/v0.8.1

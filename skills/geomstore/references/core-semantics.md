@@ -16,6 +16,7 @@
   - [订阅与冻结](#订阅与冻结)
 - [6. 插件、调试表与持久化](#6-插件调试表与持久化)
 - [7. 小程序集成细节](#7-小程序集成细节)
+- [8. 运行环境、生产模式与宿主代码口径](#8-运行环境生产模式与宿主代码口径)
 
 ---
 
@@ -51,6 +52,8 @@
 
 - `'evict-oldest'`（默认）：驱逐一份最早注册——本次是重复注册时让位该监听器自己最早的那一份——并向 `onError` 发一条事件
 - `'throw'`：直接抛错
+
+**⚠️ 额度吃满时被驱逐的往往不是组件**：驱逐的是「最早注册」那一笔，而插件通常在 `app.js` 里最先安装——`persistencePlugin` 那一笔订阅被牺牲后，**写盘静默停止**：状态改得动、订阅也正常，就是不再落盘，且**没有任何报错**（唯一线索是 `onError` 的 `'subscribe'` 源那条事件）。默认 50 在有长列表页（每项一个组件订阅）时容易触顶。对策按优先级：长列表改**单一页面级订阅**再手动分发 → 调大 `maxSubscribers` → 把 `onError` 接进监控。
 
 额度语义三条：
 
@@ -175,6 +178,15 @@ root.$patch({ 'userStore/name': 'Alice' })
 
 三端集成函数**都从主入口引入**（`withPageStore` / `withComponentStore` / `withAppStore`）。配置方法内 `this` 类型**已自动注入**（`PageThis` / `ComponentThis` / `AppThis`），**不要手写 `this` 标注**——手写反而会覆盖集成层注入的类型。
 
+**签名是 `(store, options)` 两参数**（v0.9.0 起文档显著化）：
+
+```ts
+withPageStore(store, { mapState: ['count'] })({ onLoad() {} }) // ✅
+withPageStore({ store, mapState: ['count'] })({ onLoad() {} }) // ❌ 不报错，但映射为空、零订阅
+```
+
+单对象写法里 `store` 被当成未知选项丢掉，**没有任何告警**：症状是页面 `this.data` 恒为初始值、映射的 `this.xxxAction` 为 `undefined`。排查时先看这一行，别急着怀疑订阅与 setData。
+
 **生命周期与清理**：
 
 - Page 的 `onUnload` 与 Component 的 `lifetimes.detached` **先同步执行用户钩子，再在 `finally` 清理绑定**；钩子内可以调用映射 actions，抛错仍会清理
@@ -193,3 +205,54 @@ root.$patch({ 'userStore/name': 'Alice' })
 - 映射与注入的键都按**自有属性**写入宿主（`defineProperty`），`'__proto__'` 这类键不会被原型 setter 静默丢弃
 
 **`./integrations` 子入口**额外导出底层绑定工具：`bindMappings` / `parseMapping` / `bindActions` / `performAutoInject` / `exposeStoreAPI` / `cleanupBindings`。日常用 `with*` 即可。
+
+## 8. 运行环境、生产模式与宿主代码口径
+
+### 生产模式判定（v0.9.0 起）
+
+`isProduction()` 决定两套行为（非法直写是抛错还是 `warn` / `silent`、是否打日志、严格校验是否开启、调试表是否挂载）。判定按顺序取第一个有信号的档：
+
+| 档  | 信号                                             | 说明                                                        |
+| --- | ------------------------------------------------ | ----------------------------------------------------------- |
+| 1   | `process.env.NODE_ENV`                           | 构建期注入，最可靠                                          |
+| 2   | `__DEV__`                                        | 构建期标志，或运行时挂到 `globalThis`（优先级高于宿主信号） |
+| 3   | `wx.getAccountInfoSync().miniProgram.envVersion` | `release` / `trial` → 生产，`develop` → 开发                |
+| 4   | 兜底                                             | **开发模式**（保护优先）                                    |
+
+第 3 档是原生小程序的救命档：这类宿主既没有 `process` 全局、官方构建也不替换 `__DEV__`，在只有前两档的版本里**正式版一直按开发模式跑**——非法直写直接抛错、`productionHandler` 三个取值全不生效、「生产日志静默」的承诺全线落空。
+
+**v0.9.0 的行为变更**：正式版与体验版现在**自动按生产模式运行**。`trial` 按生产处理的理由是它跑的就是待发布的那一份产物，「仅限内部可见」不等于「可以崩」；要在体验版复现严格行为请显式 `__DEV__ = true`。宿主侧兜底写法（必须 `try/catch`，见下）：
+
+```js
+// app.js 最顶部，早于任何 createStore
+let hasSignal = false
+try {
+  hasSignal = typeof __DEV__ !== 'undefined'
+} catch (e) {
+  hasSignal = false
+}
+if (!hasSignal) globalThis.__DEV__ = wx.getAccountInfoSync().miniProgram.envVersion !== 'develop'
+```
+
+### 沙箱 `typeof`（写宿主代码前必读）
+
+AppService 的全局是**沙箱代理**：读**未声明**的标识符连 `typeof` 都抛 `ReferenceError`，而不是标准语义里的 `'undefined'`。
+
+| 表达式                                     | 浏览器 / Node | 小程序 AppService        |
+| ------------------------------------------ | ------------- | ------------------------ |
+| `typeof 未声明名`（`__DEV__` / `process`） | `'undefined'` | **抛 `ReferenceError`**  |
+| `typeof wx`                                | `'undefined'` | `'object'`（宿主已注入） |
+
+库内统一按「`globalThis.xxx` 取值 + `try/catch`」读宿主能力；`isProduction()` 的 `__DEV__` 分支整体包在 `try/catch` 里（否则它在小程序里第一句就崩，而状态保护每次非法写入都要读它——「写保护」当场变成「写即抛」）。**宿主代码（`app.js` / 页面 / 组件）凡是探测全局是否存在，都要按同一口径写。**
+
+### 硬要求与降级
+
+| 能力                                                                             | 缺失后果                                                           |
+| -------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| 组件生命周期写在 `lifetimes` 内（**基础库 ≥ 3.15.0**）                           | `detached` 不执行 → 自动退订不发生 → **订阅泄漏**（硬要求）        |
+| `Proxy` / `Reflect.ownKeys` / `Object.freeze` / `WeakMap` / `Symbol.toStringTag` | 状态保护代理、脏跟踪不可用（硬依赖，无降级路径）                   |
+| 同步存储三件套 `getStorageSync` / `setStorageSync` / `removeStorageSync`         | 降级**内存存储**（重启即失），生产经 `onError('persistence')` 上报 |
+| `wx.getPerformance` / `performance.memory`                                       | 各降级为 `Date.now()` / 不采样，不影响正确性                       |
+| `queueMicrotask`（基础库 3.15.0+）                                               | 降级到 Promise 微任务                                              |
+
+基础库下界 3.15.0 是由 `lifetimes` 这一硬要求推出的（仓库未跑全版本矩阵，CI 只在 Node 上验证语义）；只用 `createStore` + 持久化的场景理论上 2.x 现代内核即可，同样未做版本实测——分发前请在自己支持的最低基础库上跑一遍 `examples/miniprogram` 的 automator 冒烟。
