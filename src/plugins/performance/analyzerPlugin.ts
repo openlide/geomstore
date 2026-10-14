@@ -187,8 +187,7 @@ function installAnalyzer(store: Store, options: PerformanceOptions): (() => void
    * 栈里正常情况下只有「进行中」的那几层；但 `discardPendingEnd` 不再据 onError 弹栈之后，
    * 一次被中止的 dispatch 会留下一条永不 pop 的栈项（它的 end 闭包连同 monitor 侧的在途条目
    * 都要等到卸载才释放）。数量正比于「本次安装周期内操作中止的次数」——重试风暴下这是实打实
-   * 的持续增长，故设上限。取栈底（最旧）淘汰：中止的帧总是当时最内层的开帧，因此栈底就是那批
-   * 永不复用的残留项，pop 仍从栈顶取，配对关系不受影响；被淘汰的那条计时不产出指标，
+   * 的持续增长，故设上限。上限已满时拒绝新的入栈请求（见 pushEnd）：该次计时不产出指标，
    * monitor 侧条目由其 TTL 清扫兜底。上限与 `PerformanceMonitor.DEFAULT_MAX_SIZE` 同量级
    */
   const MAX_PENDING_DEPTH = 1000

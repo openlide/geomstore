@@ -85,7 +85,10 @@ export function registerGlobalEntry(globalKey: string, storeName: string, api: u
   let table: Record<string, unknown> | undefined
   let discardedEntries = 0
   try {
-    if (typeof existing === 'object' && existing !== null && Object.isExtensible(existing)) {
+    // 函数也是 object-like（typeof === 'function'），且默认 isExtensible 为 true，
+    // 挂得住条目。此前只判 typeof === 'object' 会把可扩展函数误拒，
+    // 下面的告警文案「不是对象或不可扩展」对函数分支也是谎报
+    if ((typeof existing === 'object' || typeof existing === 'function') && existing !== null && Object.isExtensible(existing)) {
       table = existing as Record<string, unknown>
     } else if ((typeof existing === 'object' && existing !== null) || typeof existing === 'function') {
       // 只有 object-like 才挂得住条目：原始值上的属性写不上去，
@@ -142,7 +145,10 @@ export function registerGlobalEntry(globalKey: string, storeName: string, api: u
       const current = g[globalKey]
       if (current && Object.prototype.hasOwnProperty.call(current, storeName) && current[storeName] === api) {
         delete current[storeName]
-        if (current === table && Object.keys(current).length === 0) {
+        // 摘除判空用 getOwnPropertyNames 而非 Object.keys：外部容器可能含不可枚举自有属性
+        // （Object.defineProperty 默认 enumerable: false），keys 会漏计，把仍 populated 的
+        // 容器误判为空并 delete 掉，丢掉别人的非枚举属性
+        if (current === table && Object.getOwnPropertyNames(current).length === 0) {
           delete g[globalKey]
         }
       }

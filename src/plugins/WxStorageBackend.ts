@@ -51,6 +51,9 @@ export type WxStorageApi = {
  */
 export function assertSyncStorageResult(result: unknown, methodLabel: string): void {
   if (result !== null && (typeof result === 'object' || typeof result === 'function') && typeof (result as PromiseLike<unknown>).then === 'function') {
+    // 同步抛错后调用方不会再 await 这个 Promise：若它是 rejected（异步 polyfill 写失败），
+    // 会留下无人处理的 rejection（Node 严格模式可致进程退出）。先挂一个空 catch 吸收掉
+    void Promise.resolve(result as PromiseLike<unknown>).catch(() => {})
     throw new Error(
       `[GeomStore][persistence] ${methodLabel}() 返回了 Promise：persistencePlugin 仅支持同步存储后端` +
         `（如 wx.getStorageSync、WxStorageBackend 或同步封装的 localStorage）。` +
