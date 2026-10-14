@@ -90,9 +90,9 @@ const _gettersNotNever: [ComposedGetters] extends [never] ? false : true = true
 //    就是用它标注的），提取器内部精度退化会同步移动两侧 ⇒ 恒真；
 // 2. 注释称「手写交叉结果」，但文件里根本没有手写期望类型。
 // 现在改成：期望类型由本文件逐键手写，并用 Equal 比对（`可赋值` 在 never / any / 索引签名下都会白过）。
+// 上面那两条同源自证的 round-trip 已删除——保留它们只会给读者「已经校验过」的错觉，
+// 真正的形状锁在下面 `_stateKeysExact` 等 Equal 断言里
 type ExtractedState = ReturnType<typeof composed.getState>
-const _stateRoundTrip: ExtractedState = null as unknown as ExtractStates<[typeof userStore, typeof cartStore]>
-const _stateRoundTripBack: ExtractStates<[typeof userStore, typeof cartStore]> = null as unknown as ExtractedState
 
 const _stateKeysExact: Equal<keyof ExtractedState, 'id' | 'name' | 'items'> = true
 const _stateIdExact: Equal<ExtractedState['id'], number> = true
@@ -103,7 +103,8 @@ const _stateItemsExact: Equal<ExtractedState['items'], string[]> = true
 // 只经 composeStore 的派生成员间接覆盖，别名层的行为等于没验）
 type ExtractedActions = ExtractActions<[typeof userStore, typeof cartStore]>
 const _actionsKeysExact: Equal<keyof ExtractedActions, 'rename' | 'addItem'> = true
-const _actionsUnionIsNever: [ExtractedActions] extends [never] ? true : false = false
+// 断言方向与命名一致：这里锁的是「不是 never」
+const _actionsUnionIsNotNever: [ExtractedActions] extends [never] ? false : true = true
 const _renameSigExact: Equal<ExtractedActions['rename'], (name: string) => void> = true
 const _addItemSigExact: Equal<ExtractedActions['addItem'], (item: string) => void> = true
 
@@ -181,9 +182,9 @@ const _storedWrongType: number = composedShape.stores.someKey
 const _stateConstraint: State = { count: 1 }
 
 export { _id, _items, _missingState, _rename, _addItem, _displayName, _displayNameFn, _gettersNotNever }
-export { _stateRoundTrip, _stateRoundTripBack, _actionsFieldIsActions, _actionsFieldBack, _like }
+export { _actionsFieldIsActions, _actionsFieldBack, _like }
 export { _anyStateName, _anyActionCall, _badStateAssign }
 export { _childName, _childStoreName, _childStoreState, _rootStore, _uncheckedState, _storedStore, _storedName, _storedWrongType, _stateConstraint }
 export { _stateKeysExact, _stateIdExact, _stateNameExact, _stateItemsExact }
-export { _actionsKeysExact, _actionsUnionIsNever, _renameSigExact, _addItemSigExact, _displayNameSigExact }
+export { _actionsKeysExact, _actionsUnionIsNotNever, _renameSigExact, _addItemSigExact, _displayNameSigExact }
 export { _treeReturnTypeExact, _realTreeStoreName, _realUncheckedState }

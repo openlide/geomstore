@@ -54,6 +54,17 @@ const createStoreFromOptions = _createStore as unknown as <S extends State, A ex
   options: StoreOptions<S, A, G>,
 ) => StoreInstance<S, A, G>
 
+// 编译期守门：把上面的断言拉回一次「真实 createStore 的入参/返回是否仍可赋给它」，
+// 未来 `createStore` 签名漂移（新增/重命名 option 成员、返回类型改动、新载）时
+// 这行会直接爆编译错，而不是悄悄通过、把失配留给运行时或测试推断
+type _AssertOptionsStillAssignable = typeof _createStore extends (
+  options: StoreOptions<State, Actions, Getters<State>>,
+) => StoreInstance<State, Actions, Getters<State>>
+  ? true
+  : { __drifted: 'createStore signature no longer matches createStoreFromOptions assertion' }
+const _assertCreateStoreSignature: _AssertOptionsStillAssignable = true
+void _assertCreateStoreSignature
+
 /**
  * 测试专用 Store 工厂。
  *

@@ -96,6 +96,7 @@ const _declaredNameExact: Equal<DeclaredData['name'], string | undefined> = true
 const _undeclaredCountOptional: Equal<UndeclaredData['count'], number | undefined> = true
 
 void [_declaredCount, _declaredName, _declaredNameRequired, _undeclaredStrict, _undeclaredOptional]
+void [_declaredCountExact, _declaredNameExact, _undeclaredCountOptional]
 
 // ==================== mapActions 分支（#R5-337） ====================
 // 上面的 mapState 断言走的是 ExtractPageData，而 actions 由 `ExtractMappedActions` 单独映射
