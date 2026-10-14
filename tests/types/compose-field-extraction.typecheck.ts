@@ -16,7 +16,7 @@
 
 import { composeStore, createStore, createStoreTree } from '@/index.js'
 import type { Actions, State, Store } from '@/types/store.js'
-import type { ComposedStore, ExtractActions, ExtractGetters, ExtractStates, StoreLike, StoreTreeNode } from '@/types/compose.js'
+import type { ComposedStore, ExtractActions, ExtractGetters, StoreLike, StoreTreeNode } from '@/types/compose.js'
 
 /**
  * 双向精确类型相等断言（与 tests/types/integration-types.typecheck.ts 同口径）

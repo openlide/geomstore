@@ -186,7 +186,7 @@ void returnsValue
 // 「可赋值」断言本身仍属弱锁：若 `HookHandlerFor` 的返回位漂到 `unknown`、`any` 或
 // 带结果泛型的 `TResult`，上面这行仍然过（三者都能吃 `boolean`）。用 Equal 直接钉住
 // 返回类型确为 `void`
-type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false
+type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false
 const _returnsSlotIsVoid: Equal<ReturnType<HookHandlerFor<'beforePatch'>>, void> = true
 void _returnsSlotIsVoid
 

@@ -75,4 +75,3 @@ if (typeof App === 'function') {
 }
 
 console.log('✅ App 集成示例已定义（需在微信小程序环境中运行）')
-
