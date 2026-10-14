@@ -127,6 +127,7 @@ createStore<S extends State, A extends Actions = Actions, G extends Getters<S> =
 | `startBatch` / `endBatch` | `(): void`                                                                   | 手动批量（支持嵌套，仅最外层收尾时通知）                                                                                                                                                                                                            |
 
 - 同一监听器注册 N 次会收到 N 次通知。每个返回的退订句柄只抵消一份注册，**重复调用同一句柄无效**，不会移除其他注册。`maxSubscribers` 是**每一次注册**都生效的硬上界（含同一监听器的重复注册）：达限时重复注册挤掉自己最早的一笔，`onLimit: 'throw'` 下抛错，在册注册数不会超过上限。
+- ⚠️ **`maxSubscribers` 触顶会按 evict-oldest 挤掉最早那一笔注册，而内置插件的订阅也是「注册」**：`persistencePlugin` / `loggerPlugin` 各占 1 份额度，且通常在 `app.js` 里最早安装——于是「组件/页面订阅把额度吃满」时**被牺牲的往往是持久化的那一笔**，症状是**写盘静默停止**（不报错、不告警，只有 `onError('subscribe')` 能观测到驱逐事件）。默认上限 50 在「列表页 N 个组件各一条订阅」的场景很容易触顶（小程序 demo 的 e2e 实测：订阅数从 20 加到 60 后磁盘不再更新）。对策按优先级：①给确实只读的消费方显式 `{ readOnly: true }`（不减额度，但避免整树深拷贝）；②长列表改用**一个页面级订阅 + `setData` 下发**而不是每项组件各订一份；③确实需要大量订阅时调大 `subscription.maxSubscribers`；④把 `onError` 的 `source === 'subscribe'` 接进监控——这是生产里唯一能发现驱逐的出口。
 - **`readOnly` 默认是 `false`**：`store.subscribe(cb)` 不传第二参即按可写注册。代价不是「这次多拷一份」，而是把整个 Store 的通知路径从零拷贝切成深拷贝——无任可写注册时载荷是保护 Proxy（几乎零成本），一旦出现一笔可写注册，每次通知就要产出「1 份只读共享深拷贝 + 每个可写注册各 1 份」。只读消费（绝大多数场景）请一律显式写 `store.subscribe(cb, { readOnly: true })`；默认值保留 `false` 是为了不破坏「在回调里就地改载荷」的既有用法——**漏写不会报任何错，只会静默变慢**，这也是 `src/**` 内部订阅受源码门禁检查的原因。
 - getter 映射（`mapGetters`）拿不到脏标记，对象值一律按「有变化」发送：getter 若每次返回新建对象（内联 `{ ... }` / `map()` 构造），该键每次通知都会整包下发，脏检查对它实际失效。需要避免抖动，getter 应返回稳定引用（缓存派生结果）或改用 `mapState`。
 - 直连 `SubscriptionManager` 的宿主可以配 `onSubscriberEvicted`（载荷类型 `SubscriberEvictionInfo`：`listener` / `maxSubscribers` / `size`，`size` 是「驱逐完成后、新注册写入前」的在册数），`'throw'` 策略不产生该事件。这两个名字只随内部 barrel `src/core/store/index.ts` 出口，该子路径不在 `package.json` 的 `exports` 映射里；**用 `createStore` 的调用方不需要它**——Store 已把驱逐事件接到 `onError` 钩子上（见 1.1 的 `subscription.onLimit`）。
@@ -244,6 +245,8 @@ withPageStore<S, A, G, O>(store, options?: ConnectOptions<S, A, G>): <C>(config:
 withComponentStore<S, A, G, O>(store, options?: ConnectOptions<S, A, G>): <C>(config: C) => ComponentThis<...>
 withAppStore<S, A, G>(store, options?: ConnectOptions<S, A, G>): <C>(config: C) => C
 ```
+
+> ⚠️ **签名是 `(store, options)` 两个参数，不是单个 `{ store, ... }` 对象**。写成 `withPageStore({ store, mapState: [...] })` 不会报错：第一个实参被当成 store、`options` 走默认空配置，结果是**映射为空 → 一条订阅都不建**，页面永远不刷新，且控制台与 `onError` 都没有任何信号（这是小程序 demo 首轮 e2e 全红的根因）。三端同口径：`withPageStore(app.globalData.store, { mapState: [...] })`。
 
 **`ConnectOptions` 映射形式**（三端一致）：
 

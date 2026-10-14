@@ -109,6 +109,7 @@
 - **可写订阅的成本要按「份数 × 状态规模」估**：每个可写注册每轮通知各得一份**整树深拷贝**。经验自查线——可写注册数 × 状态节点数 > 10⁴（如 5 个可写订阅 × 2000 节点）时，评估把订阅改只读、按 `isStateKeyDirty` 在回调内自查，或拆分 store 缩小单棵树。页面 / 组件映射订阅默认就是只读，**默认场景不触发这条线**；踩线的是业务侧自己 `subscribe(fn)` 又不标 `readOnly` 的写法。见 [CONCEPTS §2](./CONCEPTS.md#监听器与只读订阅)。
 
 - **把 `maxSubscribers` 当真上界用**：额度对每一次注册生效（含同一函数重复订阅），达上限按 `onLimit` 驱逐一份最早注册或直接抛错，驱逐会发一条 `onError`（第二参 `'subscribe'`）。见 [CONCEPTS §2](./CONCEPTS.md#订阅额度)。
+- ⚠️ **额度吃满时被牺牲的往往不是组件，而是插件**：驱逐按 evict-oldest，而 `persistencePlugin` / `loggerPlugin` 通常在 `app.js` 里最早安装 → 它们是**最早那一笔注册**。默认上限 50 遇上「列表页每项组件各一条订阅」就会触顶，症状是写盘静默停止且不报错（小程序 demo 的 e2e 实测：订阅从 20 加到 60 后磁盘不再更新）。对策：长列表改「一个页面级订阅 + `setData` 下发」、必要时调大 `subscription.maxSubscribers`、**并把 `onError` 的 `'subscribe'` 源接进监控**（生产唯一的可见性出口）。
 - **退订要落实**：`subscribe` 返回退订函数；页面 / 组件场景交给集成层（`onUnload` / `detached` 自动清理），自行订阅的场景务必在销毁前退订。见 [CONCEPTS §2](./CONCEPTS.md#迭代中退订)。
 - **`onlyOnChange` 用于跳过无写入的通知**：它按变更计数判定，不做内容深比较（同值赋值也可能计数）。见 [CONCEPTS §2](./CONCEPTS.md#脏跟踪的覆盖面)。
 - **不要用 `subscribe` 做数据转换**：转换放 getter / 选择器；订阅回调里转换会让同一份数据被反复计算。
@@ -174,6 +175,8 @@
   - 需要内存兜底请交给 `persistencePlugin` 的探测分支。
   - 恢复阶段被跳过（后端抛错 / JSON 语法错 / 载荷不是可信纯对象 / `validate` 拒收）除 `console.error` 外也发一条 `onError`。见 [CONCEPTS §11](./CONCEPTS.md#调试表与持久化)。
 - **生产模式静默 ≠ 无信号**：持久化降级、恢复被跳过、监听器抛错、订阅者被驱逐、落盘与卸载清理失败在生产只走 `onError`，上线前挂一个上报处理器比排查时临时切开发模式可靠。见 [FAQ](./FAQ.md#生产环境为什么看不到插件日志)。
+- **集成层是 `(store, options)` 两参数**：`withPageStore(app.globalData.store, { mapState: [...] })`。写成单对象 `withPageStore({ store, ... })` 不报错，但映射为空、零订阅，页面永远不刷新且无任何信号——排查成本极高。
+- **别用裸 `typeof` 探测全局**：小程序 AppService 的全局是沙箱代理，未声明标识符**连 `typeof` 都抛 `ReferenceError`**（`typeof __DEV__` / `typeof process` 实测皆抛，`typeof wx` / `performance` 正常）。宿主代码里要判某个全局是否存在，一律写成 `globalThis.xxx` 取值 + `try/catch`。典型踩坑：按网上常见写法在 `app.js` 顶部写 `if (typeof __DEV__ === 'undefined') …`，结果是 `app.js` 第一行崩、整页白屏，automator 侧只报 `page node not found`。见 [README · 小程序沙箱的 typeof](../README.md#小程序沙箱的-typeof写宿主代码前必读)。
 - **生命周期**：组件端只认 `lifetimes` 写法；需要映射 actions 的收尾放在钩子同步段——包装器不等待异步 Promise。见 [CONCEPTS §13](./CONCEPTS.md#订阅生命周期)。
 - **`withDebounce` / `withThrottle` 的挂起调用要在卸载钩子里收尾**：集成层不清这些定时器，到点它照常调用被装饰方法（并在此期间拖住宿主）。
   - `cancel*`（丢弃）/ `flush*`（立即执行且只执行一次）/ `dispose*`（取消 + 释放该宿主整张状态表）三选一，写在页面 `onUnload` 或组件 `lifetimes.detached` 里。

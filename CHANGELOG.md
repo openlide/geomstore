@@ -41,6 +41,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`isProduction()` 接进小程序的运行环境信号（P0）**：原生小程序此前**恒按开发模式运行**。判定顺序在既有 `process.env.NODE_ENV` → `__DEV__` 之后新增第三档 `wx.getAccountInfoSync().miniProgram.envVersion`——`release` / `trial` 判为生产，`develop`（含 IDE 预览与真机调试）判为开发；API 抛错或取值未知时按「无信号」继续走下一档，最后才兜底为开发模式。前两档信号在原生小程序里都不存在（没有 `process` 全局、官方构建不替换 `__DEV__`、产物不做 `--define`），于是正式版一直走在开发分支上：非法状态直写**直接抛错**（而非生产承诺的 `warn` / `silent`）、`stateProtection.productionHandler` 三个取值全部不生效、`ARCHITECTURE.md` 承诺的「生产模式日志静默」全线落空。`trial` 按生产处理的理由是它跑的就是待发布的那一份产物，「仅限内部可见」不等于「可以崩」；要在体验版复现严格行为请显式 `__DEV__ = true`（优先级高于宿主信号）。新增的读取抽成独立函数，`isProduction` 函数体仍满足既有的反内联锁定（不含 `typeof process`、保留 `process.env.NODE_ENV` 字面量）。
 - **`WxStorageBackend` 的故障日志并入生产静默口径**：三个方法失败时的 `console.error` 此前不受 `isProduction()` 门控，与 `SubscriptionManager.notify`、`HookSystem.emit` 两处不一致（且这是写路径，配额超限会让后续每次落盘都重演）。错误仍原样抛出，`persistencePlugin.saveState` 照常转投 `emit('onError', …, 'persistence')`，可见性没有削弱。
+- **裸 `typeof` 探测全局在三处会在小程序里抛错（P0，与上一条同源）**：AppService 的全局对象是**沙箱代理**，读取**未声明**的标识符连 `typeof` 都抛 `ReferenceError`，而不是标准语义里的 `'undefined'`——实测 `typeof __DEV__` 与 `typeof process` 皆抛，`typeof wx` / `performance` / `queueMicrotask` 正常（宿主注入过）。三处改为「`globalThis.xxx` 取值 + `try/catch`」或整体包进 `try/catch`：
+  - `isProduction()` 的 `__DEV__` 分支：此前**在小程序里第一句就崩**，而 `StateProxy` 每次非法写入都要读它——「写保护」当场变成「写即抛」。现整段包 `try/catch`，吞掉后继续走第 3 档宿主信号。（裸标识符必须保留：打包器做的是文本替换，写成 `globalThis.__DEV__` 会让替换失效。）
+  - `LRUCache.highResNow()`：`typeof performance` → 改按 `globalThis.performance` 取值。
+  - `composeStore` 的合并通知：`typeof queueMicrotask` → 改按 `globalThis.queueMicrotask` 取值。
+
+  > 影响面不止库内：`README` 此前推荐的 `if (typeof __DEV__ === 'undefined') globalThis.__DEV__ = …` 这行兜底代码在原生小程序里同样会抛，表现为「`app.js` 第一行崩 → 整页白屏」，automator 侧只报 `page node not found`。已改为 `try/catch` 版本并新增说明。
 
 ### Changed
 
@@ -56,6 +62,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   > 一处**代码与注释相反、本次按代码改注释**：`createParametricSelector` 的 `ttl` 文档承诺 `Infinity` 表示「只由版本/快照失效」，但写入守卫要求 `Number.isFinite(ttl)`，`Infinity` 实际一个条目都不写、等价于「不缓存」。按「不改逻辑」的约定本次只订正注释；要恢复注释承诺的语义需动写入守卫，留待单独决策。
 
+### Docs
+
+- **README 新增「小程序沙箱的 `typeof`（写宿主代码前必读）」**：给出「浏览器/Node 返回 `'undefined'` vs 小程序抛 `ReferenceError`」的对照表，并说明库内的统一口径（`globalThis.xxx` + `try/catch`）。同时**订正上一轮给出的环境兜底代码**：`if (typeof __DEV__ === 'undefined') …` 在原生小程序里会抛（见 Fixed 的 P0 条目），改为 `try/catch` 版本。
+- **`docs/API.md` 两处醒目提示**：①小程序集成的三端高阶函数是 `(store, options)` **两参数**，写成单对象 `{ store, ... }` 不报错但映射为空、零订阅、页面静默不刷新；②`maxSubscribers` 触顶按 evict-oldest 驱逐时，**被牺牲的往往是 `persistencePlugin` 那一笔注册**（它通常在 `app.js` 里最早安装），症状是写盘静默停止且无任何报错，生产只能靠 `onError` 的 `'subscribe'` 源发现。附对策（长列表改单一页面级订阅 / 调大额度 / 接进监控）。
+- **`docs/BEST_PRACTICES.md`**：§5 补「额度吃满时被牺牲的往往不是组件而是插件」；§9 补「集成层是两参数」与「别用裸 `typeof` 探测全局」两条，并给出 `app.js` 首行崩 → 白屏的排查线索。
+
 ### Testing
 
 - `tests/setup.ts`：环境诊断日志（Node 版本、平台等）改为 `DEBUG=test-setup` 环境变量门控，避免每个测试文件执行时都污染 Jest 输出与 CI 日志。
@@ -67,6 +79,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **源码约定门禁 G20（新增文件 `tests/unit/regression/readonly-subscription-gate.test.ts`）**：`store.subscribe(cb)` 不传第二参即按**可写**注册，代价不是多拷一份，而是把整个 Store 的通知路径从零拷贝切成深拷贝（每次通知「1 份只读共享深拷贝 + 每个可写注册各 1 份」），且 TS 类型完全看不出差别。默认值改成 `true` 属破坏性变更（依赖「可在回调里就地改载荷」的代码会从「能改」变成「静默改不动」），故保持默认、改用门禁兜住 `src/**` 的每一处内部订阅：必须有第二实参；第二实参是对象字面量时必须含 `readOnly`（写 `{}` 等价于没写）；`AsyncBatchNotifier` 的自有 `subscribe` 按接收者排除。已用 AST（`ts.createSourceFile`）而非正则实现，并通过「临时注入一份违规源码 → 红、删除后 → 绿」的变异验证。
 - **`isProduction()` 新增第 3 档判据的配套用例**：`tests/unit/store/modules/utils.test.ts` 补 9 例——`release` / `trial` → true，`develop` → false，无 `getAccountInfoSync` / API 抛错 / `envVersion` 取值未知 / 返回空对象 → 回退兜底，以及显式信号（`NODE_ENV`、`__DEV__`）优先于宿主信号。
 - **生产静默集合补一例**：`tests/unit/store/production-mode-silence.test.ts` 增加 `WxStorageBackend` 读写失败「控制台静默但仍抛出」的断言。
+- **`isProduction()` 补一条编译期结构锁定**：`tests/unit/store/modules/utils.test.ts` 新增用例，断言 `typeof __DEV__` 必须出现在 `try` 块内（Node 下 `typeof` 恒安全，运行期复现不出沙箱差异，只能锁源码结构）。同时把既有的「不得用 `typeof process` 门控」用例改为**去注释后**匹配：ts-jest 默认保留注释，函数内新写的说明文字里含 `typeof process` 字样，原判据会把注释判成门控代码（新增 `codeOf()` 辅助函数剥离注释后再断言，并用正则容忍转译产物里 `try` 与 `{` 之间的空白差异）。
+- **小程序 demo 的 e2e 适配层（新增 `examples/miniprogram/e2e/cli.mjs`）**：解决「在开发者工具里跑 `npm run e2e` 直接失败」的三层问题。①`miniprogram-automator@0.12.1` 直接 `spawn(cli.bat)` 被 Node 18.20+/20/22 的 libuv 拒绝（`EINVAL`，`errno -4071`），却与「路径不对」报成同一句话；改为 `cmd.exe /d /s /c "<命令串>"` 启动并逐段做 Windows 转义（`Program Files (x86)` 的空格此前会被切碎成 `'C:\Program' 不是内部或外部命令`）。注意 ESM 具名导入会绑定原始 `spawn`，补丁后必须走**属性访问**取当前函数。②CLI 位置改为自动探测（Windows 扫 `ProgramFiles` 与 C/D/E 盘，macOS 扫 `/Applications`），另支持 `--cli` / `MP_CLI_PATH` / `MP_DEVTOOLS_DIR`。③会话判活：`launch` 可能返回「ws 已关闭」或「ws OPEN 但页面元数据缺失（Cannot destructure property 'rawPath'）」的实例，改为 `reLaunch` 判活 + 重试 + `cli close --project` 重置。
+- **小程序 demo 的 npm 包形态修正**：此前手工把文件放进 `miniprogram_npm` 不被工具承认（`module '@openlide/geomstore.js' is not defined`）。现 `scripts/sync-lib.mjs` 产出**完整的 npm 包**（含 `main` 与 `miniprogram: 'dist-weapp'` 字段——缺后者会被重编译成单个 `index.js`，89 个文件变成 1 个、子路径入口全部丢失），配 `file:` 依赖 + `.npmrc` 的 `install-links=true`，并新增 `scripts/build-npm.mjs` 把「工具 → 构建 npm」的菜单步骤变成无人值守（含 `__NO_NODE_MODULES__` 与超时的专项提示）。
+- **小程序 demo 的换行符归一脚本（新增 `scripts/normalize-eol.mjs`）**：开发者工具每次保存都会写回 CRLF，而仓库是 LF 口径、文档门禁 G14 断言 tracked 文件零 CR。新增 `npm run eol:check` / `eol:fix`（只处理白名单文本扩展名，跳过 `node_modules` / `miniprogram_npm`），并把这一条写进 demo README 的「提交前」小节。
 - **小程序 demo 工程（`examples/miniprogram/`，新增）**：把上线前必做的配置做成可运行实例——P0 的 `__DEV__` 环境桥接、P1 的 `persistencePlugin({ debounce: 100, filter })`、P1 的 `onError` 上报挂载；三张页面分别验证页面集成与持久化、多级页面栈下的订阅存活与退订、组件订阅容量（20 个共享 store，可加到 60 触发 `evict-oldest` 并确认 `onError('subscribe')` 可见）；配 `.mjs` 版 automator 冒烟（冷启动 / 防抖落盘 / 热启动恢复 / 多级页面栈 / 组件容量 / 前后台 / 环境信号 / onerror 可见性），宿主能力缺失的断言按 skip 处理、`--strict` 下按失败计。**不进 CI**：automator 依赖有 GUI 的开发者工具实例；定位为发版前的人工最后一道。`examples/miniprogram` 已加入 `tools/tsconfig.examples.json` 的 exclude（它是 `.js` 小程序工程，不该由 TS 示例门禁挑错），其 `miniprogram_npm/` 已加入 `.gitignore`。
 
 ## [0.8.3] - 2026-10-13

@@ -148,13 +148,37 @@ import { persistencePlugin } from '@openlide/geomstore/extras/plugins'
 因此：
 
 - 用 ≥ 0.9.0：装好即用，正式版与体验版自动按生产处理；
-- 用旧版本、或想在没有第 3 档的分支上自行兜住：在 `app.js` **最顶部**（早于任何 `createStore`）写一行
+- 用旧版本、或想在没有第 3 档的分支上自行兜住：在 `app.js` **最顶部**（早于任何 `createStore`）挂一个 `__DEV__`
 
   ```js
-  if (typeof __DEV__ === 'undefined') globalThis.__DEV__ = wx.getAccountInfoSync().miniProgram.envVersion !== 'develop'
+  // 必须包 try/catch：小程序 AppService 的全局是沙箱代理，
+  // 未声明的标识符连 `typeof` 都抛 ReferenceError（详见下一节）
+  let hasSignal = false
+  try {
+    hasSignal = typeof __DEV__ !== 'undefined'
+  } catch (e) {
+    hasSignal = false
+  }
+  if (!hasSignal) {
+    globalThis.__DEV__ = wx.getAccountInfoSync().miniProgram.envVersion !== 'develop'
+  }
   ```
 
+  > 别照抄网上常见的 `if (typeof __DEV__ === 'undefined') globalThis.__DEV__ = …` 单行写法：它在 H5 / 有打包器做替换的场景是对的，但在**原生小程序里这一句就抛** `ReferenceError: __DEV__ is not defined`，表现为「`app.js` 第一行就崩 → 整页白屏」；automator 侧只报 `page node not found`，极难回溯到这行。`process` 同理：`typeof process` 在小程序里也抛，不要拿它做存在性门控。
+
 引入 `trial`（体验版）算不算生产的取舍说明见 [docs/CONCEPTS.md §11](./docs/CONCEPTS.md#调试表与持久化)，可运行的完整写法见 [`examples/miniprogram/app.js`](./examples/miniprogram/app.js)。
+
+### 小程序沙箱的 `typeof`（写宿主代码前必读）
+
+小程序 AppService 的全局对象是**沙箱代理**，语义与浏览器 / Node 不同：读取一个**未声明**的标识符，连 `typeof` 都会抛 `ReferenceError`，而不是标准语义里的 `'undefined'`。实测（开发者工具 1.06.x / 基础库 3.x）：
+
+| 表达式                                     | 浏览器 / Node           | 小程序 AppService            |
+| ------------------------------------------ | ----------------------- | ---------------------------- |
+| `typeof 未声明名`（`__DEV__` / `process`） | `'undefined'`           | **抛 `ReferenceError`**      |
+| `typeof wx`                                | `'undefined'`（非微信） | `'object'`（宿主已注入）     |
+| `typeof performance` / `queueMicrotask`    | 视环境而定              | 正常返回字符串（宿主已注入） |
+
+库内部因此统一按「`globalThis.xxx` 取值 + `try/catch`」读宿主能力（`wx` / `performance` / `queueMicrotask`），`isProduction()` 的 `__DEV__` 分支也**整体包在 `try/catch` 里**——不包的话它会在小程序里第一句就崩，而状态保护每次非法写入都要读它，「写保护」当场变成「写即抛」。**宿主代码（`app.js` / 页面 / 组件）里凡是探测全局是否存在的写法，都要按同一口径写**，不要用裸 `typeof someGlobal === 'undefined'`。
 
 ### 把构建结果放进分包
 
