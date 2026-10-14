@@ -135,6 +135,148 @@ describe('store/utils', () => {
       expect(isProduction.toString()).not.toContain('typeof process')
       expect(isProduction.toString()).toContain('process.env.NODE_ENV')
     })
+
+    // ---- 第 3 档判据：小程序宿主宣告的运行环境 ----
+    // 共同前提：清掉 NODE_ENV 与 __DEV__。原生小程序既无 process 全局、官方构建也不替换
+    // __DEV__，这正是新增该档要修的场景；不先把前两档让位就测不到它
+
+    /** 让 process.env.NODE_ENV 缺失地执行一段断言 */
+    const withoutNodeEnv = (run: () => void): void => {
+      const originalNodeEnv = process.env.NODE_ENV
+      delete process.env.NODE_ENV
+      try {
+        run()
+      } finally {
+        process.env.NODE_ENV = originalNodeEnv
+      }
+    }
+
+    /** 在 globalThis.wx 上挂一个返回指定 envVersion 的 getAccountInfoSync，返回清理函数 */
+    const withWxAccountInfo = (make: (() => unknown) | Record<string, unknown> | undefined): (() => void) => {
+      const g = global as any
+      const hadWx = g.wx !== undefined
+      if (!hadWx) {
+        g.wx = {}
+      }
+      const original = g.wx.getAccountInfoSync
+      if (make === undefined) {
+        delete g.wx.getAccountInfoSync
+      } else {
+        g.wx.getAccountInfoSync = typeof make === 'function' ? make : () => make
+      }
+      return () => {
+        if (original === undefined) {
+          delete g.wx.getAccountInfoSync
+        } else {
+          g.wx.getAccountInfoSync = original
+        }
+        if (!hadWx) {
+          delete g.wx
+        }
+      }
+    }
+
+    it('应该在 wx envVersion=release 时返回 true（原生小程序正式版自动判为生产）', () => {
+      const restore = withWxAccountInfo({ miniProgram: { envVersion: 'release' } })
+      try {
+        withoutNodeEnv(() => {
+          expect(_isProduction()).toBe(true)
+        })
+      } finally {
+        restore()
+      }
+    })
+
+    it('应该在 wx envVersion=trial 时返回 true（体验版跑的是待发布产物，同样不该崩）', () => {
+      const restore = withWxAccountInfo({ miniProgram: { envVersion: 'trial' } })
+      try {
+        withoutNodeEnv(() => {
+          expect(_isProduction()).toBe(true)
+        })
+      } finally {
+        restore()
+      }
+    })
+
+    it('应该在 wx envVersion=develop 时返回 false（IDE 预览与真机调试保留严格保护）', () => {
+      const restore = withWxAccountInfo({ miniProgram: { envVersion: 'develop' } })
+      try {
+        withoutNodeEnv(() => {
+          expect(_isProduction()).toBe(false)
+        })
+      } finally {
+        restore()
+      }
+    })
+
+    it('应该在 wx 没有 getAccountInfoSync 时回退兜底 false（低版本基础库 / 非微信宿主）', () => {
+      const restore = withWxAccountInfo(undefined)
+      try {
+        withoutNodeEnv(() => {
+          expect(_isProduction()).toBe(false)
+        })
+      } finally {
+        restore()
+      }
+    })
+
+    it('应该在 getAccountInfoSync 抛错时静默降级为「无信号」', () => {
+      const restore = withWxAccountInfo(() => {
+        throw new Error('getAccountInfoSync:fail')
+      })
+      try {
+        withoutNodeEnv(() => {
+          expect(_isProduction()).toBe(false)
+        })
+      } finally {
+        restore()
+      }
+    })
+
+    it('应该在 envVersion 取到未知值时按无信号处理（不臆判为生产或开发）', () => {
+      const restore = withWxAccountInfo({ miniProgram: { envVersion: 'preview-v2' } })
+      try {
+        withoutNodeEnv(() => {
+          expect(_isProduction()).toBe(false)
+        })
+      } finally {
+        restore()
+      }
+    })
+
+    it('应该在 getAccountInfoSync 返回空对象时不炸并回退兜底', () => {
+      const restore = withWxAccountInfo({})
+      try {
+        withoutNodeEnv(() => {
+          expect(_isProduction()).toBe(false)
+        })
+      } finally {
+        restore()
+      }
+    })
+
+    it('NODE_ENV 与 __DEV__ 都优先于 wx 信号（显式配置不被宿主信号覆盖）', () => {
+      const restore = withWxAccountInfo({ miniProgram: { envVersion: 'release' } })
+      const g = global as any
+      try {
+        // NODE_ENV=development（构建期常量）赢过宿主的 release
+        withoutNodeEnv(() => {
+          process.env.NODE_ENV = 'development'
+          expect(_isProduction()).toBe(false)
+        })
+        // __DEV__=true（显式运行时开关）同样赢过宿主的 release
+        g.__DEV__ = true
+        try {
+          withoutNodeEnv(() => {
+            expect(_isProduction()).toBe(false)
+          })
+        } finally {
+          delete g.__DEV__
+        }
+      } finally {
+        restore()
+      }
+    })
   })
 
   describe('createMutationErrorMessage', () => {

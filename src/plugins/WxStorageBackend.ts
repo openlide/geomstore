@@ -17,6 +17,7 @@
  */
 
 import type { StorageBackend } from '../types/persistence.js'
+import { isProduction } from '../core/store/utils.js'
 
 /**
  * 小程序 `wx` 同步存储 API 在本库视角下的最小形状
@@ -135,12 +136,19 @@ export class WxStorageBackend implements StorageBackend {
    * 读失败不得退化成「键无数据」（随后一次落盘即覆盖真实数据），写/删失败不得静默成功
    * （`clearOnUninstall` 会据此报告「已清除」而数据仍在）。抽成一个方法是为了新增操作时
    * 不会只补上一半行为（只 log 不抛、或只抛不 log），错误文案也只需改一处
+   *
+   * 打印受 `isProduction()` 门控，与 `SubscriptionManager.notify` / `HookSystem.emit` 的
+   * 失败日志同口径：本处在写路径上，配额超限（`setStorageSync:fail exceed storage max size`）
+   * 时每一次后续写入都会重演；「看得见」这件事由调用方的上报通道负责——
+   * 本类把异常原样抛出，`persistencePlugin.saveState` 已转投 `emit('onError', …, 'persistence')`。
    */
   private run<T>(method: string, fn: () => T): T {
     try {
       return fn()
     } catch (error) {
-      console.error(`[WxStorage] ${method} error:`, error)
+      if (!isProduction()) {
+        console.error(`[WxStorage] ${method} error:`, error)
+      }
       throw error
     }
   }

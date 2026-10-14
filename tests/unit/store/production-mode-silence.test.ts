@@ -9,7 +9,7 @@
  * 覆盖面：HookSystem(usePlugin 安装/卸载)、Store.use 重复安装、SubscriptionManager
  * 订阅上限与监听器抛错、订阅者驱逐上报通道、composeStore 子 store 重名、compose/helpers 已销毁子 store
  * 与写入竞态、withCache 命中/in-flight 去重、persistencePlugin 安装/无后端降级/恢复、
- * analyzerPlugin 卸载时 getter 已被重新包装。
+ * analyzerPlugin 卸载时 getter 已被重新包装、WxStorageBackend 读写失败。
  */
 
 describe('生产模式下的日志静默', () => {
@@ -40,6 +40,7 @@ describe('生产模式下的日志静默', () => {
       dispatchByNamespace: (await import('@/core/compose/helpers.js')).dispatchByNamespace,
       withCache: (await import('@/extras/action/decorators/cache.js')).withCache,
       persistencePlugin: (await import('@/plugins/builtin.js')).persistencePlugin,
+      WxStorageBackend: (await import('@/plugins/WxStorageBackend.js')).WxStorageBackend,
       createAnalyzerPlugin: (await import('@/plugins/performance/index.js')).createAnalyzerPlugin,
     }
   })
@@ -246,6 +247,27 @@ describe('生产模式下的日志静默', () => {
 
     expect(() => store.use(mod.persistencePlugin())).not.toThrow()
     expect(warnSpy).not.toHaveBeenCalled()
+  })
+
+  it('WxStorageBackend 读写失败在生产模式控制台静默，但错误照常抛出', () => {
+    // 门口与 HookSystem / SubscriptionManager 同口径：这里的 console.error 在写路径上，
+    // 配额超限（`exceed storage max size`）时后续每次落盘都会重演；
+    // 「看得见」由调用方承接——异常原样抛出，persistencePlugin.saveState 已转 onError('persistence')
+    const g = globalThis as any
+    g.wx = {
+      getStorageSync: () => {
+        throw new Error('getStorageSync:fail')
+      },
+      setStorageSync: () => {
+        throw new Error('setStorageSync:fail exceed storage max size')
+      },
+      removeStorageSync: () => {},
+    }
+    const backend = new mod.WxStorageBackend()
+
+    expect(() => backend.setItem('k', '{"x":1}')).toThrow(/exceed storage max size/)
+    expect(() => backend.getItem('k')).toThrow(/getStorageSync:fail/)
+    expect(errorSpy).not.toHaveBeenCalled()
   })
 
   it('analyzerPlugin 卸载时 getter 已被重新包装也保持静默', () => {
