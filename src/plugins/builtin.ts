@@ -27,6 +27,25 @@ const DEVTOOLS_GLOBAL_KEY = '__GEOMSTORE_DEVTOOLS__'
  */
 const MAX_TIMER_DELAY = 2 ** 31 - 1
 
+/**
+ * 持久化写入防抖的默认值（毫秒）：0 = 变更即落盘。
+ *
+ * 为什么仍是 0：这是**持久性优先**的取舍。默认值一旦非零，就意味着「最后 N 毫秒内的变更在
+ * 进程被强杀且未走卸载时会丢」——而持久化的主要用途恰恰是「别把用户的数据弄丢」。
+ * 卸载路径确实会同步补写窗口内的最后一次变更（见 uninstall 注释），但覆盖不到
+ * 「用户侧滑杀掉小程序」这条没有卸载钩子的路径。同类实现（zustand persist、
+ * redux-persist 的默认配置）也取同步写，把这个选择留给接入方而非替他默认。
+ *
+ * 代价文档化（不隐藏）：一次 setState = 一次 `JSON.stringify(整棵状态树)` + 一次同步
+ * `wx.setStorageSync`（小程序里是阻塞 I/O）。因此**绝大多数生产场景都应显式配 `debounce`**：
+ * 通用取值 100，高频场景（输入联想 / 拖拽 / 轮询）300~500，或先用 `filter` 收敛落盘字段。
+ * 要求「每次写入立刻可见」的场景（交易凭证、草稿自增 id）保持默认 0。
+ *
+ * 这里曾经考虑过把默认改成 100——最终没做：默认值变更会让「到底落没落盘」从确定性行为
+ * 变成窗口内的概率行为，且不改代码的用户无从察觉（详见 docs/API.md 与 BEST_PRACTICES 的说明）。
+ */
+const DEFAULT_PERSIST_DEBOUNCE_MS = 0
+
 declare global {
   /**
    * devtools 插件在**非生产环境**挂载的两张全局调试表，键均为 `store.name`。
@@ -183,8 +202,15 @@ function installPersistence<S extends State>(store: Store<S>, rawOptions?: Persi
   // （core 的 GEOMSTORE_BRAND / stateVersion 的 STATE_VERSION 都用 Symbol.for 跨副本兜底）。
   // 稳定与唯一在默认键这个层面不可兼得，故把选择权交回调用方：需要隔离就显式传 key，
   // 见 PersistenceOptions.key 的说明
-  const { key = `geomstore_${store.name}`, filter, validate, restore: shouldRestore = true, debounce: debounceMs = 0, clearOnUninstall = false } = options
-
+  const {
+    key = `geomstore_${store.name}`,
+    filter,
+    validate,
+    restore: shouldRestore = true,
+    // 命名常量的意义是把「为什么默认 0」留在代码里（见常量注释），而不是让 0 看起来像漏配
+    debounce: debounceMs = DEFAULT_PERSIST_DEBOUNCE_MS,
+    clearOnUninstall = false,
+  } = options
   const storageKey = typeof key === 'function' ? key(store.name) : key
 
   // 解析存储后端：传入 storage 时必须完整实现三个同步方法（缺一即在安装期抛错），
