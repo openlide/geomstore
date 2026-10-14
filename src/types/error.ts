@@ -16,6 +16,10 @@
  *
  * 另：`withErrorBoundary()` 不传泛型时 `F` 落回 `unknown`，而 `unknown | X` 仍是 `unknown`，
  * 类型层连「两种形态」都表达不出来，此时判别只剩运行时 `typeof`。
+ *
+ * **注意参数顺序**：`ErrorFallback<F, S>` 的回退值类型 `F` 在前、状态类型 `S` 在后；
+ * 而 `ErrorBoundaryOptions<S, F>` 的顺序相反（状态在前）。桥接点 `ErrorBoundaryOptions.fallback`
+ * 的类型是 `ErrorFallback<F, S>`（按本类型的顺序传参）。消费者手写泛型时注意不要混淆。
  */
 export type ErrorFallback<F = unknown, S = unknown> = F | ((error: Error, currentState: S | undefined) => F)
 

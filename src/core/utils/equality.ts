@@ -268,13 +268,16 @@ function compareWithSeenPairs(a: unknown, b: unknown, comparison: Comparison, pa
     // ArrayBuffer 按字节内容比较：Object.keys 对 ArrayBuffer 恒为空（byteLength 是
     // 原型上的访问器，实例上没有自有键），只比键集会把不同大小的缓冲区判等。
     // 用 Uint8Array 视图逐字节读：DataView 也可以但 Uint8Array 的逐元素访问在 V8 上
-    // 更快；byteLength 不同直接判不等，避免无谓的字节遍历
-    if (typeof ArrayBuffer !== 'undefined' && currentA instanceof ArrayBuffer) {
+    // 更快；byteLength 不同直接判不等，避免无谓的字节遍历。
+    // 用 [[Class]] tag 而非 instanceof：跨 realm 的 ArrayBuffer（分包/多运行时）
+    // instanceof 会落空，落入通用键比较会把字节不同的两个缓冲区判等
+    if (optionalBoxedTagOf(currentA) === '[object ArrayBuffer]') {
+      const buf = currentA as ArrayBuffer
       const other = currentB as ArrayBuffer
-      if (currentA.byteLength !== other.byteLength) {
+      if (buf.byteLength !== other.byteLength) {
         return false
       }
-      const viewA = new Uint8Array(currentA)
+      const viewA = new Uint8Array(buf)
       const viewB = new Uint8Array(other)
       for (let i = 0; i < viewA.length; i++) {
         if (viewA[i] !== viewB[i]) {
@@ -288,12 +291,14 @@ function compareWithSeenPairs(a: unknown, b: unknown, comparison: Comparison, pa
     // 而它的自有可枚举键同样恒空、byteLength 也在原型上 ⇒ 落到通用键比较会把**字节不同、
     // 甚至大小不同**的两个 SAB 判等（假相等 → 选择器返回陈旧值、变更检测漏报，且无任何报错）。
     // 克隆侧已把 SAB 当一等内建（clone.ts 的 SLOT_BEARING_TAGS），比较侧不能缺这一支。
-    if (typeof SharedArrayBuffer !== 'undefined' && currentA instanceof SharedArrayBuffer) {
+    // 用 [[Class]] tag 判定，与 ArrayBuffer 分支同口径（跨 realm 安全）
+    if (optionalBoxedTagOf(currentA) === '[object SharedArrayBuffer]') {
+      const buf = currentA as SharedArrayBuffer
       const other = currentB as SharedArrayBuffer
-      if (currentA.byteLength !== other.byteLength) {
+      if (buf.byteLength !== other.byteLength) {
         return false
       }
-      const viewA = new Uint8Array(currentA)
+      const viewA = new Uint8Array(buf)
       const viewB = new Uint8Array(other)
       for (let i = 0; i < viewA.length; i++) {
         if (viewA[i] !== viewB[i]) {
@@ -332,8 +337,10 @@ function compareWithSeenPairs(a: unknown, b: unknown, comparison: Comparison, pa
     // 只能按引用判等。快速路径 `currentA === currentB` 已处理了引用相同的情况，
     // 走到这里说明引用不同，直接判不等。
     // 用 Object.prototype.toString 的 tag 判而非 instanceof：跨 realm 的 Promise 等
-    // 在 instanceof 上会落空，但本函数前面已判原型一致，同原型 ⇒ 同 realm ⇒ 同 tag
-    if (currentA instanceof Promise || currentA instanceof WeakMap || currentA instanceof WeakSet) {
+    // instanceof 会落空（用本模块 realm 的构造器），落入通用对象比较会把两个不同的
+    // Promise 判等（Object.keys 恒空 ⇒ 零次循环 ⇒ return true）
+    const boxedTag = optionalBoxedTagOf(currentA)
+    if (boxedTag === '[object Promise]' || boxedTag === '[object WeakMap]' || boxedTag === '[object WeakSet]') {
       return false
     }
 

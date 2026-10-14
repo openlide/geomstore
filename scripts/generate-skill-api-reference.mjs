@@ -61,6 +61,25 @@ function toFileName(sub) {
 }
 
 /**
+ * 计算代码围栏需要的最小反引号数：body 里最长连续反引号 + 1，至少 3。
+ * JSDoc 里嵌 ```ts 示例时，dedent 后的 body 会带三反引号；固定三反引号围栏会让
+ * 嵌套围栏破掉 markdown 渲染（prettier 会抬成四反引号救场，但生成器自己得先产合法输出）。
+ */
+function fenceLength(body) {
+  let max = 0
+  let run = 0
+  for (const ch of body) {
+    if (ch === '`') {
+      run++
+      if (run > max) max = run
+    } else {
+      run = 0
+    }
+  }
+  return Math.max(3, max + 1)
+}
+
+/**
  * 收集 exports 中声明了 types 的子路径（跳过 ./package.json）。
  *
  * types 必须是**一条字符串路径**。条件式 exports（`"types": {"import": …, "require": …}`）
@@ -125,9 +144,7 @@ function validateEntries(entries) {
   }
   for (const [file, subsWithSameFile] of byFile) {
     if (subsWithSameFile.length > 1) {
-      problems.push(
-        `入口 ${subsWithSameFile.map((sub) => `\`${sub}\``).join(' 与 ')} 的输出文件名同为 \`${file}\`，会互相覆盖`,
-      )
+      problems.push(`入口 ${subsWithSameFile.map((sub) => `\`${sub}\``).join(' 与 ')} 的输出文件名同为 \`${file}\`，会互相覆盖`)
     }
   }
 
@@ -139,7 +156,10 @@ function dedent(text) {
   const lines = text.replace(/\r\n/g, '\n').split('\n')
   const indents = lines.filter((line) => line.trim()).map((line) => line.match(/^[ \t]*/)[0].length)
   const min = indents.length > 0 ? Math.min(...indents) : 0
-  return lines.map((line) => line.slice(min)).join('\n').trim()
+  return lines
+    .map((line) => line.slice(min))
+    .join('\n')
+    .trim()
 }
 
 function kb(bytes) {
@@ -270,8 +290,7 @@ function main() {
 
   // 索引
   const indexRows = resolvedEntries.map(
-    (entry) =>
-      `| \`${entry.sub}\` | ${NAME_ONLY.has(entry.sub) ? '仅符号名' : '完整声明'} | ${entry.items.length} | [\`${entry.file}\`](./${entry.file}) |`,
+    (entry) => `| \`${entry.sub}\` | ${NAME_ONLY.has(entry.sub) ? '仅符号名' : '完整声明'} | ${entry.items.length} | [\`${entry.file}\`](./${entry.file}) |`,
   )
   const index = [
     header('GeomStore API 参考（按入口拆分，自动生成）', [
@@ -323,7 +342,8 @@ function main() {
     } else {
       for (const item of entry.items) {
         const body = item.declarations.map((declaration) => dedent(declaration.getFullText())).join('\n\n')
-        lines.push(`### \`${item.name}\``, '', '```ts', body, '```', '')
+        const fence = '`'.repeat(fenceLength(body))
+        lines.push(`### \`${item.name}\``, '', `${fence}ts`, body, fence, '')
       }
     }
 

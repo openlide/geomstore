@@ -621,13 +621,14 @@ export function cloneDeep<T>(
       // 判据与
       // core/utils/clone.ts 的 deepCloneState 合流（那边 R5-189 补的就是这一趟）。
       // 'length' 必须排除：它是每个数组的自有键，且**不可配置**——在克隆品上重新定义它会
-      // 直接抛 TypeError。键集口径与对象分支一致（includeNonEnumerable 决定取哪一套键）；
-      // 取键本身抛错（Proxy 的 ownKeys 陷阱）由包住本分支的外层 try 收尾，与对象分支的
-      // keys catch 同样落到「丢该节点」。异步引擎 clone-async.ts 的数组分支是同一段代码的
-      // 第二份，这一趟要一并补上
-      const extraKeys = (options.includeNonEnumerable ? Object.getOwnPropertyNames(value) : Object.keys(value)).filter(
-        (key) => key !== 'length' && !isIndexKey(key),
-      )
+      // 直接抛 TypeError。默认模式用 ownEnumerableKeys（含可枚举符号键），与对象分支 :657
+      // 同口径；includeNonEnumerable 模式取 names+symbols 全集。符号键不可能是 'length' 或
+      // 下标，短路放行。键集口径与对象分支一致；取键本身抛错（Proxy 的 ownKeys 陷阱）由
+      // 包住本分支的外层 try 收尾，与对象分支的 keys catch 同样落到「丢该节点」。
+      // 异步引擎 clone-async.ts 的数组分支是同一段代码的第二份，这一趟要一并补上
+      const extraKeys = (
+        options.includeNonEnumerable ? [...Object.getOwnPropertyNames(value), ...Object.getOwnPropertySymbols(value)] : ownEnumerableKeys(value)
+      ).filter((key) => typeof key === 'symbol' || (key !== 'length' && !isIndexKey(key)))
       for (const key of extraKeys) {
         copyOwnKey(value as object, cloned, key, context, options, errors, stats, counters)
       }

@@ -348,11 +348,13 @@ export function processNodeAsync(
       // 整趟丢弃会让附加键在异步快照里凭空消失，而 `deepEqual` 比的是 `Object.keys` 键集，
       // 于是同一份数据「同步快照看得见、异步快照看不见」，diff 还会把丢键报成删除。
       // 下标归上面的循环负责；`length` 只有被显式 defineProperty 过才是自有键，一并排除。
-      let extraKeys: string[]
+      // 默认模式用 ownEnumerableKeys（含可枚举符号键），与同步 clone.ts 的对象分支同口径；
+      // includeNonEnumerable 模式取 names+symbols 全集。符号键不可能是 'length' 或下标，短路放行
+      let extraKeys: Array<string | symbol>
       try {
-        extraKeys = (options.includeNonEnumerable ? Object.getOwnPropertyNames(value) : Object.keys(value)).filter(
-          (key) => key !== 'length' && !isIndexKey(key),
-        )
+        extraKeys = (
+          options.includeNonEnumerable ? [...Object.getOwnPropertyNames(value), ...Object.getOwnPropertySymbols(value)] : ownEnumerableKeys(value)
+        ).filter((key) => typeof key === 'symbol' || (key !== 'length' && !isIndexKey(key)))
       } catch (error) {
         dropFailedNode(value, context, error, options, errors, stats)
         return SKIP_CLONE_NODE

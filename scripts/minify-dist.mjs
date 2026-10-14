@@ -12,12 +12,10 @@
  * `.d.ts` 一律不动（小程序运行时不解析类型文件，压缩无收益且会破坏类型）。
  *
  * 压缩器按优先级自动探测：terser → esbuild。
- * terser 优先是因为它是本仓库唯一**显式声明**的压缩器（package.json devDependencies），
- * 版本被锁文件固定 → 发布产物可复现。esbuild 只作为已装 terser 不可用时的兜底，
- * 它并非本仓库依赖：实测 `require.resolve('esbuild')` 命中 node_modules/esbuild，
- * 那是 ts-jest 的 peer 依赖被 `nodeLinker: hoisted` 提升上来的幽灵依赖，
- * 装不装、装哪个版本都随依赖树变化——若把它排在前面，压缩器选择就不可复现
- * （这正是旧版文件头与探测顺序互相矛盾的地方）。
+ * 两个后端都是显式 devDependencies（terser `package.json:132`、esbuild `package.json:128`），
+ * 版本被锁文件固定 → 发布产物可复现。terser 优先是因为它是 `build:release` 的历史后端、
+ * 产物字节有基线可比；esbuild 作为兜底，两者输出在 ECMASCRIPT_TARGET 语义基准上对齐
+ * （见下方 ESBUILD_OPTIONS / TERSER_OPTIONS），换后端不会静默改变语法下限与注释策略。
  * （不再兜底 uglify-js：它不支持 ESM/ES2015+ 语法，也忽略 terser 专有的 `module` 选项，
  * 对 tsc 产出的 ESM 几乎必然抛错，兜底分支形同虚设。）
  *
@@ -170,10 +168,7 @@ function assertRealDistDir() {
   const realDist = fs.realpathSync(distDir)
   const expected = path.join(fs.realpathSync(projectRoot), 'dist')
   if (!samePath(realDist, expected) || !fs.statSync(realDist).isDirectory()) {
-    throw new Error(
-      `dist 不是仓库内的真实目录（realpath=${realDist}，期望=${expected}）：` +
-        '符号链接/junction 会让原地压缩写穿链接目标，已中止',
-    )
+    throw new Error(`dist 不是仓库内的真实目录（realpath=${realDist}，期望=${expected}）：` + '符号链接/junction 会让原地压缩写穿链接目标，已中止')
   }
 }
 
@@ -187,11 +182,7 @@ function assertRealDistDir() {
  * 由 main 的 catch 以退出码 1 中止，避免静默降级成「未找到压缩器」。
  */
 function isMissingItself(error, name) {
-  return (
-    error?.code === 'MODULE_NOT_FOUND' &&
-    typeof error.message === 'string' &&
-    error.message.includes(`Cannot find module '${name}'`)
-  )
+  return error?.code === 'MODULE_NOT_FOUND' && typeof error.message === 'string' && error.message.includes(`Cannot find module '${name}'`)
 }
 
 function tryRequire(name) {
@@ -250,9 +241,7 @@ function writeAll(outputs) {
     }
     throw new Error(
       `压缩结果写盘失败（${reasonOf(error)}）；` +
-        (unrestored.length > 0
-          ? `${unrestored.length} 个文件未能还原`
-          : `${written.length} 个已写入的文件已还原为压缩前内容`),
+        (unrestored.length > 0 ? `${unrestored.length} 个文件未能还原` : `${written.length} 个已写入的文件已还原为压缩前内容`),
     )
   }
 }
@@ -277,9 +266,7 @@ function requireCode(code, file, source, backend) {
 
 /** 去掉块注释、行注释与空白后是否什么都不剩：只有这种文件压成空才算正常 */
 function isBlankOrComments(source) {
-  const stripped = source
-    .replace(/\/\*[\s\S]*?\*\//g, ' ')
-    .replace(/(^|[^:"'`\\])\/\/[^\n]*/g, '$1')
+  const stripped = source.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/(^|[^:"'`\\])\/\/[^\n]*/g, '$1')
   return stripped.trim() === ''
 }
 
@@ -399,10 +386,7 @@ async function main() {
   // before 已在上面保证 > 0，这里不再可能出现 NaN
   // saved 可能为负（极小文件压缩后反而变大），百分比符号前不硬编码 `-`，由 saved 的符号决定
   const percent = ((saved / before) * 100).toFixed(1)
-  console.log(
-    `[minify-dist] ${files.length} js files: ${kb(before)} -> ${kb(after)} ` +
-      `(saved ${kb(saved)}, ${percent}%)`,
-  )
+  console.log(`[minify-dist] ${files.length} js files: ${kb(before)} -> ${kb(after)} ` + `(saved ${kb(saved)}, ${percent}%)`)
 }
 
 main().catch((error) => {
