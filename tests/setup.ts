@@ -63,8 +63,34 @@ const mockClearStorageSync = jest.fn(defaultStorageImpl.clearStorageSync)
 // Mock 微信小程序环境（在 installDefaultMocks 之前声明，供函数引用）
 const mockPage = jest.fn()
 const mockComponent = jest.fn()
-const mockGetApp = jest.fn(() => ({
-  globalData: {},
+// getApp() 真实语义返回同一 App 单例（globalData 跨调用可观察），
+// 每次新建 `{ globalData: {} }` 会让依赖 globalData 共享状态的测试观察到
+// 与生产不同的对象；提到模块级稳定引用
+const stableAppInstance = { globalData: {} as Record<string, unknown> }
+const mockGetApp = jest.fn(() => stableAppInstance)
+
+// 其余 wx API：全部提到模块级 named const，让 installDefaultMocks 能按
+// `=== mockXxx` 身份判定并 mockImplementation 复位。此前 `if (!g.wx.X)` 里的
+// 匿名 jest.fn() 无引用可比对，测试覆盖 mockImplementation 会跨用例泄漏
+// （jest.clearAllMocks 只清调用记录、不清实现）
+const defaultRequestImpl = (options: { success?: (res: { statusCode: number; data: unknown; errMsg: string }) => void } = {}): void => {
+  options?.success?.({ statusCode: 200, data: {}, errMsg: 'request:ok' })
+}
+const mockWxRequest = jest.fn(defaultRequestImpl)
+const mockShowToast = jest.fn()
+const mockHideToast = jest.fn()
+const mockShowLoading = jest.fn()
+const mockHideLoading = jest.fn()
+const createSelectorQueryStub = () => ({
+  select: jest.fn().mockReturnThis(),
+  selectAll: jest.fn().mockReturnThis(),
+  selectViewport: jest.fn().mockReturnThis(),
+  exec: jest.fn().mockResolvedValue([]),
+})
+const mockCreateSelectorQuery = jest.fn(createSelectorQueryStub)
+const mockNextTick = jest.fn((callback: () => void) => setTimeout(callback, 0))
+const mockGetPerformance = jest.fn(() => ({
+  now: () => (typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now()),
 }))
 
 // 安装默认 mock：初始化与 afterEach 复用同一份，确保 jest.clearAllMocks() 后
@@ -96,34 +122,37 @@ function installDefaultMocks(): void {
     mockClearStorageSync.mockImplementation(defaultStorageImpl.clearStorageSync)
   }
 
-  // 其余 wx API 如果不存在就创建，如果存在且是我们的 mock 就重置实现
+  // 其余 wx API：走「不存在则挂 mock；是我们挂的那份则复位实现」同一口径
   if (!g.wx.request) {
-    g.wx.request = jest.fn((options: { success?: (res: { statusCode: number; data: unknown; errMsg: string }) => void } = {}) => {
-      options?.success?.({ statusCode: 200, data: {}, errMsg: 'request:ok' })
-    })
+    g.wx.request = mockWxRequest
+  } else if (g.wx.request === mockWxRequest) {
+    mockWxRequest.mockImplementation(defaultRequestImpl)
   }
-  if (!g.wx.showToast) g.wx.showToast = jest.fn()
-  if (!g.wx.hideToast) g.wx.hideToast = jest.fn()
-  if (!g.wx.showLoading) g.wx.showLoading = jest.fn()
-  if (!g.wx.hideLoading) g.wx.hideLoading = jest.fn()
+  if (!g.wx.showToast) g.wx.showToast = mockShowToast
+  if (!g.wx.hideToast) g.wx.hideToast = mockHideToast
+  if (!g.wx.showLoading) g.wx.showLoading = mockShowLoading
+  if (!g.wx.hideLoading) g.wx.hideLoading = mockHideLoading
   if (!g.wx.createSelectorQuery) {
-    g.wx.createSelectorQuery = jest.fn(() => ({
-      select: jest.fn().mockReturnThis(),
-      selectAll: jest.fn().mockReturnThis(),
-      selectViewport: jest.fn().mockReturnThis(),
-      exec: jest.fn().mockResolvedValue([]),
-    }))
+    g.wx.createSelectorQuery = mockCreateSelectorQuery
+  } else if (g.wx.createSelectorQuery === mockCreateSelectorQuery) {
+    mockCreateSelectorQuery.mockImplementation(createSelectorQueryStub)
   }
   if (!g.wx.nextTick) {
-    g.wx.nextTick = jest.fn((callback: () => void) => setTimeout(callback, 0))
+    g.wx.nextTick = mockNextTick
+  } else if (g.wx.nextTick === mockNextTick) {
+    mockNextTick.mockImplementation((callback: () => void) => setTimeout(callback, 0))
   }
   if (!g.wx.getPerformance) {
-    g.wx.getPerformance = jest.fn(() => ({ now: () => (typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now()) }))
+    g.wx.getPerformance = mockGetPerformance
+  } else if (g.wx.getPerformance === mockGetPerformance) {
+    mockGetPerformance.mockImplementation(() => ({
+      now: () => (typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now()),
+    }))
   }
 
   mockPage.mockImplementation(() => undefined)
   mockComponent.mockImplementation(() => undefined)
-  mockGetApp.mockImplementation(() => ({ globalData: {} }))
+  mockGetApp.mockImplementation(() => stableAppInstance)
 }
 
 // Mock 微信小程序 API（首次安装）
