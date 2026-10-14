@@ -1,6 +1,6 @@
 {
   "description": "GeomStore demo（本地运行用，appid 填测试号或无 appid）",
-  "appid": "touristappid",
+  "appid": "wx6d5e9c785f2d05dd",
   "projectname": "geomstore-demo",
   "miniprogramRoot": "./",
   "compileType": "miniprogram",
@@ -14,7 +14,28 @@
     "packNpmManually": false,
     "coverView": true,
     "lazyloadPlaceholderEnable": false,
-    "ignoreUploadUnusedFiles": true
+    "ignoreUploadUnusedFiles": true,
+    "compileWorklet": true,
+    "uglifyFileName": false,
+    "uploadWithSourceMap": true,
+    "packNpmRelationList": [],
+    "minifyWXSS": true,
+    "minifyWXML": true,
+    "localPlugins": false,
+    "disableUseStrict": false,
+    "useCompilerPlugins": false,
+    "condition": true,
+    "babelSetting": {
+      "ignore": [],
+      "disablePlugins": [],
+      "outputPath": ""
+    }
   },
-  "condition": {}
+  "condition": {},
+  "simulatorPluginLibVersion": {},
+  "packOptions": {
+    "ignore": [],
+    "include": []
+  },
+  "editorSetting": {}
 }

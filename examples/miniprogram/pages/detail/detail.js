@@ -9,8 +9,7 @@ const { withPageStore } = require('@openlide/geomstore/integrations')
 const app = getApp()
 
 Page(
-  withPageStore({
-    store: app.globalData.store,
+  withPageStore(app.globalData.store, {
     mapState: ['count', 'theme'],
     mapActions: ['increment'],
   })({

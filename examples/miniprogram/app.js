@@ -30,11 +30,22 @@ const { withAppStore } = require('@openlide/geomstore/integrations')
       return 'develop'
     }
   })()
-  // 只在没有任何现有信号时写入，避免覆盖宿主/构建期的显式配置
-  if (typeof __DEV__ === 'undefined' && globalThis.__DEV__ === undefined) {
+  // 只在没有任何现有信号时写入，避免覆盖宿主/构建期的显式配置。
+  //
+  // 这里不能裸写 `typeof __DEV__ === 'undefined'`：小程序 AppService 的全局是沙箱代理，
+  // 未声明的标识符**连 typeof 都抛 ReferenceError**（实测 `typeof __DEV__`、`typeof process`
+  // 皆抛，`typeof wx` / `performance` 正常）。直接写会让 app.js 在第一行就崩，表现为
+  // 「页面白屏 + automator 报 page node not found」，排查起来极费劲。
+  let hasSignal
+  try {
+    hasSignal = typeof __DEV__ !== 'undefined' || globalThis.__DEV__ !== undefined
+  } catch (e) {
+    hasSignal = globalThis.__DEV__ !== undefined
+  }
+  if (!hasSignal) {
     globalThis.__DEV__ = env !== 'develop'
   }
-  // 环境届提供给 e2e / 页面展示，不参与任何库判定
+  // 环境原值留给 e2e / 页面展示，不参与任何库判定
   globalThis.__GEOM_ENV__ = env
 })()
 
@@ -90,8 +101,10 @@ appStore.hooks.on('onError', (error, source) => {
 globalThis.__GEOM_ERRORS__ = errorLog
 
 App(
-  withAppStore({
-    store: appStore,
+  // 签名是 (store, options) 两个参数，不是单个 { store, ... } 对象——
+  // 写成单对象时 store 位置收到的是选项对象、options 走默认值空配置，
+  // 结果是「映射为空 → 一条订阅都不建」，页面静默不刷新且没有任何报错。
+  withAppStore(appStore, {
     mapState: ['count', 'theme'],
     mapGetters: { doubledText: 'doubled' },
     mapActions: ['increment', 'toggleTheme'],

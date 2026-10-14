@@ -19,7 +19,17 @@ dist-weapp/
 examples/**
 !examples/miniprogram/
 !examples/miniprogram/**
+# 注意 `!examples/miniprogram/**` 写在后面者胜，它会把该目录里的**一切**重新纳入，
+# 包括本该忽略的依赖目录。故凡是不入库的内容都必须在这条之后再逐条排掉：
+# （.gitignore 不支持行尾注释：写在模式后面会被当成模式的一部分，故注释一律单独成行）
+# 「构建 npm」产物，工具生成
 examples/miniprogram/miniprogram_npm/
+# automator 依赖，npm install 生成
+examples/miniprogram/node_modules/
+# sync-lib 从根 dist-weapp 拷来的 npm 包壳，npm run sync:lib 生成（203KB × 89 文件的构建产物，不入库）
+examples/miniprogram/vendor/
+# 开发者工具的本地工程配置（本地路径 / 断点 / 编译选项），每人一份
+examples/miniprogram/project.private.config.json
 build/
 *.log
 *.tsbuildinfo

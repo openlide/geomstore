@@ -17,8 +17,7 @@ function pageCountRefresh() {
 }
 
 Page(
-  withPageStore({
-    store: app.globalData.store,
+  withPageStore(app.globalData.store, {
     mapState: { count: 'count', theme: 'theme', visits: 'visits' },
     mapGetters: { doubled: 'doubled' },
     mapActions: ['increment', 'incrementBy', 'toggleTheme', 'reset'],

@@ -9,8 +9,7 @@ const { withComponentStore } = require('@openlide/geomstore/integrations')
 const app = getApp()
 
 Component(
-  withComponentStore({
-    store: app.globalData.store,
+  withComponentStore(app.globalData.store, {
     mapState: ['count'],
     mapActions: ['increment'],
   })({
