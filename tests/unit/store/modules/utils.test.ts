@@ -8,6 +8,22 @@ import { isProduction, createMutationErrorMessage, deepCloneState } from '@/core
 // 重新导入以清除模块缓存
 let _isProduction: typeof isProduction
 
+/**
+ * 取函数的**可执行代码**文本（剥离注释）
+ *
+ * 编译期锁定断言（「函数体里不得出现某某门控」「某段必须包在 try 里」）只能读函数源码
+ * 文本，但 ts-jest 默认保留注释，而函数内的解释性注释同样会写出这些关键字（例如说明
+ * 「小程序里 `typeof process` 会抛」的注释本身就含该字样）。直接匹配 `toString()` 会把
+ * 注释判成真实代码，断言随注释措辞波动；统一经此函数剥离注释后再断言。
+ *
+ * 行注释的匹配刻意要求前一个字符不是 `:` / 引号，避免误删字符串里的 `http://`。
+ */
+const codeOf = (fn: (...args: never[]) => unknown): string =>
+  fn
+    .toString()
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/(^|[^:'"`])\/\/[^\n]*/g, '$1')
+
 describe('store/utils', () => {
   beforeEach(async () => {
     // 清除缓存 - 重新导入模块（isProduction 在模块内缓存判定结果）
@@ -131,9 +147,37 @@ describe('store/utils', () => {
       // 打包器只内联 process.env.NODE_ENV 这个成员表达式，不会内联 process 全局本身：
       // 一旦写成 `typeof process !== 'undefined' && ...`，浏览器产物里 && 左侧恒为 false，
       // 已内联好的 "production" 被丢弃 → 生产构建退回开发兜底 → 直写状态由 warn 变抛错。
-      // 运行期在 Node 下两种写法等价，故只能锁定编译后的函数体不含该门控
-      expect(isProduction.toString()).not.toContain('typeof process')
-      expect(isProduction.toString()).toContain('process.env.NODE_ENV')
+      // 运行期在 Node 下两种写法等价，故只能锁定编译后的函数体不含该门控。
+      // 用 codeOf() 而非 toString()：ts-jest 默认保留注释，函数内的解释性注释里
+      // 也会出现 "typeof process" 字样，直接匹配原文会把注释判成门控代码
+      const code = codeOf(isProduction)
+      expect(code).not.toContain('typeof process')
+      expect(code).toContain('process.env.NODE_ENV')
+    })
+
+    it('__DEV__ 分支必须包在 try/catch 里（小程序沙箱里 typeof 未声明标识符会抛）', () => {
+      // 小程序 AppService 的全局是沙箱代理：未声明的标识符**连 typeof 都抛 ReferenceError**，
+      // 而不是标准语义里的 'undefined'。开发者工具 1.06.x / 基础库 3.x 实测：
+      //   typeof __DEV__ / typeof process / typeof 任意未声明名 → 抛 "xxx is not defined"
+      //   typeof wx / performance / queueMicrotask → 正常（宿主注入过）
+      // Node 下 typeof 恒安全，运行期复现不出这个差异，只能锁源码结构：
+      // 裸 identifier 必须保留（打包器做的是文本替换，写成 globalThis.__DEV__ 会让替换失效），
+      // 同时必须处在 try 块内——否则 isProduction 在小程序里第一档就崩，
+      // 而 StateProxy 每次非法写入都要读它，「写保护」会变成「写即抛」。
+      const code = codeOf(isProduction)
+      expect(code).toContain('typeof __DEV__')
+      // 取 __DEV__ 出现位置往前找最近的 try：两者都出现且 try 在前即可。
+      // 用正则而非 lastIndexOf('try {')，容忍转译/插桩产物在 try 与 { 之间的空白差异
+      const devIndex = code.indexOf('typeof __DEV__')
+      const tryPattern = /try\s*\{/g
+      let tryIndex = -1
+      let match = tryPattern.exec(code)
+      while (match !== null && match.index < devIndex) {
+        tryIndex = match.index
+        match = tryPattern.exec(code)
+      }
+      expect(tryIndex).toBeGreaterThanOrEqual(0)
+      expect(tryIndex).toBeLessThan(devIndex)
     })
 
     // ---- 第 3 档判据：小程序宿主宣告的运行环境 ----

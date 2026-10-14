@@ -705,8 +705,11 @@ class ComposedStore<S extends State = State, A extends Actions = Actions, G exte
 
     // 使用微任务合并同一事件循环内的多次状态变化（基础库 3.15.0+ 原生支持 queueMicrotask）
     // 环境无 queueMicrotask 时降级为 Promise 微任务，保证通知仍能在微任务中执行
-    if (typeof queueMicrotask === 'function') {
-      queueMicrotask(runNotify)
+    // 同样经 globalThis 取值：小程序 AppService 里裸 `typeof queueMicrotask`
+    // 在未注入该 API 的基础库上会抛 ReferenceError 而不是返回 'undefined'
+    const microtask = (globalThis as { queueMicrotask?: (cb: () => void) => void }).queueMicrotask
+    if (typeof microtask === 'function') {
+      microtask(runNotify)
     } else {
       Promise.resolve().then(runNotify)
     }

@@ -60,7 +60,9 @@ function readMiniProgramEnvVersion(): MiniProgramEnvVersion | undefined {
  *
  * 注意：`__DEV__` 是构建期常量，tsc 不会替换它，运行时若未定义，
  * 不能直接 `!__DEV__`（在未声明全局时会 ReferenceError，且语义会被误判为生产）。
- * 因此使用 `typeof __DEV__ !== 'undefined'` 做存在性检查。
+ * 因此使用 `typeof __DEV__ !== 'undefined'` 做存在性检查，并**整体包在 try/catch 里**——
+ * 小程序 AppService 的全局是沙箱代理，未声明标识符连 `typeof` 都抛 ReferenceError
+ * （实测 `typeof process` / `typeof __DEV__` 皆抛），不吞掉就是每次判定都崩。
  *
  * 反向要求：读 `process.env.NODE_ENV` 时**不得**再加 `typeof process !== 'undefined'`
  * 门控（tests/unit/store/modules/utils.test.ts 锁定了函数体不含该门控）。
@@ -103,9 +105,25 @@ export function isProduction(): boolean {
   }
 
   // 2. 回退到构建期 __DEV__ 全局标志（需打包器替换；此处做存在性检查）
-  if (typeof __DEV__ !== 'undefined') {
-    cachedProductionState = !__DEV__
-    return cachedProductionState
+  try {
+    // 存在性检查必须是**裸标识符**，不能写成 globalThis.__DEV__：
+    // 打包器（DefinePlugin / esbuild --define）做的是文本替换，写成属性访问会被替成
+    // `globalThis.false` 这种废语法，替换直接失效。
+    if (typeof __DEV__ !== 'undefined') {
+      cachedProductionState = !__DEV__
+      return cachedProductionState
+    }
+  } catch {
+    // 这一档在小程序里**必然走到 catch**，不是防御性冗余。
+    // 小程序 AppService 的全局是沙箱代理：未声明的标识符连 `typeof` 都会抛 ReferenceError，
+    // 而不是标准语义里的 'undefined'。实测（开发者工具 1.06.x / 基础库 3.x）：
+    //   typeof __DEV__            → 抛 "__DEV__ is not defined"
+    //   typeof process            → 抛 "process is not defined"
+    //   typeof __任意未声明名__    → 同样抛
+    //   typeof performance / queueMicrotask / wx → 正常返回（这些是宿主已注入的）
+    // 所以这一档不包 try/catch 的话，isProduction() 在小程序里第一句就崩，
+    // 而 StateProxy 每次非法写入都要读它——等于把「写保护」变成「写即抛」。
+    // 此处吞掉后继续走下一档（宿主 envVersion），与第 1 档的 process 同理。
   }
 
   // 3. 小程序宿主宣告的运行环境：原生小程序里唯一无需接入方做任何注入就能拿到的自动判据。
