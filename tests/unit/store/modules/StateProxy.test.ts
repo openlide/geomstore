@@ -5,6 +5,7 @@
 
 import { StateProxyManager, createProxyCache } from '@/core/store/StateProxy.js'
 import type { InternalStateProtectionConfig } from '@/core/store/types.js'
+import type { State } from '@/types/store.js'
 
 describe('StateProxyManager', () => {
   // 默认配置
@@ -1100,6 +1101,37 @@ describe('StateProxyManager 补充覆盖', () => {
       expect(result).toBe(4)
       expect(state.items).toEqual([0, 1, 2, 3])
       warnSpy.mockRestore()
+    })
+  })
+
+  describe('Proxy [[Get]] 不变量与 _bindMethod 宿主分支', () => {
+    it('不可配置且不可写的函数属性原样返回（深代理 get 陷阱的不变量分支）', () => {
+      // 深代理的 get 陷阱对「既不可配置也不可写」的自有数据属性必须原样返回该值，
+      // 否则一次普通读取就抛 TypeError。对象子值一侧的不变量由 _readChild 兑现，
+      // 函数值（非对象）一侧走本分支：典型来路是把 $snapshot() 的深冻结结果
+      // setState 回状态后再读其上的方法
+      const { manager } = createManager()
+      const locked = (): string => 'locked'
+      const frozen = {} as Record<string, unknown>
+      Object.defineProperty(frozen, 'method', { value: locked, writable: false, configurable: false, enumerable: true })
+      const state = { svc: Object.freeze(frozen) }
+      const proxy = manager.createStateProxy(state, '') as { svc: Record<string, unknown> }
+
+      expect(proxy.svc.method).toBe(locked)
+    })
+
+    it('浅保护下根数组的函数属性原样返回（_bindMethod 的数组宿主分支）', () => {
+      // deep: false 时根数组不走数组代理而走深代理（浅保护的契约就是只保护顶层），
+      // 其 get 陷阱对函数值调 _bindMethod(obj=数组, ...)：数组方法对代理接收者没有
+      // #private / 内部槽位的品牌检查要求，原样返回即可。
+      // 这条分支只有「根数组 + 浅保护」能到达——数组一律走数组代理的其它路径
+      // 都不会以数组为 owner 调 _bindMethod
+      const { manager } = createManager({ deep: false })
+      const state = [1, 2, 3] as unknown as State
+      const proxy = manager.createStateProxy(state, '') as unknown as Record<string, unknown>
+
+      expect(typeof proxy.join).toBe('function')
+      expect((proxy.join as (...args: unknown[]) => string)('-')).toBe('1-2-3')
     })
   })
 })

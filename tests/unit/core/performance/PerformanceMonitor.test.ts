@@ -694,3 +694,73 @@ describe('maxSize 规范化', () => {
     expect(monitor.getMetrics()).toHaveLength(0)
   })
 })
+
+describe('环形缓冲与时钟降级的覆盖分支', () => {
+  const originalWx = (globalThis as any).wx
+  const rec = (operation: string) => ({
+    operation,
+    type: 'dispatch' as const,
+    duration: 1,
+    timestamp: Date.now(),
+    exceedThreshold: false,
+  })
+
+  afterEach(() => {
+    const g = globalThis as any
+    g.wx = originalWx
+  })
+
+  it('wx.getPerformance().now() 抛错时降级 Date.now，计时不崩', () => {
+    // 部分基础库的 getPerformance() 给了形状、now() 却是占位实现：读数抛错时
+    // 必须撤下缓存降级 Date.now，而不是让每次 start/end 都抛 TypeError
+    const g2 = globalThis as any
+    g2.wx = {
+      getPerformance: () => ({
+        now: () => {
+          throw new Error('not implemented')
+        },
+      }),
+    }
+
+    const monitor = new PerformanceMonitor()
+    const end = monitor.start('op')
+    end()
+
+    const metrics = monitor.getMetrics()
+    expect(metrics).toHaveLength(1)
+    expect(Number.isFinite(metrics[0].duration)).toBe(true)
+  })
+  it('容量不变但头游标非零时 setOptions 压缩环形缓冲，有序视图不变', () => {
+    // 满环后继续写入会让 _head 离开 0；此时 record 的 append 分支会把新条目排到
+    // 「较新的一半」之后、被 _ordered() 当作最旧。setOptions 压缩回有序视图并复位游标
+    const monitor = new PerformanceMonitor({ maxSize: 3 })
+    monitor.record(rec('a'))
+    monitor.record(rec('b'))
+    monitor.record(rec('c'))
+    monitor.record(rec('d')) // 覆盖最旧，_head = 1
+
+    const before = monitor.getMetrics().map((m) => m.operation)
+    expect(before).toEqual(['b', 'c', 'd'])
+
+    monitor.setOptions({ maxSize: 3 })
+    expect(monitor.getMetrics().map((m) => m.operation)).toEqual(before)
+  })
+
+  it('头游标绕回零时覆盖分支自洽（第六次写回归最旧位）', () => {
+    // 覆盖 _head 绕回的 ternary 真侧：maxSize=3 的环写满 6 条后 _head 归 0
+    const monitor = new PerformanceMonitor({ maxSize: 3 })
+    for (const name of ['a', 'b', 'c', 'd', 'e', 'f']) monitor.record(rec(name))
+
+    expect(monitor.getMetrics().map((m) => m.operation)).toEqual(['d', 'e', 'f'])
+  })
+
+  it('setOptions 缩到 0 时截断环形缓冲（slice(-0) 退化路径的显式判空）', () => {
+    const monitor = new PerformanceMonitor({ maxSize: 3 })
+    monitor.record(rec('a'))
+    monitor.record(rec('b'))
+    monitor.record(rec('c'))
+
+    monitor.setOptions({ maxSize: 0 })
+    expect(monitor.getMetrics()).toHaveLength(0)
+  })
+})

@@ -14,7 +14,7 @@
  * @file tests/types/compose-field-extraction.typecheck.ts
  */
 
-import { composeStore, createStore, createStoreTree } from '@/index.js'
+import { composeStore, createStore, createStoreTree, ComposedStore as ComposedStoreClass } from '@/index.js'
 import type { Actions, State, Store } from '@/types/store.js'
 import type { ComposedStore, ExtractActions, ExtractGetters, StoreLike, StoreTreeNode } from '@/types/compose.js'
 
@@ -178,6 +178,23 @@ const _storedName: string = composedShape.stores.someKey.name
 // @ts-expect-error 值类型是 Store，不是 any
 const _storedWrongType: number = composedShape.stores.someKey
 
+// ==================== P2-7：composeStore 返回类型的名义面 ====================
+
+// 公开入口导出的是实现类（含私有成员 ⇒ 名义类型）。返回类型改为「结构面 × 名义面」
+// 交叉后，该类标注可直接使用；此前一律 TS2740
+declare const p27StoreA: Store<{ a: number }>
+declare const p27StoreB: Store<{ b: string }>
+const _p27NominalAnnotated: ComposedStoreClass<{ a: number; b: string }> = composeStore([p27StoreA, p27StoreB])
+// 名义标注不损失结构面精度：getState 仍是合并后的精确状态
+const _p27NominalState: { a: number; b: string } = _p27NominalAnnotated.getState()
+// @ts-expect-error 名义面不是 any：不存在的成员必须被检查出来
+_p27NominalAnnotated.definitelyNotAStoreMethod?.()
+// Store 接口标注也能调出组合层的 destroy(false)：参数已上提接口（单 Store 忽略）
+const _p27ViaInterface: Store<{ a: number }> = p27StoreA
+_p27ViaInterface.destroy(false)
+_p27ViaInterface.destroy()
+_p27ViaInterface.destroy(undefined)
+
 // State 仍可作为显式约束使用（避免本文件只引用类型别名而漏掉 noUnusedLocals 之外的回归）
 const _stateConstraint: State = { count: 1 }
 
@@ -188,3 +205,4 @@ export { _childName, _childStoreName, _childStoreState, _rootStore, _uncheckedSt
 export { _stateKeysExact, _stateIdExact, _stateNameExact, _stateItemsExact }
 export { _actionsKeysExact, _actionsUnionIsNotNever, _renameSigExact, _addItemSigExact, _displayNameSigExact }
 export { _treeReturnTypeExact, _realTreeStoreName, _realUncheckedState }
+export { _p27NominalAnnotated, _p27NominalState, _p27ViaInterface }

@@ -44,5 +44,43 @@ describe('错误处理域边界分支', () => {
         }),
       ).toEqual({ count: 9 })
     })
+
+    it('onError 为 async 且 rejection 时被就地吸收，不外溢成 unhandled rejection（#149）', async () => {
+      // 同步 try/catch 只能兜住同步抛出：async 回调的 rejection 会逃逸成
+      // unhandled rejection（Node 严格模式下可终止进程）。实现检测 thenable 后
+      // 用 Promise.resolve 包装并挂 .catch——本用例锁的就是那条吸收分支
+      const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {})
+      const unhandled: unknown[] = []
+      const onUnhandled = (reason: unknown): void => {
+        unhandled.push(reason)
+      }
+      process.on('unhandledRejection', onUnhandled)
+
+      try {
+        const boundary = new ErrorBoundary({
+          onError: async () => {
+            throw new Error('reporter down')
+          },
+          fallback: { ok: false },
+          recoverable: true,
+        })
+
+        expect(
+          boundary.execute(() => {
+            throw new Error('boom')
+          }),
+        ).toEqual({ ok: false })
+
+        // 吸收回调挂在微任务上：冲刷到宏任务一轮，让 .catch 与 unhandledRejection
+        // 判定都跑完再断言
+        await new Promise((resolve) => setTimeout(resolve, 0))
+
+        expect(errorSpy).toHaveBeenCalledWith('[ErrorBoundary] Error in async onError callback:', expect.any(Error))
+        expect(unhandled).toEqual([])
+      } finally {
+        process.off('unhandledRejection', onUnhandled)
+        errorSpy.mockRestore()
+      }
+    })
   })
 })

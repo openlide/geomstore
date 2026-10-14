@@ -146,6 +146,29 @@ describe('生产模式下的日志静默', () => {
     expect(errorSpy).not.toHaveBeenCalled()
   })
 
+  it('钩子处理器抛错时生产模式同样静默（console 无输出），且 onError 仍收到事件', () => {
+    // 与上一条同口径：钩子挂在 setState / dispatch 热线上，持续抛错的处理器
+    // 若在生产每次写入都打印，会把发布包控制台刷满
+    const hooks = new mod.HookSystem()
+    const seen: unknown[] = []
+    const healthy = jest.fn()
+    hooks.on('onError', (error: unknown) => {
+      seen.push(error)
+    })
+    hooks.on('beforeSetState', () => {
+      throw new Error('hook boom')
+    })
+    hooks.on('beforeSetState', healthy)
+
+    expect(() => hooks.emit('beforeSetState', 'x', 1)).not.toThrow()
+
+    expect(healthy).toHaveBeenCalled()
+    expect(errorSpy).not.toHaveBeenCalled()
+    // 静默不等于丢失：异常经 onError 转投，监控侧仍可观测
+    expect(seen).toHaveLength(1)
+    expect((seen[0] as Error).message).toBe('hook boom')
+  })
+
   it('非命名空间模式下子 store 重名时静默（仅开发模式告警）', () => {
     const a = mod.createStore({ name: 'dup', state: { x: 1 } })
     const b = mod.createStore({ name: 'dup', state: { y: 2 } })

@@ -73,6 +73,33 @@ describe('extras/action/async-core', () => {
       await expect(retryWithBackoff(fn, { retries: Number.POSITIVE_INFINITY })).rejects.toThrow('finite fallback')
       expect(fn).toHaveBeenCalledTimes(1)
     })
+
+    it('抛出的对象里的敏感字段被脱敏后再进回调（token/password 只留占位）', async () => {
+      // toError 对非 Error 抛出值走 describeThrownObject：凭证类键名一律替换为占位符，
+      // 顶层原始值字段保留。规范化后的 Error 交给 shouldRetry/onRetry（向外抛的仍是
+      // 原始值），故经回调观察——这条 SENSITIVE_KEYS 分支没有用例触达过
+      const raw = { token: 'secret-token-value', password: 'p@ssw0rd', code: 500, nested: { deep: 1 } }
+      const seen: Error[] = []
+
+      await expect(
+        retryWithBackoff(() => Promise.reject(raw), {
+          retries: 1,
+          delay: 0,
+          shouldRetry: (err) => {
+            seen.push(err)
+            return false
+          },
+        }),
+      ).rejects.toBe(raw) // 对外抛出的仍是原始值（身份判断不被改写）
+
+      expect(seen).toHaveLength(1)
+      // 消息是投影结果的 JSON 串：敏感值不见、普通字段与占位符都在
+      expect(seen[0].message).toMatch(/"token":"\[details omitted\]"/)
+      expect(seen[0].message).toMatch(/"password":"\[details omitted\]"/)
+      expect(seen[0].message).toContain('"code":500')
+      expect(seen[0].message).not.toContain('secret-token-value')
+      expect(seen[0].message).not.toContain('p@ssw0rd')
+    })
   })
 
   describe('raceWithTimeout', () => {

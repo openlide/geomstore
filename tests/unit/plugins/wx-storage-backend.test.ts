@@ -235,6 +235,32 @@ describe('WxStorageBackend 的异步返回值守卫（必须先于归一化）',
       errorSpy.mockRestore()
     }
   })
+
+  it('返回 rejected Promise 时同步抛错且 rejection 被就地吸收（不留无人处理的拒绝）', async () => {
+    // 守卫发现异步后端后同步抛错，调用方不会再 await 那个 Promise：若它本身是
+    // rejected（polyfill 写失败），不挂 catch 就是 unhandledRejection。
+    // 吸收箭头（.catch(() => {})）只在「Promise 真的 rejected」时执行——
+    // 上一条用 resolved Promise 锁不到它
+    withWx({
+      setStorageSync: () => Promise.reject(new Error('disk full')),
+    })
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {})
+    const unhandled: unknown[] = []
+    const onUnhandled = (reason: unknown): void => {
+      unhandled.push(reason)
+    }
+    process.on('unhandledRejection', onUnhandled)
+
+    try {
+      expect(() => new WxStorageBackend().setItem('k', 'v')).toThrow(/wx\.setStorageSync\(\) 返回了 Promise/)
+      // 冲刷到宏任务一轮：吸收回调与 unhandledRejection 判定都跑完再断言
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      expect(unhandled).toEqual([])
+    } finally {
+      process.off('unhandledRejection', onUnhandled)
+      errorSpy.mockRestore()
+    }
+  })
 })
 
 describe('isWxStorageSyncAvailable（默认后端选择的唯一判定）', () => {
