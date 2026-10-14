@@ -118,6 +118,44 @@ import { persistencePlugin } from '@openlide/geomstore/extras/plugins'
 - **体积收益取决于宿主有没有打包器**：走 webpack / vite / esbuild 的宿主会把没 import 的子入口摇掉；只靠 npm + 开发者工具「构建 npm」的宿主则完全不是按需的——本包带 `miniprogram` 字段，微信把它当**小程序 npm 包**处理，构建时**整目录拷贝** `dist-weapp/`，既不看你的 `import` 也不做可达性分析，此时子路径分层换来的只是**运行时按需加载**，上传体积分文不省。产物体积请以 `pnpm build:weapp` 的输出为准，本文不抄实测数字
 - 环境差异（`wx.request` / `fetch` 上报、同步存储后端、基础库缺失的 `console.group`、定时器 `unref`）与生产模式的信号出口（需要被监控发现的问题统一走 `onError`）都已适配，具体契约见 [docs/CONCEPTS.md §11](./docs/CONCEPTS.md#调试表与持久化)，按症状排查见 [docs/FAQ.md](./docs/FAQ.md)
 
+### 运行环境要求与兼容性
+
+按开关 severity 排序，前两条是硬要求：
+
+| 要求                                                                             | 依赖它的功能                            | 来源与说明                                                                                                                             |
+| -------------------------------------------------------------------------------- | --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| 组件生命周期写在 `lifetimes` 内（**基础库 ≥ 3.15.0**）                           | `withComponentStore`                    | 写在配置顶层的 `attached` / `detached` 不会被调用 → `detached` 里那次自动退订不会发生，等于订阅泄漏。见 [FAQ](./docs/FAQ.md)           |
+| `Proxy` / `Reflect.ownKeys` / `Object.freeze` / `WeakMap` / `Symbol.toStringTag` | 状态保护代理、脏跟踪                    | 均已是不设降级路径的硬依赖（不是「有则更好」的能力探测）                                                                               |
+| 同步存储三件套 `wx.getStorageSync` / `setStorageSync` / `removeStorageSync`      | `persistencePlugin` 默认后端            | 缺任何一个就降级为**内存存储**（重启即失），生产经 `onError('persistence')` 上报，见 [CONCEPTS §11](./docs/CONCEPTS.md#调试表与持久化) |
+| `wx.getPerformance` / `performance.memory`                                       | `PerformanceMonitor` 的时间戳与内存采样 | 缺失时各自降级为 `Date.now()` / 不采样，不影响正确性                                                                                   |
+| `queueMicrotask`（基础库 3.15.0+）                                               | 组合层的合并通知                        | 有检测 + 降级到 Promise 微任务，见 `composeStore` 内注释                                                                               |
+
+**关于最低基础库**：本仓库**没有**按基础库版本跑过全版本矩阵（CI 只在 Node 上验证语义正确性），上表的 3.15.0 是 `lifetimes` 这一硬要求推出来的下界；只用 `createStore` + 持久化、不用组件集成的场景，理论上 2.x 现代内核即可，但同样未做版本实测。真机/ISV 分发前请在自己支持的最低基础库上跑一遍 [`examples/miniprogram`](./examples/miniprogram/README.md) 的 automator 冒烟。
+
+**Skyline**：未在 CI 或真机回归矩阵内（Node 侧无法验证渲染引擎差异）。若业务跑在 Skyline 上，请把上述冒烟当成必过项，而不是可选项。
+
+### 生产模式判定（原生小程序必读）
+
+库用 `isProduction()` 区分开发/生产两套行为（非法直写是抛错还是 warn/silent、是否打日志、严格校验是否开启），判定顺序是：
+
+1. `process.env.NODE_ENV`（构建期注入，最可靠）
+2. `__DEV__`（构建期标志，或运行时挂到 `globalThis`）
+3. **`wx.getAccountInfoSync().miniProgram.envVersion`**：`release` / `trial` → 生产，`develop` → 开发
+4. 兜底：**开发模式**（保护优先）
+
+第 3 档是原生小程序的救命档——这类宿主既没有 `process` 全局，官方构建也不替换 `__DEV__`，在只有前两档的版本里**正式版会一直按开发模式跑**：一次非法直写直接抛错、`stateProtection.productionHandler` 永不生效、生产日志静默承诺落空。
+
+因此：
+
+- 用 ≥ 0.9.0：装好即用，正式版与体验版自动按生产处理；
+- 用旧版本、或想在没有第 3 档的分支上自行兜住：在 `app.js` **最顶部**（早于任何 `createStore`）写一行
+
+  ```js
+  if (typeof __DEV__ === 'undefined') globalThis.__DEV__ = wx.getAccountInfoSync().miniProgram.envVersion !== 'develop'
+  ```
+
+引入 `trial`（体验版）算不算生产的取舍说明见 [docs/CONCEPTS.md §11](./docs/CONCEPTS.md#调试表与持久化)，可运行的完整写法见 [`examples/miniprogram/app.js`](./examples/miniprogram/app.js)。
+
 ### 把构建结果放进分包
 
 上一条说的「整目录拷贝」是微信的既定行为，库这一侧改不动——**手改 `node_modules` 里的文件去"裁剪"是跟安装器对抗，下次 `npm i` 会被覆盖回去，不要这么做**。官方给的使用者侧手段只有一类：**让 `miniprogram_npm` 落在分包**——或用配置指定输出位置（下文），或在分包目录各放一份自己的依赖（见本节末尾）。两个路径都从官方文档「npm 支持」而来，字段名以官方 project.config.json 的 schema 为准。

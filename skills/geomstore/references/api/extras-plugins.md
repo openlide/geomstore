@@ -43,10 +43,15 @@ export interface PersistenceOptions<S extends State = State> {
     /**
      * 防抖延迟（毫秒），默认 0（每次变更立即落盘）。
      *
-     * 默认立即写入可保证「变更即持久化」的可靠性，但每次通知都会执行一次
-     * `JSON.stringify(整棵状态树)` + 同步 `wx.setStorageSync`（小程序内为阻塞 I/O）。
-     * 高频更新场景（输入联想、拖拽、轮询）建议设为 300~500，或配合 `filter`
-     * 只持久化必要子集；插件卸载时会自动补写防抖窗口内未落盘的最后一次变更。
+     * 同步写保证「变更即持久化」，代价是每次通知都要付一次 `JSON.stringify(整棵状态树)` +
+     * 一次同步 `wx.setStorageSync`（小程序内为阻塞 I/O）。取舍是持久性优先：
+     * 非零默认会让「最后 N 毫秒的变更」在进程被强杀（无卸载钩子）时丢失，而插件的主要用途
+     * 就是别把用户数据弄丢——要不要换掉这个保证，交给接入方显式决定。
+     *
+     * **生产建议显式配**：通用场景 100；高频更新（输入联想、拖拽、轮询）300~500；
+     * 或配合 `filter` 只持久化必要子集。要求「每次写入立刻可见」的场景（交易凭证、
+     * 草稿自增 id）保持默认 0。插件卸载时会自动补写防抖窗口内未落盘的最后一次变更，
+     * 所以常规退订 / `destroy` 路径不会因防抖丢数据。
      */
     debounce?: number;
     /** 卸载插件时是否清除存储数据（默认 false，仅停止监听，保留已持久化的数据） */
@@ -160,6 +165,11 @@ export declare class WxStorageBackend implements StorageBackend {
      * 读失败不得退化成「键无数据」（随后一次落盘即覆盖真实数据），写/删失败不得静默成功
      * （`clearOnUninstall` 会据此报告「已清除」而数据仍在）。抽成一个方法是为了新增操作时
      * 不会只补上一半行为（只 log 不抛、或只抛不 log），错误文案也只需改一处
+     *
+     * 打印受 `isProduction()` 门控，与 `SubscriptionManager.notify` / `HookSystem.emit` 的
+     * 失败日志同口径：本处在写路径上，配额超限（`setStorageSync:fail exceed storage max size`）
+     * 时每一次后续写入都会重演；「看得见」这件事由调用方的上报通道负责——
+     * 本类把异常原样抛出，`persistencePlugin.saveState` 已转投 `emit('onError', …, 'persistence')`。
      */
     private run;
     getItem(key: string): string | null;

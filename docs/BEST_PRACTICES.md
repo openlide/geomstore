@@ -238,6 +238,12 @@
 - [ ] 验证缓存是否生效用的是 `getCached()` / `getCacheStats()`，不是 `getState()`（§6）
 - [ ] 组合层销毁子 store 后有显式存活判定（`store.destroyed`），没把「整棵组合还读得动」当成「所有子店都活着」（[CONCEPTS §12](./CONCEPTS.md#子-store-生命周期)）
 - [ ] 页面 / 组件卸载后不再触发写入；订阅由集成层自动清理（清理绑定不等于销毁 Store）（§9）
+- [ ] **确认生产模式判定真的生效**：真机正式版 / 体验版上 `isProduction()` 必须为 `true`（0.9.0 起由 `wx.getAccountInfoSync().miniProgram.envVersion` 自动判定；旧版本需在 `app.js` 顶部自己桥接 `__DEV__`）。判错时最典型的症状是「一次非法直写就崩」且 `productionHandler` 怎么配都不管用（§5 / [CONCEPTS §11](./CONCEPTS.md#生产模式怎么判定小程序)）
+- [ ] **`debounce` 已显式配置**（默认 0 = 每次变更同步写全量 JSON + 阻塞 I/O）：通用 `100`，高频 `300~500`；要求写即落盘的场景才留 `0`（[CONCEPTS §11](./CONCEPTS.md#调试表与持久化)）
+- [ ] **业务里的 `subscribe` 都显式传了 `{ readOnly: true }`**：漏写不会报错，只会把整 Store 的通知路径从零拷贝切成深拷贝（§5）
+- [ ] `maxSubscribers` 按「最大同屏 Page/Component 数 + 常驻订阅数」重估过，不是吃默认 50（§5）
+- [ ] `mapGetters` 的 getter 返回稳定引用（不在 getter 里内联构造对象 / `map()`），否则该键每次通知都整包下发（§9）
+- [ ] 支持的最低基础库上跑过一次 [`examples/miniprogram`](../examples/miniprogram/README.md) 的 automator 冒烟（宿主行为 Node 侧验证不到：Proxy / setData / 生命周期 / 同步存储）（§9）
 - [ ] 被 `withDebounce` / `withThrottle` 装饰的方法已在 `onUnload` / `detached` 里收尾（§9）
 - [ ] `stateProtection` 保持开启（§2）
 - [ ] 大对象的快照走异步并调过 `batchSize`；`success` 与 `errors` 已接入监控（§7）

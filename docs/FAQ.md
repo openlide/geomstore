@@ -219,6 +219,30 @@ store action 的 `this` 是 `ActionManager` 为一次 dispatch 现造的 action 
 - 落盘失败、`clearOnUninstall` 删除失败
 - action 收尾链路自身抛错
 - 订阅者被驱逐：达到 `maxSubscribers` 触发 `evict-oldest` 时发一次 `Error`（第二参 `'subscribe'`，消息带被驱逐监听器的名字与上限）
+- 钩子处理器 / 监听器自身抛错（`onError` 的 `source` 是钩子名）
+
+### 小程序里怎么确认「生产模式」真的生效了？
+
+这条要单独验，因为判错的代价很隐蔽：`isProduction()` 为 `false` 时非法直写会**抛错**、`stateProtection.productionHandler` 三个取值全部不生效、生产日志静默承诺落空，而表面上一切正常。
+
+判定顺序见 [CONCEPTS §11](./CONCEPTS.md#生产模式怎么判定小程序)。最快自查：
+
+```js
+// 0.9.0 起无需任何配置：正式版 / 体验版自动判定为生产
+console.log(wx.getAccountInfoSync().miniProgram.envVersion) // 'release' | 'trial' | 'develop'
+```
+
+- 开发者工具 / 真机调试打印 `develop`：按设计仍是开发模式（保留最严格的报错栈）；
+- 体验版打印 `trial`、正式版 `release`：应为生产模式。若不放心，`app.js` 里挂一个探针，
+  比如在生产模式下非法直写应当只 `console.warn`、不抛错；
+- 用 0.9.0 之前的版本：这一档环境信号还不存在，真机上会恒按开发模式跑。
+  在 `app.js` **最顶部**（早于任何 `createStore`）补一行即可：
+
+  ```js
+  if (typeof __DEV__ === 'undefined') globalThis.__DEV__ = wx.getAccountInfoSync().miniProgram.envVersion !== 'develop'
+  ```
+
+  完整可运行版本见 [`examples/miniprogram/app.js`](../examples/miniprogram/app.js)。
 
 ### 插件安装失败会留下半成品吗？
 

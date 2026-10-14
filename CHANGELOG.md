@@ -37,7 +37,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `wechat-enterprise`：`syncInFlight` 标记在 `logout()` 与 `login()` 中未重置，旧实例的在途同步若未结束，新会话的 `onShow` 会误判为「仍有同步在跑」并跳过队列同步。两处 teardown 路径均显式重置。
 - `initBackgroundSync`：全局 App 首次就位（`installedAppWrapper === null`）与外部替换的告警文案相同，前者并非「被替换」。区分两种场景，首次就位用「已就位」、外部替换用「已被替换」。
 
+**生产可行性评估出的缺陷修复（2026-10-14，第二轮）**
+
+- **`isProduction()` 接进小程序的运行环境信号（P0）**：原生小程序此前**恒按开发模式运行**。判定顺序在既有 `process.env.NODE_ENV` → `__DEV__` 之后新增第三档 `wx.getAccountInfoSync().miniProgram.envVersion`——`release` / `trial` 判为生产，`develop`（含 IDE 预览与真机调试）判为开发；API 抛错或取值未知时按「无信号」继续走下一档，最后才兜底为开发模式。前两档信号在原生小程序里都不存在（没有 `process` 全局、官方构建不替换 `__DEV__`、产物不做 `--define`），于是正式版一直走在开发分支上：非法状态直写**直接抛错**（而非生产承诺的 `warn` / `silent`）、`stateProtection.productionHandler` 三个取值全部不生效、`ARCHITECTURE.md` 承诺的「生产模式日志静默」全线落空。`trial` 按生产处理的理由是它跑的就是待发布的那一份产物，「仅限内部可见」不等于「可以崩」；要在体验版复现严格行为请显式 `__DEV__ = true`（优先级高于宿主信号）。新增的读取抽成独立函数，`isProduction` 函数体仍满足既有的反内联锁定（不含 `typeof process`、保留 `process.env.NODE_ENV` 字面量）。
+- **`WxStorageBackend` 的故障日志并入生产静默口径**：三个方法失败时的 `console.error` 此前不受 `isProduction()` 门控，与 `SubscriptionManager.notify`、`HookSystem.emit` 两处不一致（且这是写路径，配额超限会让后续每次落盘都重演）。错误仍原样抛出，`persistencePlugin.saveState` 照常转投 `emit('onError', …, 'persistence')`，可见性没有削弱。
+
 ### Changed
+
+- **`persistencePlugin` 的 `debounce` 保持默认 `0`，本次只把取舍固化下来**：原计划把默认值改成 100ms，改完 20 个既有用例全部反转——说明它不只是默认值，而是「变更即落盘」这条对外契约的一部分。非零默认意味着最后 N 毫秒的变更在进程被强杀且未走卸载时会丢，而「别把用户数据弄丢」正是持久化的用途；同类实现（zustand persist、redux-persist 默认配置）同样取同步写。故默认值不动，改为把理由写进常量注释与 `PersistenceOptions.debounce`，并在 CONCEPTS / API / BEST_PRACTICES 给出建议取值（通用 100、高频 300~500、要求写即落盘留 0）。**默认 0 的代价**（每次 setState 一次全量 `JSON.stringify` + 一次同步 `wx.setStorageSync` 阻塞 I/O）现在是文档里的显式条款，生产没有理由不去配它。
+
+**本轮其余 Changed 项**
 
 - **`withComponentStore` 参数命名**：返回函数的入参由 `ComponentConfig` 改为 `componentConfig`（camelCase），避免遮蔽同名导入类型 `ComponentConfig`。纯内部重命名，调用方代码不受影响。
 - **`ComposedStore` 类泛型化**：`class ComposedStore<S extends State = State>` 增加 `A extends Actions`、`G extends Getters<S>` 两个泛型参数，`actions` / `getters` / `getter()` 因此是精确类型而非 `Record<string, (...args: unknown[]) => unknown>`。此前 `composeStore()` 返回结构化的 `Store<…>`，而 `ComposedStore` 类含 `private` 成员属名义类型，`const s: ComposedStore = composeStore([...])` 过不了检查（TS2740）。现 `composeStore` 返回「结构面 × 名义面」交叉类型，该标注成立。**对调用方是放宽**：既有的 `Store<…>` 标注、`instanceof` 判断、交给推断三种写法全部照旧，新增的只是「可以用 `ComposedStore` 标注」这一项能力。
@@ -55,6 +64,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `StateProxy` 中 `hasInternalSlot` 的 `default` 分支按仓库约定加带原因的 `istanbul ignore`：`switch` 已穷举 slot-bearing 内建清单，该分支不可达。
 - **文档门禁 G17 补反向判据**：原先只做「源码里的钩子名必须出现在文档里」这一个方向，幽灵钩子因此漏网。新增断言——文档语料里出现的 `` `beforeXxx` `` / `` `afterXxx` `` 形态标识符必须是 `HookName` 的真实成员（文档里当作占位符使用的 `beforeXxx` 显式豁免）。
 - **文档门禁 G19 补 `extras` 零跨依赖守卫**：`ARCHITECTURE §2` 写了「`extras/*` 之间不互相依赖」却无机器守卫。新增判据扫描 `src/extras/<子目录>/**` 指向同级其他子目录的 import（聚合桶 `extras/*.ts` 豁免）。当前实测零跨依赖，守卫直接通过；已做变异验证——注入一条跨依赖即红、还原即绿。
+- **源码约定门禁 G20（新增文件 `tests/unit/regression/readonly-subscription-gate.test.ts`）**：`store.subscribe(cb)` 不传第二参即按**可写**注册，代价不是多拷一份，而是把整个 Store 的通知路径从零拷贝切成深拷贝（每次通知「1 份只读共享深拷贝 + 每个可写注册各 1 份」），且 TS 类型完全看不出差别。默认值改成 `true` 属破坏性变更（依赖「可在回调里就地改载荷」的代码会从「能改」变成「静默改不动」），故保持默认、改用门禁兜住 `src/**` 的每一处内部订阅：必须有第二实参；第二实参是对象字面量时必须含 `readOnly`（写 `{}` 等价于没写）；`AsyncBatchNotifier` 的自有 `subscribe` 按接收者排除。已用 AST（`ts.createSourceFile`）而非正则实现，并通过「临时注入一份违规源码 → 红、删除后 → 绿」的变异验证。
+- **`isProduction()` 新增第 3 档判据的配套用例**：`tests/unit/store/modules/utils.test.ts` 补 9 例——`release` / `trial` → true，`develop` → false，无 `getAccountInfoSync` / API 抛错 / `envVersion` 取值未知 / 返回空对象 → 回退兜底，以及显式信号（`NODE_ENV`、`__DEV__`）优先于宿主信号。
+- **生产静默集合补一例**：`tests/unit/store/production-mode-silence.test.ts` 增加 `WxStorageBackend` 读写失败「控制台静默但仍抛出」的断言。
+- **小程序 demo 工程（`examples/miniprogram/`，新增）**：把上线前必做的配置做成可运行实例——P0 的 `__DEV__` 环境桥接、P1 的 `persistencePlugin({ debounce: 100, filter })`、P1 的 `onError` 上报挂载；三张页面分别验证页面集成与持久化、多级页面栈下的订阅存活与退订、组件订阅容量（20 个共享 store，可加到 60 触发 `evict-oldest` 并确认 `onError('subscribe')` 可见）；配 `.mjs` 版 automator 冒烟（冷启动 / 防抖落盘 / 热启动恢复 / 多级页面栈 / 组件容量 / 前后台 / 环境信号 / onerror 可见性），宿主能力缺失的断言按 skip 处理、`--strict` 下按失败计。**不进 CI**：automator 依赖有 GUI 的开发者工具实例；定位为发版前的人工最后一道。`examples/miniprogram` 已加入 `tools/tsconfig.examples.json` 的 exclude（它是 `.js` 小程序工程，不该由 TS 示例门禁挑错），其 `miniprogram_npm/` 已加入 `.gitignore`。
 
 ## [0.8.3] - 2026-10-13
 
