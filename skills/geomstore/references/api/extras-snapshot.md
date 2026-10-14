@@ -132,7 +132,7 @@ export interface SnapshotErrorContext {
 
 ### `SnapshotManager`
 
-```ts
+````ts
 /**
  * 增强型快照管理器
  *
@@ -252,7 +252,7 @@ export declare class SnapshotManager {
      */
     private getDataType;
 }
-```
+````
 
 ### `SnapshotMetadata`
 
@@ -477,7 +477,7 @@ export declare function createSnapshotAsync<T>(data: T, options?: Partial<AsyncS
 
 ### `default`
 
-```ts
+````ts
 /**
  * 增强型快照管理器
  *
@@ -597,4 +597,4 @@ export declare class SnapshotManager {
      */
     private getDataType;
 }
-```
+````

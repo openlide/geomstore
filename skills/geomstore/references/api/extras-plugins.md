@@ -87,7 +87,7 @@ export interface StorageBackend {
 
 ### `TimeTravelOptions`
 
-```ts
+````ts
 /**
  * 时间旅行选项
  *
@@ -128,7 +128,7 @@ export interface TimeTravelOptions<S extends State = State> {
     /** 是否自动记录 */
     autoRecord?: boolean;
 }
-```
+````
 
 ### `WxStorageBackend`
 

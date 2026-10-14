@@ -115,7 +115,7 @@ export interface SelectorCacheItem<R> {
 
 ### `SelectorComposer`
 
-```ts
+````ts
 /**
  * 选择器组合器类
  *
@@ -408,7 +408,7 @@ export declare class SelectorComposer {
      */
     static createThrottledSelector<S extends State, R>(selector: Selector<S, R>, interval?: number): Selector<S, R>;
 }
-```
+````
 
 ### `SelectorComposerInput`
 
@@ -443,7 +443,7 @@ export interface SelectorComposerInput<S extends State = Record<string, unknown>
 
 ### `SelectorFactory`
 
-```ts
+````ts
 /**
  * 选择器工厂类
  *
@@ -629,7 +629,7 @@ export declare class SelectorFactory<S extends State = Record<string, unknown>, 
      */
     withCacheResult(): Selector<S, SelectorResult<R>>;
 }
-```
+````
 
 ### `SelectorOptions`
 
@@ -720,7 +720,7 @@ export type SelectorResult<R> = {
 
 ### `createMemoizedSelector`
 
-```ts
+````ts
 /**
  * 创建记忆化选择器
  *
@@ -755,11 +755,11 @@ export type SelectorResult<R> = {
  * ```
  */
 export declare function createMemoizedSelector<S extends State, R>(selectorFn: Selector<S, R>, equalityFn?: (a: any, b: any) => boolean): Selector<S, R>;
-```
+````
 
 ### `createParametricSelector`
 
-```ts
+````ts
 /**
  * 创建参数化选择器
  *
@@ -821,11 +821,11 @@ export declare function createParametricSelector<S extends State, P, R>(selector
     ttl?: number;
     maxEntries?: number;
 }): ParametricSelectorFactory<S, P, R>;
-```
+````
 
 ### `createRetrySelector`
 
-```ts
+````ts
 /**
  * 创建重试选择器
  *
@@ -857,11 +857,11 @@ export declare function createParametricSelector<S extends State, P, R>(selector
  * ```
  */
 export declare function createRetrySelector<S extends State, R>(selector: Selector<S, R>, options?: RetrySelectorOptions): Selector<S, R>;
-```
+````
 
 ### `createRetrySelectorAsync`
 
-```ts
+````ts
 /**
  * 创建可延迟重试的异步选择器
  *
@@ -895,11 +895,11 @@ export declare function createRetrySelector<S extends State, R>(selector: Select
  * ```
  */
 export declare function createRetrySelectorAsync<S extends State, R>(selector: Selector<S, R>, options?: AsyncRetrySelectorOptions): (state: S) => Promise<R>;
-```
+````
 
 ### `createSelector`
 
-```ts
+````ts
 /**
  * 创建选择器
  *
@@ -963,11 +963,11 @@ export declare function createRetrySelectorAsync<S extends State, R>(selector: S
 export declare function createSelector<S extends State, R>(selectorFn: Selector<S, R>, options?: SelectorOptions): Selector<S, R> & {
     factory: SelectorFactory<S, R>;
 };
-```
+````
 
 ### `createStructuredSelector`
 
-```ts
+````ts
 /**
  * 创建组合选择器
  *
@@ -1003,4 +1003,4 @@ export declare function createSelector<S extends State, R>(selectorFn: Selector<
 export declare function createStructuredSelector<S extends State, R extends object = Record<string, unknown>>(selectors: {
     [K in keyof R]?: Selector<S, R[K]>;
 }): Selector<S, R>;
-```
+````

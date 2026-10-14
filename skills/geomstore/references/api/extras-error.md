@@ -11,7 +11,7 @@
 
 ### `ActionError`
 
-```ts
+````ts
 /**
  * Action相关错误
  *
@@ -39,11 +39,11 @@
 export declare class ActionError extends GeomStoreError {
     constructor(message: string, code: string, context?: Record<string, unknown>, cause?: unknown);
 }
-```
+````
 
 ### `ComposeError`
 
-```ts
+````ts
 /**
  * Compose相关错误
  *
@@ -71,11 +71,11 @@ export declare class ActionError extends GeomStoreError {
 export declare class ComposeError extends GeomStoreError {
     constructor(message: string, code: string, context?: Record<string, unknown>, cause?: unknown);
 }
-```
+````
 
 ### `ErrorBoundary`
 
-```ts
+````ts
 /**
  * 错误边界类
  *
@@ -292,7 +292,7 @@ export declare class ErrorBoundary<S = unknown, F = undefined> {
      */
     getLastError(): Error | undefined;
 }
-```
+````
 
 ### `ErrorBoundaryOptions`
 
@@ -372,13 +372,17 @@ export declare enum ErrorCode {
  *
  * 另：`withErrorBoundary()` 不传泛型时 `F` 落回 `unknown`，而 `unknown | X` 仍是 `unknown`，
  * 类型层连「两种形态」都表达不出来，此时判别只剩运行时 `typeof`。
+ *
+ * **注意参数顺序**：`ErrorFallback<F, S>` 的回退值类型 `F` 在前、状态类型 `S` 在后；
+ * 而 `ErrorBoundaryOptions<S, F>` 的顺序相反（状态在前）。桥接点 `ErrorBoundaryOptions.fallback`
+ * 的类型是 `ErrorFallback<F, S>`（按本类型的顺序传参）。消费者手写泛型时注意不要混淆。
  */
 export type ErrorFallback<F = unknown, S = unknown> = F | ((error: Error, currentState: S | undefined) => F);
 ```
 
 ### `GeomStoreError`
 
-```ts
+````ts
 /**
  * GeomStore - 自定义错误类体系
  *
@@ -525,11 +529,11 @@ export declare class GeomStoreError extends Error {
      */
     getFriendlyMessage(): string;
 }
-```
+````
 
 ### `PluginError`
 
-```ts
+````ts
 /**
  * Plugin相关错误
  *
@@ -556,11 +560,11 @@ export declare class GeomStoreError extends Error {
 export declare class PluginError extends GeomStoreError {
     constructor(message: string, code: string, context?: Record<string, unknown>, cause?: unknown);
 }
-```
+````
 
 ### `SelectorError`
 
-```ts
+````ts
 /**
  * Selector相关错误
  *
@@ -587,11 +591,11 @@ export declare class PluginError extends GeomStoreError {
 export declare class SelectorError extends GeomStoreError {
     constructor(message: string, code: string, context?: Record<string, unknown>, cause?: unknown);
 }
-```
+````
 
 ### `StateError`
 
-```ts
+````ts
 /**
  * State相关错误
  *
@@ -619,11 +623,11 @@ export declare class SelectorError extends GeomStoreError {
 export declare class StateError extends GeomStoreError {
     constructor(message: string, code: string, context?: Record<string, unknown>, cause?: unknown);
 }
-```
+````
 
 ### `ValidationError`
 
-```ts
+````ts
 /**
  * 验证错误
  *
@@ -653,11 +657,11 @@ export declare class StateError extends GeomStoreError {
 export declare class ValidationError extends GeomStoreError {
     constructor(message: string, code: string, context?: Record<string, unknown>, cause?: unknown);
 }
-```
+````
 
 ### `createError`
 
-```ts
+````ts
 /**
  * 根据错误代码创建错误实例
  *
@@ -678,7 +682,7 @@ export declare class ValidationError extends GeomStoreError {
  * ```
  */
 export declare function createError(code: ErrorCode, message: string, context?: Record<string, unknown>, cause?: unknown): GeomStoreError;
-```
+````
 
 ### `isActionError`
 
@@ -706,7 +710,7 @@ export declare function isComposeError(error: unknown): error is ComposeError;
 
 ### `isGeomStoreError`
 
-```ts
+````ts
 /**
  * 检查是否为GeomStoreError
  *
@@ -727,7 +731,7 @@ export declare function isComposeError(error: unknown): error is ComposeError;
  * ```
  */
 export declare function isGeomStoreError(error: unknown): error is GeomStoreError;
-```
+````
 
 ### `isPluginError`
 
@@ -779,7 +783,7 @@ export declare function isValidationError(error: unknown): error is ValidationEr
 
 ### `withErrorBoundary`
 
-```ts
+````ts
 /**
  * 创建错误边界装饰器
  *
@@ -802,4 +806,4 @@ export declare function isValidationError(error: unknown): error is ValidationEr
  * ```
  */
 export declare function withErrorBoundary(options?: ErrorBoundaryOptions): (_target: unknown, _propertyKey: string | symbol, descriptor: PropertyDescriptor) => PropertyDescriptor;
-```
+````

@@ -745,7 +745,7 @@ export type InferGetterReturn<G extends Record<string, (state: any) => any>, K e
 
 ### `LRUCache`
 
-```ts
+````ts
 /**
  * 增强型LRU缓存类
  *
@@ -1080,7 +1080,7 @@ export declare class LRUCache<K, V> {
      */
     private evictLRU;
 }
-```
+````
 
 ### `LRUCacheStats`
 
@@ -1246,7 +1246,7 @@ export type PageReservedKeys = 'data' | 'setData' | 'onLoad' | 'onShow' | 'onHid
 
 ### `PageThis`
 
-```ts
+````ts
 /**
  * 页面方法 this 类型（原生精确推导）
  *
@@ -1276,11 +1276,11 @@ export type PageThis<S extends State, A extends Actions, G extends Getters<S> = 
         syncSelectedTab?: () => void;
     } | undefined;
 };
-```
+````
 
 ### `Plugin`
 
-```ts
+````ts
 /**
  * 插件接口
  *
@@ -1298,7 +1298,7 @@ export interface Plugin<S extends State = State> {
     name: string;
     install: PluginHook<S>;
 }
-```
+````
 
 ### `PluginHook`
 
@@ -1795,7 +1795,7 @@ export interface StoreOptions<S extends State = State, A extends Actions = Actio
 
 ### `StoreRegistry`
 
-```ts
+````ts
 /**
  * Store注册表类
  *
@@ -2119,7 +2119,7 @@ export declare class StoreRegistry {
      */
     restoreSnapshot(snapshot: Record<string, unknown>): void;
 }
-```
+````
 
 ### `StoreTreeNode`
 
@@ -2203,7 +2203,7 @@ declare function composeStore<Stores extends readonly StoreLike[]>(stores: [...S
 
 ### `createStore`
 
-```ts
+````ts
 /**
  * 创建 Store 实例，支持完整的类型推断
  *
@@ -2237,8 +2237,8 @@ declare function composeStore<Stores extends readonly StoreLike[]>(stores: [...S
  */
 export declare function createStore<S extends State, A extends Actions = Actions, G extends Getters<S> = Getters<S>>(options: FactoryStoreConfig<S, A, G>): Store<S, A, G>;
 
-export declare function createStore<S extends State, A extends Actions = Actions, G extends Getters<S> = Getters<S>>(options: LiteralStoreConfig<S, A, G>): Store<S, A, G>;
-```
+export declare function createStore<S extends Exclude<State, (...args: never[]) => unknown>, A extends Actions = Actions, G extends Getters<S> = Getters<S>>(options: LiteralStoreConfig<S, A, G>): Store<S, A, G>;
+````
 
 ### `createStoreTree`
 
@@ -2484,7 +2484,7 @@ export declare function withAppStore<S extends State, A extends Actions, G exten
 
 ### `withComponentStore`
 
-```ts
+````ts
 /**
  * Component 混入函数
  *
@@ -2537,11 +2537,11 @@ export declare function withComponentStore<S extends State, A extends Actions, G
         data: infer D;
     } ? D : object) & ExtractPageData<S, O, G>;
 };
-```
+````
 
 ### `withPageStore`
 
-```ts
+````ts
 /**
  * Page 混入函数
  *
@@ -2594,4 +2594,4 @@ export declare function withPageStore<S extends State, A extends Actions, G exte
         data: infer D;
     } ? D : object) & ExtractPageData<S, O, G>;
 };
-```
+````

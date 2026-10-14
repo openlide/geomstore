@@ -263,7 +263,7 @@ export interface PerformanceMetrics {
 
 ### `PerformanceMonitor`
 
-```ts
+````ts
 /**
  * 性能监控器实现类
  *
@@ -593,7 +593,7 @@ export declare class PerformanceMonitor implements PerformanceMonitorInterface {
      * monitor.setOptions({ trackMemory: true })
      * ```
      */
-    setOptions(options: PerformanceOptions): void;
+    setOptions(options?: PerformanceOptions): void;
     /**
      * 默认日志记录器
      *
@@ -698,7 +698,7 @@ export declare class PerformanceMonitor implements PerformanceMonitorInterface {
      */
     exportJSON(): string;
 }
-```
+````
 
 ### `PerformanceOptions`
 
@@ -787,7 +787,7 @@ analyzerPlugin: Plugin
 
 ### `createAnalyzerPlugin`
 
-```ts
+````ts
 /**
  * 性能分析插件
  *
@@ -892,4 +892,4 @@ analyzerPlugin: Plugin
  * ```
  */
 export declare function createAnalyzerPlugin(options?: PerformanceOptions): Plugin;
-```
+````

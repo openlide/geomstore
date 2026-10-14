@@ -91,7 +91,7 @@ export declare function cleanupBindings(unbinds: Array<() => void>): void;
 
 ### `exposeStoreAPI`
 
-```ts
+````ts
 /**
  * 暴露 Store API 到目标实例
  *
@@ -112,11 +112,11 @@ export declare function cleanupBindings(unbinds: Array<() => void>): void;
  * ```
  */
 export declare function exposeStoreAPI<S extends State = State>(target: Record<string, unknown>, store: Store<S>): () => void;
-```
+````
 
 ### `parseMapping`
 
-```ts
+````ts
 /**
  * 解析映射配置，返回统一的键值对映射
  *
@@ -141,11 +141,11 @@ export declare function exposeStoreAPI<S extends State = State>(target: Record<s
  * ```
  */
 export declare function parseMapping(mapping: ReadonlyArray<PropertyKey> | Record<string, PropertyKey>): Record<string, string>;
-```
+````
 
 ### `performAutoInject`
 
-```ts
+````ts
 /**
  * 自动注入 Store 值到目标对象
  *
@@ -172,7 +172,7 @@ export declare function parseMapping(mapping: ReadonlyArray<PropertyKey> | Recor
  * ```
  */
 export declare function performAutoInject<S extends State = State>(_target: unknown, injectMapping: Record<string, string>, store: Store<S>, setter: (updates: Record<string, unknown>) => void): void;
-```
+````
 
 ### `withAppStore`
 
@@ -182,7 +182,7 @@ export declare function withAppStore<S extends State, A extends Actions, G exten
 
 ### `withComponentStore`
 
-```ts
+````ts
 /**
  * Component 混入函数
  *
@@ -235,11 +235,11 @@ export declare function withComponentStore<S extends State, A extends Actions, G
         data: infer D;
     } ? D : object) & ExtractPageData<S, O, G>;
 };
-```
+````
 
 ### `withPageStore`
 
-```ts
+````ts
 /**
  * Page 混入函数
  *
@@ -292,4 +292,4 @@ export declare function withPageStore<S extends State, A extends Actions, G exte
         data: infer D;
     } ? D : object) & ExtractPageData<S, O, G>;
 };
-```
+````

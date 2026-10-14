@@ -73,7 +73,7 @@ export interface ActionExecutionContext<S extends State = State, A extends Actio
 
 ### `ActionExecutor`
 
-```ts
+````ts
 /**
  * Action执行器类
  *
@@ -382,11 +382,11 @@ export declare class ActionExecutor<A extends Actions = AsyncActions> {
      */
     getAllStats(): Record<string, ActionStats>;
 }
-```
+````
 
 ### `ActionLoader`
 
-```ts
+````ts
 /**
  * Action加载状态管理器
  *
@@ -451,11 +451,15 @@ export declare class ActionLoader {
      */
     private stateGeneration;
     /**
-     * 最近一次**实际调用**用到的 setState
+     * 每个状态键最近一次**实际写入**用到的 setState
      *
      * `clear()` 与换键的 `setOptions()` 据此给旧键补写复位值：内部记账被清空后已无
      * 在途调用来纠正 store，`loading: true` 会永久卡住。
      * 需要复位的键直接取自下面的几张表（键即状态键），无需另设登记表。
+     *
+     * 多宿主共享同一 ActionLoader 时，每个宿主有自己的 setState（bind 到各自的 store）。
+     * 单槽 `lastSetState` 只留得住最后一个宿主，`clear()` 时其它宿主的键拿不到正确的
+     * 写入函数、复位值写不到对应的 store 上。改成按键登记，每个键记住自己的写入函数。
      *
      * 赋值点在 wrapper 内部（每次调用登记一次），而不是只在 `wrap()` 当时：本类的常见
      * 用法是 wrap 一次、复用同一个 wrapper 反复调用，而 `clear()` 会把本字段清成
@@ -463,7 +467,7 @@ export declare class ActionLoader {
      * 下一次 clear()/setOptions() 就拿不到写入函数，复位值一个也写不出去。
      * @private
      */
-    private lastSetState;
+    private lastSetStateByKey;
     /**
      * 配置选项（由 {@link normalizeActionLoaderOptions} 补齐，缺省值见 {@link ACTION_LOADER_DEFAULTS}）
      * @private
@@ -742,7 +746,7 @@ export declare class ActionLoader {
      */
     setOptions(options: Partial<ActionLoaderOptions>): void;
 }
-```
+````
 
 ### `ActionLoaderOptions`
 
@@ -848,7 +852,7 @@ export interface ActionStats {
 
 ### `ActionUtils`
 
-```ts
+````ts
 /**
  * Action工具类
  *
@@ -911,7 +915,7 @@ export declare class ActionUtils<A extends Actions = AsyncActions> {
     execute<K extends keyof A>(actionName: K, ...args: Parameters<A[K]>): Promise<Awaited<ReturnType<A[K]>>>;
     execute<K extends keyof A>(actions: A, actionName: K, ...args: Parameters<A[K]>): Promise<Awaited<ReturnType<A[K]>>>;
 }
-```
+````
 
 ### `ActionUtilsOptions`
 
@@ -1169,7 +1173,7 @@ export interface TimeoutError extends Error {
 
 ### `cancelDebouncedCalls`
 
-```ts
+````ts
 /**
  * 取消宿主上挂起的防抖调用（**不执行**原方法）
  *
@@ -1196,11 +1200,11 @@ export interface TimeoutError extends Error {
  * ```
  */
 export declare function cancelDebouncedCalls(host: unknown, method?: string | symbol): void;
-```
+````
 
 ### `cancelThrottledCalls`
 
-```ts
+````ts
 /**
  * 取消宿主上挂起的节流补发（**不执行**原方法）
  *
@@ -1226,11 +1230,11 @@ export declare function cancelDebouncedCalls(host: unknown, method?: string | sy
  * ```
  */
 export declare function cancelThrottledCalls(host: unknown, method?: string | symbol): void;
-```
+````
 
 ### `createDecorator`
 
-```ts
+````ts
 /**
  * 创建Action装饰器
  *
@@ -1269,7 +1273,7 @@ export declare function cancelThrottledCalls(host: unknown, method?: string | sy
  * ```
  */
 export declare function createDecorator(options?: DecoratorOptions): MethodDecorator;
-```
+````
 
 ### `disposeDebouncedState`
 
@@ -1352,7 +1356,7 @@ export declare function flushThrottledCalls(host: unknown, method?: string | sym
 
 ### `withCache`
 
-```ts
+````ts
 /**
  * 创建缓存装饰器
  *
@@ -1409,11 +1413,11 @@ export declare function flushThrottledCalls(host: unknown, method?: string | sym
  * ```
  */
 export declare function withCache(options?: CacheDecoratorOptions): MethodDecorator;
-```
+````
 
 ### `withDebounce`
 
-```ts
+````ts
 /**
  * GeomStore - 防抖装饰器
  *
@@ -1482,11 +1486,11 @@ export declare function withCache(options?: CacheDecoratorOptions): MethodDecora
  * ```
  */
 export declare function withDebounce(delay?: number): MethodDecorator;
-```
+````
 
 ### `withLoading`
 
-```ts
+````ts
 /**
  * 创建withLoading装饰器
  *
@@ -1517,11 +1521,11 @@ export declare function withDebounce(delay?: number): MethodDecorator;
  * ```
  */
 export declare function withLoading(options?: ActionLoaderOptions): MethodDecorator;
-```
+````
 
 ### `withLog`
 
-```ts
+````ts
 /**
  * 创建日志装饰器
  *
@@ -1562,11 +1566,11 @@ export declare function withLoading(options?: ActionLoaderOptions): MethodDecora
  * ```
  */
 export declare function withLog(name?: string, options?: LogDecoratorOptions): MethodDecorator;
-```
+````
 
 ### `withRetry`
 
-```ts
+````ts
 /**
  * 创建重试装饰器
  *
@@ -1611,11 +1615,11 @@ export declare function withLog(name?: string, options?: LogDecoratorOptions): M
  * ```
  */
 export declare function withRetry(options?: RetryDecoratorOptions): MethodDecorator;
-```
+````
 
 ### `withThrottle`
 
-```ts
+````ts
 /**
  * 创建节流装饰器
  *
@@ -1646,11 +1650,11 @@ export declare function withRetry(options?: RetryDecoratorOptions): MethodDecora
  * ```
  */
 export declare function withThrottle(interval?: number, options?: ThrottleDecoratorOptions): MethodDecorator;
-```
+````
 
 ### `withTimeout`
 
-```ts
+````ts
 /**
  * GeomStore - 超时装饰器
  *
@@ -1709,4 +1713,4 @@ export declare function withThrottle(interval?: number, options?: ThrottleDecora
  * 的文案是 `Action timeout after <n>ms`（小写 t），按文本匹配又会漏判它的真实超时。
  */
 export declare function withTimeout(timeout?: number): MethodDecorator;
-```
+````
