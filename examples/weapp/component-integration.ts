@@ -59,7 +59,9 @@ export const counterComponentOptions = withComponentStore(counterStore, {
   lifetimes: {
     attached() {
       // 组件生命周期内的 this 同样是注入后的实例类型，可直接访问 this.data
-      console.log('组件挂载，当前计数:', this.data.count)
+      // 打印 doubled 让「getter 注入」这条路可观测，否则这条 mapGetters 从未被消费、
+      // 读者无从判断注入是否生效
+      console.log('组件挂载，当前计数:', this.data.count, '加倍:', this.data.doubled)
     },
     detached() {
       // 集成层在 detached 时自动退订

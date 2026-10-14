@@ -1,7 +1,9 @@
 /**
  * Extras 示例：Action 装饰器
  *
- * 覆盖：withLog / withRetry / withCache / withThrottle（含 assumeAsync）等装饰器的组合使用。
+ * 覆盖：withLog / withRetry / withCache / withThrottle / withTimeout 的组合使用。
+ * （withThrottle 本例只演示 leading/trailing 语义；assumeAsync 选项见 throttle.ts
+ * 与其测试用例，此处不实际使用）
  *
  * 发布包等价导入：`@openlide/geomstore/extras/action`
  *
@@ -37,8 +39,13 @@ class UserService {
   /**
    * 节流：滚动/拖拽等高频调用
    *
-   * `assumeAsync: true` 用于「非 async 语法但返回 Promise」的方法被抑制的场景，
-   * 保证被抑制的调用同样返回 Promise，调用方 await 不会拿到 undefined。
+   * `reportScroll` 是非 async 的 `void` 返回方法，且未传 `assumeAsync`，
+   * 因此窗口内被抑制的调用返回 `undefined`（见 throttle.ts:337）——
+   * 这里只演示 leading/trailing 语义，调用方不需要 await。
+   *
+   * 若要演示「非 async 语法但返回 Promise」的方法被抑制后仍返回 Promise 的场景，
+   * 需在选项里显式加 `assumeAsync: true` 并让方法真的返回 thenable，
+   * 否则被抑制调用会拿到 `undefined`。
    */
   @withThrottle(200, { leading: true, trailing: true })
   reportScroll(offset: number): void {

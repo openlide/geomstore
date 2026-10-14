@@ -11,8 +11,15 @@ import { createStore } from '../../src/index.js'
 import { withPageStore } from '../../src/integrations/index.js'
 
 // 会话状态：先定义类型，state / actions 共用一份（避免 `as` 断言与字面量重复）
+// userInfo 的形状也抽成命名类型：`SessionState.userInfo` 与 login action 参数
+// 是同一个契约，此处若各写一份字面量则未来字段变更会静默漂移
+interface UserInfo {
+  name: string
+  avatar: string
+}
+
 interface SessionState {
-  userInfo: { name: string; avatar: string } | null
+  userInfo: UserInfo | null
   isLoggedIn: boolean
   theme: string
 }
@@ -27,7 +34,7 @@ const appStore = createStore({
   }),
   actions: {
     // action 的 this 由 Store 自动注入（state / setState / $patch / dispatch 等），无需手写标注
-    login(userInfo: { name: string; avatar: string }): void {
+    login(userInfo: UserInfo): void {
       this.$patch({ userInfo, isLoggedIn: true })
     },
     logout(): void {

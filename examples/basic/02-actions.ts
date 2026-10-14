@@ -20,6 +20,10 @@ interface TodoState {
   error: string
 }
 
+// Date.now() 毫秒精度，同 tick 内 add 会撞 id（toggle 按 id 查找会误伤多条）；
+// 用递增计数器代替时间戳保证 id 唯一
+let nextTodoId = 1
+
 const todoStore = createStore({
   name: 'todos',
   state: (): TodoState => ({
@@ -30,7 +34,7 @@ const todoStore = createStore({
   actions: {
     // 同步 action：this 为 action 上下文（类型由 state 自动推导，无需手写）
     add(text: string): Todo {
-      const todo: Todo = { id: Date.now(), text, done: false }
+      const todo: Todo = { id: nextTodoId++, text, done: false }
       this.$patch({ items: [...this.state.items, todo] })
       return todo
     },
@@ -46,10 +50,14 @@ const todoStore = createStore({
       this.$patch({ loading: true })
       try {
         const items = await Promise.resolve([{ id: 1, text: '示例待办', done: false }])
-        this.$patch({ items, loading: false })
+        // 成功路径要清 error：初始 `error: ''` 只兜住第一次；一次失败一次成功后
+        // 陈旧错误会一直挂在 store 上被消费侧读到
+        this.$patch({ items, loading: false, error: '' })
         return items.length
       } catch (error) {
-        this.$patch({ loading: false, error: String(error) })
+        // String(error) 会把 [object Error] 或整个 stack 塞给消费侧；
+        // 优先取 .message 保证是可读的用户级信息
+        this.$patch({ loading: false, error: error instanceof Error ? error.message : String(error) })
         throw error
       }
     },
