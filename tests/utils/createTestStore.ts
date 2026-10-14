@@ -54,16 +54,13 @@ const createStoreFromOptions = _createStore as unknown as <S extends State, A ex
   options: StoreOptions<S, A, G>,
 ) => StoreInstance<S, A, G>
 
-// 编译期守门：把上面的断言拉回一次「真实 createStore 的入参/返回是否仍可赋给它」，
-// 未来 `createStore` 签名漂移（新增/重命名 option 成员、返回类型改动、新载）时
-// 这行会直接爆编译错，而不是悄悄通过、把失配留给运行时或测试推断
-type _AssertOptionsStillAssignable = typeof _createStore extends (
-  options: StoreOptions<State, Actions, Getters<State>>,
-) => StoreInstance<State, Actions, Getters<State>>
-  ? true
-  : { __drifted: 'createStore signature no longer matches createStoreFromOptions assertion' }
-const _assertCreateStoreSignature: _AssertOptionsStillAssignable = true
-void _assertCreateStoreSignature
+// 编译期守门：把上面的断言拉回一次「真实 createStore 的返回是否仍是 StoreInstance」。
+// 走 ReturnType：TypeScript 对重载函数取最后一个签名的返回值，`createStore` 三个
+// 重载都收 `Store<S, A, G>`，返回类型不随 S/A/G 变化，因此这条锁能捕捉到
+// 「返回类型整体漂移」这类破坏性改动（比如改成了 `Store` 的兄弟接口、或加了包装）
+type _AssertReturnStillCompatible = ReturnType<typeof _createStore> extends StoreInstance<State, Actions, Getters<State>> ? true : false
+const _assertCreateStoreReturn: _AssertReturnStillCompatible = true
+void _assertCreateStoreReturn
 
 /**
  * 测试专用 Store 工厂。

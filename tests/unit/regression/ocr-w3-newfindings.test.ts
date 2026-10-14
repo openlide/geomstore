@@ -76,17 +76,18 @@ describe('W3-N2: 跨 realm ArrayBuffer/SharedArrayBuffer 按字节比较', () =>
 
 describe('W3-N4: 快照数组默认模式保留可枚举符号键', () => {
   it('数组上的可枚举符号键被快照保留', () => {
-    const arr = [1, 2, 3]
+    const arr = [1, 2, 3] as number[] & Record<symbol, unknown>
     const sym = Symbol('tag')
     arr[sym] = 'metadata'
 
     const result = createSnapshot(arr)
     expect(result.success).toBe(true)
-    expect(result.data[sym]).toBe('metadata')
+    const data = result.data as number[] & Record<symbol, unknown>
+    expect(data[sym]).toBe('metadata')
   })
 
   it('数组上的多个符号键都被保留', () => {
-    const arr = [1, 2]
+    const arr = [1, 2] as number[] & Record<symbol, unknown>
     const s1 = Symbol('a')
     const s2 = Symbol('b')
     arr[s1] = 'x'
@@ -94,39 +95,43 @@ describe('W3-N4: 快照数组默认模式保留可枚举符号键', () => {
 
     const result = createSnapshot(arr)
     expect(result.success).toBe(true)
-    expect(result.data[s1]).toBe('x')
-    expect(result.data[s2]).toBe('y')
+    const data = result.data as number[] & Record<symbol, unknown>
+    expect(data[s1]).toBe('x')
+    expect(data[s2]).toBe('y')
   })
 
   it('符号键与字符串附加键共存时都被保留', () => {
-    const arr = [1, 2, 3]
+    const arr = [1, 2, 3] as number[] & { meta?: string } & Record<symbol, unknown>
     arr.meta = 'v2'
     const sym = Symbol('version')
     arr[sym] = 1
 
     const result = createSnapshot(arr)
     expect(result.success).toBe(true)
-    expect(result.data.meta).toBe('v2')
-    expect(result.data[sym]).toBe(1)
+    const data = result.data as number[] & { meta?: string } & Record<symbol, unknown>
+    expect(data.meta).toBe('v2')
+    expect(data[sym]).toBe(1)
   })
 
   it('不可枚举符号键在默认模式下不被保留（与对象分支同口径）', () => {
-    const arr = [1, 2]
+    const arr = [1, 2] as number[] & Record<symbol, unknown>
     const sym = Symbol('hidden')
     Object.defineProperty(arr, sym, { value: 'secret', enumerable: false })
 
     const result = createSnapshot(arr)
     expect(result.success).toBe(true)
-    expect(result.data[sym]).toBeUndefined()
+    const data = result.data as number[] & Record<symbol, unknown>
+    expect(data[sym]).toBeUndefined()
   })
 
   it('includeNonEnumerable 模式下不可枚举符号键也被保留', () => {
-    const arr = [1, 2]
+    const arr = [1, 2] as number[] & Record<symbol, unknown>
     const sym = Symbol('hidden')
     Object.defineProperty(arr, sym, { value: 'secret', enumerable: false })
 
     const result = createSnapshot(arr, { includeNonEnumerable: true })
     expect(result.success).toBe(true)
-    expect(result.data[sym]).toBe('secret')
+    const data = result.data as number[] & Record<symbol, unknown>
+    expect(data[sym]).toBe('secret')
   })
 })
