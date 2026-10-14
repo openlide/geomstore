@@ -217,8 +217,10 @@ export function createParametricSelector<S extends State, P, R>(
         // 执行选择器
         const value = selectorFn(state, params)
 
-        // 存入缓存
-        cache.objectParamsCache.set(params, { value, timestamp: now })
+        // #155: ttl<=0 或 NaN 时文档语义是「不缓存」，跳过写入避免占内存却永不命中
+        if (ttl > 0 && Number.isFinite(ttl)) {
+          cache.objectParamsCache.set(params, { value, timestamp: now })
+        }
 
         return value
       } else {
@@ -233,9 +235,12 @@ export function createParametricSelector<S extends State, P, R>(
         // 执行选择器
         const value = selectorFn(state, params)
 
-        // 存入缓存（写入前维护容量与过期条目）
-        maintainPrimitiveCache(cache.primitiveParamsCache, now)
-        cache.primitiveParamsCache.set(cacheKey, { value, timestamp: now })
+        // #155: ttl<=0 或 NaN 时文档语义是「不缓存」，跳过写入避免占内存却永不命中
+        if (ttl > 0 && Number.isFinite(ttl)) {
+          // 存入缓存（写入前维护容量与过期条目）
+          maintainPrimitiveCache(cache.primitiveParamsCache, now)
+          cache.primitiveParamsCache.set(cacheKey, { value, timestamp: now })
+        }
 
         return value
       }

@@ -189,6 +189,12 @@ export class SelectorFactory<S extends State = Record<string, unknown>, R = unkn
     if (item.version !== undefined) {
       return false
     }
+    // #161: 无版本缓存条目 vs 版本化输入：版本化输入有明确的失效凭证（版本号），
+    // 无版本条目只能按内容比较，二者口径不一致。版本化输入应只匹配版本化条目，
+    // 否则状态变异后版本号递增，但无版本条目仍可能按内容相等被误命中
+    if (stateVersion !== undefined) {
+      return false
+    }
     // 回退：状态无版本标记（非 Store 状态，如直接传入的普通对象），沿用 equalityFn 比较
     // equalityFn 在构造期已归一化（未提供时回退默认 deepEqual），类型上恒为函数，无需 falsy 兜底分支
     return this.options.equalityFn(item.state, state)

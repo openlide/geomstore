@@ -209,11 +209,11 @@ export class ErrorBoundary<S = unknown, F = undefined> {
     // 调用错误回调
     if (this.onErrorCallback) {
       try {
-        const result = this.onErrorCallback(error)
+        const result = this.onErrorCallback(error) as unknown
         // #149: onError 回调可能是 async 函数，返回 Promise。同步 try/catch 只能兜住同步抛出，
-        // async 回调的 rejection 会逃逸成 unhandled rejection。检测 thenable 并挂 .catch
+        // async 回调的 rejection 会逃逸成 unhandled rejection。检测 thenable 并用 Promise.resolve 包装后挂 .catch
         if (isThenable(result)) {
-          result.catch((callbackError) => {
+          Promise.resolve(result).catch((callbackError: unknown) => {
             console.error('[ErrorBoundary] Error in async onError callback:', callbackError)
           })
         }
