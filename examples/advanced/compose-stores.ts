@@ -69,9 +69,15 @@ const rootStore = composeStore([userStore, cartStore, settingsStore], {
 })
 
 /**
- * 组合状态的类型：当前 `getState()` 的返回类型为各子 store 状态的交叉类型，
- * 而命名空间模式下运行时结构是按 name 嵌套的 —— 因此这里做一次断言对齐运行时结构。
- * （若不需要命名空间，可传 `namespace: false`，此时状态为扁平结构。）
+ * 组合状态的类型：当前 `getState()` 的返回类型为各子 store 状态的**交叉类型**，
+ * 而命名空间模式下运行时是按 name 嵌套的 —— 因此这里做一次 `as unknown as RootState`
+ * 对齐。若不需要命名空间，可传 `namespace: false`，交叉类型即运行时结构，无需断言。
+ *
+ * ⚠️ 断言会关掉本行以下所有 `state.user.name` / `state.settings.theme` 的编译期校验：
+ * `namespace` 从 `true` 切到 `false`、或子 store 的 `name` 改了，`RootState` 会静默
+ * 与运行时结构不符而本示例照旧编译通过。改结构时**必须**同步这里的 interface；
+ * 更长期的方案是让 `composeStore` 在 namespace=true 时直接把返回类型推成
+ * 按 name 嵌套的形状（需要 core 侧泛型改造），断言只作为过渡期的单点对齐
  */
 interface RootState {
   user: UserState
